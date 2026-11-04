@@ -1,0 +1,128 @@
+#pragma once
+#include "DeskLook.h"
+
+namespace td
+{
+/** Called after a switch so the choice is remembered (set by the application). */
+inline std::function<void (bool dark)>& themeSaveHook() { static std::function<void (bool)> f; return f; }
+
+namespace themeswitch
+{
+/** Gives colours that were set by hand (from the old palette) the matching colour of the new palette. */
+inline void recolour (juce::Component& c, const std::array<juce::uint32, 18>& oldP, const std::array<juce::Colour*, 18>& newP)
+{
+    static const int ids[] = {
+        juce::ResizableWindow::backgroundColourId,
+        juce::TextButton::buttonColourId, juce::TextButton::buttonOnColourId, juce::TextButton::textColourOffId, juce::TextButton::textColourOnId,
+        juce::ComboBox::backgroundColourId, juce::ComboBox::outlineColourId, juce::ComboBox::textColourId, juce::ComboBox::arrowColourId, juce::ComboBox::focusedOutlineColourId,
+        juce::TextEditor::backgroundColourId, juce::TextEditor::textColourId, juce::TextEditor::highlightColourId, juce::TextEditor::highlightedTextColourId,
+        juce::TextEditor::outlineColourId, juce::TextEditor::focusedOutlineColourId,
+        juce::Label::backgroundColourId, juce::Label::textColourId, juce::Label::outlineColourId,
+        juce::Slider::backgroundColourId, juce::Slider::thumbColourId, juce::Slider::trackColourId, juce::Slider::textBoxTextColourId,
+        juce::Slider::textBoxBackgroundColourId, juce::Slider::textBoxOutlineColourId, juce::Slider::textBoxHighlightColourId,
+        juce::ToggleButton::textColourId, juce::ToggleButton::tickColourId, juce::ToggleButton::tickDisabledColourId,
+        juce::ListBox::backgroundColourId, juce::ListBox::outlineColourId, juce::ListBox::textColourId,
+        juce::ScrollBar::backgroundColourId, juce::ScrollBar::thumbColourId, juce::ScrollBar::trackColourId,
+        juce::TableHeaderComponent::backgroundColourId, juce::TableHeaderComponent::textColourId, juce::TableHeaderComponent::outlineColourId };
+    for (int id : ids)
+    {
+        if (! c.isColourSpecified (id)) continue;
+        const auto v = c.findColour (id).getARGB();
+        for (size_t i = 0; i < oldP.size(); ++i)
+            if (oldP[i] == v) { c.setColour (id, *newP[i]); break; }
+    }
+    for (auto* ch : c.getChildren()) if (ch != nullptr) recolour (*ch, oldP, newP);
+}
+
+/** The same font again, made afresh: a Font keeps the typeface it first resolved, so after a change of UI style (another default typeface) every
+    label and text box that holds a font is given a new one, which resolves to the new face. (Without this an old font shaped with the old face
+    and a new one with the new face would share the glyph cache, and the writing came out as the wrong letters.) */
+inline juce::Font refreshed (const juce::Font& f)
+{
+    const auto name = theme::isSansName (f.getTypefaceName()) ? juce::String (theme::sansName (theme::manuscript())) : f.getTypefaceName();
+    auto o = juce::FontOptions (name, f.getTypefaceStyle(), f.getHeight()).withKerningFactor (f.getExtraKerningFactor()).withHorizontalScale (f.getHorizontalScale());
+    if (f.isUnderlined()) o = o.withUnderline (true);
+    return juce::Font (o);
+}
+inline void refont (juce::Component& c)
+{
+    // (a font that only differs in its typeface counts as the same font, so a different one goes in first, or nothing would change)
+    const juce::Font other (juce::FontOptions (1.0f));
+    if (auto* l = dynamic_cast<juce::Label*> (&c)) { const auto f = refreshed (l->getFont()); l->setFont (other); l->setFont (f); }
+    else if (auto* e = dynamic_cast<juce::TextEditor*> (&c)) { const auto f = refreshed (e->getFont()); e->applyFontToAllText (other, true); e->applyFontToAllText (f, true); }
+    for (auto* ch : c.getChildren()) if (ch != nullptr) refont (*ch);
+}
+}
+
+/** Switches the whole program between the dark and the light look: every window, the mixers, and the choice is remembered. */
+inline void switchTheme (bool dark)
+{
+    if (theme::isDark() == dark) return;
+    const auto oldP = theme::snapshot();
+    theme::setDark (dark);
+    desk::setTheme (desk::themeIndex());                         // (the main window's desk takes the new shade too)
+    setMixDark (dark);
+    if (auto* l = FermataLookAndFeel::instance()) l->applyTheme();
+    const auto newP = theme::all();
+    auto& desk = juce::Desktop::getInstance();
+    for (int i = 0; i < desk.getNumComponents(); ++i)
+        if (auto* c = desk.getComponent (i))
+        {
+            themeswitch::recolour (*c, oldP, newP);
+            c->sendLookAndFeelChange();
+            if (dynamic_cast<juce::ResizableWindow*> (c) != nullptr) c->resized();      // the wooden side panels come and go with the desk look
+            c->repaint();
+        }
+    if (themeSaveHook()) themeSaveHook() (dark);
+}
+
+/** Gives the desk another colour (Project > Colour theme): 0 blue, 1 red, 2 orange, 3 yellow, 4 green, 5 purple. Every window follows at once. */
+inline void applyDeskColour (int index)
+{
+    index = juce::jlimit (0, desk::kThemes - 1, index);
+    const auto oldP = theme::snapshot();
+    theme::deskIndex() = index;
+    desk::setTheme (index);
+    theme::setDark (theme::isDark());
+    setMixDark (theme::isDark());
+    if (auto* l = FermataLookAndFeel::instance()) l->applyTheme();
+    const auto newP = theme::all();
+    auto& d = juce::Desktop::getInstance();
+    for (int i = 0; i < d.getNumComponents(); ++i)
+        if (auto* c = d.getComponent (i))
+        {
+            themeswitch::recolour (*c, oldP, newP);
+            c->sendLookAndFeelChange();
+            c->repaint();
+        }
+}
+
+/** Switches the whole interface between the Fermata style UI (0) and the Manuscript UI (1): the palette, the desk, the mixers, the type. Every open
+    window takes the new look at once (a few labels keep their old typeface until their window is opened again). */
+inline void applyStyle (int style)
+{
+    style = juce::jlimit (0, 1, style);
+    const auto oldP = theme::snapshot();
+    theme::styleIndex() = style;
+    theme::applyDefaultFontName();                               // new fonts take the style's face (under its own name: see theme::sansName)
+    desk::setTheme (desk::themeIndex());
+    theme::setDark (theme::isDark());
+    setMixDark (theme::isDark());
+    juce::Typeface::clearTypefaceCache();                        // the default typeface is another one now
+    if (auto* l = FermataLookAndFeel::instance()) l->applyTheme();
+    const auto newP = theme::all();
+    auto& d = juce::Desktop::getInstance();
+    for (int i = 0; i < d.getNumComponents(); ++i)
+        if (auto* c = d.getComponent (i))
+        {
+            themeswitch::recolour (*c, oldP, newP);
+            themeswitch::refont (*c);
+            c->sendLookAndFeelChange();
+            c->resized();
+            c->repaint();
+        }
+}
+
+/** Makes the program use switchTheme for the buttons in the windows. Call once at start. */
+inline void installThemeSwitch() { themeSwitchHook() = [] (bool dark) { switchTheme (dark); }; }
+} // namespace td
