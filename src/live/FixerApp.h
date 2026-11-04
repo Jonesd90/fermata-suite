@@ -22,6 +22,8 @@ public:
     FixerApp (const juce::String& version, int port);
     ~FixerApp() override;
     std::function<void()> onQuit;
+    /** 0.3.1: the Fixer's own settings and mixer saved (the first step of closing, before the closing safety net starts; again as it goes). */
+    void saveSettings();
 
     const juce::String version;
     const int port;

@@ -3,6 +3,7 @@
     station's player and tells the player where the sound is. The player renders on this thread (render), as far ahead as the window allows and no
     further; a new generation (Play, Stop, a locate) drops what the recorder still has queued, so the sound follows the transport at once. */
 #include "StreamProtocol.h"
+#include "../core/CrashReport.h"
 #include <atomic>
 #include <functional>
 #include <mutex>
@@ -43,6 +44,7 @@ public:
 private:
     void run() override
     {
+        crashreport::nameThisThread (getThreadName());                   // (0.3.1: named for the log's thread listing)
         std::vector<float> buf ((size_t) stream::kMaxFramesPerPacket * 2);
         std::string in;
         char tmp[4096];

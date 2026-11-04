@@ -122,8 +122,19 @@ public:
     // ---- the Fixer
     void startFixer();
 
-    /** The window closes: the recorder is told to quit unless a take records or a merge runs (then it is left running, and found again). */
-    void shuttingDown();
+    // ---- closing (0.3.1: closing lets go of everything unless the user says otherwise - see LiveApplication::quitPrimary)
+    /** What closing would end, or have to wait for (as far as the recorder has said): the pre-take, and the takes not yet merged. */
+    struct StillGoing { bool session = false; int takesToMerge = 0; };
+    StillGoing stillGoing() const;
+    /** Close everything: playback stops, the project is saved, and the recorder is told to end the session, let go of the audio device at once and
+        close as soon as its merges have finished. True when fermata:Live should wait for it (a take still to be merged: it is put into the project
+        when its merge is done); onRecorderClosed is then called once the recorder has closed. */
+    bool closeEverything();
+    std::function<void()> onRecorderClosed;
+    /** Close the window only (a take recording, or the user keeps the pre-take running): the recorder is left as it is, and found again next time. */
+    void closeWindowOnly();
+    /** The last save as the program closes (anything the closing windows changed). */
+    void finalSave();
 
 private:
     void onEvent (const juce::var&);
@@ -158,6 +169,9 @@ private:
     juce::int64 lastAskMs = 0, lastSaveMs = 0;
     juce::uint32 lastMixMs = 0;
     bool mutedForPlayback = false;
+    bool closingDown = false;                                   // (closing: nothing is opened or put back on the recorder any more)
+    bool closingWait = false;                                   // (Close everything: waiting for the recorder to finish its merges and close)
+    juce::uint32 closingMergeSeenMs = 0;                        // (the last moment the recorder said a merge was going)
     std::shared_ptr<bool> alive = std::make_shared<bool> (true);
 };
 } // namespace td::live

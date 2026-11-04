@@ -1,6 +1,7 @@
 #include "RecorderService.h"
 #include "TestSignalDevice.h"
 #include "../core/Project.h"
+#include "../ui/ClosingLog.h"
 
 namespace td::live
 {
@@ -77,20 +78,35 @@ RecorderService::RecorderService (int port, const juce::String& ver)
     else log ("fermata:Live recorder " + version + " listening on 127.0.0.1:" + juce::String (port));
     if (! streams.start (port + 1)) log ("Cannot listen for playback streams on port " + juce::String (port + 1) + ": the stations will not be heard");
     mergeRunner.startThread (juce::Thread::Priority::low);
+    aloneSinceMs = juce::Time::currentTimeMillis();
     startTimer (50);
+}
+
+void RecorderService::closeForQuit()
+{
+    stopTimer();
+    endSession();                                                   // (the drives finish their chunks, and the session's index says it ended)
 }
 
 RecorderService::~RecorderService()
 {
-    stopTimer();
+    // 0.3.1: each step into the log with its time (fermata's closing log, src/ui/ClosingLog.h - written only while the application closes).
+    // The device is closed here, after the closing safety net has started: a driver that hangs as it is closed cannot keep the recorder for good.
+    closeForQuit();
+    const bool hadDevice = device != nullptr;
+    closeDevice();
+    if (hadDevice) closing::step ("the audio device let go");
     mergeCancel = true;
     mergeRunner.stopThread (60000);
-    closeDevice();
+    closing::step ("the merge thread stopped");
     for (auto* t : devices.getAvailableDeviceTypes()) t->removeListener (listWatch.get());
     listWatch.reset();
     peakTap.stop();
+    closing::step ("the waveform thread stopped");
     streams.stop();
+    closing::step ("the stations' playback streams closed");
     hub.stop();
+    closing::step ("the control port closed");
 }
 
 void RecorderService::log (const juce::String& text)
@@ -198,15 +214,16 @@ void RecorderService::handleLine (const juce::String& line)
         if (cmd == "hello")          { auto e = obj(); put (e, "ev", "hello"); put (e, "version", version); send (e); send (statusEvent()); }
         else if (cmd == "status")    send (statusEvent());
         else if (cmd == "devices")   sendDevices();
-        else if (cmd == "open")      { if (recording()) refuse ("a take is recording"); else openDevice (c); }
+        else if (cmd == "open")      { if (recording()) refuse ("a take is recording"); else { keepRunning(); openDevice (c); } }
         else if (cmd == "close-device") { if (recording()) refuse ("a take is recording"); else closeDevice(); }
-        else if (cmd == "session")   startSession (c);
+        else if (cmd == "session")   { keepRunning(); startSession (c); }
         else if (cmd == "end-session") { if (recording()) refuse ("a take is recording: Stop first"); else endSession(); }
         else if (cmd == "record")    record (c);
         else if (cmd == "stop")      stop();
         else if (cmd == "registered") takeRegistered (c);
         else if (cmd == "take-info") takeInfo (c);
         else if (cmd == "merge-backup") mergeBackup (c);
+        else if (cmd == "merge-take") mergeAgain (c);
         else if (cmd == "resume-drive") resumeDrive (c);
         else if (cmd == "mix")       setMix (c);
         else if (cmd == "talkback")  setTalkback (c);
@@ -218,9 +235,22 @@ void RecorderService::handleLine (const juce::String& line)
         else if (cmd == "quit")
         {
             if (recording()) return refuse ("a take is recording");
+            if ((bool) c["whenDone"])
+            {   // 0.3.1: the window's Close everything - nothing is left running. With no merge to finish the recorder closes now (the session
+                // ends; the device is closed as the program closes, under the closing safety net). With one, the session ends and the audio device is
+                // let go now - fermata can open it meanwhile - and the recorder closes as soon as the merges have finished (their results sent, so
+                // the window can put the takes into the project).
+                if (! merging() && mergeEventsUnsent.load() == 0) { endSession(); quitNow ("Quit (Close everything)"); return; }
+                const auto name = device != nullptr ? device->getName() : juce::String();
+                endSession();
+                if (device != nullptr) closeWithGuard ([this] { closeDevice(); });
+                if (name.isNotEmpty()) log ("The audio device is let go (" + name + ")");
+                quitWhenDone = true; quitReadyMs = 0;
+                log ("Closing as soon as the merge has finished");
+                return;
+            }
             if (merging())   return refuse ("a merge is still running: it finishes first");
-            log ("Quit");
-            if (onQuit) onQuit();
+            quitNow ("Quit");
         }
         else log ("Unknown command: " + cmd);
     }
@@ -385,6 +415,8 @@ void RecorderService::audioDeviceError (const juce::String& message)
 
 void RecorderService::audioDeviceIOCallbackWithContext (const float* const* inputs, int numInputs, float* const* outputs, int numOutputs, int n, const juce::AudioIODeviceCallbackContext&)
 {
+    static thread_local bool named = false;                         // 0.3.1: the driver's thread named for the log, once (nothing allocated), as fermata's
+    if (! named) { named = true; crashreport::nameThisThreadW (L"fermata:Live audio callback (the driver's thread)"); }
     for (int o = 0; o < numOutputs; ++o) if (outputs[o] != nullptr) juce::FloatVectorOperations::clear (outputs[o], n);
     callbacks.fetch_add (1, std::memory_order_relaxed);
     // first the recording: the block goes into the ring before anything else is done with it (the monitoring below only reads the inputs);
@@ -681,7 +713,8 @@ void RecorderService::runMerge (MergeJob job)
 {
     // Everything here talks to the session through its own thread-safe calls (no round trips to the message thread): the job holds the session
     // alive (shared_ptr), so it stays valid - closed, at worst - until the merge is over
-    auto post = [this] (juce::var e) { juce::MessageManager::callAsync ([this, e] { send (e); }); };
+    // (0.3.1: counted until sent - closing waits for the last of them, so the window hears that its take is merged before the recorder goes)
+    auto post = [this] (juce::var e) { ++mergeEventsUnsent; juce::MessageManager::callAsync ([this, e] { send (e); --mergeEventsUnsent; }); };
     auto logger = [this] (const juce::String& t) { juce::MessageManager::callAsync ([this, t] { log (t); }); };
     { auto e = obj(); put (e, "ev", "merge"); put (e, "state", "started"); put (e, "take", job.take); put (e, "backup", job.backup); put (e, "folder", job.sessionFolder.getFullPathName()); post (e); }
     const auto rec = job.rec;
@@ -896,7 +929,7 @@ void RecorderService::answerPeaks (remote::Hub::Connection& conn, const juce::va
 void RecorderService::timerCallback()
 {
     const auto now = juce::Time::currentTimeMillis();
-    if (hub.takeNewConnection()) send (statusEvent());
+    if (hub.takeNewConnection()) { keepRunning(); send (statusEvent()); }      // (0.3.1: a window that connects wants this recorder: no Close everything)
     monitor.service();
     if (deviceRunning.load() && now - lastMeterMs >= 50 && hub.connections() > 0)
     {
@@ -910,11 +943,94 @@ void RecorderService::timerCallback()
     }
     if (now - lastPeaksMs >= 100) { lastPeaksMs = now; sendPeaks(); }
     watchAudio (now);
+    watchClosing (now);
     if (now - lastStatusMs >= 1000)
     {
         lastStatusMs = now;
         if (hub.connections() > 0) send (statusEvent());
     }
+}
+
+// ---- closing (0.3.1) ---------------------------------------------------------------------------------------------------------------------------
+/** Closing the audio device while the recorder goes on merging (Close everything with a merge to finish): outside the closing safety net, which
+    starts only when the recorder closes. A driver that hangs as its device is closed would hold the recorder for good - so if 'close' has not
+    returned in 20 s, where every part of the recorder is goes into its log and it ends itself. (The merge it was doing is done again the next time
+    fermata:Live opens the project: "merge-take".) Message thread. */
+void RecorderService::closeWithGuard (std::function<void()> close)
+{
+    struct State { std::mutex m; std::condition_variable cv; bool done = false; };
+    auto st = std::make_shared<State>();                            // (shared with the guard's thread, which is let go of: it may outlive this object)
+    juce::File logFile;
+    if (auto* fl = dynamic_cast<juce::FileLogger*> (juce::Logger::getCurrentLogger())) logFile = fl->getLogFile();
+    const auto mainId = (unsigned long) (juce::pointer_sized_int) juce::Thread::getCurrentThreadId();
+    std::thread ([st, logFile, mainId]
+    {
+        crashreport::nameThisThreadW (L"fermata:Live device close guard");
+        std::unique_lock<std::mutex> lk (st->m);
+        if (st->cv.wait_for (lk, std::chrono::seconds (20), [&st] { return st->done; })) return;
+        if (logFile != juce::File())
+            logFile.appendText ("\nThe audio driver has not let go of the device 20 s after it was asked to (it hangs as it is closed): the recorder ends itself now. "
+                                "A take it was merging is merged again the next time fermata:Live opens the project. Where every part of it was (innermost first):\n"
+                                + crashreport::describeThreads (mainId, 48, 24) + "\n");
+        crashreport::endThisProcess();
+    }).detach();
+    close();
+    { const std::lock_guard<std::mutex> l (st->m); st->done = true; }
+    st->cv.notify_all();
+}
+
+void RecorderService::mergeAgain (const juce::var& c)
+{
+    // 0.3.1: a take of an ENDED session whose merge never finished - the recorder or the PC stopped while it merged (after Close everything,
+    // say). Its index says it ended, so it is not carried on: the window finds the take in the index and asks for it here, and it is merged as
+    // the session's own merge would have been, into the project (the result is put in by the window, as any merge's)
+    if (! fullPath (c["folder"].toString())) return log ("merge-take: not a full path");
+    const juce::File folder (c["folder"].toString());
+    const int number = (int) c["number"];
+    if (mergeQueuedFor (folder, number)) return log ("Take " + juce::String (number) + " of " + folder.getFileName() + " is being merged already");
+    if (auto rec = session(); rec != nullptr && rec->primaryFolder() == folder) return;     // (the running session merges its own takes)
+    SessionIndex idx;
+    if (! idx.load (folder.getChildFile (kIndexFileName))) return log ("merge-take: no session index in " + folder.getFullPathName());
+    const auto* t = idx.findTake (number);
+    if (t == nullptr || t->end < 0 || t->merged) return;
+    TakeRec take = *t;
+    take.registered = false; take.mergeError.clear();
+    log ("Take " + juce::String (number) + " of the ended session " + folder.getFileName() + " was never merged (it was cut short): merging it now");
+    queueMerge ({ nullptr, folder, number, folder.getParentDirectory().getParentDirectory(), false, take, idx.projectName });
+}
+
+void RecorderService::quitNow (const juce::String& why)
+{
+    if (quitting) return;
+    quitting = true;
+    log (why);
+    if (onQuit) onQuit();
+}
+
+void RecorderService::keepRunning()
+{
+    aloneSinceMs = juce::Time::currentTimeMillis();
+    if (! quitWhenDone) return;
+    quitWhenDone = false; quitReadyMs = 0;
+    log ("Not closing after all: a window wants the recorder again");
+}
+
+void RecorderService::watchClosing (juce::int64 now)
+{
+    if (quitting) return;
+    const bool busy = recording() || merging() || mergeEventsUnsent.load() > 0;
+    if (quitWhenDone)
+    {   // Close everything: once the merges have finished and their results are sent, 1.5 s more (the window puts the take into the project and
+        // says so - "registered" - which goes into the session's index here), then the recorder closes
+        if (busy || session() != nullptr) quitReadyMs = 0;
+        else if (quitReadyMs == 0) quitReadyMs = now;
+        else if (now - quitReadyMs >= 1500) { quitNow ("Quit (Close everything: nothing is left running)"); return; }
+    }
+    // left alone: no window for a minute and nothing running - the window died, or its "quit" never came (never with the pre-take or a take)
+    if (hub.connections() > 0 || session() != nullptr || busy) aloneSinceMs = now;
+    else if (now - aloneSinceMs >= kAloneQuitMs)
+        quitNow ("No fermata:Live window has been connected for " + juce::String (kAloneQuitMs / 1000) + " s, and nothing is recording, merging or running: "
+                 "the recorder closes" + juce::String (device != nullptr ? " and lets go of the audio device" : ""));
 }
 
 void RecorderService::watchAudio (juce::int64 now)
@@ -1008,6 +1124,7 @@ void RecorderService::testSignal (const juce::var& c)
     if (action == "pause")        ts->pauseFor (juce::roundToInt (1000.0 * (double) c["seconds"]));
     else if (action == "restart") ts->restartItself ((double) c["rate"]);
     else if (action == "die")     ts->dieForTests();
+    else if (action == "hang-on-close") ts->hangWhenClosed (juce::roundToInt (1000.0 * (double) c["seconds"]));
     else log ("test-signal: no action called " + action);
 }
 } // namespace td::live

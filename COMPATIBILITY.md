@@ -41,6 +41,9 @@ Everything listed here is built into BOTH programs, so a change to any of it cha
   `src/ui/WaveDraw.h`, `src/ui/MarkerStrip.h`, `src/ui/TimeReadout.h`, `src/ui/TalkbackGlow.h`, `src/ui/BusyWindow.h`. Each of them may include only
   the others in this list and `src/core` (never `AppContext.h` or any other file of fermata's windows), and fermata:Live includes nothing else from
   `src/ui`. The check enforces both. A change to one of them changes how both programs look: build and look at both.
+- **fermata's closing log and closing safety net** (fermata 3.15.0 / 3.17.0; shared from fermata:Live 0.3.1, which uses them in its window, its
+  recorder and its Fixer): `src/ui/ClosingLog.h`. It stays in fermata's folder, unchanged, under the same rules as the look files above. A change to
+  it changes how both programs close. (Its safety net's log lines name "Fermata" in fermata:Live's logs too.)
 
 A file from one program's own folder joins this list as soon as the other program uses it (as fermata's look did in contract 3). From then on it is
 shared, and the rules below apply to it.

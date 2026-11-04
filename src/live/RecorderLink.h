@@ -30,6 +30,8 @@ public:
     int  portNumber() const noexcept         { return port; }
     /** Stops looking (and the connection); the recorder is left running. */
     void stop();
+    /** 0.3.1: closing - from now on no recorder is started when none answers (the one told to close must not be replaced by a new one). */
+    void stopLaunching() noexcept            { wantLaunch = false; }
 
 private:
     void run() override;

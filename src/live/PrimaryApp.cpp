@@ -1,6 +1,7 @@
 #include "PrimaryApp.h"
 #include "TakeRegister.h"
 #include "../ui/WinOwner.h"
+#include "../ui/ClosingLog.h"
 #include "LiveRecorder.h"
 #include "Merge.h"
 
@@ -40,14 +41,18 @@ PrimaryApp::PrimaryApp (const juce::String& ver, int p) : version (ver), port (p
 
 PrimaryApp::~PrimaryApp()
 {
+    // (0.3.1: each step into the log with its time - fermata's closing log, written only while the program closes)
     *alive = false;
     stopTimer();
-    if (dirty) saveNow();
+    if (dirty) { saveNow(); closing::step ("the project saved again (the windows had changed it)"); }
     model.removeChangeListener (this);
     project.removeChangeListener (this);
     player.reset();
+    closing::step ("playback stopped (its stream from the recorder closed)");
     project.preampDriver = std::make_shared<NullPreampDriver>();
+    closing::step ("the preamp connections closed");
     link.stop();
+    closing::step ("the connection to the recorder closed");
     settings->saveIfNeeded();
 }
 
@@ -534,19 +539,68 @@ void PrimaryApp::startFixer()
     else addLog ("The Fixer could not be started: " + error);
 }
 
-void PrimaryApp::shuttingDown()
+// ---- closing (0.3.1) ----------------------------------------------------------------------------------------------------------------------------
+PrimaryApp::StillGoing PrimaryApp::stillGoing() const
 {
+    StillGoing g;
+    if (! model.connected) return g;                            // (nothing is known: the recorder closes by itself if it is left with nothing to do)
+    g.session = model.sessionOn;
+    int unmerged = 0;                                           // (a take just stopped is in the session's list before the merge says it is queued)
+    for (auto& t : model.takes) if (t.end >= 0 && ! t.merged && t.mergeError.isEmpty()) ++unmerged;
+    g.takesToMerge = juce::jmax (unmerged, model.mergeQueued + (model.mergeActive ? 1 : 0));
+    return g;
+}
+
+bool PrimaryApp::closeEverything()
+{
+    closingDown = true;
+    stopPlayback();
+    if (dirty) saveNow();
+    const auto g = stillGoing();
+    link.stopLaunching();                                       // (the recorder told to close must not be replaced by a new one when it has gone)
+    auto c = cmd ("quit"); put (c, "whenDone", true); send (c);
+    if (! model.connected)
+    {
+        addLog ("Closing: the recorder is not answering. It closes by itself a minute after the last window has gone, unless a take records or the pre-take runs");
+        return false;
+    }
+    if (g.takesToMerge == 0)
+    {
+        addLog (g.session ? "Closing: the session ends, the audio device is let go and the recorder closes" : "Closing: the recorder lets go of the audio device and closes");
+        return false;
+    }
+    closingWait = true;
+    closingMergeSeenMs = juce::Time::getMillisecondCounter();
+    addLog ("Closing: " + juce::String (g.session ? "the session ends and " : "") + "the audio device is let go now; fermata:Live closes once the merge has finished and its take is in the project");
+    return true;
+}
+
+void PrimaryApp::closeWindowOnly()
+{
+    closingDown = true;
     stopPlayback();
     if (dirty) saveNow();
     if (isRecording()) addLog ("A take is recording: the recorder is left running and is found again when fermata:Live starts");
-    else if (model.mergeActive || model.mergeQueued > 0) addLog ("A merge is still running: the recorder is left running to finish it");
     else if (model.sessionOn) addLog ("The session is left running (the pre-take): the recorder is found again when fermata:Live starts");
-    else send (cmd ("quit"));
+}
+
+void PrimaryApp::finalSave()
+{
+    stopTimer();
+    if (dirty) saveNow();
 }
 
 // ---- events -------------------------------------------------------------------------------------------------------------------------------------
 void PrimaryApp::onConnection (bool on)
 {
+    if (! on && closingWait)
+    {   // 0.3.1, Close everything: the recorder has finished its merges (their takes are in the project) and closed - fermata:Live closes too
+        closingWait = false;
+        model.setConnected (false);
+        addLog ("The recorder has closed");
+        if (onRecorderClosed) onRecorderClosed();
+        return;
+    }
     const bool hadBefore = wasConnected;
     model.setConnected (on);
     if (! on) sessionStarting = 0;                              // (the answer will not come: the restore after reconnecting starts it again)
@@ -562,7 +616,7 @@ void PrimaryApp::onConnection (bool on)
             std::weak_ptr<bool> a = alive;
             juce::Timer::callAfterDelay (900, [this, a]
             {
-                if (a.expired() || model.deviceRunning) return;
+                if (a.expired() || model.deviceRunning || closingDown) return;     // (0.3.1: not when closing - it would call off Close everything)
                 openDevice (settings->getValue ("deviceType"), settings->getValue ("deviceName"), settings->getDoubleValue ("deviceRate", 48000.0), settings->getIntValue ("deviceBuffer", 0));
             });
         }
@@ -687,6 +741,7 @@ void PrimaryApp::onEvent (const juce::var& e)
     if (ev == "refused") { warn ("The recorder refused \"" + e["cmd"].toString() + "\": " + e["error"].toString()); return; }
     if (ev == "status")
     {
+        if (restoreAfterStatus && closingDown) restoreAfterStatus = false;   // (0.3.1: closing - nothing is put back)
         if (restoreAfterStatus)
         {   // the recorder had to be started again (it died): it has no device and no session - they are put back without waiting for anyone
             restoreAfterStatus = false;
@@ -836,6 +891,14 @@ void PrimaryApp::askForUnregistered()
                 SessionIndex idx;
                 if (! idx.load (folder.getChildFile (kIndexFileName)) || idx.state != "closed" || idx.role != "primary") continue;
                 for (auto& t : idx.takes)
+                {
+                    if (t.end >= 0 && ! t.merged && (t.mergeError.isEmpty() || t.mergeError == "Cancelled"))
+                    {   // 0.3.1: its merge was cut short (the recorder or the PC stopped while it merged - after Close everything, say): the session
+                        // has ended, so it is not carried on - its take is merged again now, and put into the project when that is done
+                        auto c = cmd ("merge-take"); put (c, "number", t.number); put (c, "folder", folder.getFullPathName()); send (c);
+                        ++asked;
+                        continue;
+                    }
                     if (t.merged && ! t.registered)
                     {
                         bool inProject = false;                                // (put in already - the index was not told): nothing to ask
@@ -844,8 +907,9 @@ void PrimaryApp::askForUnregistered()
                         auto c = cmd ("take-info"); put (c, "number", t.number); put (c, "folder", folder.getFullPathName()); send (c);
                         ++asked;
                     }
+                }
             }
-        if (asked > 0) addLog (juce::String (asked) + " take(s) of earlier sessions were merged but not put into the project: asked for again");
+        if (asked > 0) addLog (juce::String (asked) + " take(s) of earlier sessions were not put into the project (merged but not put in, or their merge cut short): asked for again");
         return;
     }
     if (! hasProject() || ! model.sessionOn) return;
@@ -944,5 +1008,16 @@ void PrimaryApp::timerCallback()
     if (dirty && now - lastSaveMs > 1500 && ! isRecording()) saveNow();       // (while a take records only every 10 s: the disk is the recording's)
     if (dirty && now - lastSaveMs > 10000) saveNow();
     if (model.connected && juce::Time::getMillisecondCounter() - lastMixMs > 5000) sendMix();   // (a recorder that came back gets the mix again)
+    if (closingWait)
+    {   // (the recorder closes 1.5 s after its last merge: if it says no merge is going for 10 s and is still there, fermata:Live closes anyway)
+        const auto ms = juce::Time::getMillisecondCounter();
+        if (model.mergeActive || model.mergeQueued > 0) closingMergeSeenMs = ms;
+        if (ms - closingMergeSeenMs > 10000 && ! isRecording())
+        {
+            closingWait = false;
+            addLog ("Closing: the recorder says it has finished merging but has not closed - fermata:Live closes anyway");
+            if (onRecorderClosed) onRecorderClosed();
+        }
+    }
 }
 } // namespace td::live

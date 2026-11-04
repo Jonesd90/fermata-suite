@@ -77,7 +77,18 @@ void StationModel::handle (const juce::var& e)
         if (auto* a = e["flags"].getArray()) for (auto& x : *a) { auto f = FlagRec::fromVar (x); if (f.id.isNotEmpty()) flags.push_back (f); }
         if (auto* a = e["fixes"].getArray()) for (auto& x : *a) fixes.push_back (x);
     }
-    else if (ev == "merge" || ev == "device" || ev == "drive" || ev == "gap" || ev == "refused" || ev == "log") {}
+    else if (ev == "merge")
+    {   // 0.3.1: at once, not a second later with the next status - closing asks only while a merge is really going (the status puts the rest right)
+        const auto state = e["state"].toString();
+        if (state == "started") { mergeActive = true; mergeTake = (int) e["take"]; }
+        else if (state == "done" || state == "failed")
+        {
+            mergeActive = false; mergeTake = 0; mergeFraction = 0.0;
+            if (state == "done" && ! (bool) e["backup"] && e["folder"].toString() == sessionFolder)
+                for (auto& t : takes) if (t.number == (int) e["take"]) t.merged = true;
+        }
+    }
+    else if (ev == "device" || ev == "drive" || ev == "gap" || ev == "refused" || ev == "log") {}
     else changed = false;
     if (onEvent) onEvent (e);
     if (changed) sendChangeMessage();

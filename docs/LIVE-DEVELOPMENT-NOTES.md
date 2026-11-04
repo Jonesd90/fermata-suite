@@ -2,6 +2,109 @@
 
 The brief is in `docs/LIVE-BRIEF.md`, and the rules shared with fermata are in `COMPATIBILITY.md`. Newest entries come first.
 
+## 0.3.1: closing lets go of everything (4 November 2026)
+
+Asked for: "fermata:Live is having the same problem as fermata in that when the program is closed it is hanging on to resources and not closing
+properly. Can we find the fix for that from fermata and use it in fermata:Live." GitHub could not be reached; built on the local copy (0.3.0).
+
+### What kept it running
+- **Mostly on purpose, and the wrong way round.** `PrimaryApp::shuttingDown` (0.2.0 - 0.3.0) left the recorder process running whenever a take
+  recorded, a merge ran, **or the session (the pre-take) was on** - and the pre-take stays on after every take (STOP TAKE ends the take, not the
+  session). So after any take, closing fermata:Live left `fermata-Live.exe --recorder` behind with the audio device open (the MAD driver taken, so
+  fermata could not have it) and writing pre-take chunks to every drive, until fermata:Live was opened again. A merge running at close did the same,
+  and the recorder then never closed at all (no one sent it "quit" afterwards). The log said so ("The session is left running (the pre-take)"), but
+  nothing on screen did.
+- **And nothing would have caught a real hang.** fermata's 3.17.0 problem (a closed Fermata.exe that went on running: its take matching) had no
+  counterpart here, but neither was there fermata's answer to it: no closing log to show where a closing stopped, no safety net to end a process
+  whose closing does not finish. Any of the three programs could have stayed behind (a driver that hangs as it is closed, a thread that does not
+  stop) and nobody would have known why.
+
+### What changed
+- **The question** (`LiveApplication::quitPrimary`, Main.cpp): closing the window with the pre-take on, or a take not yet merged, asks: **Close
+  everything** (the session ends and the audio device is let go at once; fermata:Live waits for the merge, so that its take is in the project, then
+  closes), **Keep the pre-take running** (only the window closes; the recorder goes on and is found again - the old behaviour, now chosen), or
+  **Cancel**. With only a merge it is "Close when it has finished" / Cancel. Nothing running: it closes at once, and the recorder with it. A take
+  recording: asked as before ("Close the window, keep recording" / Cancel). `PrimaryApp::stillGoing` counts a take just stopped as one to merge before
+  the recorder's "queued" arrives (its index entry is stopped and not merged).
+- **The wait** (the "Closing fermata:Live" box): which take is merging, the progress bar (the status's merge fraction), and **Close now** (the window
+  closes at once; the recorder finishes the merge by itself and closes; the take is put into the project the next time fermata:Live opens - the
+  0.3.0 mechanism for a take merged while the window was closed). A second close of the window is Close now. fermata:Live closes when the recorder's
+  connection goes (its "merge done" events have all come first: the link reads them in order) - `RecorderLink::stopLaunching` first, so that the
+  link does not start a new recorder when this one has gone. If the recorder says no merge is going for 10 s and is still there, it closes anyway.
+- **The recorder's `quit {whenDone: true}`** (new; plain `quit` is unchanged): refused while a take records. With no merge to finish: the session
+  ends and the recorder closes at once (the device is then closed as the program closes, under the safety net). With one: the session ends and the
+  device is let go now - so fermata can open it meanwhile - and the recorder closes 1.5 s after its last merge and its merge events have gone out
+  (`mergeEventsUnsent` counts them: the window must hear "done" before the connection closes; the 1.5 s lets the window's `registered` reach the
+  index). An `open` or `session` meanwhile calls it off (`keepRunning`: a fermata:Live started again wants this recorder).
+- **A recorder left alone closes itself** (`watchClosing`, `kAloneQuitMs` = 60 s): no window connected for a minute, and no session, no take, no
+  merge - the window died, or its quit never arrived. Never with the pre-take or a take running (that is what the recorder is for).
+- **fermata's closing log** (`src/ui/ClosingLog.h`, unchanged, now listed as shared in COMPATIBILITY.md): every program's shutdown logs each step with
+  its time ("Closing: the session ended (its drives finished) (0 ms)" ... "Closing: finished cleanly in 0.3 s") - LiveApplication::shutdown, and
+  inside ~PrimaryApp, ~FixerApp and ~RecorderService.
+- **fermata's closing safety net** (`ClosingWatchdog` from the same file, 3.17.0): started in every program once nothing can be lost - the Primary
+  after its project is saved, the Fixer after its settings, the recorder after its session has ended (its drives finished) and BEFORE its audio
+  device is closed, so a driver that hangs as it is closed is covered. If closing has not finished 15 s later, or the program is still running 20 s
+  after it finished, where every thread is goes into that program's log (Windows) and it ends itself. Its lines say "Fermata" (fermata's wording:
+  the file is shared unchanged); the closing step before them says what had been done.
+- Thread names for that listing: the playback stream (`StreamClient`), the Test signal device, and the driver's audio thread in the recorder
+  ("fermata:Live audio callback (the driver's thread)", once per thread, as fermata's).
+- "Test signal" pretends one more fault: `test-signal {action: hang-on-close, seconds}` - its next close takes that long.
+
+### The review (one reader, after it worked) and what changed
+- **A merge cut short after Close everything was never done again (serious).** Close everything ends the session first, so its index says
+  "closed" while the merge still runs; if the recorder then died (the PC shut down - Windows ends the windowless recorder at once - a crash, a
+  power cut), nothing ever merged that take: `findCutOffSession` looks only at "writing" sessions and the scan of ended ones only at takes merged
+  but not put in. (The same was true in 0.3.0 of a session ended by hand during a merge.) Now the scan (`askForUnregistered`, once per project
+  opened) also finds an ended session's take that is stopped and not merged (no error, or "Cancelled") and sends the new **`merge-take {folder,
+  number}`**: the recorder merges it as the session's own merge would have (no session object: the index on the drive gets the result), and the
+  window puts it into the project from the "done" event. Asked twice, or while it is being merged, it is not merged twice.
+- **The closing box could be dismissed without closing.** JUCE's AlertWindow ends its modal state with 0 when its window is closed (Alt+F4, the
+  taskbar), whatever `setEscapeKeyCancels` says: the box stayed, dead, and the main window was usable while the closing waited. Now any way the box
+  goes means Close now (`closingDone` keeps the programme's own dismissal from doing it twice).
+- **A driver hanging as the device is closed during the wait** blocked the recorder's message thread outside the safety net. The close there now
+  runs under a guard (`closeWithGuard`): not back in 20 s, the thread listing goes into the recorder's log and it ends itself (the merge is done
+  again at the next start, above). The device is still closed on the message thread - the thread it was opened on.
+- **Windows shutting down while the box waits** no longer closes fermata:Live at once (`systemRequestedQuit`): it stays until the merge is done,
+  so Windows shows it as keeping the PC from shutting down ("Shut down anyway" ends it; the merge is then done again at the next start).
+- **A window that connects calls the closing off** (`keepRunning` on a new connection, not only on `open` / `session`): a fermata:Live started
+  again during the 1.5 s before the recorder closes had it close under it. And a closing window no longer opens the device again 0.9 s after it
+  connected, or puts anything back (`closingDown`): that "open" would have called off its own Close everything.
+- The 10 s fallback of the wait never closes the window while a take records.
+- Found while testing: closing within a second after "Take n is in the project" asked about a merge still going (the window knew the merge had
+  ended only from the next status). `StationModel` now takes a merge's start and end from the `merge` events at once (the take is then merged);
+  the status puts anything else right a second later.
+
+### Checked here (Linux, the Test signal device, the test display)
+- The recorder alone, from a Python client: Close everything with the pre-take on (closed in 0.4 s, its index "closed", the closing log to
+  "finished cleanly"); just after a 40 s take at 96 kHz x 16 tracks (the device let go 0.8 s after, the merge done, closed 1.9 s after its result,
+  the window's `registered` in the index); called off by an `open` during the merge; left alone with nothing running (closed by itself after 61 s,
+  saying why) and with the pre-take on (still running at 75 s); quit and quit-when-done refused while a take records; a driver hanging 60 s as it is
+  closed (the safety net ended the recorder 15.1 s after the session had ended; the session's index "closed"). After the review: a driver hanging
+  90 s as the device is let go during the wait (the guard ended the recorder 20.1 s after Close everything, saying why); a window connecting during
+  the wait (the closing called off); the recorder killed in the middle of a 60 s take's merge at 192 kHz (the index "closed", the take not merged),
+  then `merge-take` from a new recorder (merged again: 16 files into the project's Recorded Media, the index merged; asked again, not merged twice).
+- In the windows: nothing running (both programs gone at once, both closing logs complete); the pre-take on - the question, Keep the pre-take
+  running (the recorder went on and was found again), then Close everything (both gone); a 90 s take at 192 kHz x 16 tracks still merging - the
+  question, the box, the take in the project, both gone; Close now during a 150 s take's merge (the window gone at once, the recorder after its
+  merge, the take put into the project at the next start); a take recording - Cancel, then Close the window, keep recording (the recorder went on
+  recording); the Fixer closing on its own (its closing log complete) while fermata:Live went on. After the review: the box closed by its window
+  (as Alt+F4) - Close now; Close now, then the recorder killed in the middle of the merge (the PC shut down, say) - started again, fermata:Live
+  merged the take again and put it into the project, and closed at once 0.3 s after (no question about a merge that had ended). All of it again
+  on the final build.
+- Test display only: a window close sent to a JUCE window sat undelivered until the next event (the same Xlib queue as clicks, see 0.3.0) - the
+  close helper nudges the pointer after it; and the question can open behind the main window with the test window manager (it has the focus: the
+  keys reach it). Neither happens on Windows.
+
+### Not checked here
+- The thread listing of the safety net (Windows only: `crashreport::describeThreads`); a real ASIO driver being let go and fermata opening it at
+  once; Windows asking fermata:Live to close (shutting down or logging off).
+
+### Known limits (0.3.1)
+- A take merged after Close now (or merged again after its merge was cut short) goes into the project only when fermata:Live opens the project
+  again: opened in fermata first, the take is not there yet.
+- A take whose merge FAILED (an error, not cut short) in a session that has ended is not tried again by itself (it was warned about when it failed).
+- The Fixer stays open when fermata:Live closes everything: it says the recorder is not answering, and closes when you close it.
+
 ## 0.3.0: the working demo (Primary and Fixer stations)
 
 Asked for on 4 November 2026: "carry on building so I can try a fully working demo". The design below is what was built; what changed or was
@@ -280,8 +383,9 @@ Asked for after fermata crashed while a new interface was plugged in (the crash 
   bufferSeconds, chunkSeconds, resume}, end-session, record {number, label}, stop, registered {number}, take-info {number, folder?},
   merge-backup {folder, number}, resume-drive {folder, role}, quit` (0.3.0 adds `mix, talkback, flag, flag-note, flag-remove, reply, fix, notes,
   peaks-get, test-signal {action}`; and the events `audio {state missing | back, seconds, why, session, flag}` and `device-list {added, gone,
-  current, currentGone}`; the status's device has `audioMissing`, `audioWhy` and `audioSession` while there is no audio). Folders must be full paths. `open`, `close-device`, `end-session` and `quit`
-  are refused while a take records (`refused` event); `quit` also while a merge is going; `record` refuses a take number already used in the
+  current, currentGone}`; the status's device has `audioMissing`, `audioWhy` and `audioSession` while there is no audio; 0.3.1 adds
+  `quit {whenDone: true}`, `merge-take {folder, number}` and `test-signal {action: hang-on-close, seconds}` - see 0.3.1 above). Folders must be full paths. `open`, `close-device`, `end-session` and `quit`
+  are refused while a take records (`refused` event); plain `quit` also while a merge is going; `record` refuses a take number already used in the
   session. Events: `hello, status` (every second: device, session with takes and drives, merge), `meters` (20 Hz, the inputs' peaks), `log,
   refused, device, session, take {state recording | stopped | registered | refused}, drive (dropped), gap, merge {queued | started | progress | done
   | failed | refused}` - "done" with the files, gaps, length, window, rate and tracks.

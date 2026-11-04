@@ -1,5 +1,6 @@
 #include "FixerApp.h"
 #include "FixerWindow.h"
+#include "../ui/ClosingLog.h"
 
 namespace td::live
 {
@@ -43,17 +44,26 @@ FixerApp::FixerApp (const juce::String& ver, int p) : version (ver), port (p), l
     startTimerHz (30);
 }
 
-FixerApp::~FixerApp()
+void FixerApp::saveSettings()
 {
-    stopTimer();
     saveMix();
     settings->setValue ("delaySeconds", delaySeconds);
     settings->setValue ("outPair", outPair);
     settings->saveIfNeeded();
+}
+
+FixerApp::~FixerApp()
+{
+    // (0.3.1: each step into the log with its time - fermata's closing log, written only while the program closes)
+    stopTimer();
+    saveSettings();
     window.reset();
+    closing::step ("the Fixer's window closed");
     model.removeChangeListener (this);
     player.reset();
+    closing::step ("playback stopped (its stream from the recorder closed)");
     link.stop();
+    closing::step ("the connection to the recorder closed");
 }
 
 TakeWindowDef* FixerApp::pieceWindow()

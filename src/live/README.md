@@ -8,7 +8,7 @@ fermata.
 fermata:Live is a single program, `fermata-Live.exe`. Put it anywhere and double-click it. The first time, Windows may say it "protected your PC"
 because the program is not signed: click **More info**, then **Run anyway**.
 
-## Trying this version (0.3.0)
+## Trying this version (0.3.1)
 
 1. **Audio settings**: choose the driver type and the device ("Test signal" is a pretend 16-input device for trying everything without an
    interface), the sample rate and the buffer ("Largest the driver offers" is the safest), and press **Open device**. Add a folder on each
@@ -37,5 +37,14 @@ then REC.
 
 The recording runs in a separate program, `fermata-Live.exe --recorder`, started by the main window (it has no window of its own; it is in Task
 Manager). It keeps recording if the windows are closed or crash; start fermata:Live again and it is found. Closing the main window while a take
-records leaves it recording on purpose - press STOP TAKE first if you mean to stop. Logs, in `Documents\Fermata`: `fermata-live-log.txt` (the
-main window), `fermata-live-recorder-log.txt` (the recorder) and `fermata-live-fixer-log.txt` (the Fixer).
+records leaves it recording on purpose - press STOP TAKE first if you mean to stop.
+
+Closing fermata:Live with nothing running closes everything, the recorder too. With the pre-take on, or a take still being merged, it asks: **Close
+everything** (the pre-take ends, the audio device is let go at once, and fermata:Live closes once the merge has finished and the take is in the
+project), **Keep the pre-take running** (only the window closes; the recorder goes on, and is found again next time) or **Cancel**. While it waits
+for a merge, **Close now** closes at once: the recorder finishes the merge by itself, and the take goes into the project the next time fermata:Live
+opens. A recorder left with no window for a minute, and nothing recording, merging or running, closes by itself.
+
+Logs, in `Documents\Fermata`: `fermata-live-log.txt` (the main window), `fermata-live-recorder-log.txt` (the recorder) and
+`fermata-live-fixer-log.txt` (the Fixer). Each program writes its closing steps there, ending "Closing: finished cleanly in ... s"; one that does not
+finish closing within 15 seconds writes where it is stuck and ends itself.

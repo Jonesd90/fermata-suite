@@ -9,6 +9,7 @@
     type can pretend that a second device was plugged in or out. */
 #include <juce_audio_devices/juce_audio_devices.h>
 #include "../core/Project.h"
+#include "../core/CrashReport.h"
 
 namespace td::live
 {
@@ -34,6 +35,8 @@ public:
     }
     /** Stops for good, as a device that was pulled out. */
     void dieForTests() { stop(); }
+    /** 0.3.1: closing it takes this long, as a driver that hangs when it is closed (for trying the closing safety net). */
+    void hangWhenClosed (int ms) { closeHangMs = juce::jmax (0, ms); }
 
     juce::StringArray getOutputChannelNames() override { juce::StringArray a; for (int i = 0; i < kOutputs; ++i) a.add ("Test out " + juce::String (i + 1)); return a; }
     juce::StringArray getInputChannelNames() override  { juce::StringArray a; for (int i = 0; i < kInputs; ++i) a.add ("Tone " + juce::String (110 * (i + 1)) + " Hz"); return a; }
@@ -54,7 +57,7 @@ public:
         opened = true;
         return {};
     }
-    void close() override { stop(); opened = false; }
+    void close() override { stop(); opened = false; if (const int h = closeHangMs.exchange (0); h > 0) juce::Thread::sleep (h); }
     bool isOpen() override { return opened; }
     void start (juce::AudioIODeviceCallback* cb) override
     {
@@ -80,6 +83,7 @@ public:
 private:
     void run() override
     {
+        crashreport::nameThisThread (getThreadName());                   // (0.3.1: named for the log's thread listing)
         const double blockSeconds = (double) blockSize / sampleRate;
         auto next = juce::Time::getMillisecondCounterHiRes();
         while (! threadShouldExit())
@@ -123,7 +127,7 @@ private:
     std::vector<const float*> inPtrs; std::vector<float*> outPtrs;
     juce::AudioIODeviceCallback* callback = nullptr;
     juce::int64 pos = 0;
-    std::atomic<int> pauseMs { 0 };
+    std::atomic<int> pauseMs { 0 }, closeHangMs { 0 };
 };
 
 class TestSignalDeviceType final : public juce::AudioIODeviceType

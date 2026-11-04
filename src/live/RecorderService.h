@@ -3,7 +3,8 @@
     session (LiveRecorder), the merge, and a control port on 127.0.0.1:<port> (the shared remote::Hub) that the fermata:Live window talks to in
     JSON lines (the protocol is listed in docs/LIVE-DEVELOPMENT-NOTES.md). Nothing else runs in this process - no plug-ins, no drawing, no waveform
     building - so nothing else can stop the recording: the window can be closed, or die, and the recorder goes on until it is told to stop; a
-    window started again finds it on the same port and carries on with it. While a take records, no command may end it: end-session, close-device,
+    window started again finds it on the same port and carries on with it. (0.3.1: told by the window's Close everything, it ends the session, lets
+    go of the device and closes once its merges are done; left with no window and nothing to do for a minute, it closes by itself.) While a take records, no command may end it: end-session, close-device,
     open and quit are refused (Stop first).
 
     Threads: the message thread runs the commands and the status; the audio callback feeds the session (process() into the ring, the input
@@ -29,8 +30,16 @@ public:
     ~RecorderService() override;
 
     bool isListening() const                       { return hub.isListening(); }
-    /** The window said quit (with nothing recording and no merge going): the application ends. */
+    /** The window said quit (with nothing recording and no merge going), or its Close everything has finished, or the recorder has been left with
+        nothing to do (see timerCallback): the application ends. */
     std::function<void()> onQuit;
+    /** 0.3.1, the first step of closing (the application's shutdown, before the closing safety net starts): the timer stops and the session ends
+        (the drives finish their chunks; its index says it ended). The rest - the audio device, the threads, the connections - goes with the object,
+        under the safety net (a driver that hangs as it is closed cannot keep the recorder). */
+    void closeForQuit();
+    /** 0.3.1: a recorder with no window connected for this long, and no session, no take and no merge, closes by itself - a window that died, or
+        whose "quit" never arrived, must not leave it holding the audio device. (With the pre-take or a take running it never does.) */
+    static constexpr int kAloneQuitMs = 60000;
 
     /** The default control port. */
     static constexpr int kDefaultPort = 57120;
@@ -51,6 +60,7 @@ private:
     void takeRegistered (const juce::var& c);
     void takeInfo (const juce::var& c);
     void mergeBackup (const juce::var& c);
+    void mergeAgain (const juce::var& c);           // 0.3.1: a take of an ended session whose merge was cut short, merged again (into the project)
     void resumeDrive (const juce::var& c);
     void sendTake (const TakeRec&, const juce::String& state);
     // 0.3.0: monitoring, flags, fixes, peaks
@@ -141,6 +151,23 @@ private:
     std::atomic<bool> mergeActive { false }, mergeCancel { false };
     std::atomic<double> mergeFraction { 0.0 };
     juce::String mergeWhat; int mergeTake = 0; juce::File mergeFolder;   // (mergeLock)
+    std::atomic<int> mergeEventsUnsent { 0 };                   // 0.3.1: merge events on their way to the message thread, not yet sent (closing waits for them)
+
+    // ---- closing (0.3.1) ----
+    /** Closes the application (once): 'why' goes into the log first. */
+    void quitNow (const juce::String& why);
+    /** Runs 'close' (the audio device's) and ends the recorder if it has not returned in 20 s (a driver that hangs as it is closed). */
+    void closeWithGuard (std::function<void()> close);
+    /** The timer: Close everything finished (see "quit" with whenDone), or the recorder left alone with nothing to do. */
+    void watchClosing (juce::int64 nowMs);
+    /** A window opens a device or starts a session: a Close everything still waiting for its merge is called off (a fermata:Live started again
+        meanwhile wants this recorder). */
+    void keepRunning();
+    bool quitWhenDone = false;                                  // "quit" with whenDone: the session ended, the device let go; closes once the merges are done
+    juce::int64 quitReadyMs = 0;                                // (when nothing was left to wait for: it closes 1.5 s later, so its last events - and the
+                                                                // window's "registered" - are through)
+    juce::int64 aloneSinceMs = 0;                               // the last moment a window was connected, or something was running
+    bool quitting = false;
 
     JUCE_DECLARE_NON_COPYABLE (RecorderService)
 };
