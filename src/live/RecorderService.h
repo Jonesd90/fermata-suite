@@ -1,5 +1,5 @@
 #pragma once
-/** fermata:Live 0.2.0: the recorder process. "fermata-Live.exe --recorder <port>" runs this and nothing else: no window; the audio device, the
+/** fermata:Live 0.2.0 (0.3.0: the monitoring, the talkback, the stations' playback streams, the waveform peaks, the flags): the recorder process. "fermata-Live.exe --recorder <port>" runs this and nothing else: no window; the audio device, the
     session (LiveRecorder), the merge, and a control port on 127.0.0.1:<port> (the shared remote::Hub) that the fermata:Live window talks to in
     JSON lines (the protocol is listed in docs/LIVE-DEVELOPMENT-NOTES.md). Nothing else runs in this process - no plug-ins, no drawing, no waveform
     building - so nothing else can stop the recording: the window can be closed, or die, and the recorder goes on until it is told to stop; a
@@ -11,9 +11,13 @@
     shared_ptr, so a merge that ends after the session has been closed still finishes and writes the indexes). */
 #include "LiveRecorder.h"
 #include "Merge.h"
+#include "MonitorMix.h"
+#include "PeakTap.h"
+#include "StreamServer.h"
 #include "../core/RemoteHub.h"
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <deque>
+#include <map>
 
 namespace td::live
 {
@@ -49,6 +53,16 @@ private:
     void mergeBackup (const juce::var& c);
     void resumeDrive (const juce::var& c);
     void sendTake (const TakeRec&, const juce::String& state);
+    // 0.3.0: monitoring, flags, fixes, peaks
+    void setMix (const juce::var& c);
+    void setTalkback (const juce::var& c);
+    void putFlag (const juce::var& c, const juce::String& cmd);
+    void reply (const juce::var& c);
+    void putFix (const juce::var& c);
+    void sendNotes();
+    void sendPeaks();
+    /** A station asks for waveform history: answered on its own connection's thread, to that station only (see the constructor). */
+    void answerPeaks (remote::Hub::Connection&, const juce::var& c);
     juce::var mergeDoneEvent (const TakeRec&, const SessionIndex&, const juce::File& sessionFolder, const juce::File& outputFolder, bool backup) const;
     std::shared_ptr<LiveRecorder> session() const  { const std::lock_guard<std::mutex> l (recorderLock); return recorder; }
     bool recording() const                         { auto r = session(); return r != nullptr && r->recordingTake() != 0; }
@@ -60,6 +74,12 @@ private:
     void audioDeviceAboutToStart (juce::AudioIODevice*) override;
     void audioDeviceStopped() override;
     void audioDeviceError (const juce::String& message) override;
+    /** 0.3.0, the timer: notices when the session stops getting audio (the driver stopped or restarted the device, gave nothing, or runs at
+        another rate), warns while it lasts, and pins a flag where the missing time is once the audio comes back. */
+    void watchAudio (juce::int64 nowMs);
+    /** 0.3.0: a driver type's list of devices changed (a device plugged in or out): noted in the log and told to the window. Never acted on. */
+    void deviceListChanged();
+    void testSignal (const juce::var& c);           // (the "Test signal" device only: pretend faults, for trying the above without hardware)
 
     // ---- the merge: its own thread, one job after another, waiting while a take records ----
     struct MergeJob { std::shared_ptr<LiveRecorder> rec; juce::File sessionFolder; int take = 0; juce::File outputFolder; bool backup = false; TakeRec takeRec; juce::String projectName; };
@@ -70,7 +90,33 @@ private:
 
     const juce::String version;
     remote::Hub hub;
-    juce::AudioDeviceManager devices;
+    juce::AudioDeviceManager devices;                           // 0.3.0: only the list of driver types - it never has a device open (see 'device')
+    // 0.3.0: the device is the recorder's own: made, opened, started, stopped and closed here and nowhere else. (Opened through the
+    // AudioDeviceManager, JUCE closed it and opened another one by itself when it left its driver's list - a different device, its inputs and
+    // its rate, in the middle of a session. Nothing here ever changes the device: only "open" from the window does, and never while a take records.)
+    std::unique_ptr<juce::AudioIODevice> device;
+    juce::String deviceTypeName;
+    std::atomic<bool> ownStartStop { false };                   // (true while this code starts, stops or closes the device: not the driver's doing)
+    std::atomic<int> driverStops { 0 };                         // the driver stopped the device by itself (a reset, the device gone)
+    std::atomic<bool> rateWrong { false };                      // it started again at a rate other than the session's: the session is not fed
+    std::atomic<double> rateNow { 0.0 };                        // the rate it last started at (the audio side's view)
+    std::atomic<int> fed { 0 };                                 // blocks given to the session
+    // a stretch the session got no audio, measured by the audio thread when the audio comes back (the time since the block before, less one
+    // block) - so it is caught even when the driver restarts the device on the message thread, where the timer cannot look meanwhile
+    std::atomic<juce::int64> holePos { 0 }, holeMs { 0 };      // where on the timeline, how long
+    std::atomic<int> holeSeq { 0 };                             // +1 for each (holePos and holeMs are written first)
+    std::atomic<int> sessionSerial { 0 };                       // +1 for each session (the audio thread starts measuring afresh)
+    std::atomic<bool> rateWasWrong { false };                   // (since the last hole was reported)
+    std::atomic<double> wrongRate { 0.0 };                      // (the rate it ran at then)
+    int fedSerial = -1; juce::int64 lastFedTicks = 0;          // (the audio thread's own)
+    int holeSeqSeen = 0, stopsSeen = 0;                         // (the timer's)
+    struct Hole { bool on = false, warned = false; juce::int64 sinceMs = 0; int rank = 0; juce::String why; };
+    Hole hole;                                                  // (the timer) the session getting no audio now: since when, and why
+    int lastFed = 0, lastCallbacks = 0; juce::int64 lastFedMs = 0, lastCallbackMs = 0;
+    bool deviceSilentWarned = false;                            // (no session) the device has given no audio for a while: said once
+    struct ListWatch;
+    std::unique_ptr<ListWatch> listWatch;                       // listens to every driver type's device list
+    std::map<juce::String, juce::StringArray> knownDevices;    // per type: the device names last seen
     std::shared_ptr<LiveRecorder> recorder;                     // the session (recorderLock for the pointer itself)
     mutable std::mutex recorderLock;
     std::atomic<LiveRecorder*> live { nullptr };               // the session the audio callback feeds (nullptr: none)
@@ -78,8 +124,13 @@ private:
     std::atomic<int> callbacks { 0 };
     double deviceRate = 0.0; int deviceBuffer = 0;
     juce::StringArray inputNames, outputNames;
-    std::vector<std::atomic<float>> peaks;                      // per input: the loudest sample since the last meters event (the audio thread raises it, the timer takes it)
-    juce::int64 lastMeterMs = 0, lastStatusMs = 0;
+    std::vector<std::atomic<float>> peaks, outPeaks;            // per input / output: the loudest sample since the last meters event (the audio thread raises it, the timer takes it)
+    juce::int64 lastMeterMs = 0, lastStatusMs = 0, lastPeaksMs = 0;
+    MonitorMix monitor;                                         // 0.3.0: what the Primary hears live, and the talkback
+    StreamServer streams;                                       // 0.3.0: the stations' playback (the control port + 1)
+    PeakTap peakTap;                                            // 0.3.0: the waveform of the session, for the stations
+    int controlPort = kDefaultPort;
+    juce::String lastMixText;                                   // (the last "mix" command, so a window that comes back can be told what is sounding)
     juce::String projectName, windowName; juce::File projectFolder;
     std::vector<juce::File> backupRoots;
     int preTakeSeconds = 120;

@@ -21,7 +21,7 @@ SessionIndex LiveRecorder::baseIndex (const juce::String& role) const
     idx.sampleRate = setup.sampleRate; idx.chunkSamples = (juce::int64) setup.chunkSeconds * (juce::int64) std::lround (setup.sampleRate);
     idx.origin = origin;
     idx.tracks = trackSpecs;
-    { const std::lock_guard<std::mutex> l (takesLock); idx.takes = takes; }
+    { const std::lock_guard<std::mutex> l (takesLock); idx.takes = takes; idx.flags = flagList; idx.fixes = fixList; }
     if (role != "primary")                                             // a backup's merged state is its own (see updateTake): it starts unmerged
         for (auto& t : idx.takes) { t.merged = false; t.registered = false; t.mergedFiles.clear(); t.mergeError.clear(); t.mergedSamples = 0; t.mergeGaps.clear(); }
     return idx;
@@ -89,7 +89,23 @@ juce::String LiveRecorder::prepare (const Setup& s)
         ch = 0;
         for (auto& t : trackSpecs) { t.channels = juce::jlimit (1, (int) kMaxTrackChannels, t.channels); t.inputs.resize ((size_t) t.channels, -1); t.ringFirst = ch; ch += t.channels; }
         setup.chunkSeconds = (int) juce::jmax<juce::int64> (1, old.chunkSamples / (juce::int64) std::lround (setup.sampleRate));
-        { const std::lock_guard<std::mutex> l (takesLock); takes = old.takes; }
+        // 0.3.0: what the backups' indexes know and the primary's does not (its index could not be written when a take began or ended, and then the
+        // program stopped): carried on too - else that take's chunks would go as chunks of no take. (Its merged state is each drive's own.)
+        for (auto& root : setup.backupRoots)
+        {
+            SessionIndex b;
+            const auto folder = liveChunksFolder (backupProjectFolder (root, setup.projectFolder), setup.windowName).getChildFile (found.getFileName());
+            if (! b.load (folder.getChildFile (kIndexFileName), true)) continue;
+            for (auto& t : b.takes)
+            {
+                if (auto* k = old.findTake (t.number)) { if (k->end < 0 && t.end >= 0) k->end = t.end; continue; }
+                auto x = t; x.merged = false; x.registered = false; x.mergedFiles.clear(); x.mergeError.clear(); x.mergedSamples = 0; x.mergeGaps.clear();
+                old.takes.push_back (x);
+            }
+            for (auto& f : b.flags) if (old.findFlag (f.id) == nullptr) old.flags.push_back (f);
+        }
+        std::sort (old.takes.begin(), old.takes.end(), [] (const TakeRec& a, const TakeRec& b) { return a.start < b.start; });
+        { const std::lock_guard<std::mutex> l (takesLock); takes = old.takes; flagList = old.flags; fixList = old.fixes; }
         sessionName = found.getFileName();
         startAt = juce::jmax<juce::int64> (old.lastSample, (juce::int64) std::llround ((now - origin).inSeconds() * setup.sampleRate));
     }
@@ -117,6 +133,39 @@ juce::String LiveRecorder::prepare (const Setup& s)
         for (auto& root : setup.backupRoots)
             writers.push_back (makeWriter (liveChunksFolder (backupProjectFolder (root, setup.projectFolder), setup.windowName).getChildFile (sessionName), "backup", setup.resume));
         for (auto& w : writers) w->start (startAt);
+        if (callbacks.log)
+            for (auto& w : writers)
+                if (w->unlistedChunksFound() > 0)
+                    callbacks.log ("Drive " + w->folder().getFullPathName() + ": " + juce::String (w->unlistedChunksFound()) + " chunk(s) its index had not listed were found and taken in");
+    }
+    endedWhenCarriedOn = 0;
+    if (setup.resume)
+    {
+        // a take that was recording when the session was cut off: after a short stop (the recorder started again at once) it goes on, and the
+        // stretch missed is a gap in it; after a longer one (the PC went off, fermata:Live was opened again later) it ends where the audio on the
+        // disk ends - a take of hours of silence helps nobody - and is merged at once (RecorderService), Record making the next take
+        // where the audio on the disk ends: the furthest any drive got (each writer has measured the chunk the stop left open, and taken in the
+        // chunks its index never listed). Not the primary's alone: a primary dropped long before the stop would end the take where it dropped,
+        // and the backups would then delete the rest of it as chunks of no take.
+        juce::int64 onDisk = 0;
+        {
+            const std::lock_guard<std::mutex> l (writersLock);
+            for (auto& w : writers) onDisk = juce::jmax (onDisk, w->snapshot().lastSample);
+        }
+        TakeRec cut;
+        {
+            const std::lock_guard<std::mutex> l (takesLock);
+            for (auto& t : takes)
+                if (t.end < 0 && (double) (startAt - onDisk) > (double) juce::jmax (0, setup.resumeTakeMaxGapSeconds) * setup.sampleRate)
+                { t.end = juce::jmax (t.start + 1, onDisk); cut = t; }
+        }
+        if (cut.number != 0)
+        {
+            updateTake (cut);
+            endedWhenCarriedOn = cut.number;
+            if (callbacks.log) callbacks.log ("Take " + juce::String (cut.number) + " was recording when the session was cut off, " + juce::String ((juce::int64) std::llround ((double) (startAt - onDisk) / setup.sampleRate))
+                                              + " s ago: it ends where the audio on the disk ends (" + juce::String (cut.end) + ")");
+        }
     }
     prepared.store (true);
     if (callbacks.log) callbacks.log ("Session " + sessionName + ": " + juce::String (trackSpecs.size()) + " tracks, " + juce::String (ch) + " channels, buffer "
@@ -204,6 +253,66 @@ void LiveRecorder::updateTake (const TakeRec& t)
             }
         });
     }
+}
+
+// ---- flags and fix versions (0.3.0): kept here and in every drive's index (each drive gets all of them: they are small, and a backup must not lose them)
+void LiveRecorder::putFlag (const FlagRec& f)
+{
+    if (f.id.isEmpty()) return;
+    {
+        const std::lock_guard<std::mutex> l (takesLock);
+        bool found = false;
+        for (auto& k : flagList) if (k.id == f.id) { k = f; found = true; }
+        if (! found) flagList.push_back (f);
+    }
+    const std::lock_guard<std::mutex> l (writersLock);
+    for (auto& w : writers)
+        w->updateIndex ([f] (SessionIndex& idx) { if (auto* k = idx.findFlag (f.id)) *k = f; else idx.flags.push_back (f); });
+}
+
+bool LiveRecorder::addReply (const juce::String& flagId, const ReplyRec& r, FlagRec& updated)
+{
+    {
+        const std::lock_guard<std::mutex> l (takesLock);
+        FlagRec* k = nullptr;
+        for (auto& f : flagList) if (f.id == flagId) k = &f;
+        if (k == nullptr) return false;
+        k->replies.push_back (r);
+        updated = *k;
+    }
+    putFlag (updated);
+    return true;
+}
+
+std::vector<FlagRec> LiveRecorder::flags() const
+{
+    const std::lock_guard<std::mutex> l (takesLock);
+    return flagList;
+}
+
+void LiveRecorder::putFix (const juce::var& fix)
+{
+    const auto id = fix["id"].toString();
+    if (id.isEmpty()) return;
+    {
+        const std::lock_guard<std::mutex> l (takesLock);
+        bool found = false;
+        for (auto& k : fixList) if (k["id"].toString() == id) { k = fix; found = true; }
+        if (! found) fixList.push_back (fix);
+    }
+    const std::lock_guard<std::mutex> l (writersLock);
+    for (auto& w : writers)
+        w->updateIndex ([fix, id] (SessionIndex& idx)
+        {
+            for (auto& k : idx.fixes) if (k["id"].toString() == id) { k = fix; return; }
+            idx.fixes.push_back (fix);
+        });
+}
+
+std::vector<juce::var> LiveRecorder::fixes() const
+{
+    const std::lock_guard<std::mutex> l (takesLock);
+    return fixList;
 }
 
 void LiveRecorder::updateTakeOnDrive (const juce::File& sessionFolder, const TakeRec& t)
@@ -298,8 +407,10 @@ void LiveRecorder::close()
     if (! prepared.exchange (false)) return;
     std::vector<std::unique_ptr<DriveWriter>> mine;
     { const std::lock_guard<std::mutex> l (writersLock); for (auto& w : writers) w->requestClose(); mine.swap (writers); }
-    // every drive drains at once; a writer that is still inside a disk call after a long wait is left alive for good rather than killed
-    static std::vector<std::unique_ptr<DriveWriter>> stuck;
+    // every drive drains at once; a writer that is still inside a disk call after a long wait is left alive for good rather than killed. 0.3.0: the
+    // list is never destroyed (not even when the program ends: a stuck thread's writer deleted at exit would wait for it for ever), and this object
+    // must outlive it too - the writer still uses the ring and the callbacks - so its owner keeps it (leftWritersBehind)
+    static auto* stuck = new std::vector<std::unique_ptr<DriveWriter>>();
     static std::mutex stuckLock;
     for (auto& w : mine)
     {
@@ -307,7 +418,8 @@ void LiveRecorder::close()
         {
             if (callbacks.log) callbacks.log ("Drive " + w->folder().getFullPathName() + ": its writer is stuck in a disk call and is left behind");
             const std::lock_guard<std::mutex> l (stuckLock);
-            stuck.push_back (std::move (w));
+            stuck->push_back (std::move (w));
+            stuckWriters.fetch_add (1);
         }
     }
     const std::lock_guard<std::mutex> l (writersLock);

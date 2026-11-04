@@ -169,6 +169,19 @@ void __wrap__ZN2td4live12LiveRecorder7processEPKPKfii (void* self, const float* 
     RtDepth d;
     __real__ZN2td4live12LiveRecorder7processEPKPKfii (self, in, numIn, n);
 }
+// fermata:Live 0.3.0: td::live::MonitorMix::process (the live monitoring and talkback) and td::live::StreamServer::mix (the stations' playback)
+void __real__ZN2td4live10MonitorMix7processEPKPKfiPKPfii (void* self, const float* const* in, int numIn, float* const* out, int numOut, int n);
+void __wrap__ZN2td4live10MonitorMix7processEPKPKfiPKPfii (void* self, const float* const* in, int numIn, float* const* out, int numOut, int n)
+{
+    RtDepth d;
+    __real__ZN2td4live10MonitorMix7processEPKPKfiPKPfii (self, in, numIn, out, numOut, n);
+}
+void __real__ZN2td4live12StreamServer3mixEPKPfii (void* self, float* const* out, int numOut, int n);
+void __wrap__ZN2td4live12StreamServer3mixEPKPfii (void* self, float* const* out, int numOut, int n)
+{
+    RtDepth d;
+    __real__ZN2td4live12StreamServer3mixEPKPfii (self, out, numOut, n);
+}
 #endif
 // juce::WaitableEvent::signal() const and juce::Thread::notify() const (which calls it): how the audio thread wakes the disk writer and the mixer
 // helpers. SetEvent (no lock) on Windows, where the program runs; a mutex and a condition variable on Linux. Allowed through.

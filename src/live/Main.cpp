@@ -1,11 +1,18 @@
-// fermata:Live - the live-concert recorder (see docs/LIVE-BRIEF.md). One program, two ways of running:
-//   fermata-Live.exe                      the window (0.2.0: the recorder's test bench, RecorderWindow), which starts and talks to
-//   fermata-Live.exe --recorder <port>    the recorder process (RecorderService): the audio device, the session, the merge - and nothing else,
-//                                         so nothing else can stop a recording. It runs at high priority and keeps going when the window closes.
-// Both are built from the shared core (src/core), like fermata.
+// fermata:Live - the live-concert recorder (see docs/LIVE-BRIEF.md). One program, three ways of running:
+//   fermata-Live.exe                      the Primary station (0.3.0): the main window, the take window, the mixer... (PrimaryApp), which starts
+//                                         and talks to
+//   fermata-Live.exe --recorder <port>    the recorder process (RecorderService): the audio device, the session, the merge, the monitoring - and
+//                                         nothing else, so nothing else can stop a recording. It runs at high priority and keeps going when the
+//                                         windows close.
+//   fermata-Live.exe --fixer [--port n]   the Fixer station (0.3.0): the delayed take window, its own mixer, ReTouch, replies (FixerApp).
+//   (--testbench: 0.2.0's recorder test bench, kept for checking the recorder on its own.)
+// All are built from the shared core (src/core) and fermata's shared look (COMPATIBILITY.md), like fermata.
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "RecorderWindow.h"
 #include "RecorderService.h"
+#include "LiveMainWindow.h"
+#include "FixerApp.h"
+#include "../ui/FermataLookAndFeel.h"
 #include "../core/CrashReport.h"
 #include <csignal>
 
@@ -49,11 +56,12 @@ public:
     {
         const auto args = getCommandLineParameterArray();
         recorderMode = args.contains ("--recorder");
+        fixerMode = args.contains ("--fixer");
         logFolder().createDirectory();
-        const auto logFile = logFolder().getChildFile (recorderMode ? "fermata-live-recorder-log.txt" : "fermata-live-log.txt");
+        const auto logFile = logFolder().getChildFile (recorderMode ? "fermata-live-recorder-log.txt" : fixerMode ? "fermata-live-fixer-log.txt" : "fermata-live-log.txt");
         crashLogFile = logFile;
         // (the log is kept across starts - the previous run's log is what shows why a recorder died; the newest 4 MB stay, as fermata keeps its own)
-        logger = std::make_unique<juce::FileLogger> (logFile, juce::String (kDisplayName) + " " + FERMATA_LIVE_VERSION_STRING + (recorderMode ? " (recorder process)" : "") + " started", 4 * 1024 * 1024);
+        logger = std::make_unique<juce::FileLogger> (logFile, juce::String (kDisplayName) + " " + FERMATA_LIVE_VERSION_STRING + (recorderMode ? " (recorder process)" : fixerMode ? " (Fixer)" : "") + " started", 4 * 1024 * 1024);
         juce::Logger::setCurrentLogger (logger.get());
         crashreport::install (logFolder().getChildFile ("Crash reports"), FERMATA_LIVE_VERSION_STRING);
         juce::SystemStats::setApplicationCrashHandler (crashHandler);
@@ -69,23 +77,82 @@ public:
             if (! service->isListening()) { juce::Logger::writeToLog ("The recorder could not listen on port " + juce::String (port) + ": quitting"); quit(); }
         }
         else
-            window = std::make_unique<RecorderWindow> (FERMATA_LIVE_VERSION_STRING, port);
+        {
+            look = std::make_unique<FermataLookAndFeel>();
+            juce::LookAndFeel::setDefaultLookAndFeel (look.get());
+            tooltips = std::make_unique<juce::TooltipWindow> (nullptr, 900);
+            focusKeeper = std::make_unique<ToolWindow::FocusKeeper>();
+            if (args.contains ("--testbench")) { window = std::make_unique<RecorderWindow> (FERMATA_LIVE_VERSION_STRING, port); return; }
+            // one station of each kind on a PC: a second Primary (or Fixer) would fight the first over the project and the windows
+            stationLock = std::make_unique<juce::InterProcessLock> (fixerMode ? "fermata-Live-fixer-" + juce::String (port) : "fermata-Live-primary-" + juce::String (port));
+            if (! stationLock->enter (0))
+            {
+                juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, kDisplayName,
+                    juce::String (fixerMode ? "The Fixer" : "fermata:Live") + " is already open on this PC (look for its window, or in the taskbar).", "OK", nullptr,
+                    juce::ModalCallbackFunction::create ([this] (int) { quit(); }));
+                return;
+            }
+            if (fixerMode)
+            {
+                fixer = std::make_unique<FixerApp> (FERMATA_LIVE_VERSION_STRING, port);
+                fixer->onQuit = [this] { quit(); };
+            }
+            else
+            {
+                primary = std::make_unique<PrimaryApp> (FERMATA_LIVE_VERSION_STRING, port);
+                if (primary->recentProject().existsAsFile()) { juce::String err; if (! primary->openProject (primary->recentProject(), err)) primary->addLog ("The last project did not open: " + err); }
+                mainWindow = std::make_unique<LiveMainWindow> (*primary);
+                mainWindow->onClose = [this] { quitPrimary(); };
+            }
+        }
+    }
+    /** The Primary's window closes: the project is saved and the recorder told to quit - unless it records, merges or has a session on (then it is
+        left running on purpose, and found again next time). */
+    void quitPrimary()
+    {
+        if (primary == nullptr) { quit(); return; }
+        if (primary->isRecording())
+        {
+            juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon).withTitle ("A take is recording")
+                .withMessage ("Close fermata:Live while a take records? The recording goes on (the recorder is a program of its own); start fermata:Live again to see it and stop it.")
+                .withButton ("Close the window, keep recording").withButton ("Cancel"),
+                [this] (int r) { if (r == 1) { primary->shuttingDown(); quit(); } });
+            return;
+        }
+        primary->shuttingDown();
+        quit();
     }
     void shutdown() override
     {
+        if (mainWindow != nullptr) { if (auto* m = mainWindow->main()) m->closeAllWindows(); }
+        mainWindow.reset();
+        primary.reset();
+        fixer.reset();
         window.reset();
         service.reset();
+        tooltips.reset();
+        focusKeeper.reset();
+        juce::LookAndFeel::setDefaultLookAndFeel (nullptr);
+        look.reset();
+        stationLock.reset();
         juce::Logger::writeToLog (juce::String (kDisplayName) + " closed");
         juce::Logger::setCurrentLogger (nullptr);
         logger.reset();
     }
-    void systemRequestedQuit() override                  { quit(); }
+    void systemRequestedQuit() override                  { if (primary != nullptr) quitPrimary(); else quit(); }
     void anotherInstanceStarted (const juce::String&) override { if (window != nullptr) window->toFront (true); }
 
 private:
-    bool recorderMode = false;
+    bool recorderMode = false, fixerMode = false;
     std::unique_ptr<juce::FileLogger> logger;
+    std::unique_ptr<FermataLookAndFeel> look;
+    std::unique_ptr<juce::TooltipWindow> tooltips;
+    std::unique_ptr<ToolWindow::FocusKeeper> focusKeeper;
+    std::unique_ptr<juce::InterProcessLock> stationLock;
     std::unique_ptr<RecorderWindow> window;
+    std::unique_ptr<PrimaryApp> primary;
+    std::unique_ptr<LiveMainWindow> mainWindow;
+    std::unique_ptr<FixerApp> fixer;
     std::unique_ptr<RecorderService> service;
 };
 } // namespace td::live

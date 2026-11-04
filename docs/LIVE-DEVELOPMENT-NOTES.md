@@ -2,6 +2,195 @@
 
 The brief is in `docs/LIVE-BRIEF.md`, and the rules shared with fermata are in `COMPATIBILITY.md`. Newest entries come first.
 
+## 0.3.0: the working demo (Primary and Fixer stations)
+
+Asked for on 4 November 2026: "carry on building so I can try a fully working demo". The design below is what was built; what changed or was
+added while it was tried out follows it.
+
+### Three processes, one program
+- `fermata-Live.exe` - **the Primary station**: the main window (inputs, outputs, menus), the Primary take window, the processing mixer (the
+  Primary's monitoring and Bounce out), Preamps, Project Designer, Audio settings. It owns the project file: it is the only process that writes it.
+  One Primary at a time (an `InterProcessLock`).
+- `fermata-Live.exe --recorder <port>` - **the recorder** (0.2.0) plus what both stations need from the audio device: the live monitoring mix, the
+  talkback, the stations' playback streams, the waveform peaks and the flags. Nothing in it reads a project or draws anything.
+- `fermata-Live.exe --fixer` - **the Fixer station**: the delayed take window, its own mixer (kept in the Fixer's own settings, not the project),
+  ReTouch, replies. It reads the project and the session's chunks; it never writes the project. Started from the Primary's menu or on its own.
+
+### The recorder's new services
+- **Monitoring** (`MonitorMix`): the Primary window turns the processing mixer (levels, pans, mutes, solos, the main Ext Bus's output pair) into
+  a gain matrix, input -> output, and sends it (`mix`). The audio callback applies it after the block went into the ring (so nothing in the
+  monitoring can touch the recording), ramping every gain over the block. No plug-ins in the recorder (the brief: plug-ins run outside it).
+- **Talkback**: the inputs marked TALK, to the talkback outputs, while the talkback is open (`talkback`; the Talkback square is purple then).
+- **Playback streams** (`StreamServer`, control port + 1, binary): a station's player renders its own mix and sends stereo to the recorder,
+  which adds it to the output pair the station chose. Credit-based (the station sends only what the recorder's small ring has room for, so the
+  latency is that ring: about 85 ms), with a generation number so Stop and a locate drop what is queued at once. A station that stalls is silence.
+- **Waveform peaks** (`PeakTap`, its own thread, reads the ring like a drive does): min / max of every ~10.7 ms (512 samples at 48 kHz) of each
+  recorded channel, companded to 8 bits (sqrt: about -84 dB floor). Sent to the stations as they come (`peaks`), and kept for the whole
+  session so a station that starts later gets the history (`peaks-history`).
+- **Flags, replies and fix versions**: the Primary pins a flag (`flag` {id, sample, note}); the Fixer replies (`reply`) and announces a fix
+  version (`fix`). The recorder keeps them in the session (in every drive's index: `flags`, `fixes`) and sends each to every station at once.
+  The Primary window puts them into the project (flags as take-window markers, fix versions in the take window) as soon as their take is there.
+- **Device names**: the status carries the inputs' and outputs' names and counts, and the outputs' meters.
+
+### The shared model (contract 3)
+- `Marker` (core/Markers.h) gets the flag fields: `flag` (true for a flag), `note`, `replies` [{text, by, at}], `pinnedAt`. fermata shows a flag
+  as an ordinary marker whose name carries the note and the last reply, and keeps the fields when it saves.
+- `TakeWindowDef::fixVersions` (core/Takes.h): every fix the Fixer made - the take, the span (take samples), one file per track holding the fixed
+  span, what was done, the flag it answers, the version it retries, its state (waiting / approved / rejected: set by fermata's review, to come).
+  The original recording is never changed.
+- Shared from fermata's own folder (they join the shared list, unchanged): `src/ui/Uikit.h`, `FermataLookAndFeel.h`, `FontData.cpp`,
+  `FontData2.cpp`, `WaveColor.h`, `WaveStore.h`, `WaveThumb.h`, `WinOwner.h/.cpp`, `MixerLook.h`, `DeskLook.h`, `ValueEntry.h`, `WaveDraw.h`. The
+  compatibility check makes sure fermata:Live uses nothing else from `src/ui` and that these use nothing but shared code.
+
+### The Primary station
+- **Main window** (fermata's desk look): the menu bar (Project, Audio settings, Preamps, Project Designer, Take Window, Mixer, Bounce out, Fixer,
+  Help) and the status squares (Talkback, recorder, drives); the top row (take counter, project, rate, disk free, the recorder's state); every input
+  of the driver as a desk strip (your name, the SEO input number and the device: "01-Anubis-01", the gain dial and preamp keys where a Merging
+  device controls the input, the meter, TALK); the driver outputs along the bottom (name, what feeds it, meter, TB).
+- **Primary take window** (fermata's take window, reduced): piece name, Next Take, the REC light, take length, the H:M:S.MS display, transport,
+  ARM per track with Arm all / Arm none, markers (M), flags (Enter: pin and type the note, Enter again: saved), the Fixer's replies under the flag,
+  the takes on the timeline with the one recording growing at the end (from the peaks), the merged takes from their files.
+- **Mixer**: the project's processing mixer as faders, pans, mute / solo and the output pair - what the Primary hears live, and what Bounce out uses.
+- **Bounce out** (where fermata has Mastering): a take, whole or between markers 1 and 2, through the processing mixer (the shared `BounceJob`),
+  to a stereo WAV in Bounced Media.
+
+### The Fixer station
+- Reads the session's index and chunks (primary drive) as one timeline (`ChunkTimeline`: the chunks, the holes as silence, the merged take files
+  once the chunks are gone), fills as audio is written, the flags from the recorder at once (even before their audio is on disk).
+- **Follow Primary** (on by default): the playhead stays a little behind the written audio and cannot be moved; untick it to move about.
+- Its own mixer (levels, pans, mute / solo, output pair), applied by its player, sent to the recorder's stream port.
+- **ReTouch**: a selection (time, tracks) and a fix (De-click, Repair, Denoise - the shared processing in core/AudioOps.h), auditioned in place,
+  then saved as a fix version (new files in `Recorded Media/<window>/Fixes`, the version announced to the recorder). Never changes the recording.
+
+### Changed or added while it was tried out
+- **The recorder and the Fixer are started with `startProgram`** (src/ui/WinOwner.cpp), which hands them none of the window's open handles. With
+  JUCE's `ChildProcess` (bInheritHandles = TRUE on Windows) a child was given the window's sockets, which then stayed open in it after the window
+  had closed them. RecorderLink no longer asks whether "its" child runs: it starts a recorder at most every 8 s, and a second one started while the
+  first comes up cannot take the port and quits. The Primary starts the Fixer at most every 10 s (a Fixer already open says so and closes).
+- **A session that was cut off** (the PC or fermata:Live stopped while it wrote): `PrimaryApp::findCutOffSession` finds the newest session of the
+  piece whose primary index still says "writing" and that has a take not in the project yet (recording, not merged, or not registered). The window
+  offers to carry it on as soon as the device runs (once per project opened; not while it restores its own session after the recorder was started
+  again), and REC / Pre-take carry it on instead of starting a new one - a new session would leave those takes out of the project for good.
+  A session that only wrote its pre-take is not offered (a new one starts).
+- **The take left recording by such a stop** (`LiveRecorder::Setup::resumeTakeMaxGapSeconds`, 600): after a shorter stop it goes on, the missed
+  stretch a gap in it (0.2.0's behaviour, right when the recorder was started again at once); after a longer one it ends where the audio on the
+  disk ends (the primary writer measures the chunk the stop left open) and is merged at once, so a session carried on the next day does not make a
+  take of hours of silence. The "session" event says which (`recordingTake`, `endedAtCut`). Tested in live_recorder_test.
+- **The processing mixer was silent in projects made by fermata:Live**: the program never set `Project::newStripsToMain` (fermata does, in
+  AppContext), so new strips had their output off - nothing was heard live or played back, and Bounce out wrote silence (found by bouncing: peak
+  -100 dBFS). The Primary sets it now, and a project whose processing mixer has no track going to its main output gets every track sent there when
+  it is opened (logged).
+- **A fix version needs the session**: the recorder keeps the versions (every drive's index) and the Primary puts them into the project, so with no
+  session there is nowhere safe for one. The Fixer now says so and writes nothing (it used to write the files and then be refused).
+- **The flag lists** (both stations) show the project's flags from earlier sessions too (the take window's flag markers): the Primary can edit
+  their notes (in the project directly); the Fixer shows them but replies only to the running session's flags. A flag pinned between takes says
+  so on the Fixer ("between takes"), not "on its way to the disk".
+- **The Fixer's output pair**: 3-4 by default; on a device without them (the Test signal has two outputs) it plays on 1-2, beside the Primary,
+  rather than not at all (`FixerApp::playPair`), and says so once.
+- **Meters in the mixers**: the Fixer's strips show what its player plays (`Player::takePeak`, before the fader); both mixers' MAIN OUT show the
+  output pair's level (the recorder's output meters: everything played there).
+- **The timeline repaints only when something drawn changed** (`LiveTakeView::repaintIfChanged`: playhead pixel, live end, new peaks, flags, view,
+  M / S / ARM...), and twice a second regardless; it is opaque, so the window behind it is not painted again. Both windows used to repaint all of it
+  30 times a second.
+- **Windows fit the screen** they open on (the take window was 1360 x 820, too big for a laptop).
+- **Keyboard**: every button of the take window, the Fixer and the mixer strips is set not to take the keyboard - a button that has it presses
+  itself on Enter, and Enter must always pin a flag (found while testing: Enter pressed REC, which asked to stop the take).
+- The Primary's log has the operator's actions (REC, STOP TAKE, flag pinned, flag note) - what was pressed when, for after a concert.
+- The "Test signal" tones are at -24 dBFS (0.2.0: -12): 16 of them added up in the mixer clipped the outputs and the bounce.
+
+### The audio device: the recorder's own, and watched (4 November 2026)
+Asked for after fermata crashed while a new interface was plugged in (the crash was in Merging's WASM driver; see the user's fermata conversation):
+"fermata should never try to switch to a new driver without asking the user first". Looking at fermata:Live for the same found more:
+- **The real drivers were never listed (0.2.0 and 0.3.0 until now).** `RecorderService` added "Test signal" to its `AudioDeviceManager` before
+  anything else, and JUCE makes its own list of driver types only while that list is empty (`createDeviceTypesIfNeeded`): on Windows the recorder
+  offered "Test signal" and nothing else. Now JUCE's list is made first (`createAudioDeviceTypes`), then "Test signal" is added beside it. (Shown
+  here with a small program and a manager that stands in for Windows: the old order listed "Test signal" only, the new one all three.)
+- **The device is the recorder's own** (`RecorderService::device`): made from its driver type, opened and started by the recorder, and closed only by
+  it. The `AudioDeviceManager` is kept only as the list of driver types and never has a device open. Through the manager (0.2.0), JUCE itself
+  closed a device that had left its driver's list and opened the saved or default one in its place (`audioDeviceListChanged`, private in JUCE):
+  another device, other inputs, maybe another rate, in the middle of a session - with nobody asked. One initialisation of the driver now, not two
+  (0.2.0 made it once to read its channels, then the manager made it again).
+- **Devices plugged in or pulled out** (`ListWatch`, a listener on every driver type): noted in the log ("plugged in: ... The recorder keeps using
+  ...") and told to the window (`device-list`), whose device list is sent again. Never acted on. If the device in use has gone, the window says so.
+  (ASIO's list is the installed drivers, so plugging in an ASIO interface changes Windows Audio's list, not ASIO's.)
+- **No audio for the session** (`watchAudio`, the timer; and the audio thread): the session gets no blocks - the driver stopped the device,
+  restarted it, gives nothing, or started it again at another rate. While it lasts beyond 2 s: `audio {state: missing, why, seconds, session}`,
+  the status carries `audioMissing` / `audioWhy`, and the Primary shows NO AUDIO - NOT RECORDING (recorder box, status line, the take window's hint
+  line, in red) with what to do in the log. When it comes back, a **flag** (by "Recorder") is pinned where it happened: "NO AUDIO for 1.2 s here (the
+  driver stopped the audio device and started it again): that time is not in the recording" - so the take shows it in the Fixer, and in fermata as
+  a marker. The stretch is measured by the audio thread when the next block comes (the time since the block before, less one block; more than
+  four blocks and at least half a second), because a driver's reset runs on the message thread, where the timer cannot look while it happens.
+  With no session, "the audio device gives no audio" after 2 s, and again when it is back.
+- **Another rate** (`rateWrong`): a device that its driver starts again at a rate other than the session's is not fed into the session at all (its
+  files are at the session's rate); the monitoring still runs. JUCE's ASIO device restarts itself with the old rate when its driver asks to be reset,
+  and JUCE's WASAPI device with the new one when Windows' format changes.
+- **"Test signal" pretends the faults** (`test-signal {action}`: `pause {seconds}`, `restart {rate}` - stop, 0.6 s, start, like a reset, at
+  another rate if given - `die`, `plug`, `unplug`), so all of the above can be tried without hardware. Only the Test signal device obeys.
+- The window forgets a session the recorder says has ended, whoever ended it: it is no longer carried on if the recorder later has to be started
+  again (found here: a test ended a session from outside, the recorder was then stopped, and the window carried the ended session on).
+
+### The code review (one reader, after the demo worked) and what changed
+- **Critical: the carry-on cut used the primary drive alone.** A primary dropped long before the stop would have ended the take where it dropped,
+  and the backups would then have deleted the rest of it as chunks of no take. The cut is now where the furthest drive got
+  (`LiveRecorder::prepare`), and each writer of a session carried on takes in the whole-numbered chunks its index never listed (index writes that had
+  been failing), so the end is where the audio really ends and the merge has them (`DriveWriter`'s constructor; tested).
+- Takes merged after End session lost their flags and fix versions (the station clears them when the session ends): the merge's "done" event now
+  carries the session's notes (`RecorderService::mergeDoneEvent`, read again when the merge ends) and `PrimaryApp::registerTake` puts them in
+  (`syncNotes`). A take that finished merging with no window open was never put into the project: with no session on, the window now looks
+  through the ended sessions once per project and asks for those takes (`take-info`); the recorder notes them registered in the ended session's
+  index (`takeRegistered`, only while no merge runs).
+- The Fixer's `Project::load` could put the previous save back: the shared read mends a file it cannot read from its .bak, and a read between the
+  Primary's two renames found none. `Project::readOnlyLoads` (shared, default off) - the Fixer sets it.
+- `Player`: a render under way put its old place back over a `play()` (a seek, Follow's corrections, the ReTouch audition "from a second before"),
+  so what was heard did not match the playhead. A seek count now stops it.
+- The take window kept a pointer to the piece's markers, freed when a project was made or opened: the view now asks for them each time.
+- The "quit" queued as the window closes could be lost (the link thread left without sending): `RecorderLink` sends what is queued before it goes.
+- (0.2.0) A drive writer stuck in a disk call outlived its session's memory: the session object is now kept for good when that happens, and the
+  stuck writers' list is never destroyed (not even at exit).
+- Smaller: a new flag no longer takes the Fixer's chosen flag while a fix is tried; the log window refreshed only while the list grew (it stops
+  at 400 lines); Open device is greyed out while the session is on; the playback window is at least two device blocks; REC pressed twice while a
+  session starts; `findCutOffSession` reads the index without mending it (it may be a live drive's).
+
+### Checked here (Linux, the Test signal device, a test display)
+- The unit tests: live_recorder_test (with the new carry-on rule), compat_test (contract 3: a flag and a fix version round trip, a plain marker
+  gains no new keys, the shared look files use only shared code), and the address / thread / realtime checks of the recorder core.
+- End to end in the windows: the main window and its menus; REC starting the session and the take; the take growing live; flags with notes; the
+  Fixer following about 3 s behind the disk with the hatched not-yet-written part; a reply shown under the flag on the Primary; a Repair tried on
+  three tracks and kept as a fix version (three files in Fixes); STOP TAKE, the merge, the take in the project with its flag markers (notes and
+  replies), its gap marker and the fix version; playback on both stations through the streams (playhead, meters); the mixers with meters; Bounce
+  out (silent before the routing fix, then the right level); talkback open and closed; Audio settings, Preamps and Project Designer; the processes
+  killed in the middle of a take and started again - after a short stop the take went on with a gap of 1 min 21 s marked, after a long one it was
+  ended where its audio stopped (13 min 16 s) and put into the project.
+- The audio device's faults (the recorder process alone, from a Python client, on the Test signal device): 3.5 s of no audio (warned after 2 s,
+  in the status while it lasted, back after 3.49 s, a flag); a restart of 0.6 s by the "driver" on the message thread (caught: 0.59 s, a flag, no
+  alarm); a restart at 44.1 kHz in a 48 kHz session (nothing recorded, warned, a flag of 4.7 s when it was back at 48 kHz); a second device plugged
+  in and pulled out (noted, the device in use unchanged); the three flags in the index and inside the take, and the take short by exactly their
+  time; the device dying in a take (warned, no other device opened, the take merged once the session ended); the device opened again by the window.
+  In the windows: the take window and the main window showing NO AUDIO during an 8 s stop, the flag in the list afterwards, and after STOP TAKE the
+  flag as a marker on the take in the project file.
+- About the test display: JUCE on X11 can leave a click read into Xlib's queue undelivered until the next event arrives (and with no window
+  manager the focus misbehaves), so the first tests looked as if clicks were lost. With a small click-to-focus window manager and a nudge of the
+  pointer after each action everything arrived. This is the Linux test setup only; Windows does not work that way.
+
+### Not checked here (needs Windows and the MAD driver)
+- The MSVC build (GitHub builds it), Direct2D drawing speed, real audio out of the outputs (here only their meters show it), ANEMAN and the
+  preamps, two stations on one PC under load, and how long the buffer and chunks must really be.
+
+### Known limits (0.3.0)
+- No plug-ins in the monitoring yet (stage 4: they run in a helper process).
+- A session carried on takes its takes from every drive's index (0.3.0: a take begun or ended while the primary's index could not be written is
+  known to the backups'); one that no drive's index got before the stop is not known at all - its audio is in the chunks, but no take says so.
+- Fix versions only while a session is on (see above).
+- In the Primary's take window a flag that is in the project shows twice: in the flag row and, as fermata will show it, in the marker row.
+- One take window (piece) per session; another piece means ending the session.
+- The load-test program for the studio PC (stage 5) is still to come.
+- Time with no audio is not in the take (a flag says where and how long): the audio after it follows straight on, so the chunks' time of day is
+  behind the clock by that much from there on. (A session carried on after a crash keeps in step with the clock: its missing stretch is a gap.)
+- A take stopped while the device gives no audio is merged when the session ends: its last chunk is only finished then.
+- The device is never opened again by itself: if it dies, STOP TAKE, end the session, open it again (the warning says so).
+- fermata:Live does not yet ask "keep the device, or change to the new one?" when one is plugged in (fermata's version of that question is to be
+  designed in its own conversation first); it notes the new device and keeps the one in use.
+
 ## Agreed with the user (4 November 2026)
 
 - **The name**: **fermata:Live** on screen (one capital L), `fermata-Live` in file names, because Windows allows no colon there.
@@ -89,7 +278,9 @@ The brief is in `docs/LIVE-BRIEF.md`, and the rules shared with fermata are in `
 - **The protocol** (`RecorderService::handleLine`): commands `hello, status, devices, open {type, device, rate, buffer (0 = the largest the driver
   offers)}, close-device, session {projectName, projectFolder, window, tracks [{id, name, channels, inputs}], backups [], preTakeSeconds,
   bufferSeconds, chunkSeconds, resume}, end-session, record {number, label}, stop, registered {number}, take-info {number, folder?},
-  merge-backup {folder, number}, resume-drive {folder, role}, quit`. Folders must be full paths. `open`, `close-device`, `end-session` and `quit`
+  merge-backup {folder, number}, resume-drive {folder, role}, quit` (0.3.0 adds `mix, talkback, flag, flag-note, flag-remove, reply, fix, notes,
+  peaks-get, test-signal {action}`; and the events `audio {state missing | back, seconds, why, session, flag}` and `device-list {added, gone,
+  current, currentGone}`; the status's device has `audioMissing`, `audioWhy` and `audioSession` while there is no audio). Folders must be full paths. `open`, `close-device`, `end-session` and `quit`
   are refused while a take records (`refused` event); `quit` also while a merge is going; `record` refuses a take number already used in the
   session. Events: `hello, status` (every second: device, session with takes and drives, merge), `meters` (20 Hz, the inputs' peaks), `log,
   refused, device, session, take {state recording | stopped | registered | refused}, drive (dropped), gap, merge {queued | started | progress | done

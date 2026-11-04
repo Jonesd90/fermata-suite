@@ -88,6 +88,37 @@ juce::String fitLabel (const std::vector<juce::String>& forms, bool cutLast, int
     return last.substring (0, lo).trimEnd();
 }
 
+/** fermata:Live (contract 3): one fix the Fixer made during a live recording, kept as a VERSION of a span of a take - the original recording is
+    never changed. Each file holds exactly the fixed span of one track, the take's samples [startSample, endSample) (the fix already crossfaded
+    into the original at both ends inside it), so the take sounds fixed when the files are played over that span. A second attempt at the same
+    place is a version of its own ('replaces' = the one it retries, versionNumber counts up), so no attempt is ever overwritten. fermata's review
+    (to come) goes through them one at a time and sets 'state'; until then fermata keeps them as they are. */
+struct FixFile
+{
+    juce::Uuid   trackId;
+    juce::String trackName;
+    juce::File   file;
+    int          numChannels = 1;
+};
+struct FixVersion
+{
+    juce::Uuid   id;
+    juce::Uuid   takeId;                    // the take (TakeGroup) of this window it is a version of; null while that take is not in the project yet
+    int          takeNumber = 0;            // the take's number (it finds the take before its id is known)
+    juce::int64  startSample = 0, endSample = 0;   // the span it replaces, in the take's own samples
+    double       sampleRate = 48000.0;
+    std::vector<FixFile> files;             // one per track fixed
+    juce::String what;                      // what was done: "De-click (sensitivity 6)"
+    juce::String note;                      // the Fixer's own words
+    juce::Uuid   flagId;                    // the flag (a Marker of this window) it answers; null = none
+    juce::Uuid   replaces;                  // the version it is another attempt at; null = the first attempt
+    int          versionNumber = 1;         // 1, 2, 3 ... for the attempts at the same place
+    juce::String by;                        // who made it ("Fixer")
+    juce::Time   madeAt;
+    int          state = 0;                 // 0 waiting for review, 1 approved, 2 not used (fermata's review sets it)
+    juce::String reviewNote;                // what the review said about it (fermata)
+};
+
 /** A 'Take window': all the takes for one piece. */
 struct TakeWindowDef
 {
@@ -102,6 +133,7 @@ struct TakeWindowDef
     std::vector<juce::Uuid> hiddenTracks;         // tracks removed from THIS window's view (other windows and the mixers are not touched)
     int pieceBars = 0;                            // how many bars the piece has (the take chart, 3.8.0); 0 = not entered (the chart then runs to the last bar any take reaches)
     bool takeMatching = false;                    // 3.18.0: this window's takes are analysed for J and Find other versions (off until switched on; a setting, not part of undo)
+    std::vector<FixVersion> fixVersions;          // fermata:Live (contract 3): the Fixer's fixes of this window's takes, each a version (saved, not part of undo)
 
     bool isHidden (const juce::Uuid& trackId) const
     {

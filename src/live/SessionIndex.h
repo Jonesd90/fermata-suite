@@ -1,5 +1,5 @@
 #pragma once
-/** fermata:Live 0.2.0: the index of a recording session on one drive - what the recorder wrote there, in order, so the chunks read as one
+/** fermata:Live 0.2.0 (flags and fixes since 0.3.0): the index of a recording session on one drive - what the recorder wrote there, in order, so the chunks read as one
     timeline. One "session" is one run of the recorder with the device open: a timeline of samples from 0 (the first block the device gave)
     onwards, cut into chunks of kChunkSeconds, with the takes as spans of that timeline. Every drive the session writes to has its own copy of
     the index (session.json in that drive's session folder, beside the chunks), written by that drive's writer thread and nobody else.
@@ -65,6 +65,47 @@ struct TakeRec
     std::vector<GapRec> mergeGaps;   // the gaps the merge found in the take (so the take can be put into the project later from the index alone)
 };
 
+/** fermata:Live 0.3.0: an answer to a flag (the Fixer's reply). */
+struct ReplyRec
+{
+    juce::String text, by;
+    juce::Time   at;
+};
+
+/** fermata:Live 0.3.0: a flag the Primary pinned on the session's timeline (the moment of the music it is about), with its note and the Fixer's
+    replies. The recorder keeps them in every drive's index, so they outlive the stations' windows; the Primary's window puts each into the
+    project as a take window marker (contract 3: Marker::flag) once its take is there. */
+struct FlagRec
+{
+    juce::String id;                 // a Uuid as text (made by the station that pinned it)
+    juce::int64  sample = 0;         // where on the session's timeline
+    juce::String note, by;
+    juce::Time   pinnedAt;
+    std::vector<ReplyRec> replies;
+    bool         removed = false;    // taken back by the Primary (kept, so a station that missed it does not bring it back)
+
+    juce::var toVar() const
+    {
+        auto* x = new juce::DynamicObject(); juce::var v (x);
+        x->setProperty ("id", id); x->setProperty ("sample", sample); x->setProperty ("note", note); x->setProperty ("by", by);
+        x->setProperty ("pinnedAt", pinnedAt.toMilliseconds());
+        if (removed) x->setProperty ("removed", true);
+        juce::Array<juce::var> rs;
+        for (auto& r : replies) { auto* y = new juce::DynamicObject(); y->setProperty ("text", r.text); y->setProperty ("by", r.by); y->setProperty ("at", r.at.toMilliseconds()); rs.add (juce::var (y)); }
+        x->setProperty ("replies", rs);
+        return v;
+    }
+    static FlagRec fromVar (const juce::var& v)
+    {
+        FlagRec f;
+        f.id = v["id"].toString(); f.sample = juce::jmax ((juce::int64) 0, (juce::int64) v["sample"]); f.note = v["note"].toString(); f.by = v["by"].toString();
+        f.pinnedAt = juce::Time ((juce::int64) v["pinnedAt"]); f.removed = (bool) v["removed"];
+        if (auto* rs = v["replies"].getArray())
+            for (auto& r : *rs) f.replies.push_back ({ r["text"].toString(), r["by"].toString(), juce::Time ((juce::int64) r["at"]) });
+        return f;
+    }
+};
+
 struct SessionIndex
 {
     juce::String projectName, windowName;       // the project and the take window the takes belong to
@@ -81,6 +122,8 @@ struct SessionIndex
     std::vector<ChunkRec>  chunks;
     std::vector<GapRec>    gaps;
     std::vector<TakeRec>   takes;
+    std::vector<FlagRec>   flags;                 // 0.3.0: the Primary's flags with the Fixer's replies
+    std::vector<juce::var> fixes;                 // 0.3.0: the Fixer's fix versions as it announced them (FixVersion's fields, plus "window"), for the Primary's window
 
     /** The time of day of a sample of the timeline, in seconds since midnight (wrapping at midnight). */
     double timeOfDay (juce::int64 sample) const
@@ -101,6 +144,15 @@ struct SessionIndex
     static juce::File chunkFile (const juce::File& folder, const TrackSpec& t, const ChunkRec& c) { return folder.getChildFile (t.stem + "." + c.name + ".wav"); }
 
     TakeRec* findTake (int number) { for (auto& t : takes) if (t.number == number) return &t; return nullptr; }
+    FlagRec* findFlag (const juce::String& id) { for (auto& f : flags) if (f.id == id) return &f; return nullptr; }
+    /** The take whose span holds 'sample' (the last one that does: takes do not overlap, but a take's pre-take may reach back over the end of the one
+        before - the newer take wins), or nullptr. A take still recording holds everything from its start on. */
+    const TakeRec* takeAt (juce::int64 sample) const
+    {
+        const TakeRec* best = nullptr;
+        for (auto& t : takes) if (sample >= t.start && (t.end < 0 || sample < t.end)) if (best == nullptr || t.start > best->start) best = &t;
+        return best;
+    }
     const TakeRec* findTake (int number) const { for (auto& t : takes) if (t.number == number) return &t; return nullptr; }
 
     juce::var toVar() const
@@ -137,6 +189,8 @@ struct SessionIndex
             ks.add (juce::var (x));
         }
         o->setProperty ("tracks", ts); o->setProperty ("chunks", cs); o->setProperty ("gaps", gs); o->setProperty ("takes", ks);
+        if (! flags.empty()) { juce::Array<juce::var> fl; for (auto& f : flags) fl.add (f.toVar()); o->setProperty ("flags", fl); }
+        if (! fixes.empty()) { juce::Array<juce::var> fx; for (auto& f : fixes) fx.add (f); o->setProperty ("fixes", fx); }
         return root;
     }
 
@@ -148,7 +202,7 @@ struct SessionIndex
         role = v["role"].toString(); state = v["state"].toString(); droppedWhy = v["droppedWhy"].toString(); recorder = v["recorder"].toString();
         sampleRate = (double) v["sampleRate"]; chunkSamples = (juce::int64) v["chunkSamples"];
         origin = juce::Time::fromISO8601 (v["origin"].toString()); lastSample = (juce::int64) v["lastSample"];
-        tracks.clear(); chunks.clear(); gaps.clear(); takes.clear();
+        tracks.clear(); chunks.clear(); gaps.clear(); takes.clear(); flags.clear(); fixes.clear();
         if (auto* a = v["tracks"].getArray())
             for (auto& x : *a)
             {
@@ -173,6 +227,8 @@ struct SessionIndex
                 if (auto* mg = x["mergeGaps"].getArray()) for (auto& g : *mg) k.mergeGaps.push_back ({ (juce::int64) g["first"], (juce::int64) g["samples"], g["time"].toString(), g["why"].toString() });
                 takes.push_back (k);
             }
+        if (auto* a = v["flags"].getArray()) for (auto& x : *a) { auto f = FlagRec::fromVar (x); if (f.id.isNotEmpty()) flags.push_back (f); }
+        if (auto* a = v["fixes"].getArray()) for (auto& x : *a) if (x.isObject() && x["id"].toString().isNotEmpty()) fixes.push_back (x);
         return true;
     }
 

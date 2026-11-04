@@ -95,8 +95,8 @@ public:
 
     // ---- any thread ----
     /** Changes the index (a take noted, ended, merged...) under the lock and has the drive write it soon. Once the thread has ended (the session
-        is over), the index is written here and now (a merge that finishes after the session must still reach the disk). Only 'takes' may be
-        changed this way: chunks and gaps belong to the drive thread. */
+        is over), the index is written here and now (a merge that finishes after the session must still reach the disk). Only 'takes', 'flags'
+        and 'fixes' may be changed this way: chunks and gaps belong to the drive thread. */
     void updateIndex (const std::function<void (SessionIndex&)>& change);
     SessionIndex snapshot() const                       { const std::lock_guard<std::mutex> l (indexLock); return index; }
     juce::File folder() const                           { return settings.sessionFolder; }
@@ -113,6 +113,8 @@ public:
     int gapCount() const noexcept                       { return gaps.load (std::memory_order_relaxed); }
     int chunksWritten() const noexcept                  { return chunkCount.load (std::memory_order_relaxed); }
     int indexWriteFailures() const noexcept             { return indexFailures.load (std::memory_order_relaxed); }
+    /** 0.3.0, a session carried on: how many chunks this drive's index had not listed and were found in its folder and taken in. */
+    int unlistedChunksFound() const noexcept            { return unlistedFound; }
 
     struct OpenChunk
     {
@@ -144,6 +146,7 @@ private:
     Ring::Reader reader;
     std::atomic<juce::int64> readerPos { 0 }, written { 0 }, maxWriteUs { 0 }, lastProgressMs { 0 };
     std::atomic<int> gaps { 0 }, chunkCount { 0 }, indexFailures { 0 };
+    int unlistedFound = 0;                               // (set by the constructor only)
     std::atomic<bool> droppedFlag { false }, closing { false }, abandoned { false }, closedFlag { false };
     juce::int64 lastIndexTryMs = 0;
 

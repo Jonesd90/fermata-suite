@@ -36,8 +36,10 @@ Say plainly what could and could not be checked here.
 
 ## Deliveries
 
-- A zip of **only the files changed** since the previous delivery, with paths from the repository's top folder and **no `.github` folder**. The user
-  uploads the contents over the repository. GitHub's web upload takes fewer than 100 files at a time, so split a bigger delivery into numbered parts.
+- A zip of **only the files changed** since the previous delivery, with paths from the repository's top folder. The user uploads the contents over
+  the repository. **If the GitHub workflow (`.github/workflows/build-windows.yml`) changed, it goes in the zip too**, so one upload makes one build
+  (asked for on 4 November 2026: a workflow given separately meant a second upload and a second build). GitHub's web upload takes fewer than 100
+  files at a time, so split a bigger delivery into numbered parts.
   If a delivery deletes or renames a file, list it in the message.
 - Raise the program's version (MAJOR.MINOR.PATCH) and add its history entry. Give one line saying what to test in that build.
 - **If shared code changed, say so in one line** ("Shared: ... changed - the other program needs a rebuild and test"), and start the history entry's

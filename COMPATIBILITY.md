@@ -18,7 +18,7 @@ These lines are checked by `tests/compat_test.cpp`. Keep each line's wording exa
 they name (`src/core/Compat.h`, `Project::kProjectRates` in `src/core/Project.h`).
 
 ```text
-Contract version: 2
+Contract version: 3
 Project file: "Fermata project", version 1
 Sample rates (Hz): 44100 48000 96000 192000
 Live session index: "fermata:Live session", version 1
@@ -35,9 +35,15 @@ Everything listed here is built into BOTH programs, so a change to any of it cha
 - `src/reharmoniser/third_party/pocketfft_hdronly.h`: the FFT the shared denoiser uses (`src/core/DenoiseFft.cpp`).
 - `third_party/signalsmith-stretch/`: the time-stretcher the shared ReTimEr code uses (`src/core/Retime.cpp`).
 - `tests/compat_test.cpp`, `tools/compat-check.sh`, `COMPATIBILITY.md`, `CLAUDE.md`: the check, and the rules themselves.
+- **fermata's look** (contract 3: fermata:Live's windows are drawn with it). These files stay in fermata's folder, unchanged, and are shared from
+  there: `src/ui/Uikit.h`, `src/ui/FermataLookAndFeel.h`, `src/ui/FontData.cpp`, `src/ui/FontData2.cpp`, `src/ui/WaveColor.h`, `src/ui/WaveStore.h`,
+  `src/ui/WaveThumb.h`, `src/ui/WinOwner.h`, `src/ui/WinOwner.cpp`, `src/ui/MixerLook.h`, `src/ui/DeskLook.h`, `src/ui/ValueEntry.h`,
+  `src/ui/WaveDraw.h`, `src/ui/MarkerStrip.h`, `src/ui/TimeReadout.h`, `src/ui/TalkbackGlow.h`, `src/ui/BusyWindow.h`. Each of them may include only
+  the others in this list and `src/core` (never `AppContext.h` or any other file of fermata's windows), and fermata:Live includes nothing else from
+  `src/ui`. The check enforces both. A change to one of them changes how both programs look: build and look at both.
 
-A file from one program's own folder joins this list as soon as the other program uses it. For example, fermata's look, its mixer strip and its preamp
-buttons will join when fermata:Live's windows are built. From then on it is shared, and the rules below apply to it.
+A file from one program's own folder joins this list as soon as the other program uses it (as fermata's look did in contract 3). From then on it is
+shared, and the rules below apply to it.
 
 ## The rules
 
@@ -82,8 +88,20 @@ opens a live recording as its own, with nothing to read in the index. fermata mu
 merged (fermata:Live merges them when it next opens the project), and the chunks of merged takes go by themselves. "Create copy of entire project"
 copies it like everything else, which is fine.
 
-Still to come, each with its numbers here and a check in `tests/compat_test.cpp`: the Primary's flags and notes, the Fixer's replies, and the fix
-versions (every fix as a version of its own, reviewed in fermata one at a time).
+**Flags, replies and fix versions (contract 3).** They live in the project file, read and written by the shared code, so fermata keeps them:
+- **A flag** is a take window marker (`Marker` in `src/core/Markers.h`) with `flag` set, the Primary's `note`, the time it was pinned
+  (`pinnedAt`) and the Fixer's `replies` (text, who, when). Its `name` is `flagName (note, replies)` - "Flag: horn crack bar 34 | Fixer: fixed" - so
+  fermata shows it as an ordinary marker. An ordinary marker is saved exactly as before (the new keys are only written for a flag).
+- **A fix version** is an entry of the take window's `fixVersions` (`FixVersion` in `src/core/Takes.h`): the take, the span it replaces (the
+  take's samples), one file per track holding the fixed span, what was done, the flag it answers, the version it retries, and its `state`
+  (0 waiting for review, 1 approved, 2 not used). The recording itself is never changed. **fermata's part, still to be built:** a review that goes
+  through the versions one at a time, plays each against the original, and sets `state` (approve, or ask the Fixer for another attempt); an
+  approved version is put into an edit the way fermata puts any fix in. Until then fermata keeps the versions as they are.
+- fermata:Live's recorder also keeps the flags and versions of a session in its index (`flags`, `fixes`), so nothing is lost if the Primary's
+  window is closed while the Fixer works; the Primary's window puts them into the project.
+- **Reading a project another program writes**: `Project::readOnlyLoads` (off unless a program sets it) makes `Project::load` mend nothing on
+  disk - a file it cannot read is read from its `.bak`, but neither is moved or copied (`filesync::readJsonWithBackup`'s `repair`). fermata:Live's
+  Fixer sets it: a read that fell between the Primary's two renames of a save would otherwise put the previous save back. fermata does not set it.
 
 ## Still to decide
 
@@ -99,3 +117,6 @@ versions (every fix as a version of its own, reviewed in fermata one at a time).
   3.30.1, with nothing in it changed. Added: `src/core/Compat.h`, this file, the check, and the frame of fermata:Live.
 - **Contract 2** (fermata 3.30.2, fermata:Live 0.2.0): the live session index and the Live Chunks folder (above). `src/core/Compat.h` names the
   index's format; nothing else in the shared core changed.
+- **Contract 3** (fermata 3.30.2, fermata:Live 0.3.0): flags (with notes and replies) on take window markers, fix versions in take windows (above),
+  and fermata's look shared with fermata:Live (the `src/ui` files listed under Shared code). fermata's own behaviour is unchanged: an ordinary marker
+  and a take window without fix versions are saved byte for byte as before.

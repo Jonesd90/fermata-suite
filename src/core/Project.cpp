@@ -21,7 +21,29 @@ bool isProjectFormat (const String& format) { return format == "Fermata project"
 var markersToVar (const std::vector<Marker>& list)
 {
     juce::Array<var> a;
-    for (auto& m : list) { var o = new DynamicObject(); o.getDynamicObject()->setProperty ("id", m.id.toString()); o.getDynamicObject()->setProperty ("name", m.name); o.getDynamicObject()->setProperty ("t", m.seconds); a.add (o); }
+    for (auto& m : list)
+    {
+        var o = new DynamicObject(); auto* d = o.getDynamicObject();
+        d->setProperty ("id", m.id.toString()); d->setProperty ("name", m.name); d->setProperty ("t", m.seconds);
+        if (m.flag)                                                   // fermata:Live's flag (contract 3): only written for a flag, so other markers are as before
+        {
+            d->setProperty ("flag", true);
+            if (m.note.isNotEmpty()) d->setProperty ("note", m.note);
+            if (m.pinnedAt.toMilliseconds() != 0) d->setProperty ("pinnedAt", m.pinnedAt.toMilliseconds());
+            if (! m.replies.empty())
+            {
+                juce::Array<var> rs;
+                for (auto& r : m.replies)
+                {
+                    var ro = new DynamicObject(); auto* rd = ro.getDynamicObject();
+                    rd->setProperty ("text", r.text); if (r.by.isNotEmpty()) rd->setProperty ("by", r.by); rd->setProperty ("at", r.at.toMilliseconds());
+                    rs.add (ro);
+                }
+                d->setProperty ("replies", rs);
+            }
+        }
+        a.add (o);
+    }
     return a;
 }
 void markersFromVar (const var& v, std::vector<Marker>& list)
@@ -31,6 +53,14 @@ void markersFromVar (const var& v, std::vector<Marker>& list)
         for (auto& o : *a)
         {
             Marker m; m.id = juce::Uuid (o["id"].toString()); m.name = o["name"].toString(); m.seconds = juce::jmax (0.0, (double) o["t"]);
+            m.flag = (bool) o.getProperty ("flag", false);
+            if (m.flag)
+            {
+                m.note = o["note"].toString();
+                m.pinnedAt = juce::Time ((juce::int64) o["pinnedAt"]);
+                if (auto* rs = o["replies"].getArray())
+                    for (auto& rv : *rs) { FlagReply r; r.text = rv["text"].toString(); r.by = rv["by"].toString(); r.at = juce::Time ((juce::int64) rv["at"]); m.replies.push_back (r); }
+            }
             list.push_back (m);
         }
 }
@@ -1329,6 +1359,55 @@ static WaitingPiece waitingFromVar (const var& o, const juce::File& base)
     return w;
 }
 
+/** fermata:Live's fix versions (contract 3): see FixVersion in Takes.h. Every file is written like a take's file (its path, relative to the project
+    folder too, and "channels", which marks it as audio for the project copy). */
+static var fixVersionToVar (const FixVersion& f, const juce::File& base)
+{
+    var o = obj();
+    put (o, "id", f.id.toString()); put (o, "take", f.takeId.toString()); put (o, "takeNumber", f.takeNumber);
+    put (o, "from", (juce::int64) f.startSample); put (o, "to", (juce::int64) f.endSample); put (o, "rate", f.sampleRate);
+    juce::Array<var> fs;
+    for (auto& x : f.files)
+    {
+        var fo = obj();
+        put (fo, key::k_track, x.trackId.toString()); put (fo, key::k_trackName, x.trackName);
+        putFilePath (fo, x.file, base); put (fo, key::k_channels, x.numChannels);
+        fs.add (fo);
+    }
+    put (o, "files", fs);
+    if (f.what.isNotEmpty()) put (o, "what", f.what);
+    if (f.note.isNotEmpty()) put (o, "note", f.note);
+    if (! f.flagId.isNull()) put (o, "flag", f.flagId.toString());
+    if (! f.replaces.isNull()) put (o, "replaces", f.replaces.toString());
+    put (o, "version", f.versionNumber);
+    if (f.by.isNotEmpty()) put (o, "by", f.by);
+    put (o, "madeAt", f.madeAt.toMilliseconds());
+    put (o, "state", f.state);
+    if (f.reviewNote.isNotEmpty()) put (o, "reviewNote", f.reviewNote);
+    return o;
+}
+static FixVersion fixVersionFromVar (const var& o, const juce::File& base, bool* moved)
+{
+    FixVersion f;
+    f.id = juce::Uuid (o["id"].toString()); f.takeId = juce::Uuid (o["take"].toString()); f.takeNumber = (int) o["takeNumber"];
+    f.startSample = juce::jmax ((juce::int64) 0, samplesFromVar (o["from"])); f.endSample = juce::jmax (f.startSample, samplesFromVar (o["to"]));
+    if (const double r = rateFromVar (o["rate"]); r > 0.0) f.sampleRate = r;
+    if (auto* fs = o["files"].getArray())
+        for (auto& fv : *fs)
+        {
+            FixFile x; x.trackId = juce::Uuid (fv[key::k_track].toString()); x.trackName = fv[key::k_trackName].toString();
+            x.file = getFilePath (fv, base, moved); x.numChannels = juce::jlimit (1, kMaxTrackChannels, (int) fv.getProperty (key::k_channels, 1));
+            f.files.push_back (x);
+        }
+    f.what = o["what"].toString(); f.note = o["note"].toString();
+    if (o.hasProperty ("flag")) f.flagId = juce::Uuid (o["flag"].toString());
+    if (o.hasProperty ("replaces")) f.replaces = juce::Uuid (o["replaces"].toString());
+    f.versionNumber = juce::jmax (1, (int) o.getProperty ("version", 1));
+    f.by = o["by"].toString(); f.madeAt = juce::Time ((juce::int64) o["madeAt"]);
+    f.state = juce::jlimit (0, 2, (int) o["state"]); f.reviewNote = o["reviewNote"].toString();
+    return f;
+}
+
 juce::File Project::takeFolder (const TakeWindowDef& w) const
 {
     return audioFolder().getChildFile (sanitiseForFile (w.name));
@@ -1493,6 +1572,11 @@ var Project::takeWindowToVarIn (const TakeWindowDef& w, const juce::File& base)
     if (! w.showMarkers) put (o, "showMarkers", false);
     if (w.pieceBars > 0) put (o, "pieceBars", w.pieceBars);                // (3.8.0: the take chart)
     if (w.takeMatching) put (o, "takeMatching", true);                    // (3.18.0: switched on for this window; older projects: off)
+    if (! w.fixVersions.empty())                                             // (fermata:Live's fixes, contract 3)
+    {
+        juce::Array<var> fv; for (auto& f : w.fixVersions) fv.add (fixVersionToVar (f, base));
+        put (o, "fixVersions", fv);
+    }
     juce::Array<var> gs;
     for (auto& g : w.groups)
     {
@@ -1937,6 +2021,7 @@ bool Project::fromVar (const var& root)
             markersFromVar (v["markers"], w->markers); w->showMarkers = v["showMarkers"].isVoid() ? true : (bool) v["showMarkers"];
             w->pieceBars = juce::jmax (0, (int) v["pieceBars"]);
             w->takeMatching = v.hasProperty ("takeMatching") && (bool) v["takeMatching"];
+            if (auto* fv = v["fixVersions"].getArray()) for (auto& f : *fv) w->fixVersions.push_back (fixVersionFromVar (f, base, &moved));     // (fermata:Live's fixes, contract 3)
             if (auto* hid = v["hiddenTracks"].getArray()) for (auto& h : *hid) w->hiddenTracks.push_back (juce::Uuid (h.toString()));
             if (auto* gs = v["groups"].getArray())
                 for (auto& gv : *gs)
@@ -2152,6 +2237,13 @@ struct UndoHasher
         if (w.rx) { add (true); add (w.fileFrom); add (w.fileLen); add (w.program); }     // (3.22.0: only for pieces sent to a program, so other hashes stay as they were)
     }
 };
+/** fermata:Live's flag fields of a marker (contract 3): nothing for an ordinary marker, so the hashes of other markers stay as they were. */
+void hashFlag (UndoHasher& h, const Marker& m) noexcept
+{
+    if (! m.flag) return;
+    h.add (true); h.add (m.note); h.add (m.pinnedAt);
+    h.count (m.replies.size()); for (auto& r : m.replies) { h.add (r.text); h.add (r.by); h.add (r.at); }
+}
 }
 
 juce::uint64 Project::undoHash (const TakeWindowDef& w)
@@ -2223,7 +2315,8 @@ juce::uint64 Project::saveHash (const TakeWindowDef& w)
     h.add (w.editTake); h.add (w.editIn); h.add (w.editOut); h.count (w.editTracks.size()); for (auto& t : w.editTracks) h.add (t);
     h.add (w.cursorTake); h.add (w.cursorSeconds); h.add (w.playheadSeconds); h.add (w.overdub); h.add (w.showMarkers); h.add (w.takeMatching);
     h.count (w.hiddenTracks.size()); for (auto& t : w.hiddenTracks) h.add (t);
-    h.count (w.markers.size()); for (auto& m : w.markers) { h.add (m.id); h.add (m.name); h.add (m.seconds); }
+    h.count (w.markers.size()); for (auto& m : w.markers) { h.add (m.id); h.add (m.name); h.add (m.seconds); hashFlag (h, m); }
+    h.count (w.fixVersions.size()); for (auto& f : w.fixVersions) h.add (juce::JSON::toString (fixVersionToVar (f, juce::File()), true));     // (fermata:Live's fixes: saved, not undone)
     return h.h;
 }
 
@@ -2232,7 +2325,7 @@ juce::uint64 Project::saveHash (const EditDef& e)
     UndoHasher h; h.mix (undoHash (e));
     h.add (e.fixIn); h.add (e.fixOut); h.count (e.fixTracks.size()); for (auto& t : e.fixTracks) h.add (t);
     h.add (e.playheadSeconds); h.add (e.insertIndex); h.add (e.showFeedback); h.add (e.showMarkers); h.add (e.showGuide);
-    h.count (e.markers.size()); for (auto& m : e.markers) { h.add (m.id); h.add (m.name); h.add (m.seconds); }
+    h.count (e.markers.size()); for (auto& m : e.markers) { h.add (m.id); h.add (m.name); h.add (m.seconds); hashFlag (h, m); }
     for (auto& kv : e.laneRows)                                                      // (an entry that only says "one fader row" is the same as none)
         if (! EditDef::isDefaultRows (kv.second)) { h.add (kv.first); h.count (kv.second.size()); for (auto& sh : kv.second) { h.add (sh.param); h.add (sh.mixer); } }
     h.count (e.feedback.size());
@@ -2247,7 +2340,7 @@ void strip (const var& o, std::initializer_list<const char*> keys)
 {
     if (auto* d = o.getDynamicObject()) for (auto* k : keys) d->removeProperty (juce::Identifier (k));
 }
-const std::initializer_list<const char*> kTakeViewKeys = { "editTake", "editIn", "editOut", "editTracks", "cursorTake", "cursorSeconds", "playhead", "hiddenTracks", "overdub", "markers", "showMarkers", "takeMatching" };
+const std::initializer_list<const char*> kTakeViewKeys = { "editTake", "editIn", "editOut", "editTracks", "cursorTake", "cursorSeconds", "playhead", "hiddenTracks", "overdub", "markers", "showMarkers", "takeMatching", "fixVersions" };   // (fixVersions: fermata:Live's, made outside - saved, never undone)
 const std::initializer_list<const char*> kTakeMachineKeys = { "length", "overruns", "lost", "writeFailed", "verified" };     // per take: the recorder's, not the person's (3.1.4)
 const std::initializer_list<const char*> kEditViewKeys = { "markIn", "markOut", "fixIn", "fixOut", "fixTracks", "playhead", "insertIndex", "markers", "feedback", "showFeedback", "showMarkers", "laneRows", "showGuide", "autoBefore" };
 }
@@ -2685,7 +2778,7 @@ bool Project::load (const juce::File& f, juce::String& error)
     reportLoad ("Reading the project file", 0.02);
     const auto t0 = juce::Time::getMillisecondCounterHiRes(); double tMain = 0.0, tWindows = 0.0, tSetup = 0.0, tHashes = 0.0;
     // A damaged (or missing) project file: the save before it is in <name>.fermata.bak and is used instead
-    const int read = filesync::readJsonWithBackup (f, v, [] (const juce::var& x) { return x.isObject(); });
+    const int read = filesync::readJsonWithBackup (f, v, [] (const juce::var& x) { return x.isObject(); }, ! readOnlyLoads);
     tMain = juce::Time::getMillisecondCounterHiRes() - t0;
     readingFrom = f.getParentDirectory();
     // (a file that reads as an object but is not a Fermata project - some other program's .json renamed, say - is turned away here, before anything of
@@ -2703,7 +2796,7 @@ bool Project::load (const juce::File& f, juce::String& error)
     {
         const bool oldStyle = ! v.hasProperty ("takeWindowFiles") && ! v.hasProperty ("editFiles")
                               && ((v["takeWindows"].isArray() && v["takeWindows"].size() > 0) || (v["edits"].isArray() && v["edits"].size() > 0));
-        if (oldStyle)                                      // a project from before window files: keep the old file as it was, once
+        if (oldStyle && ! readOnlyLoads)                   // a project from before window files: keep the old file as it was, once
         {
             auto bak = f.getSiblingFile (f.getFileName() + ".before-window-files");
             if (! bak.exists()) f.copyFileTo (bak);
@@ -3226,7 +3319,7 @@ void Project::mergeWindowFiles (var& root)
     parallelFor ((int) reads.size(), [&] (int i)
     {
         auto& rd = reads[(size_t) i];
-        rd.result = filesync::readJsonWithBackup (base.getChildFile (rd.rel), rd.fv, [&] (const var& x) { return x.isObject() && x["format"].toString() == rd.format && x[rd.fileKey].isObject(); });
+        rd.result = filesync::readJsonWithBackup (base.getChildFile (rd.rel), rd.fv, [&] (const var& x) { return x.isObject() && x["format"].toString() == rd.format && x[rd.fileKey].isObject(); }, ! readOnlyLoads);
     });
     reportLoad ("Reading " + String ((int) reads.size()) + " window files", 0.5);
 

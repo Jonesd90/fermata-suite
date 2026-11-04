@@ -402,6 +402,9 @@ private:
 public:
     /** The program sets this: strips created from now on have their output button on (so a new track is heard). Saved projects keep what they saved. */
     bool newStripsToMain = false;
+    /** The program sets this when it only ever reads the project, which another program writes (fermata:Live's Fixer): load() then mends nothing on
+        disk - a file it cannot read is read from its .bak, but neither is moved or copied (see filesync::readJsonWithBackup). */
+    bool readOnlyLoads = false;
 
     // --- preamps ---
     void setPreamp (int inputIndex, const PreampSettings&);

@@ -1,5 +1,5 @@
 #!/bin/bash
-# fermata:Live's recorder core on Linux (0.2.0): builds src/live's core (no window, no device) with the shared core against JUCE and runs
+# fermata:Live's recorder core on Linux (0.2.0; 0.3.0: monitoring, playback streams, waveform peaks, flags): builds src/live's core (no window, no device) with the shared core against JUCE and runs
 # tests/live_recorder_test.cpp - fake audio, drives as folders, a disk the tests break. Usage: tools/live-check.sh /path/to/JUCE [out folder]
 # The objects of the shared core are reused from tools/compat-check.sh's out folder when it is the same (default /tmp/fermata-compat-build).
 set -e
@@ -22,7 +22,7 @@ done | xargs -r -P"$JOBS" -I{} bash -c 'f={}; echo "building $(basename $f)"; $C
 CORE_OBJS=""; for f in "$HERE"/src/core/*.cpp; do CORE_OBJS="$CORE_OBJS $OUT/core_$(basename "$f" .cpp).o"; done
 # the recorder core: every src/live .cpp that needs no window or device
 LIVE_OBJS=""
-for f in DriveWriter LiveRecorder Merge; do
+for f in DriveWriter LiveRecorder Merge StreamServer MonitorMix; do
     $CXX -c "$HERE/src/live/$f.cpp" -o "$OUT/live_$f.o"
     LIVE_OBJS="$LIVE_OBJS $OUT/live_$f.o"
 done

@@ -267,7 +267,7 @@ run_longsession ()
 # audio for the sanitizers; the ring's unsynchronised copies are listed in tools/tsan-suppressions.txt, see there)
 run_live ()
 {
-    local LIVE_SRC="$HERE/src/live/DriveWriter.cpp $HERE/src/live/LiveRecorder.cpp $HERE/src/live/Merge.cpp"
+    local LIVE_SRC="$HERE/src/live/DriveWriter.cpp $HERE/src/live/LiveRecorder.cpp $HERE/src/live/Merge.cpp $HERE/src/live/StreamServer.cpp $HERE/src/live/MonitorMix.cpp"
     for san in asan tsan; do
         local O="$OUT/$san" FL
         if [ $san = asan ]; then FL="-fsanitize=address,undefined"; else FL="-fsanitize=thread"; fi
@@ -282,7 +282,7 @@ run_live ()
         ( cd "$O" && LIVE_TEST_PACE=4 ./live_recorder_test ) > "$OUT/${san}_live_recorder_test.log" 2>&1
         report "$OUT/${san}_live_recorder_test.log" $? "ERROR: AddressSanitizer|runtime error:|ERROR: LeakSanitizer|WARNING: ThreadSanitizer" "report(s)"
     done
-    # the realtime check: nothing inside LiveRecorder::process may allocate, lock, sleep or touch a file
+    # the realtime check: nothing inside LiveRecorder::process, MonitorMix::process or StreamServer::mix (0.3.0) may allocate, lock, sleep or touch a file
     local O="$OUT/plain" CXX="g++ -std=c++17 -O1 -g -I$JUCE/modules $CORE_DEFS -w"
     echo "== live recorder realtime check ($O)"
     build_core "$O" "$CXX"
@@ -290,7 +290,7 @@ run_live ()
     local objs=""
     for f in $LIVE_SRC; do $CXX -c "$f" -o "$O/live_$(basename $f .cpp).o" 2>/dev/null || echo "FAILED $f"; objs="$objs $O/live_$(basename $f .cpp).o"; done
     $CXX -c "$HERE/tests/live_recorder_test.cpp" -o "$O/t_live_recorder_test.o" 2>"$O/t_live_recorder_test.log" || echo "FAILED live_recorder_test"
-    local L="-rdynamic -lpthread -ldl -lrt -Wl,--wrap=_ZN2td11AudioEngine7processEPKPKfiPKPfii -Wl,--wrap=_ZN2td4live12LiveRecorder7processEPKPKfii -Wl,--wrap=_ZNK4juce13WaitableEvent6signalEv -Wl,--wrap=_ZNK4juce6Thread6notifyEv"
+    local L="-rdynamic -lpthread -ldl -lrt -Wl,--wrap=_ZN2td11AudioEngine7processEPKPKfiPKPfii -Wl,--wrap=_ZN2td4live12LiveRecorder7processEPKPKfii -Wl,--wrap=_ZN2td4live10MonitorMix7processEPKPKfiPKPfii -Wl,--wrap=_ZN2td4live12StreamServer3mixEPKPfii -Wl,--wrap=_ZNK4juce13WaitableEvent6signalEv -Wl,--wrap=_ZNK4juce6Thread6notifyEv"
     g++ "$O/t_live_recorder_test.o" "$O/realtime_guard_live.o" $objs $CORE_OBJS $JUCE_OBJS -o "$O/rt_live_recorder_test" $L
     ( cd "$O" && ./rt_live_recorder_test ) > "$OUT/rtcheck_live_recorder_test.log" 2>&1
     report "$OUT/rtcheck_live_recorder_test.log" $? "^REALTIME: " "realtime report(s)"

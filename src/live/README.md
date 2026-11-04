@@ -8,22 +8,34 @@ fermata.
 fermata:Live is a single program, `fermata-Live.exe`. Put it anywhere and double-click it. The first time, Windows may say it "protected your PC"
 because the program is not signed: click **More info**, then **Run anyway**.
 
-## This version (0.2.0): the recorder test bench
+## Trying this version (0.3.0)
 
-The recorder itself is built and this window drives it. It is not the final look: the main window, the Primary and Fixer windows come later.
+1. **Audio settings**: choose the driver type and the device ("Test signal" is a pretend 16-input device for trying everything without an
+   interface), the sample rate and the buffer ("Largest the driver offers" is the safest), and press **Open device**. Add a folder on each
+   backup drive, and set the pre-take (how far back a take reaches before you press REC, up to 300 seconds).
+2. **Project > New project...** (or open a fermata project). **Project Designer**: name the tracks, mono or stereo, and the input each records.
+   The main window shows every input of the driver with its meter.
+3. **Take Window**: type the piece's name, arm the tracks (ARM), and press **REC** (or R). The session and the take start together; the take grows
+   on the timeline as it records. **Enter** pins a flag: type its note and press Enter again. **STOP TAKE** asks first, then the take is merged
+   and put into the project (the Merge square is blue meanwhile). The R key never stops a take.
+4. **Fixer** (in the menu) opens the Fixer's window: the same takes, a few seconds behind the disk (Follow Primary). The Primary's flags appear
+   at once on the right: click one and type a reply. To fix something: drag over the tracks, choose the fix, **Try it** (it plays from a second
+   before), then **Keep as a fix version**. The recording itself is never changed; the version goes into the project for fermata's review.
+5. **Mixer**: what you hear (live and when playing back) and what **Bounce out** uses. The Fixer's **Mixer** button opens its own, on its own
+   outputs (3-4 unless you choose others; 1-2 on a device with two outputs).
+6. **Bounce out**: a take, whole or between marks 1 and 2 (keys 1 and 2 in the take window), to a stereo WAV in the project's Bounced Media folder.
+7. Close fermata:Live, then open the project in fermata: the takes, the flags (as markers, with the notes and replies) and the fix versions are
+   there. (Open a project in one program at a time: the two do not yet stop each other from saving over the same project.)
 
-1. **New project...** (choose where, type a name) or **Open project...** (a fermata project). Type the **Take window** name (the piece or half).
-2. Choose the driver type (ASIO), the device, the sample rate and the buffer ("Largest the driver offers" is the safest), and press **Open device**.
-   "Test signal" is a pretend 16-input device for trying everything without an interface.
-3. **Backup drives**: Add a folder on each backup drive (the primary is the project's own drive). Set **Pre-take** (seconds before Record that the
-   take includes, up to 300) and **Buffer** (how long a drive may stall before it loses anything, 30 - 60 s). **Inputs to record**: with a project
-   that has no tracks, this many inputs are recorded as mono tracks; a project with tracks records its tracks.
-4. **Start session (pre-take)**: the recorder writes from now on. **RECORD** marks the start of a take, **STOP** its end; the merge follows and the
-   take goes into the project. The log at the bottom says what happened, and each drive's line shows how far behind it is, its longest write,
-   its chunks and gaps - or that it was dropped, and why.
-5. **End session** when you are done. **Carry on last session** continues a session that was cut off (the PC or the program stopped).
+If the PC or fermata:Live stops in the middle of a session, start it again: it offers to carry the session on. A take that was recording goes on
+(after a short stop, with the missing time marked as a gap) or is ended where its audio stops and put into the project (after a longer one).
 
-The recording runs in a separate program, `fermata-Live.exe --recorder`, started by this window (it has no window of its own; it is in Task
-Manager). It keeps recording if this window is closed or crashes; start fermata:Live again and it is found. Closing the window while a take
-records leaves it recording on purpose - press STOP first if you mean to stop. Logs: `Documents\Fermata\fermata-live-log.txt` (the window) and
-`fermata-live-recorder-log.txt` (the recorder).
+fermata:Live never changes the audio device by itself: plugging in or pulling out an interface is only noted in the log. If the audio device stops
+giving audio during a session, both windows say **NO AUDIO - NOT RECORDING** in red at once; when it comes back, a flag marks the place on the take
+with how long it was missing. If it does not come back: STOP TAKE, end the session (the Pre-take square), open the device again in Audio settings,
+then REC.
+
+The recording runs in a separate program, `fermata-Live.exe --recorder`, started by the main window (it has no window of its own; it is in Task
+Manager). It keeps recording if the windows are closed or crash; start fermata:Live again and it is found. Closing the main window while a take
+records leaves it recording on purpose - press STOP TAKE first if you mean to stop. Logs, in `Documents\Fermata`: `fermata-live-log.txt` (the
+main window), `fermata-live-recorder-log.txt` (the recorder) and `fermata-live-fixer-log.txt` (the Fixer).

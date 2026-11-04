@@ -35,6 +35,9 @@ public:
         juce::int64 memoryBudgetBytes = 0;               // the most the buffer may take (0: a quarter of the machine's memory)
         juce::String programName { "fermata:Live" };
         bool   resume = false;                           // carry on the newest session found in the primary's Live Chunks folder (after a crash)
+        int    resumeTakeMaxGapSeconds = 600;            // 0.3.0, resume: a take that was recording goes on after a stop shorter than this (the recorder
+                                                         // was started again at once: the stretch missed is a gap in it); after a longer one (the PC went
+                                                         // off) it ends where the audio on the disk ends - it is merged at once, and Record makes the next
         juce::Time nowForTests;                          // tests only: the clock (the session's origin, and where a carried-on session is now)
     };
     struct DriveStatus
@@ -73,6 +76,9 @@ public:
     /** Notes the end of the take that is recording. Returns its number (0: none was). */
     int stopTake();
     int recordingTake() const                            { const std::lock_guard<std::mutex> l (takesLock); for (auto& t : takes) if (t.end < 0) return t.number; return 0; }
+    /** 0.3.0: the take that was recording when the session was cut off, and that prepare (resume) ended where the audio on the disk ends (the stop
+        was longer than resumeTakeMaxGapSeconds); 0: none. */
+    int takeEndedWhenCarriedOn() const noexcept          { return endedWhenCarriedOn; }
     std::vector<TakeRec> takesSoFar() const              { const std::lock_guard<std::mutex> l (takesLock); return takes; }
     /** A take's record changed outside (merged, registered): the primary's index gets all of it; the backups' indexes get the span (start, end,
         label) and keep their own merged state - a backup is merged on demand, and its chunks stay until it has been. Any thread. */
@@ -81,6 +87,20 @@ public:
     void updateTakeOnDrive (const juce::File& sessionFolder, const TakeRec&);
     /** A drive's own record of a take, as its index holds it (a backup's merged state), or none. Any thread. */
     bool takeOnDrive (const juce::File& sessionFolder, int number, TakeRec& out) const;
+
+    // ---- flags and fix versions (0.3.0; any thread) ----
+    /** Adds the flag, or replaces the one with its id (its note typed, taken back). Every drive's index gets it. */
+    void putFlag (const FlagRec&);
+    /** Adds a reply to a flag; false if there is no such flag. 'updated' gets the flag as it now is. */
+    bool addReply (const juce::String& flagId, const ReplyRec&, FlagRec& updated);
+    std::vector<FlagRec> flags() const;
+    /** Adds a fix version (as the Fixer announced it), or replaces the one with its id. */
+    void putFix (const juce::var& fix);
+    std::vector<juce::var> fixes() const;
+    /** The memory buffer, for a reader of its own (the waveform peaks: PeakTap). It lives as long as this object. */
+    const Ring& ringForReaders() const noexcept          { return ring; }
+    /** The time of day of sample 0 of the timeline. */
+    juce::Time timelineOrigin() const noexcept           { return origin; }
 
     // ---- drives (any thread) ----
     std::vector<DriveStatus> drives() const;
@@ -101,6 +121,9 @@ public:
         Takes as long as the slowest drive keeps making progress (a drive that stops making progress is dropped after a minute). A drive whose thread
         is stuck inside a disk call is kept alive (never killed) and left behind. */
     void close();
+    /** 0.3.0: close() left a writer behind (stuck in a disk call): it still uses this object's ring and callbacks, so this object must never be
+        destroyed - its owner keeps it for good (RecorderService::endSession). */
+    bool leftWritersBehind() const noexcept              { return stuckWriters.load() > 0; }
     /** Tests only: pretends the program died here - the drives stop at once, with their chunks open and their indexes as last written. */
     void abandonForTests();
 
@@ -133,6 +156,10 @@ private:
     std::vector<std::unique_ptr<DriveWriter>> writers;   // the primary first (writersLock for the list itself; the writers are thread-safe)
     mutable std::mutex writersLock;
     std::vector<TakeRec> takes;
+    std::vector<FlagRec> flagList;                       // 0.3.0 (takesLock)
+    std::vector<juce::var> fixList;                      // 0.3.0 (takesLock)
     mutable std::mutex takesLock;
+    int endedWhenCarriedOn = 0;                          // 0.3.0 (set by prepare only)
+    std::atomic<int> stuckWriters { 0 };
 };
 } // namespace td::live

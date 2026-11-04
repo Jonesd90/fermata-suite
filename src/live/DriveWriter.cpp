@@ -1,5 +1,6 @@
 #include "DriveWriter.h"
 #include "Merge.h"
+#include <set>
 
 namespace td::live
 {
@@ -40,6 +41,38 @@ DriveWriter::DriveWriter (const Ring& r, const SessionIndex& idx, Settings s, st
                 it->samples = len;
                 index.lastSample = juce::jmax (index.lastSample, it->firstSample + len);
                 ++it;
+            }
+            // 0.3.0: chunks the index never listed (its writes had been failing - a scanner holding session.json - when the program stopped): every
+            // whole-numbered chunk ("c000012") with a file for every track is measured and listed, so the merge has them and the take's end is
+            // where the audio really ends. (A chunk begun again inside one, "c000012-r1", cannot be placed from its name and is left as it is.)
+            if (! index.tracks.empty() && index.chunkSamples > 0)
+            {
+                std::set<juce::String> listed;
+                for (auto& c : index.chunks) listed.insert (c.name);
+                const auto& t0 = index.tracks.front();
+                int found = 0;
+                for (auto& f : settings.sessionFolder.findChildFiles (juce::File::findFiles, false, t0.stem + ".c*.wav"))
+                {
+                    const auto name = f.getFileNameWithoutExtension().fromLastOccurrenceOf (".", false, false);
+                    if (name.length() != 7 || ! name.startsWithChar ('c') || ! name.substring (1).containsOnly ("0123456789") || listed.count (name) > 0) continue;
+                    ChunkRec c; c.name = name; c.firstSample = name.substring (1).getLargeIntValue() * index.chunkSamples;
+                    juce::int64 len = -1;
+                    for (auto& t : index.tracks)
+                    {
+                        const auto n = Merge::chunkLength (SessionIndex::chunkFile (settings.sessionFolder, t, c));
+                        if (n < 0) { len = -1; break; }
+                        len = len < 0 ? n : juce::jmin (len, n);
+                    }
+                    if (len <= 0) continue;
+                    c.samples = len;
+                    index.chunks.push_back (c); listed.insert (name); ++found;
+                    index.lastSample = juce::jmax (index.lastSample, c.firstSample + len);
+                }
+                if (found > 0)
+                {
+                    std::sort (index.chunks.begin(), index.chunks.end(), [] (const ChunkRec& a, const ChunkRec& b) { return a.firstSample < b.firstSample; });
+                    unlistedFound = found;
+                }
             }
         }
     }
@@ -300,7 +333,8 @@ bool DriveWriter::writePiece (int n)
 bool DriveWriter::writeIndex (bool force)
 {
     // An index that cannot be written is tried again soon (at most every 2 s), and never drops the drive: the audio files are what matters, and a
-    // scanner or a sync program holding session.json for a moment is no fault of the drive. A session carried on measures unlisted chunks anyway.
+    // scanner or a sync program holding session.json for a moment is no fault of the drive. A session carried on takes in the chunks its index never
+    // listed (0.3.0: see the constructor).
     const auto now = juce::Time::currentTimeMillis();
     if (! force && now - lastIndexTryMs < 2000) return false;
     lastIndexTryMs = now;

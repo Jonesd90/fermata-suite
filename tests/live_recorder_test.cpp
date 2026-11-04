@@ -1,10 +1,14 @@
-// fermata:Live 0.2.0: the recorder core's tests (tools/live-check.sh builds and runs them; also under the address, thread and realtime checks).
+// fermata:Live 0.2.0 (0.3.0: the monitoring, the playback streams, the waveform peaks, the flags and fix versions): the recorder core's tests (tools/live-check.sh builds and runs them; also under the address, thread and realtime checks).
 // Fake audio at many times real time, drives as folders, and a disk layer the tests can break: a drive that refuses writes, a drive that stalls
 // for longer than the memory buffer, a program that dies in the middle of a chunk. Every merged file is checked sample for sample against what
 // was fed in: each channel k's sample at timeline position s is the 24-bit value v (k, s) below, which the 24-bit files keep exactly.
 #include "../src/live/LiveRecorder.h"
 #include "../src/live/Merge.h"
 #include "../src/live/TakeRegister.h"
+#include "../src/live/MonitorMix.h"
+#include "../src/live/PeakTap.h"
+#include "../src/live/StreamServer.h"
+#include "../src/live/StreamClient.h"
 #include <cstdio>
 #include <map>
 #include <random>
@@ -483,6 +487,158 @@ int main()
         }
     }
 
+    SECTION ("0.3.0: the PC was off for longer: the session is carried on, and the take that was recording ends where the audio on the disk ends");
+    {
+        tmp.getChildFile ("Concert4b").deleteRecursively();
+        const auto project = tmp.getChildFile ("Concert4b");
+        juce::File session; std::vector<TrackSpec> tracks;
+        const auto origin = juce::Time::getCurrentTime();
+        {
+            LiveRecorder rec (disk);
+            auto setup = baseSetup (project, "Off");
+            setup.nowForTests = origin;
+            CHECK (rec.prepare (setup).isEmpty());
+            session = rec.primaryFolder(); tracks = rec.tracks();
+            feed (rec, 1.0, 50);
+            CHECK (rec.startTake (5, "").isEmpty());
+            feed (rec, 4.3, 50);
+            CHECK (waitWritten (rec, sec (4)));
+            juce::Thread::sleep (300);
+            rec.abandonForTests();
+        }
+        SessionIndex left; CHECK (left.load (session.getChildFile (kIndexFileName)));
+        CHECK (left.state == "writing" && left.takes.size() == 1 && left.takes[0].end == -1);
+        const auto openLen = Merge::chunkLength (SessionIndex::chunkFile (session, tracks[0], left.chunks.back()));
+        CHECK (openLen > 0);
+        {   // started again 30 s (of the clock) later, with takes going on only after a stop of up to 10 s
+            LiveRecorder rec (disk);
+            auto setup = baseSetup (project, "Off");
+            setup.resume = true; setup.resumeTakeMaxGapSeconds = 10;
+            setup.nowForTests = origin + juce::RelativeTime::seconds (30.0);
+            CHECK (rec.prepare (setup).isEmpty());
+            CHECK (rec.recordingTake() == 0 && rec.takeEndedWhenCarriedOn() == 5 && rec.position() == sec (30));
+            const auto ts = rec.takesSoFar();
+            CHECK (ts.size() == 1 && ts[0].end == left.chunks.back().firstSample + openLen);
+            CHECK (rec.startTake (6, "").isEmpty());                  // (Record makes the next take)
+            feed (rec, 2.0, 50);
+            CHECK (rec.stopTake() == 6);
+            feed (rec, 2.0, 50);
+            CHECK (waitWritten (rec, sec (34)));                    // (the drive notes what it has written at each chunk's end: every 2 s here)
+            rec.close();
+            const auto idx = rec.primaryIndex();
+            const auto* k5 = idx.findTake (5);
+            CHECK (k5 != nullptr && k5->end == ts[0].end);
+            const auto out = project.getChildFile ("Recorded Media").getChildFile ("Off");
+            const auto res = mergeTake (session, 5, out);
+            CHECK_MSG (res.ok, res.error);
+            CHECK (res.lengthSamples == ts[0].end - ts[0].start && res.gaps.empty());    // (no half a minute of silence on its end)
+            for (size_t i = 0; i < 3; ++i) CHECK (checkMerged (juce::File (res.files[(int) i]), tracks[i], ts[0].start, ts[0].end) == 0);
+        }
+        {   // and a short stop: the take goes on (as before)
+            tmp.getChildFile ("Concert4c").deleteRecursively();
+            const auto p2 = tmp.getChildFile ("Concert4c");
+            juce::File s2;
+            {
+                LiveRecorder rec (disk);
+                auto setup = baseSetup (p2, "Short");
+                setup.nowForTests = origin;
+                CHECK (rec.prepare (setup).isEmpty());
+                s2 = rec.primaryFolder();
+                feed (rec, 1.0, 50);
+                CHECK (rec.startTake (1, "").isEmpty());
+                feed (rec, 3.0, 50);
+                CHECK (waitWritten (rec, sec (4)));
+                rec.abandonForTests();
+            }
+            LiveRecorder rec (disk);
+            auto setup = baseSetup (p2, "Short");
+            setup.resume = true; setup.resumeTakeMaxGapSeconds = 10;
+            setup.nowForTests = origin + juce::RelativeTime::seconds (8.0);
+            CHECK (rec.prepare (setup).isEmpty());
+            CHECK (rec.recordingTake() == 1 && rec.takeEndedWhenCarriedOn() == 0);
+            rec.close();
+        }
+    }
+
+    SECTION ("0.3.0: the index could not be written for a while, then the program died: the chunks it never listed are taken in when the session is carried on");
+    {
+        tmp.getChildFile ("Concert8b").deleteRecursively();
+        const auto project = tmp.getChildFile ("Concert8b");
+        juce::File session; std::vector<TrackSpec> tracks;
+        const auto origin = juce::Time::getCurrentTime();
+        {
+            LiveRecorder rec (disk);
+            auto setup = baseSetup (project, "Unlisted");
+            setup.chunkSeconds = 1; setup.nowForTests = origin;
+            CHECK (rec.prepare (setup).isEmpty());
+            session = rec.primaryFolder(); tracks = rec.tracks();
+            CHECK (rec.startTake (2, "").isEmpty());
+            feed (rec, 1.5, 50);
+            CHECK (waitWritten (rec, sec (1)));
+            juce::Thread::sleep (300);                               // (the index with the take in it reaches the disk)
+            disk->set (disk->failIndex, session, 1);
+            feed (rec, 3.0, 50);
+            CHECK (waitWritten (rec, sec (4)));
+            rec.abandonForTests();
+            disk->set (disk->failIndex, session, 0);
+        }
+        SessionIndex left; CHECK (left.load (session.getChildFile (kIndexFileName)));
+        CHECK (left.takes.size() == 1 && left.takes[0].end == -1 && left.lastSample < sec (3));     // (the index on the disk is behind)
+        LiveRecorder rec (disk);
+        auto setup = baseSetup (project, "Unlisted");
+        setup.chunkSeconds = 1; setup.resume = true; setup.resumeTakeMaxGapSeconds = 1;
+        setup.nowForTests = origin + juce::RelativeTime::seconds (20.0);
+        CHECK (rec.prepare (setup).isEmpty());
+        CHECK (rec.primary() != nullptr && rec.primary()->unlistedChunksFound() >= 2);
+        const auto ts = rec.takesSoFar();
+        CHECK (ts.size() == 1 && ts[0].end >= sec (4));              // (it ends where the audio really ends, not where the index said)
+        rec.close();
+        const auto res = mergeTake (session, 2, project.getChildFile ("Recorded Media").getChildFile ("Unlisted"));
+        CHECK_MSG (res.ok, res.error);
+        CHECK (res.gaps.empty());
+        if (ts.size() == 1) for (size_t i = 0; i < 3; ++i) CHECK (checkMerged (juce::File (res.files[(int) i]), tracks[i], ts[0].start, ts[0].end) == 0);
+    }
+
+    SECTION ("0.3.0: a take begun while the primary's index could not be written, then the program died: the backup's index carries it on");
+    {
+        tmp.getChildFile ("Concert8c").deleteRecursively();
+        const auto project = tmp.getChildFile ("Concert8c");
+        const auto bdrive = tmp.getChildFile ("Backup8c"); bdrive.deleteRecursively(); bdrive.createDirectory();
+        juce::File session;
+        const auto origin = juce::Time::getCurrentTime();
+        {
+            LiveRecorder rec (disk);
+            auto setup = baseSetup (project, "OnlyBackup");
+            setup.chunkSeconds = 1; setup.nowForTests = origin; setup.backupRoots = { bdrive };
+            CHECK (rec.prepare (setup).isEmpty());
+            session = rec.primaryFolder();
+            feed (rec, 1.5, 50);
+            CHECK (waitWritten (rec, sec (1)));
+            disk->set (disk->failIndex, session, 1);                   // (the primary's index cannot be written from here on)
+            CHECK (rec.startTake (3, "").isEmpty());
+            feed (rec, 2.0, 50);
+            CHECK (waitWritten (rec, sec (3)));
+            juce::Thread::sleep (300);                               // (the backup's index has the take)
+            rec.abandonForTests();
+            disk->set (disk->failIndex, session, 0);
+        }
+        SessionIndex left; CHECK (left.load (session.getChildFile (kIndexFileName)) && left.takes.empty());      // (the primary never heard of it)
+        LiveRecorder rec (disk);
+        auto setup = baseSetup (project, "OnlyBackup");
+        setup.chunkSeconds = 1; setup.resume = true; setup.backupRoots = { bdrive };
+        setup.nowForTests = origin + juce::RelativeTime::seconds (5.0);
+        CHECK (rec.prepare (setup).isEmpty());
+        CHECK (rec.recordingTake() == 3);                             // (a short stop: it goes on, from the backup's word)
+        CHECK (rec.stopTake() == 3);
+        feed (rec, 1.5, 50);
+        CHECK (waitWritten (rec, sec (6)));
+        rec.close();
+        const auto idx = rec.primaryIndex();
+        CHECK (idx.findTake (3) != nullptr);
+        const auto res = mergeTake (session, 3, project.getChildFile ("Recorded Media").getChildFile ("OnlyBackup"));
+        CHECK_MSG (res.ok, res.error);
+    }
+
     SECTION ("pre-take and the rolling deletion: nothing recorded for a while, then a take that starts 2 s before Record");
     {
         tmp.getChildFile ("Concert5").deleteRecursively();
@@ -657,6 +813,187 @@ int main()
         SessionIndex repaired; CHECK (repaired.load (f, true) && repaired.takes.size() == 1);
         CHECK (f.getSiblingFile (juce::String (kIndexFileName) + ".damaged").existsAsFile() && f.loadFileAsString() != "{ broken");
         CHECK (idx.chunkNameFor (sec (5)) == "c000002" && idx.timeText (0).length() == 8);
+    }
+
+    SECTION ("0.3.0 monitoring: the routes are heard, ramped, the talkback only while open");
+    {
+        MonitorMix mix;
+        std::vector<std::vector<float>> in (4, std::vector<float> (256, 0.0f)), out (6, std::vector<float> (256, 0.0f));
+        for (int c = 0; c < 4; ++c) std::fill (in[(size_t) c].begin(), in[(size_t) c].end(), 0.1f * (float) (c + 1));
+        std::vector<const float*> ip; for (auto& b : in) ip.push_back (b.data());
+        std::vector<float*> op; for (auto& b : out) op.push_back (b.data());
+        auto block = [&] (int n) { for (auto& b : out) std::fill (b.begin(), b.end(), 0.0f); mix.process (ip.data(), 4, op.data(), 6, n); };
+        std::map<MonitorMix::Key, float> r;
+        r[{ 0, { 0, 0 } }] = 0.5f; r[{ 0, { 1, 1 } }] = 2.0f; r[{ 0, { 1, 0 } }] = 1.0f;
+        r[{ 1, { 3, 4 } }] = 1.0f;                                  // (the talkback: input 4 to output 5)
+        r[{ 0, { 9, 2 } }] = 1.0f;                                  // (an input the device does not have: passed over)
+        mix.setRoutes (r);                                          // (no audio running yet: taken over at once)
+        mix.setAudioRunning (true);
+        block (256);                                                // the first block ramps up from silence
+        CHECK (std::abs (out[0][0]) < 0.01f && std::abs (out[0][255] - (0.05f + 0.2f)) < 0.01f);
+        block (256);                                                // then steady
+        CHECK (std::abs (out[0][0] - 0.25f) < 1.0e-6f && std::abs (out[0][200] - 0.25f) < 1.0e-6f && std::abs (out[1][100] - 0.4f) < 1.0e-6f);
+        CHECK (out[4][100] == 0.0f && out[2][100] == 0.0f);        // talkback closed; the missing input heard nowhere
+        mix.setTalkOpen (true); block (256);
+        CHECK (out[4][0] < 0.01f && std::abs (out[4][255] - 0.4f) < 0.01f);
+        block (256); CHECK (std::abs (out[4][128] - 0.4f) < 1.0e-6f);
+        mix.setTalkOpen (false); block (256); block (256); CHECK (out[4][128] == 0.0f);
+        // a change while the audio runs: taken at the next block (after the last list was taken), ramped from where it was
+        r[{ 0, { 0, 0 } }] = 1.0f; r.erase ({ 0, { 1, 1 } });
+        mix.setRoutes (r); block (256);
+        CHECK (std::abs (out[0][0] - 0.25f) < 0.01f && std::abs (out[0][255] - 0.3f) < 0.01f && out[1][255] < 0.01f);
+        block (256); CHECK (std::abs (out[0][10] - 0.3f) < 1.0e-6f && out[1][10] == 0.0f);
+        for (int i = 0; i < 50; ++i) { r[{ 0, { 0, 0 } }] = 0.01f * (float) i; mix.setRoutes (r); if (i % 3 == 0) block (64); mix.service(); }   // (moved quickly: only the newest is kept)
+        block (64); mix.service(); block (64); mix.service(); block (64); block (64);           // (taken over, ramped, then steady)
+        CHECK (std::abs (out[0][10] - (0.49f * 0.1f + 0.2f)) < 1.0e-5f);
+        mix.clear(); block (64); block (64); CHECK (out[0][10] == 0.0f);                       // (ramped down to nothing)
+        mix.clear(); block (64); CHECK (mix.routesInUse() == 0);                              // (and the silent routes gone with the next list)
+    }
+
+    SECTION ("0.3.0 playback streams: a station is heard on its outputs, follows Stop and a locate, and never runs further ahead than the window");
+    {
+        const int port = 57400 + (int) (juce::Random::getSystemRandom().nextInt (400));
+        StreamServer server; server.setSampleRate (kRate);
+        CHECK (server.start (port));
+        std::atomic<juce::int64> renderPos { 0 };
+        StreamClient client (port, "Test station", 1);
+        client.setOutputs (2, 3);
+        client.render = [&] (float* buf, int frames)
+        {
+            const auto p = renderPos.load();
+            for (int i = 0; i < frames; ++i) { buf[2 * i] = (float) ((p + i) % 100000) * 1.0e-5f; buf[2 * i + 1] = -buf[2 * i]; }
+            renderPos = p + frames;
+            return frames;
+        };
+        client.newGeneration (true);
+        client.start();
+        std::vector<std::vector<float>> out (4, std::vector<float> (512, 0.0f));
+        std::vector<float*> op; for (auto& b : out) op.push_back (b.data());
+        std::vector<float> heard;
+        int maxFill = 0;
+        auto runAudio = [&] (int ms)
+        {
+            const auto until = juce::Time::getMillisecondCounter() + (juce::uint32) ms;
+            while (juce::Time::getMillisecondCounter() < until)
+            {
+                for (auto& b : out) std::fill (b.begin(), b.end(), 0.0f);
+                server.mix (op.data(), 4, 480); server.blockDone();
+                for (int i = 0; i < 480; ++i) { heard.push_back (out[2][(size_t) i]); CHECK (std::abs (out[2][(size_t) i] + out[3][(size_t) i]) < 1.0e-6f); }
+                for (auto& i : server.info()) maxFill = juce::jmax (maxFill, i.fill);
+                juce::Thread::sleep (10);                                       // (480 frames at 48 kHz: 10 ms - about real time)
+            }
+        };
+        runAudio (1500);
+        CHECK (client.isConnected());
+        // what was heard: after the first moment, the ramp the station rendered, without a step
+        int start = 0; while (start < (int) heard.size() && heard[(size_t) start] == 0.0f) ++start;
+        int jumps = 0;
+        for (size_t i = (size_t) start + 1; i < heard.size(); ++i)
+            if (std::abs (heard[i] - heard[i - 1] - 1.0e-5f) > 1.0e-6f && heard[i] != 0.0f && heard[i - 1] != 0.0f) ++jumps;
+        CHECK_MSG (start < 48000 / 4 && jumps <= 2, "started after " + juce::String (start) + " frames, " + juce::String (jumps) + " steps");
+        CHECK_MSG (maxFill <= stream::windowFor (kRate) + stream::kMaxFramesPerPacket, "the most queued: " + juce::String (maxFill));
+        const auto g1 = client.currentGeneration();
+        CHECK (client.playedFrames (g1) > 30000);
+        // a locate: what was queued goes at once, the new place follows
+        heard.clear();
+        renderPos = 5000000; client.newGeneration (true);
+        runAudio (400);
+        int firstNew = -1;
+        for (size_t i = 0; i < heard.size(); ++i) if (heard[i] != 0.0f && std::abs (heard[i] - (float) ((5000000 % 100000)) * 1.0e-5f) < 0.2f) { firstNew = (int) i; break; }
+        CHECK_MSG (firstNew >= 0 && firstNew < 6000, "the new place was heard after " + juce::String (firstNew) + " frames");
+        // Stop: silence within a moment
+        client.newGeneration (false);
+        heard.clear(); runAudio (300);
+        int last = -1; for (size_t i = 0; i < heard.size(); ++i) if (heard[i] != 0.0f) last = (int) i;
+        CHECK_MSG (last < 2400, "still heard " + juce::String (last) + " frames after Stop");
+        client.stop(); server.stop();
+    }
+
+    SECTION ("0.3.0 waveform peaks: every point's lowest and highest sample, the coarse level, the history, a station's share");
+    {
+        auto proj = tmp.getChildFile ("peaks project"); proj.createDirectory();
+        auto setup = baseSetup (proj, "Peaks");
+        auto rec = std::make_shared<LiveRecorder> (disk);
+        CHECK (rec->prepare (setup).isEmpty());
+        PeakTap tap; tap.start (rec);
+        CHECK (tap.samplesPerPoint() == 512 && tap.channels() == 4);
+        feed (*rec, 3.0);
+        for (int i = 0; i < 200 && tap.fineRange().end < sec (3) / 512 - 1; ++i) juce::Thread::sleep (10);
+        const auto fr = tap.fineRange();
+        CHECK_MSG (fr.first == 0 && fr.end >= sec (3) / 512 - 1, juce::String (fr.first) + " .. " + juce::String (fr.end));
+        // the points against the signal fed (ring channel k, sample s: fv (k, s))
+        std::vector<std::vector<juce::int8>> data;
+        tap.get (false, 0, 200, data);
+        int badPoints = 0;
+        for (int c = 0; c < 4; ++c)
+            for (int k = 0; k < 200; ++k)
+            {
+                float lo = 1.0f, hi = -1.0f;
+                for (int i = 0; i < 512; ++i) { const float x = fv (c, (juce::int64) k * 512 + i); lo = juce::jmin (lo, x); hi = juce::jmax (hi, x); }
+                if (std::abs (PeakTap::decode (data[(size_t) c][(size_t) k * 2]) - lo) > 0.02f || std::abs (PeakTap::decode (data[(size_t) c][(size_t) k * 2 + 1]) - hi) > 0.02f) ++badPoints;
+            }
+        CHECK_MSG (badPoints == 0, juce::String (badPoints) + " points wrong");
+        CHECK (std::abs (PeakTap::decode (PeakTap::encode (0.001f)) - 0.001f) < 0.0005f && PeakTap::decode (PeakTap::encode (-1.0f)) == -1.0f);
+        const auto cr = tap.coarseRange();
+        CHECK (cr.first == 0 && cr.end == fr.end / PeakTap::kCoarse);
+        std::vector<std::vector<juce::int8>> coarse; tap.get (true, 0, 4, coarse);
+        bool coarseOk = true;
+        for (int c = 0; c < 4; ++c)
+            for (int k = 0; k < 4; ++k)
+            {
+                juce::int8 lo = 127, hi = -127;
+                for (int j = 0; j < PeakTap::kCoarse; ++j) { lo = juce::jmin (lo, data[(size_t) c][(size_t) (k * PeakTap::kCoarse + j) * 2]); hi = juce::jmax (hi, data[(size_t) c][(size_t) (k * PeakTap::kCoarse + j) * 2 + 1]); }
+                coarseOk = coarseOk && coarse[(size_t) c][(size_t) k * 2] == lo && coarse[(size_t) c][(size_t) k * 2 + 1] == hi;
+            }
+        CHECK (coarseOk);
+        // what is new is handed out once, in order
+        juce::int64 first = 0, expect = 0; int n = 0; std::vector<std::vector<juce::int8>> fresh; int pieces = 0;
+        while (tap.takeNew (first, n, fresh)) { CHECK (first == expect && n > 0 && fresh.size() == 4 && fresh[0].size() == (size_t) n * 2); expect = first + n; ++pieces; }
+        CHECK (expect == tap.fineRange().end && pieces >= 1);
+        feed (*rec, 0.5);
+        for (int i = 0; i < 100 && tap.fineRange().end <= expect; ++i) juce::Thread::sleep (10);
+        CHECK (tap.takeNew (first, n, fresh) && first == expect);
+        tap.stop();
+        rec->close();
+    }
+
+    SECTION ("0.3.0 flags, replies and fix versions: kept in every drive's index, and back when the session is carried on");
+    {
+        auto proj = tmp.getChildFile ("flags project"); proj.createDirectory();
+        auto backup = tmp.getChildFile ("flags backup"); backup.createDirectory();
+        auto setup = baseSetup (proj, "Flags");
+        setup.backupRoots = { backup };
+        auto rec = std::make_shared<LiveRecorder> (disk);
+        CHECK (rec->prepare (setup).isEmpty());
+        feed (*rec, 1.0);
+        FlagRec f; f.id = juce::Uuid().toString(); f.sample = sec (0.5); f.note = "horn crack"; f.by = "Primary"; f.pinnedAt = juce::Time::getCurrentTime();
+        rec->putFlag (f);
+        FlagRec updated;
+        CHECK (rec->addReply (f.id, { "fixed it, version 1", "Fixer", juce::Time::getCurrentTime() }, updated) && updated.replies.size() == 1 && updated.note == "horn crack");
+        CHECK (! rec->addReply ("no such flag", { "x", "Fixer", {} }, updated));
+        auto fix = juce::var (new juce::DynamicObject()); fix.getDynamicObject()->setProperty ("id", juce::Uuid().toString());
+        fix.getDynamicObject()->setProperty ("takeNumber", 3); fix.getDynamicObject()->setProperty ("what", "De-click");
+        rec->putFix (fix);
+        feed (*rec, 3.5);                                             // (the drives write their indexes again at the next chunks)
+        CHECK (waitWritten (*rec, sec (4.0)));
+        juce::Thread::sleep (300);
+        for (auto& folder : rec->driveFolders())
+        {
+            SessionIndex idx;
+            CHECK (idx.load (folder.getChildFile (kIndexFileName)));
+            CHECK_MSG (idx.flags.size() == 1 && idx.flags[0].note == "horn crack" && idx.flags[0].replies.size() == 1 && idx.flags[0].replies[0].by == "Fixer"
+                       && idx.flags[0].sample == sec (0.5), folder.getFullPathName());
+            CHECK (idx.fixes.size() == 1 && idx.fixes[0]["what"].toString() == "De-click" && (int) idx.fixes[0]["takeNumber"] == 3);
+        }
+        rec->abandonForTests();
+        auto again = std::make_shared<LiveRecorder> (disk);
+        auto s2 = setup; s2.resume = true;
+        CHECK (again->prepare (s2).isEmpty());
+        CHECK (again->flags().size() == 1 && again->flags()[0].replies.size() == 1 && again->fixes().size() == 1);
+        feed (*again, 0.5);
+        again->close();
+        SessionIndex idx; CHECK (idx.load (again->primaryFolder().getChildFile (kIndexFileName)) && idx.flags.size() == 1 && idx.fixes.size() == 1);
+        CHECK (idx.takeAt (sec (1)) == nullptr);
     }
 
     DriveWriter::finishAbandonedForTests();

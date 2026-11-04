@@ -126,15 +126,18 @@ inline bool restoreBackupText (const juce::File& target, const juce::String& tex
 
 /** Reads a JSON file into v. If the file is missing or cannot be parsed but its .bak can, the .bak is used: the broken file is put aside as
     <name>.damaged and the .bak copied into its place, so the folder is whole again. Returns 0 when nothing could be read, 1 when the file was
-    read, 2 when the backup had to be used. 'accept' says whether the parsed value is what the file should hold (the right format, say). */
+    read, 2 when the backup had to be used. 'accept' says whether the parsed value is what the file should hold (the right format, say).
+    'repair' false (a program that only reads a project another program writes - fermata:Live's Fixer): the .bak is read but nothing is moved or
+    copied - a read that fell between the writer's two renames would otherwise put the previous save back over the new one. */
 template <typename Accept>
-inline int readJsonWithBackup (const juce::File& f, juce::var& v, Accept&& accept)
+inline int readJsonWithBackup (const juce::File& f, juce::var& v, Accept&& accept, bool repair = true)
 {
     v = juce::var();
     if (f.existsAsFile() && ! juce::JSON::parse (f.loadFileAsString(), v).failed() && accept (v)) return 1;
     const auto bak = backupOf (f);
     v = juce::var();
     if (! bak.existsAsFile() || juce::JSON::parse (bak.loadFileAsString(), v).failed() || ! accept (v)) { v = juce::var(); return 0; }
+    if (! repair) return 2;
     if (f.existsAsFile())
     {
         const auto aside = damagedCopyOf (f);

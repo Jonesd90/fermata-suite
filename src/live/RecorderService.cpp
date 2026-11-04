@@ -13,14 +13,69 @@ static juce::var gapsVar (const std::vector<GapRec>& gaps)
     return gs;
 }
 static bool fullPath (const juce::String& s) { return s.isNotEmpty() && juce::File::isAbsolutePath (s); }
+/** A driver type's devices, inputs and outputs together (some types list them apart). */
+static juce::StringArray namesOf (juce::AudioIODeviceType& t)
+{
+    auto a = t.getDeviceNames (true);
+    if (t.hasSeparateInputsAndOutputs()) for (auto& n : t.getDeviceNames (false)) a.addIfNotAlreadyThere (n);
+    return a;
+}
+static juce::String secondsText (double s)
+{
+    if (s < 10.0) return juce::String (s, 1) + " s";
+    if (s < 120.0) return juce::String (juce::roundToInt (s)) + " s";
+    const int m = (int) (s / 60.0);
+    return juce::String (m) + " min " + juce::String (juce::roundToInt (s - 60.0 * m)) + " s";
+}
+
+/** 0.3.0: told by a driver type when its list of devices changes; the recorder looks at the lists a moment later (not from inside the type's
+    own scan) and only notes what came and went - it never changes the device it uses. */
+struct RecorderService::ListWatch final : juce::AudioIODeviceType::Listener
+{
+    explicit ListWatch (RecorderService& o) : owner (o) {}
+    void audioDeviceListChanged() override
+    {
+        juce::WeakReference<ListWatch> w (this);
+        juce::MessageManager::callAsync ([w] { if (auto* x = w.get()) x->owner.deviceListChanged(); });
+    }
+    RecorderService& owner;
+    JUCE_DECLARE_WEAK_REFERENCEABLE (ListWatch)
+};
 
 RecorderService::RecorderService (int port, const juce::String& ver)
-    : version (ver), hub ([this] (remote::Hub::Connection&, const juce::String& line) { juce::MessageManager::callAsync ([this, line] { handleLine (line); }); })
+    : version (ver), hub ([this] (remote::Hub::Connection& conn, const juce::String& line)
+      {
+          // a station's request for waveform history is answered here, on its own connection's thread, to it alone (the history can be big, and
+          // the other stations have no use for it); everything else goes to the message thread
+          if (line.contains ("\"peaks-get\""))
+          {
+              const auto c = juce::JSON::parse (line);
+              if (c["cmd"].toString() == "peaks-get") { answerPeaks (conn, c); return; }
+          }
+          juce::MessageManager::callAsync ([this, line] { handleLine (line); });
+      }),
+      controlPort (port)
 {
     hub.log = [this] (const juce::String& t) { log (t); };
-    devices.addAudioDeviceType (std::make_unique<TestSignalDeviceType>());        // ("Test signal": the pretend device, beside the real drivers)
+    streams.log = [this] (const juce::String& t) { juce::MessageManager::callAsync ([this, t] { log (t); }); };
+    // the real drivers first, then "Test signal" beside them. (0.3.0: JUCE makes its own list of drivers only while the list is still empty, so
+    // the pretend device added first meant it was the only one - on Windows no ASIO, no WASAPI.)
+    {
+        juce::OwnedArray<juce::AudioIODeviceType> types;
+        devices.createAudioDeviceTypes (types);
+        for (auto* t : types) devices.addAudioDeviceType (std::unique_ptr<juce::AudioIODeviceType> (t));
+        types.clear (false);
+    }
+    devices.addAudioDeviceType (std::make_unique<TestSignalDeviceType>());
+    listWatch = std::make_unique<ListWatch> (*this);
+    for (auto* t : devices.getAvailableDeviceTypes())                    // (this scans every type once)
+    {
+        knownDevices[t->getTypeName()] = namesOf (*t);
+        t->addListener (listWatch.get());
+    }
     if (! hub.start (port)) log ("Cannot listen on port " + juce::String (port) + " (is another recorder running?)");
     else log ("fermata:Live recorder " + version + " listening on 127.0.0.1:" + juce::String (port));
+    if (! streams.start (port + 1)) log ("Cannot listen for playback streams on port " + juce::String (port + 1) + ": the stations will not be heard");
     mergeRunner.startThread (juce::Thread::Priority::low);
     startTimer (50);
 }
@@ -31,6 +86,10 @@ RecorderService::~RecorderService()
     mergeCancel = true;
     mergeRunner.stopThread (60000);
     closeDevice();
+    for (auto* t : devices.getAvailableDeviceTypes()) t->removeListener (listWatch.get());
+    listWatch.reset();
+    peakTap.stop();
+    streams.stop();
     hub.stop();
 }
 
@@ -61,7 +120,14 @@ juce::var RecorderService::statusEvent() const
     auto d = obj();
     put (d, "running", deviceRunning.load()); put (d, "rate", deviceRate); put (d, "buffer", deviceBuffer);
     put (d, "inputs", inputNames.size()); put (d, "outputs", outputNames.size()); put (d, "callbacks", callbacks.load());
-    if (auto* dev = devices.getCurrentAudioDevice()) { put (d, "name", dev->getName()); put (d, "type", dev->getTypeName()); put (d, "latencyMs", 1000.0 * (dev->getInputLatencyInSamples() + dev->getOutputLatencyInSamples()) / juce::jmax (1.0, dev->getCurrentSampleRate())); }
+    { juce::Array<juce::var> in, out; for (auto& n : inputNames) in.add (n); for (auto& n : outputNames) out.add (n); put (d, "inputNames", in); put (d, "outputNames", out); }
+    put (d, "talkback", monitor.isTalkOpen());
+    if (auto* dev = device.get()) { put (d, "name", dev->getName()); put (d, "type", deviceTypeName); put (d, "latencyMs", 1000.0 * (dev->getInputLatencyInSamples() + dev->getOutputLatencyInSamples()) / juce::jmax (1.0, dev->getCurrentSampleRate())); }
+    {   // 0.3.0: the device has given no audio (no session), or the session has had none, for this long - and why, as far as can be told
+        const auto now = juce::Time::currentTimeMillis();
+        if (hole.on && hole.warned) { put (d, "audioMissing", (now - hole.sinceMs) / 1000.0); put (d, "audioWhy", hole.why); put (d, "audioSession", true); }
+        else if (deviceSilentWarned) { put (d, "audioMissing", (now - lastCallbackMs) / 1000.0); put (d, "audioWhy", deviceRunning.load() ? "the driver gives no audio" : "the driver stopped the audio device"); put (d, "audioSession", false); }
+    }
     put (e, "device", d);
     if (auto rec = session(); rec != nullptr && rec->isPrepared())
     {
@@ -69,6 +135,24 @@ juce::var RecorderService::statusEvent() const
         put (s, "folder", rec->primaryFolder().getFullPathName()); put (s, "position", rec->position()); put (s, "rate", rec->sampleRate());
         put (s, "bufferSeconds", rec->settings().bufferSeconds); put (s, "preTakeSeconds", rec->settings().preTakeSeconds); put (s, "chunkSeconds", rec->settings().chunkSeconds);
         put (s, "recordingTake", rec->recordingTake()); put (s, "project", projectName); put (s, "window", windowName);
+        put (s, "origin", rec->timelineOrigin().toISO8601 (true));
+        {   // (0.3.0) the tracks, so the stations can find each one's channels in the peaks and its chunk files
+            juce::Array<juce::var> tr;
+            for (auto& t : rec->tracks())
+            {
+                auto x = obj(); put (x, "id", t.id.isNull() ? juce::String() : t.id.toString()); put (x, "name", t.name); put (x, "channels", t.channels);
+                put (x, "ringFirst", t.ringFirst); put (x, "stem", t.stem);
+                juce::Array<juce::var> ins; for (auto i : t.inputs) ins.add (i); put (x, "inputs", ins);
+                tr.add (x);
+            }
+            put (s, "tracks", tr);
+        }
+        {
+            auto pk = obj(); const auto fr = peakTap.fineRange(), cr = peakTap.coarseRange();
+            put (pk, "spp", peakTap.samplesPerPoint()); put (pk, "coarse", PeakTap::kCoarse); put (pk, "channels", peakTap.channels());
+            put (pk, "fineFirst", fr.first); put (pk, "fineEnd", fr.end); put (pk, "coarseFirst", cr.first); put (pk, "coarseEnd", cr.end);
+            put (s, "peaks", pk);
+        }
         juce::Array<juce::var> ts;
         for (auto& t : rec->takesSoFar())
         {
@@ -83,6 +167,7 @@ juce::var RecorderService::statusEvent() const
             put (x, "lagSeconds", rec->sampleRate() > 0 ? (double) dr.lagSamples / rec->sampleRate() : 0.0); put (x, "longestWriteMs", dr.longestWriteMs);
             put (x, "stalledSeconds", dr.stalledMs / 1000.0); put (x, "indexFailures", dr.indexFailures);
             put (x, "chunks", dr.chunks); put (x, "gaps", dr.gaps); put (x, "written", dr.written);
+            put (x, "writtenTo", juce::jmax<juce::int64> (0, rec->position() - dr.lagSamples));      // (0.3.0: the timeline is on this drive up to here)
             ds.add (x);
         }
         put (s, "drives", ds);
@@ -92,6 +177,13 @@ juce::var RecorderService::statusEvent() const
     { const std::lock_guard<std::mutex> l (mergeLock); put (m, "active", mergeActive.load()); put (m, "take", mergeTake); put (m, "what", mergeWhat); put (m, "queued", (int) mergeQueue.size()); put (m, "folder", mergeFolder.getFullPathName()); }
     put (m, "fraction", mergeFraction.load());
     put (e, "merge", m);
+    {   // (0.3.0) the stations playing through this recorder
+        juce::Array<juce::var> st;
+        for (auto& i : streams.info())
+            if (i.connected) { auto x = obj(); put (x, "name", i.name); put (x, "outL", i.outL); put (x, "outR", i.outR); put (x, "playing", i.playing); put (x, "underruns", (int) i.underruns); st.add (x); }
+        put (e, "streams", st);
+        put (e, "streamPort", controlPort + 1);
+    }
     return e;
 }
 
@@ -116,6 +208,13 @@ void RecorderService::handleLine (const juce::String& line)
         else if (cmd == "take-info") takeInfo (c);
         else if (cmd == "merge-backup") mergeBackup (c);
         else if (cmd == "resume-drive") resumeDrive (c);
+        else if (cmd == "mix")       setMix (c);
+        else if (cmd == "talkback")  setTalkback (c);
+        else if (cmd == "flag" || cmd == "flag-note" || cmd == "flag-remove") putFlag (c, cmd);
+        else if (cmd == "reply")     reply (c);
+        else if (cmd == "fix")       putFix (c);
+        else if (cmd == "notes")     sendNotes();
+        else if (cmd == "test-signal") testSignal (c);
         else if (cmd == "quit")
         {
             if (recording()) return refuse ("a take is recording");
@@ -136,6 +235,7 @@ void RecorderService::sendDevices()
     for (auto* t : devices.getAvailableDeviceTypes())
     {
         t->scanForDevices();
+        knownDevices[t->getTypeName()] = namesOf (*t);                     // (what a later change of the list is measured against)
         auto x = obj(); put (x, "type", t->getTypeName());
         juce::Array<juce::var> names; for (auto& n : t->getDeviceNames (true)) names.add (n);
         put (x, "devices", names);
@@ -143,6 +243,32 @@ void RecorderService::sendDevices()
     }
     put (e, "types", types);
     send (e);
+}
+
+void RecorderService::deviceListChanged()
+{
+    juce::StringArray added, gone;
+    for (auto* t : devices.getAvailableDeviceTypes())
+    {
+        const auto now = namesOf (*t);
+        auto& before = knownDevices[t->getTypeName()];
+        for (auto& n : now)    if (! before.contains (n)) added.add (n + " (" + t->getTypeName() + ")");
+        for (auto& n : before) if (! now.contains (n))    gone.add (n + " (" + t->getTypeName() + ")");
+        before = now;
+    }
+    if (added.isEmpty() && gone.isEmpty()) return;
+    const auto current = device != nullptr ? device->getName() + " (" + deviceTypeName + ")" : juce::String();
+    const bool currentGone = current.isNotEmpty() && gone.contains (current);
+    if (! added.isEmpty())
+        log ("Audio device plugged in: " + added.joinIntoString (", ")
+             + (current.isNotEmpty() ? ". The recorder keeps using " + current + " - it never changes device by itself" : juce::String()));
+    if (! gone.isEmpty())
+        log ("Audio device gone: " + gone.joinIntoString (", ") + (currentGone ? " - THE ONE IN USE (the recorder does not open another one in its place)" : ""));
+    auto e = obj(); put (e, "ev", "device-list");
+    { juce::Array<juce::var> a, g; for (auto& n : added) a.add (n); for (auto& n : gone) g.add (n); put (e, "added", a); put (e, "gone", g); }
+    put (e, "current", current); put (e, "currentGone", currentGone);
+    send (e);
+    sendDevices();                                                      // (the window's list of devices, up to date)
 }
 
 void RecorderService::openDevice (const juce::var& c)
@@ -154,35 +280,46 @@ void RecorderService::openDevice (const juce::var& c)
     juce::AudioIODeviceType* found = nullptr;
     for (auto* t : devices.getAvailableDeviceTypes()) if (t->getTypeName() == type) found = t;
     if (found == nullptr) return fail ("no driver type called " + type);
-    devices.setCurrentAudioDeviceType (type, true);
     found->scanForDevices();
-    // (the device is made once to read its channels and buffer sizes, then opened for real: two initialisations of the driver, which ASIO drivers take)
-    std::unique_ptr<juce::AudioIODevice> probe (found->createDevice (name, name));
-    if (probe == nullptr) return fail ("no device called " + name);
-    const auto ins = probe->getInputChannelNames(), outs = probe->getOutputChannelNames();
+    knownDevices[type] = namesOf (*found);
+    // 0.3.0: made, opened and started here by the recorder itself, and only ever closed by it - not through JUCE's device manager, which closed
+    // a device that left its driver's list and opened another in its place by itself. (One initialisation of the driver: it is made, its
+    // channels and buffer sizes are read, and it is opened.)
+    std::unique_ptr<juce::AudioIODevice> dev (found->createDevice (name, name));
+    if (dev == nullptr) return fail ("no device called " + name);
+    const auto ins = dev->getInputChannelNames(), outs = dev->getOutputChannelNames();
     // the safest buffering the driver allows: the largest buffer it offers, unless one was asked for
     int useBuffer = buffer;
-    if (useBuffer <= 0) for (auto b : probe->getAvailableBufferSizes()) useBuffer = juce::jmax (useBuffer, b);
-    probe.reset();
-    juce::AudioDeviceManager::AudioDeviceSetup setup;
-    setup.inputDeviceName = name; setup.outputDeviceName = name;
-    setup.sampleRate = rate; setup.bufferSize = useBuffer;
-    setup.useDefaultInputChannels = false; setup.useDefaultOutputChannels = false;
-    setup.inputChannels.setRange (0, juce::jmax (1, ins.size()), true); setup.outputChannels.setRange (0, juce::jmax (1, outs.size()), true);
-    const auto err = devices.setAudioDeviceSetup (setup, true);
+    if (useBuffer <= 0) for (auto b : dev->getAvailableBufferSizes()) useBuffer = juce::jmax (useBuffer, b);
+    juce::BigInteger inMask, outMask;
+    inMask.setRange (0, juce::jmax (1, ins.size()), true); outMask.setRange (0, juce::jmax (1, outs.size()), true);
+    ownStartStop = true;
+    const auto err = dev->open (inMask, outMask, rate, useBuffer);
+    ownStartStop = false;
     if (err.isNotEmpty()) return fail (err);
-    auto* dev = devices.getCurrentAudioDevice();
-    if (dev == nullptr) return fail ("the device did not start");
-    if (std::abs (dev->getCurrentSampleRate() - rate) > 0.5) { closeDevice(); return fail ("the driver stayed at " + juce::String (dev->getCurrentSampleRate(), 0) + " Hz (set it in its own panel)"); }
+    if (! dev->isOpen()) return fail ("the driver did not open the device" + (dev->getLastError().isNotEmpty() ? ": " + dev->getLastError() : juce::String()));
+    if (const double got = dev->getCurrentSampleRate(); std::abs (got - rate) > 0.5)
+    {
+        ownStartStop = true; dev->close(); ownStartStop = false;
+        return fail ("the driver stayed at " + juce::String (got, 0) + " Hz (set it in its own panel)");
+    }
     inputNames = dev->getInputChannelNames(); outputNames = dev->getOutputChannelNames();
     deviceRate = dev->getCurrentSampleRate(); deviceBuffer = dev->getCurrentBufferSizeSamples();
+    rateNow = deviceRate;
     peaks = std::vector<std::atomic<float>> ((size_t) inputNames.size());
     for (auto& p : peaks) p.store (0.0f);
-    devices.addAudioCallback (this);
+    outPeaks = std::vector<std::atomic<float>> ((size_t) outputNames.size());
+    for (auto& p : outPeaks) p.store (0.0f);
+    streams.setSampleRate (deviceRate); streams.setBlockSize (deviceBuffer);
+    device = std::move (dev); deviceTypeName = type;
+    lastCallbackMs = juce::Time::currentTimeMillis(); lastCallbacks = callbacks.load(); deviceSilentWarned = false;
+    ownStartStop = true;
+    device->start (this);
+    ownStartStop = false;
     auto e = obj(); put (e, "ev", "device"); put (e, "ok", true); put (e, "type", type); put (e, "name", name); put (e, "rate", deviceRate); put (e, "buffer", deviceBuffer);
     juce::Array<juce::var> in, out; for (auto& n : inputNames) in.add (n); for (auto& n : outputNames) out.add (n);
     put (e, "inputs", in); put (e, "outputs", out);
-    put (e, "latencyMs", 1000.0 * (dev->getInputLatencyInSamples() + dev->getOutputLatencyInSamples()) / deviceRate);
+    put (e, "latencyMs", 1000.0 * (device->getInputLatencyInSamples() + device->getOutputLatencyInSamples()) / deviceRate);
     send (e);
     log ("Device " + name + " (" + type + ") open: " + juce::String (inputNames.size()) + " inputs, " + juce::String (outputNames.size()) + " outputs, " + juce::String (deviceRate, 0) + " Hz, buffer " + juce::String (deviceBuffer));
 }
@@ -190,22 +327,56 @@ void RecorderService::openDevice (const juce::var& c)
 void RecorderService::closeDevice()
 {
     if (session() != nullptr) endSession();
-    devices.removeAudioCallback (this);
-    devices.closeAudioDevice();
+    if (device != nullptr)
+    {
+        ownStartStop = true;
+        device->stop();
+        device->close();
+        device.reset();
+        ownStartStop = false;
+    }
+    deviceTypeName.clear();
+    deviceSilentWarned = false;
     deviceRunning = false;
+    monitor.setAudioRunning (false);
+    monitor.clear();                                                // (the next device's channels may be others: the window sends its mix again)
     inputNames.clear(); outputNames.clear(); deviceRate = 0.0; deviceBuffer = 0;
 }
 
 void RecorderService::audioDeviceAboutToStart (juce::AudioIODevice* dev)
 {
+    const double rate = dev->getCurrentSampleRate(); const int block = dev->getCurrentBufferSizeSamples();
+    rateNow = rate;
+    // 0.3.0: a device the driver started again at another rate is never fed into the session (the session's files are at its own rate)
+    const auto* r = live.load (std::memory_order_acquire);
+    rateWrong = r != nullptr && std::abs (rate - r->sampleRate()) > 0.5;
+    if (rateWrong.load()) { wrongRate = rate; rateWasWrong = true; }
     deviceRunning = true;
-    const auto text = "Device started: " + dev->getName() + " at " + juce::String (dev->getCurrentSampleRate(), 0) + " Hz, " + juce::String (dev->getCurrentBufferSizeSamples()) + " samples";
-    juce::MessageManager::callAsync ([this, text] { log (text); });
+    monitor.setAudioRunning (true);
+    streams.setSampleRate (rate); streams.setBlockSize (block);
+    const bool byDriver = ! ownStartStop.load();
+    const bool wrong = rateWrong.load();
+    const double sessionRate = r != nullptr ? r->sampleRate() : 0.0;
+    const auto text = (byDriver ? "The driver started the audio device again by itself: " : "Device started: ") + dev->getName() + " at " + juce::String (rate, 0) + " Hz, "
+                      + juce::String (block) + " samples"
+                      + (wrong ? " - NOT the session's " + juce::String (sessionRate, 0) + " Hz: nothing is recorded until it runs at that rate again" : juce::String());
+    juce::MessageManager::callAsync ([this, text, rate, block, byDriver]
+    {
+        if (byDriver && device != nullptr) { deviceRate = rate; deviceBuffer = block; }     // (what it runs at now, for the status and a next session)
+        log (text);
+    });
 }
 void RecorderService::audioDeviceStopped()
 {
     deviceRunning = false;
-    juce::MessageManager::callAsync ([this] { log ("Device stopped"); });
+    monitor.setAudioRunning (false);
+    const bool byDriver = ! ownStartStop.load();
+    if (byDriver) driverStops.fetch_add (1);
+    juce::MessageManager::callAsync ([this, byDriver]
+    {
+        log (byDriver ? "The driver stopped the audio device by itself" + juce::String (session() != nullptr ? ": the session gets no audio until it starts again" : "")
+                      : juce::String ("Device stopped"));
+    });
 }
 void RecorderService::audioDeviceError (const juce::String& message)
 {
@@ -216,7 +387,28 @@ void RecorderService::audioDeviceIOCallbackWithContext (const float* const* inpu
 {
     for (int o = 0; o < numOutputs; ++o) if (outputs[o] != nullptr) juce::FloatVectorOperations::clear (outputs[o], n);
     callbacks.fetch_add (1, std::memory_order_relaxed);
-    if (auto* r = live.load (std::memory_order_acquire)) r->process (inputs, numInputs, n);
+    // first the recording: the block goes into the ring before anything else is done with it (the monitoring below only reads the inputs);
+    // never a block at a rate other than the session's (0.3.0: the driver may start the device again at another one)
+    if (auto* r = live.load (std::memory_order_acquire); r != nullptr && ! rateWrong.load (std::memory_order_relaxed))
+    {
+        // (0.3.0) a stretch with no audio for the session before this block: noted for the timer (where, how long) - it gets a flag
+        const auto t = juce::Time::getHighResolutionTicks();
+        if (const int ser = sessionSerial.load (std::memory_order_acquire); ser != fedSerial) { fedSerial = ser; lastFedTicks = 0; }
+        if (lastFedTicks != 0)
+        {
+            const double blockMs = 1000.0 * n / juce::jmax (1.0, r->sampleRate());
+            const double gapMs = 1000.0 * juce::Time::highResolutionTicksToSeconds (t - lastFedTicks) - blockMs;
+            if (gapMs > juce::jmax (500.0, 4.0 * blockMs))
+            {
+                holePos.store (r->position(), std::memory_order_relaxed);
+                holeMs.store ((juce::int64) gapMs, std::memory_order_relaxed);
+                holeSeq.fetch_add (1, std::memory_order_release);
+            }
+        }
+        lastFedTicks = t;
+        r->process (inputs, numInputs, n);
+        fed.fetch_add (1, std::memory_order_relaxed);
+    }
     const int m = juce::jmin (numInputs, (int) peaks.size());
     for (int i = 0; i < m; ++i)
         if (inputs[i] != nullptr)
@@ -224,6 +416,18 @@ void RecorderService::audioDeviceIOCallbackWithContext (const float* const* inpu
             const auto mm = juce::FloatVectorOperations::findMinAndMax (inputs[i], n);
             const float pk = juce::jmax (std::abs (mm.getStart()), std::abs (mm.getEnd()));
             if (pk > peaks[(size_t) i].load (std::memory_order_relaxed)) peaks[(size_t) i].store (pk, std::memory_order_relaxed);
+        }
+    // (0.3.0) then what is heard: the live monitoring and the talkback from the inputs, and the stations' playback
+    monitor.process (inputs, numInputs, outputs, numOutputs, n);
+    streams.mix (outputs, numOutputs, n);
+    streams.blockDone();
+    const int mo = juce::jmin (numOutputs, (int) outPeaks.size());
+    for (int o = 0; o < mo; ++o)
+        if (outputs[o] != nullptr)
+        {
+            const auto mm = juce::FloatVectorOperations::findMinAndMax (outputs[o], n);
+            const float pk = juce::jmax (std::abs (mm.getStart()), std::abs (mm.getEnd()));
+            if (pk > outPeaks[(size_t) o].load (std::memory_order_relaxed)) outPeaks[(size_t) o].store (pk, std::memory_order_relaxed);
         }
 }
 
@@ -272,9 +476,16 @@ void RecorderService::startSession (const juce::var& c)
     if (err.isNotEmpty()) return fail (err);
     projectName = s.projectName; windowName = s.windowName; projectFolder = s.projectFolder; backupRoots = s.backupRoots; preTakeSeconds = r->settings().preTakeSeconds;
     { const std::lock_guard<std::mutex> l (recorderLock); recorder = r; }
+    rateWrong = false; rateWasWrong = false;                        // (the session's rate is the device's)
+    hole = {}; lastFed = fed.load(); lastFedMs = juce::Time::currentTimeMillis();
+    holeSeqSeen = holeSeq.load(); stopsSeen = driverStops.load();
+    sessionSerial.fetch_add (1, std::memory_order_release);         // (before the session is fed: the audio thread measures it afresh)
     live.store (r.get(), std::memory_order_release);
+    peakTap.start (r);                                              // (0.3.0: the waveform for the stations, from the ring like a drive)
     auto e = obj(); put (e, "ev", "session"); put (e, "ok", true); put (e, "folder", r->primaryFolder().getFullPathName());
     put (e, "bufferSeconds", r->settings().bufferSeconds); put (e, "resumed", s.resume); put (e, "recordingTake", r->recordingTake());
+    put (e, "endedAtCut", r->takeEndedWhenCarriedOn());                 // (0.3.0: a take the long stop ended - it is merged now, below)
+    { int last = 0; for (auto& t : r->takesSoFar()) last = juce::jmax (last, t.number); put (e, "lastTake", last); }   // (a carried-on session's takes: the next number is past them)
     send (e);
     send (statusEvent());
     // a session carried on: its takes that ended but were never merged are merged now (unless a merge for one is already queued)
@@ -290,11 +501,18 @@ void RecorderService::endSession()
     if (rec == nullptr) return;
     if (rec->recordingTake() != 0) stop();
     live.store (nullptr, std::memory_order_release);
+    rateWrong = false; hole = {};
     // a callback that was inside process() has left it once the next block has run (or the device has stopped): wait for that, at most 300 ms
     const int seen = callbacks.load();
     for (int i = 0; i < 30 && deviceRunning.load() && callbacks.load() == seen; ++i) juce::Thread::sleep (10);
     juce::Thread::sleep (5);
+    peakTap.stop();
     rec->close();                                                   // (the merge thread may still hold the session: it stays valid, closed)
+    if (rec->leftWritersBehind())
+    {   // a drive's writer is stuck inside a disk call and still uses this session's memory: the session object is kept for good (a small leak)
+        static auto* keptForGood = new std::vector<std::shared_ptr<LiveRecorder>>();
+        keptForGood->push_back (rec);
+    }
     log ("Session ended: " + rec->primaryFolder().getFullPathName() + (merging() ? " (a merge is still running: it finishes in the background)" : ""));
     { const std::lock_guard<std::mutex> l (recorderLock); recorder.reset(); }
     auto e = obj(); put (e, "ev", "session"); put (e, "ok", true); put (e, "ended", true); send (e);
@@ -330,9 +548,24 @@ void RecorderService::stop()
 void RecorderService::takeRegistered (const juce::var& c)
 {
     auto rec = session();
-    if (rec == nullptr) return;
-    for (auto t : rec->takesSoFar())
-        if (t.number == (int) c["number"]) { t.registered = true; rec->updateTake (t); sendTake (t, "registered"); }
+    const juce::File folder (fullPath (c["folder"].toString()) ? c["folder"].toString() : juce::String());
+    if (rec != nullptr && (folder == juce::File() || folder == rec->primaryFolder()))
+    {
+        for (auto t : rec->takesSoFar())
+            if (t.number == (int) c["number"]) { t.registered = true; rec->updateTake (t); sendTake (t, "registered"); }
+        return;
+    }
+    // 0.3.0: a take of a session that has ended (merged after it, put into the project when the window came back): its own index says so, so it is
+    // not asked for again - that session has no writer any more, so the index is written here (as the merge of a backup after its session is)
+    if (folder == juce::File()) return;
+    if (merging()) return;                                          // (a merge may be writing that index: the window asks again next time)
+    SessionIndex idx;
+    if (! idx.load (folder.getChildFile (kIndexFileName)) || idx.state != "closed") return;
+    if (auto* t = idx.findTake ((int) c["number"]); t != nullptr && t->merged && ! t->registered)
+    {
+        t->registered = true;
+        if (idx.save (folder.getChildFile (kIndexFileName))) log ("Take " + juce::String (t->number) + " of the ended session " + folder.getFileName() + " is in the project");
+    }
 }
 
 juce::var RecorderService::mergeDoneEvent (const TakeRec& t, const SessionIndex& idx, const juce::File& sessionFolder, const juce::File& outputFolder, bool backup) const
@@ -354,6 +587,11 @@ juce::var RecorderService::mergeDoneEvent (const TakeRec& t, const SessionIndex&
         ts.add (x);
     }
     put (e, "tracks", ts);
+    // 0.3.0: the session's flags and fix versions go with it, so the window can put them in with the take even when the session has ended meanwhile
+    juce::Array<juce::var> fl, fx;
+    for (auto& f : idx.flags) fl.add (f.toVar());
+    for (auto& v : idx.fixes) fx.add (v);
+    put (e, "flags", fl); put (e, "fixes", fx);
     return e;
 }
 
@@ -510,28 +748,266 @@ void RecorderService::runMerge (MergeJob job)
         if (auto* k = idx.findTake (t.number)) *k = t; else idx.takes.push_back (t);
         idx.save (job.sessionFolder.getChildFile (kIndexFileName));
     }
+    { SessionIndex now; bool live = false; if (rec != nullptr && rec->driveIndex (job.sessionFolder, now, live)) { idx.flags = now.flags; idx.fixes = now.fixes; } }   // (the notes as they are now: the merge took a while)
     post (mergeDoneEvent (t, idx, job.sessionFolder, job.outputFolder, job.backup));
     logger (t.merged ? "Take " + juce::String (t.number) + " merged: " + juce::String (t.mergedFiles.size()) + " files" + (job.backup ? " (backup)" : "")
                      : "Take " + juce::String (t.number) + " NOT merged: " + t.mergeError);
+}
+
+// ---- 0.3.0: the monitoring, the flags and fix versions, the waveform peaks ------------------------------------------------------------------------
+void RecorderService::setMix (const juce::var& c)
+{
+    // {"routes": [[in, out, gain], ...], "talk": [[in, out, gain], ...]}: everything the Primary should hear from the inputs (gains linear)
+    std::map<MonitorMix::Key, float> want;
+    auto read = [&want] (const juce::var& list, int group)
+    {
+        if (auto* a = list.getArray())
+            for (auto& r : *a)
+                if (auto* x = r.getArray(); x != nullptr && x->size() >= 3)
+                {
+                    const int in = (int) (*x)[0], out = (int) (*x)[1];
+                    const float g = (float) (double) (*x)[2];
+                    if (in < 0 || in >= 4096 || out < 0 || out >= 4096 || ! std::isfinite (g) || g <= 0.0f) continue;
+                    want[{ group, { in, out } }] = juce::jmin (g, 16.0f);
+                }
+    };
+    read (c["routes"], 0);
+    read (c["talk"], 1);
+    monitor.setRoutes (std::move (want));
+}
+
+void RecorderService::setTalkback (const juce::var& c)
+{
+    const bool open = (bool) c["open"];
+    if (open != monitor.isTalkOpen()) log (open ? "Talkback open" : "Talkback closed");
+    monitor.setTalkOpen (open);
+    auto e = obj(); put (e, "ev", "talkback"); put (e, "open", open); send (e);
+}
+
+void RecorderService::putFlag (const juce::var& c, const juce::String& cmd)
+{
+    auto refuse = [&] (const juce::String& why) { auto e = obj(); put (e, "ev", "refused"); put (e, "cmd", cmd); put (e, "error", why); put (e, "id", c["id"].toString()); send (e); };
+    auto rec = session();
+    if (rec == nullptr) return refuse ("a flag needs a session (the recording running)");
+    const auto id = c["id"].toString();
+    if (id.isEmpty()) return refuse ("a flag needs an id");
+    FlagRec f; bool known = false;
+    for (auto& x : rec->flags()) if (x.id == id) { f = x; known = true; }
+    if (cmd == "flag")
+    {
+        if (! known)
+        {
+            f.id = id;
+            // where: the moment the Primary heard (the sound they flagged left the inputs a device latency ago), unless the station says where
+            juce::int64 lat = 0;
+            if (auto* dev = device.get()) lat = dev->getInputLatencyInSamples() + dev->getOutputLatencyInSamples();
+            f.sample = c.hasProperty ("sample") ? juce::jmax ((juce::int64) 0, (juce::int64) c["sample"]) : juce::jmax ((juce::int64) 0, rec->position() - lat);
+            f.pinnedAt = juce::Time::getCurrentTime();
+            f.by = c["by"].toString().isNotEmpty() ? c["by"].toString() : juce::String ("Primary");
+        }
+        if (c.hasProperty ("note")) f.note = c["note"].toString();
+    }
+    else if (! known) return refuse ("no such flag");
+    else if (cmd == "flag-note") f.note = c["note"].toString();
+    else if (cmd == "flag-remove") f.removed = true;
+    rec->putFlag (f);
+    auto e = obj(); put (e, "ev", "flag"); put (e, "flag", f.toVar()); send (e);
+}
+
+void RecorderService::reply (const juce::var& c)
+{
+    auto rec = session();
+    if (rec == nullptr) { auto e = obj(); put (e, "ev", "refused"); put (e, "cmd", "reply"); put (e, "error", "no session"); send (e); return; }
+    ReplyRec r; r.text = c["text"].toString(); r.by = c["by"].toString().isNotEmpty() ? c["by"].toString() : juce::String ("Fixer"); r.at = juce::Time::getCurrentTime();
+    FlagRec updated;
+    if (r.text.trim().isEmpty() || ! rec->addReply (c["flag"].toString(), r, updated))
+    {
+        auto e = obj(); put (e, "ev", "refused"); put (e, "cmd", "reply"); put (e, "error", "no such flag, or no text"); send (e); return;
+    }
+    auto e = obj(); put (e, "ev", "flag"); put (e, "flag", updated.toVar()); send (e);
+}
+
+void RecorderService::putFix (const juce::var& c)
+{
+    auto rec = session();
+    const auto fix = c["fix"];
+    if (rec == nullptr || ! fix.isObject() || fix["id"].toString().isEmpty())
+    {
+        auto e = obj(); put (e, "ev", "refused"); put (e, "cmd", "fix"); put (e, "error", rec == nullptr ? "no session" : "not a fix version"); send (e); return;
+    }
+    rec->putFix (fix);
+    log ("Fix version " + fix["version"].toString() + " of take " + fix["takeNumber"].toString() + " from " + fix["by"].toString() + ": " + fix["what"].toString());
+    auto e = obj(); put (e, "ev", "fix"); put (e, "fix", fix); send (e);
+}
+
+void RecorderService::sendNotes()
+{
+    auto e = obj(); put (e, "ev", "notes");
+    juce::Array<juce::var> fl, fx;
+    if (auto rec = session())
+    {
+        for (auto& f : rec->flags()) fl.add (f.toVar());
+        for (auto& f : rec->fixes()) fx.add (f);
+        put (e, "folder", rec->primaryFolder().getFullPathName());
+    }
+    put (e, "flags", fl); put (e, "fixes", fx);
+    send (e);
+}
+
+static juce::var peaksVar (const std::vector<std::vector<juce::int8>>& data)
+{
+    juce::Array<juce::var> ch;
+    for (auto& d : data) ch.add (juce::Base64::toBase64 (d.data(), d.size()));
+    return ch;
+}
+
+void RecorderService::sendPeaks()
+{
+    if (! peakTap.isRunning() || hub.connections() == 0) return;
+    juce::int64 first = 0; int n = 0;
+    std::vector<std::vector<juce::int8>> data;
+    for (int i = 0; i < 4 && peakTap.takeNew (first, n, data); ++i)
+    {
+        auto e = obj(); put (e, "ev", "peaks"); put (e, "first", first); put (e, "n", n); put (e, "spp", peakTap.samplesPerPoint());
+        put (e, "ch", peaksVar (data));
+        send (e);
+    }
+}
+
+void RecorderService::answerPeaks (remote::Hub::Connection& conn, const juce::var& c)
+{
+    // {"cmd": "peaks-get", "id": n, "level": "fine" | "coarse", "from": point, "count": points}: on the station's connection thread
+    const bool coarseLevel = c["level"].toString() == "coarse";
+    const int chans = juce::jmax (1, peakTap.channels());
+    const int most = juce::jmax (16, (512 * 1024) / (2 * chans));            // (a reply of at most about 0.7 MB)
+    const int count = juce::jlimit (0, most, (int) c["count"]);
+    const juce::int64 from = juce::jmax ((juce::int64) 0, (juce::int64) c["from"]);
+    std::vector<std::vector<juce::int8>> data;
+    peakTap.get (coarseLevel, from, count, data);
+    auto e = obj(); put (e, "ev", "peaks-data"); put (e, "id", c["id"]); put (e, "level", coarseLevel ? "coarse" : "fine");
+    put (e, "from", from); put (e, "count", count); put (e, "spp", peakTap.samplesPerPoint());
+    put (e, "ch", peaksVar (data));
+    std::string bytes = juce::JSON::toString (e, true).toStdString();
+    for (auto& ch : bytes) if (ch == '\n' || ch == '\r') ch = ' ';
+    bytes += '\n';
+    conn.queue (bytes);
 }
 
 void RecorderService::timerCallback()
 {
     const auto now = juce::Time::currentTimeMillis();
     if (hub.takeNewConnection()) send (statusEvent());
+    monitor.service();
     if (deviceRunning.load() && now - lastMeterMs >= 50 && hub.connections() > 0)
     {
         lastMeterMs = now;
         auto e = obj(); put (e, "ev", "meters");
-        juce::Array<juce::var> pk;
+        juce::Array<juce::var> pk, op;
         for (auto& p : peaks) pk.add ((double) p.exchange (0.0f));
-        put (e, "peak", pk);
+        for (auto& p : outPeaks) op.add ((double) p.exchange (0.0f));
+        put (e, "peak", pk); put (e, "out", op);
         send (e);
     }
+    if (now - lastPeaksMs >= 100) { lastPeaksMs = now; sendPeaks(); }
+    watchAudio (now);
     if (now - lastStatusMs >= 1000)
     {
         lastStatusMs = now;
         if (hub.connections() > 0) send (statusEvent());
     }
+}
+
+void RecorderService::watchAudio (juce::int64 now)
+{
+    const int c = callbacks.load (std::memory_order_relaxed), f = fed.load (std::memory_order_relaxed);
+    if (c != lastCallbacks) { lastCallbacks = c; lastCallbackMs = now; }
+    auto event = [this] (const juce::String& state, double seconds, const juce::String& why, bool inSession, const juce::String& flagId)
+    {
+        auto e = obj(); put (e, "ev", "audio"); put (e, "state", state); put (e, "seconds", seconds); put (e, "why", why); put (e, "session", inSession);
+        if (flagId.isNotEmpty()) put (e, "flag", flagId);
+        send (e);
+    };
+    if (device == nullptr) { hole = {}; deviceSilentWarned = false; lastFed = f; lastFedMs = now; lastCallbackMs = now; return; }
+    auto rec = session();
+    if (rec == nullptr)
+    {   // no session: nothing is recorded, but the meters and what is heard stop - said once it has lasted 2 s, and again when it is back
+        hole = {}; lastFed = f; lastFedMs = now;
+        const bool silent = now - lastCallbackMs >= 2000;
+        if (silent && ! deviceSilentWarned)
+        {
+            deviceSilentWarned = true;
+            const juce::String why = deviceRunning.load() ? "the driver gives no audio" : "the driver stopped the audio device";
+            log ("The audio device has given no audio for " + secondsText ((now - lastCallbackMs) / 1000.0) + " (" + why + ")");
+            event ("missing", (now - lastCallbackMs) / 1000.0, why, false, {});
+        }
+        else if (! silent && deviceSilentWarned)
+        {
+            deviceSilentWarned = false;
+            log ("The audio device gives audio again");
+            event ("back", 0.0, {}, false, {});
+        }
+        return;
+    }
+    deviceSilentWarned = false;
+    // why the session gets (or got) no audio, as far as can be told; 'rank': the stronger reason wins while a stretch lasts
+    auto reason = [&] (int& rank) -> juce::String
+    {
+        if (rateWrong.load() || rateWasWrong.load())
+        { rank = 3; return "the device ran at " + juce::String (wrongRate.load(), 0) + " Hz, not the session's " + juce::String (rec->sampleRate(), 0) + " Hz"; }
+        if (! deviceRunning.load()) { rank = 2; return "the driver stopped the audio device"; }
+        if (driverStops.load() != stopsSeen) { rank = 2; return "the driver stopped the audio device and started it again"; }
+        rank = 1; return "the driver gave no audio";
+    };
+    // a stretch without audio that has ended (the audio thread measured it): a flag where it is - so the take shows it, in the Fixer and in fermata
+    if (const int seq = holeSeq.load (std::memory_order_acquire); seq != holeSeqSeen)
+    {
+        holeSeqSeen = seq;
+        const double secs = (double) holeMs.load (std::memory_order_relaxed) / 1000.0;
+        int rank = 0; auto why = reason (rank);
+        if (hole.on && hole.rank > rank) why = hole.why;
+        FlagRec fl;
+        fl.id = juce::Uuid().toString(); fl.sample = holePos.load (std::memory_order_relaxed); fl.pinnedAt = juce::Time::getCurrentTime(); fl.by = "Recorder";
+        fl.note = "NO AUDIO for " + secondsText (secs) + " here (" + why + "): that time is not in the recording.";
+        rec->putFlag (fl);
+        auto fe = obj(); put (fe, "ev", "flag"); put (fe, "flag", fl.toVar()); send (fe);
+        log ("The session had no audio for " + secondsText (secs) + " (" + why + "): a flag marks the place on the timeline");
+        event ("back", secs, why, true, fl.id);
+        stopsSeen = driverStops.load(); rateWasWrong = rateWrong.load();
+        hole = {}; lastFed = f; lastFedMs = now;
+        return;
+    }
+    if (f != lastFed) { lastFed = f; lastFedMs = now; hole = {}; return; }
+    // no block for the session since the last look: a stretch without audio once it is longer than a few of the device's blocks (at least half
+    // a second) - said once it has lasted 2 s, and shown in the status while it lasts
+    const double blockMs = deviceRate > 0.0 && deviceBuffer > 0 ? 1000.0 * deviceBuffer / deviceRate : 50.0;
+    if (! hole.on && (double) (now - lastFedMs) > juce::jmax (500.0, 4.0 * blockMs)) { hole.on = true; hole.sinceMs = lastFedMs; }
+    if (! hole.on) return;
+    {
+        int rank = 0; const auto why = reason (rank);
+        if (rank >= hole.rank) { hole.rank = rank; hole.why = why; }
+    }
+    if (! hole.warned && now - hole.sinceMs >= 2000)
+    {
+        hole.warned = true;
+        log ("THE SESSION HAS HAD NO AUDIO FOR " + secondsText ((now - hole.sinceMs) / 1000.0) + " (" + hole.why + "): nothing is being recorded");
+        event ("missing", (now - hole.sinceMs) / 1000.0, hole.why, true, {});
+    }
+}
+
+void RecorderService::testSignal (const juce::var& c)
+{
+    const auto action = c["action"].toString();
+    if (action == "plug" || action == "unplug")
+    {
+        for (auto* t : devices.getAvailableDeviceTypes())
+            if (auto* ts = dynamic_cast<TestSignalDeviceType*> (t)) ts->plugSecond (action == "plug");
+        return;
+    }
+    auto* ts = dynamic_cast<TestSignalDevice*> (device.get());
+    if (ts == nullptr) { log ("test-signal " + action + ": only for the Test signal device, and it is not the one open"); return; }
+    if (action == "pause")        ts->pauseFor (juce::roundToInt (1000.0 * (double) c["seconds"]));
+    else if (action == "restart") ts->restartItself ((double) c["rate"]);
+    else if (action == "die")     ts->dieForTests();
+    else log ("test-signal: no action called " + action);
 }
 } // namespace td::live

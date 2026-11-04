@@ -1,6 +1,7 @@
 #include "RecorderLink.h"
 #include "../core/TextBytes.h"
 #include "../core/CrashReport.h"
+#include "../ui/WinOwner.h"
 
 namespace td::live
 {
@@ -23,8 +24,8 @@ void RecorderLink::stop()
 bool RecorderLink::launchRecorder()
 {
     const auto exe = juce::File::getSpecialLocation (juce::File::currentExecutableFile);
-    juce::StringArray args { exe.getFullPathName(), "--recorder", juce::String (port) };
-    if (! child.start (args, 0)) return false;
+    juce::String error;
+    if (! startProgram ({ exe.getFullPathName(), "--recorder", juce::String (port) }, error)) { juce::Logger::writeToLog ("The recorder could not be started: " + error); return false; }
     launched = true;
     return true;
 }
@@ -57,7 +58,7 @@ void RecorderLink::run()
             }
             ++failed;
             const auto now = juce::Time::currentTimeMillis();
-            if (wantLaunch.load() && failed >= 4 && ! child.isRunning() && now - lastLaunchMs > 5000) { lastLaunchMs = now; launchRecorder(); }
+            if (wantLaunch.load() && failed >= 4 && now - lastLaunchMs > 8000) { lastLaunchMs = now; launchRecorder(); }
             wait (500);
             continue;
         }
@@ -90,6 +91,21 @@ void RecorderLink::run()
         }
         in.erase (0, from);
         if (in.size() > (size_t) 4 << 20) in.clear();
+    }
+    // the last lines before the socket goes - the window's "quit" as it closes (else the recorder, with nobody left, would keep the audio device):
+    // sent as far as the recorder takes them within a second
+    if (connected.load())
+    {
+        std::string out;
+        { const std::lock_guard<std::mutex> l (outLock); out.swap (outbox); }
+        const auto until = juce::Time::getMillisecondCounter() + 1000;
+        for (size_t sent = 0; sent < out.size() && juce::Time::getMillisecondCounter() < until;)
+        {
+            const int n = sock.write (out.data() + sent, (int) juce::jmin ((size_t) 65536, out.size() - sent));
+            if (n < 0) break;
+            sent += (size_t) n;
+            if (n == 0) juce::Thread::sleep (10);
+        }
     }
     sock.close();
     connected = false;
