@@ -55,3 +55,6 @@ jobs:
 
       - name: Build and run the compatibility check
         run: bash tools/compat-check.sh "$RUNNER_TEMP/juce" "$RUNNER_TEMP/compat-build"
+
+      - name: Build and run fermata:Live's recorder core tests
+        run: LIVE_TEST_PACE=2 bash tools/live-check.sh "$RUNNER_TEMP/juce" "$RUNNER_TEMP/compat-build"
