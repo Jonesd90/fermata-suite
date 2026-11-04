@@ -1,0 +1,167 @@
+#pragma once
+#include "AppContext.h"
+#include "MixerLook.h"
+
+namespace td
+{
+class MixerStripsHolder;
+
+/** A small square button with a drawn icon: the clipboard-with-a-fader (copy mix menu) and the sun / moon (look). */
+class MixIconButton : public juce::Button
+{
+public:
+    enum class Kind { CopyMix, Look, AltDeck };
+    explicit MixIconButton (Kind k) : juce::Button ({}), kind (k) {}
+    void setDarkLook (bool dark) { if (dark != darkLook) { darkLook = dark; repaint(); } }
+    void setGlow (bool on) { if (on != glowing) { glowing = on; setToggleState (on, juce::dontSendNotification); repaint(); } }
+    void paintButton (juce::Graphics& g, bool over, bool down) override
+    {
+        const auto& t = mixTheme();
+        auto b = getLocalBounds().toFloat().reduced (0.5f);
+        g.setColour (down ? t.soft : over ? t.field.brighter (0.15f) : t.field); g.fillRoundedRectangle (b, 4.0f);
+        g.setColour (t.line); g.drawRoundedRectangle (b, 4.0f, 1.0f);
+        const auto ink = t.text;
+        g.setColour (ink);
+        auto c = b.getCentre();
+        if (kind == Kind::AltDeck)                                   // a little key pad (like a Stream Deck): glows when this is the Alt Mixer
+        {
+            const juce::Colour lit (0xff29d3ff);
+            if (glowing)
+            {
+                g.setColour (lit.withAlpha (0.22f)); g.fillRoundedRectangle (b.expanded (0.0f), 4.0f);
+                g.setColour (lit.withAlpha (0.55f)); g.drawRoundedRectangle (b, 4.0f, 2.0f);
+            }
+            for (int r = 0; r < 2; ++r)
+                for (int k = 0; k < 3; ++k)
+                {
+                    juce::Rectangle<float> key (c.x - 10.0f + (float) k * 7.0f, c.y - 6.5f + (float) r * 7.0f, 6.0f, 6.0f);
+                    g.setColour (glowing ? lit : ink.withAlpha (0.65f)); g.fillRoundedRectangle (key, 1.4f);
+                }
+            return;
+        }
+        if (kind == Kind::CopyMix)
+        {
+            const float w = 12.0f, h = 15.0f;
+            juce::Rectangle<float> board (c.x - w * 0.5f, c.y - h * 0.5f + 1.0f, w, h);
+            g.drawRoundedRectangle (board, 1.5f, 1.2f);
+            g.fillRoundedRectangle (juce::Rectangle<float> (c.x - 3.0f, board.getY() - 2.0f, 6.0f, 3.5f), 1.0f);       // the clip
+            g.fillRect (c.x - 0.6f, board.getY() + 3.5f, 1.2f, h - 6.5f);                                              // the fader slot
+            g.fillRect (c.x - 3.0f, board.getY() + 6.0f, 6.0f, 2.4f);                                                   // the fader cap
+            g.fillRect (c.x - 4.2f, board.getY() + 4.2f, 1.5f, 1.0f); g.fillRect (c.x + 2.7f, board.getY() + 4.2f, 1.5f, 1.0f);
+        }
+        else if (darkLook)                                           // the dark look is on: a moon
+        {
+            juce::Path moon;
+            moon.addEllipse (c.x - 6.0f, c.y - 6.0f, 12.0f, 12.0f);
+            juce::Path bite; bite.addEllipse (c.x - 1.0f, c.y - 6.5f, 11.0f, 11.0f);
+            juce::Path both (moon); both.setUsingNonZeroWinding (false); both.addPath (bite);
+            g.saveState(); g.reduceClipRegion (moon);                // inside the moon only: the moon minus the bite is a crescent
+            g.fillPath (both);
+            g.restoreState();
+        }
+        else                                                         // the light look is on: a sun
+        {
+            g.fillEllipse (c.x - 3.6f, c.y - 3.6f, 7.2f, 7.2f);
+            for (int i = 0; i < 8; ++i)
+            {
+                const float a = juce::MathConstants<float>::twoPi * (float) i / 8.0f;
+                g.drawLine (c.x + std::cos (a) * 5.6f, c.y + std::sin (a) * 5.6f, c.x + std::cos (a) * 8.0f, c.y + std::sin (a) * 8.0f, 1.3f);
+            }
+        }
+    }
+private:
+    Kind kind; bool darkLook = true, glowing = false;
+};
+
+/** The view the mixer's strips scroll in. The mouse wheel moves the strips left and right (no fader or knob in a mixer turns with the wheel: they
+    hand it on to here); Shift + wheel scrolls up and down when the window is shorter than the strips (the plain wheel too, when every strip fits across). */
+class MixerViewport : public juce::Viewport
+{
+public:
+    /** 3.26.0: asked first - true when the wheel was used for something else (the section above the fader line, scrolled up and down). */
+    std::function<bool (const juce::MouseEvent&, const juce::MouseWheelDetails&)> onWheel;
+    void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override
+    {
+        if (onWheel && onWheel (e, w)) return;
+        const float d = std::abs (w.deltaX) > std::abs (w.deltaY) ? w.deltaX : w.deltaY;
+        if (d == 0.0f) return;
+        int step = juce::roundToInt (d * 400.0f);                  // (one notch of a mouse wheel: about one strip)
+        if (step == 0) step = d > 0.0f ? 1 : -1;
+        auto pos = getViewPosition();
+        const bool canX = getHorizontalScrollBar().isVisible(), canY = getVerticalScrollBar().isVisible();
+        if (canY && (e.mods.isShiftDown() || ! canX)) pos.y -= step;      // (every strip fits across: the wheel scrolls up / down instead)
+        else pos.x -= step;
+        setViewPosition (pos);
+    }
+};
+
+/** One mixer. Several can be open at once; each has its own solo/mute/levels/sends/plug-ins and output pair. */
+class MixerComponent : public juce::Component, private juce::ChangeListener, private juce::Timer, private juce::ScrollBar::Listener
+{
+public:
+    MixerComponent (AppContext&, const juce::Uuid& mixerId);
+    ~MixerComponent() override;
+    void resized() override;
+    void parentHierarchyChanged() override;
+    /** Used when the window opens: makes it as big as the strips need (everything shown), but never wider than the display nor so tall that its
+        bottom edge (the horizontal scroll bar) is off the screen; strips that do not fit get a scroll bar. 'remembered': the size the window had
+        when it was last closed (from the project), kept instead (still within those limits). */
+    void fitWindowToStrips (juce::Rectangle<int> remembered = {});
+    /** The control surface's Select key: as a click on the strip's name plate (selected on its own, or unselected if it was the only one). */
+    void selectStrip (const juce::Uuid& trackId);
+    bool isStripSelected (const juce::Uuid& trackId) const;
+
+private:
+    void changeListenerCallback (juce::ChangeBroadcaster*) override;
+    void timerCallback() override;
+    void rebuild();
+    int naturalContentW() const;
+    int naturalContentH() const;
+    int minContentH() const;
+    void applyHeight();
+    bool inApply = false;
+    int slotsBase = 1, extraSlots = 0;
+    // 3.26.0: the rows every strip lays out (see StripLayout in MixerWindow.cpp), what the last layout gave, and the fader line / the top section's scroll bar
+    int lyInputRows = 2, lyPanRows = 2, lySendRows = 1;
+    int lastTopShown = 0, lastTopContent = 0, lastFaderH = 0, topScroll = 0, dragFader = 0, shownFaderGen = 0, lastViewY = 0;
+    bool lineDragging = false;
+    juce::ScrollBar topBar { true };
+    void layoutView();                                      // the view, the strips and the top section's scroll bar at the window's size
+    void placeTopBar();
+    void scrollBarMoved (juce::ScrollBar*, double newRangeStart) override;
+    bool wheelOverTop (const juce::MouseEvent&, const juce::MouseWheelDetails&);
+    void saveFaderPref();
+    void updateWindowLimits();
+    void updateBars();
+    bool inLimits = false;
+    int lastMaxW = 0, lastMaxH = 0;
+    MixerState* mixer() const;
+
+    AppContext& app;
+    juce::Uuid mixerId;
+    juce::Label statusLabel, nameCaption;
+    juce::TextEditor nameEditor;
+    MixIconButton themeButton { MixIconButton::Kind::Look }, copyButton { MixIconButton::Kind::CopyMix }, altButton { MixIconButton::Kind::AltDeck };
+    juce::TextButton auditionButton, deleteButton { "Delete this mixer" };
+    juce::ToggleButton followBox { "Follow Processing Mixer" };    // a cue mixer: plays the processing mixer's main mix instead of its own (which is kept)
+    std::unique_ptr<juce::Component> followCover;               // over the strips while it follows (they rest, untouchable, until it is unticked)
+    void updateFollow();
+    int slotCount = 1;                    // insert slots shown on every strip: one more than the highest one in use
+    int slotsNeeded();
+    juce::String routeSignature();        // 3.23.0: the strips' outputs and the Main out ticks (a change rebuilds the strips: their send dials follow it)
+    juce::String routeSig;
+    int topBarMinWidth() const;
+    void showCopyMenu();
+    juce::TextButton pasteButton;
+    void pasteHere();
+    int statusFlash = 0;
+    int refreshCounter = 0;                                 // (timerCallback: every tenth tick, 3 Hz, the plug-in names and slot rows)
+    void updateAuditionButton();
+    MixerLookAndFeel mixLook;             // declared before the viewport: it must outlive it
+    bool shownDark = false;
+    int shownGen = 0;
+    int shownWidthGen = 0;                                  // the strip width (see stripWidthGen) when the strips were last laid out                                       // theme::generation() when the colours were last taken
+    MixerViewport viewport;
+    std::unique_ptr<MixerStripsHolder> holder;
+};
+} // namespace td
