@@ -1,10 +1,13 @@
-// fermata:Live - the live-concert recorder (see docs/LIVE-BRIEF.md). 0.1.0 is its frame only: the program, its window, its name and version, built
-// from the shared core (src/core) like fermata - the sample rates it shows are fermata's own list, read from that core, not a copy. The recorder
-// (its own small process), the Primary and Fixer windows and the rest follow in the next builds.
+// fermata:Live - the live-concert recorder (see docs/LIVE-BRIEF.md). One program, two ways of running:
+//   fermata-Live.exe                      the window (0.2.0: the recorder's test bench, RecorderWindow), which starts and talks to
+//   fermata-Live.exe --recorder <port>    the recorder process (RecorderService): the audio device, the session, the merge - and nothing else,
+//                                         so nothing else can stop a recording. It runs at high priority and keeps going when the window closes.
+// Both are built from the shared core (src/core), like fermata.
 #include <juce_gui_extra/juce_gui_extra.h>
-#include "../core/Project.h"
-#include "../core/Compat.h"
-#include <cmath>
+#include "RecorderWindow.h"
+#include "RecorderService.h"
+#include "../core/CrashReport.h"
+#include <csignal>
 
 #ifndef FERMATA_LIVE_VERSION_STRING
  #define FERMATA_LIVE_VERSION_STRING "0.0.0"      // only when built without CMake
@@ -16,88 +19,74 @@ namespace td::live
 constexpr const char* kDisplayName = "fermata:Live";
 constexpr const char* kFileName    = "fermata-Live";
 
-/** "44.1 / 48 / 96 / 192 kHz": the project sample rates fermata offers - the same list (Project::kProjectRates in the shared core). */
-static juce::String sampleRatesText()
+static juce::File logFolder() { return juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("Fermata"); }
+static juce::File crashLogFile;                      // this process's own log (the window's or the recorder's)
+
+/** Called by Windows when the program crashes: what happened, where, into the log (and a crash report, as fermata's). */
+static void crashHandler (void* exceptionPointers)
 {
-    juce::StringArray parts;
-    for (auto r : Project::kProjectRates)
-        parts.add (juce::String (r / 1000.0, std::fmod (r, 1000.0) == 0.0 ? 0 : 1));
-    return parts.joinIntoString (" / ") + " kHz";
+    const auto report = crashreport::write (exceptionPointers, "crash");
+    auto f = crashLogFile != juce::File() ? crashLogFile : logFolder().getChildFile ("fermata-live-log.txt");
+    juce::String text ("\n*** CRASH ***");
+   #if JUCE_WINDOWS
+    if (const auto what = crashreport::describeException (exceptionPointers); what.isNotEmpty()) text << " " << what;
+   #endif
+    text << "\n";
+    if (report != juce::File()) text << "Crash report written: " << report.getFullPathName() << "\n";
+    text << juce::SystemStats::getStackBacktrace() << "\n";
+    f.appendText (text);
 }
-
-/** The window's content in this first build: the name, the version and what the program is built from. */
-class FrameComponent final : public juce::Component
-{
-public:
-    FrameComponent() { setSize (640, 256); }
-
-    void paint (juce::Graphics& g) override
-    {
-        g.fillAll (juce::Colour (0xff1b1f23));
-        auto r = getLocalBounds().reduced (36, 30);
-
-        auto top = r.removeFromTop (56);
-        g.setColour (juce::Colour (0xffd8342c));                                      // the record light
-        g.fillEllipse (top.removeFromLeft (22).withSizeKeepingCentre (18, 18).toFloat());
-        top.removeFromLeft (12);
-        g.setColour (juce::Colours::white);
-        g.setFont (juce::FontOptions (40.0f, juce::Font::bold));
-        g.drawText (kDisplayName, top, juce::Justification::centredLeft, false);
-
-        g.setColour (juce::Colour (0xff8f9aa5));
-        g.setFont (juce::FontOptions (15.0f));
-        g.drawText (juce::String ("Version ") + FERMATA_LIVE_VERSION_STRING + " - the recorder for live concerts", r.removeFromTop (24), juce::Justification::centredLeft, true);
-        r.removeFromTop (22);
-
-        const std::pair<const char*, juce::String> rows[] = {
-            { "This build",    "The program's frame. The recorder and its windows come in the next builds." },
-            { "Sample rates",  sampleRatesText() + " (the same list as fermata)" },
-            { "Built with",    "fermata's shared core - compatibility contract " + juce::String (compat::kContractVersion) },
-        };
-        for (auto& [label, text] : rows)
-        {
-            auto line = r.removeFromTop (30);
-            g.setColour (juce::Colour (0xff8f9aa5));
-            g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
-            g.drawText (label, line.removeFromLeft (130), juce::Justification::centredLeft, false);
-            g.setColour (juce::Colour (0xffe4e8ec));
-            g.setFont (juce::FontOptions (14.0f));
-            g.drawText (text, line, juce::Justification::centredLeft, true);
-        }
-    }
-};
-
-class MainWindow final : public juce::DocumentWindow
-{
-public:
-    MainWindow()
-        : juce::DocumentWindow (juce::String (kDisplayName) + " " + FERMATA_LIVE_VERSION_STRING, juce::Colour (0xff1b1f23),
-                                juce::DocumentWindow::minimiseButton | juce::DocumentWindow::closeButton)
-    {
-        setUsingNativeTitleBar (true);
-        setContentOwned (new FrameComponent(), true);
-        setResizable (false, false);
-        centreWithSize (getWidth(), getHeight());
-        setVisible (true);
-    }
-
-    void closeButtonPressed() override { juce::JUCEApplication::getInstance()->systemRequestedQuit(); }
-};
 
 class LiveApplication final : public juce::JUCEApplication
 {
 public:
     const juce::String getApplicationName() override    { return kDisplayName; }
     const juce::String getApplicationVersion() override { return FERMATA_LIVE_VERSION_STRING; }
-    bool moreThanOneInstanceAllowed() override          { return false; }          // one recorder at a time: two would fight over the audio driver
+    /** The recorder process runs beside the window (and fermata's freeze-report helper beside either). */
+    bool moreThanOneInstanceAllowed() override          { return true; }
 
-    void initialise (const juce::String&) override      { window = std::make_unique<MainWindow>(); }
-    void shutdown() override                             { window.reset(); }
+    void initialise (const juce::String& commandLine) override
+    {
+        const auto args = getCommandLineParameterArray();
+        recorderMode = args.contains ("--recorder");
+        logFolder().createDirectory();
+        const auto logFile = logFolder().getChildFile (recorderMode ? "fermata-live-recorder-log.txt" : "fermata-live-log.txt");
+        crashLogFile = logFile;
+        // (the log is kept across starts - the previous run's log is what shows why a recorder died; the newest 4 MB stay, as fermata keeps its own)
+        logger = std::make_unique<juce::FileLogger> (logFile, juce::String (kDisplayName) + " " + FERMATA_LIVE_VERSION_STRING + (recorderMode ? " (recorder process)" : "") + " started", 4 * 1024 * 1024);
+        juce::Logger::setCurrentLogger (logger.get());
+        crashreport::install (logFolder().getChildFile ("Crash reports"), FERMATA_LIVE_VERSION_STRING);
+        juce::SystemStats::setApplicationCrashHandler (crashHandler);
+        juce::Logger::writeToLog ("Command line: " + commandLine);
+        int port = RecorderService::kDefaultPort;
+        for (int i = 0; i + 1 < args.size(); ++i)
+            if ((args[i] == "--recorder" || args[i] == "--port") && args[i + 1].getIntValue() > 0) port = args[i + 1].getIntValue();
+        if (recorderMode)
+        {
+            juce::Process::setPriority (juce::Process::HighPriority);        // (the recording comes before anything else on the machine)
+            service = std::make_unique<RecorderService> (port, FERMATA_LIVE_VERSION_STRING);
+            service->onQuit = [this] { juce::MessageManager::callAsync ([this] { quit(); }); };
+            if (! service->isListening()) { juce::Logger::writeToLog ("The recorder could not listen on port " + juce::String (port) + ": quitting"); quit(); }
+        }
+        else
+            window = std::make_unique<RecorderWindow> (FERMATA_LIVE_VERSION_STRING, port);
+    }
+    void shutdown() override
+    {
+        window.reset();
+        service.reset();
+        juce::Logger::writeToLog (juce::String (kDisplayName) + " closed");
+        juce::Logger::setCurrentLogger (nullptr);
+        logger.reset();
+    }
     void systemRequestedQuit() override                  { quit(); }
     void anotherInstanceStarted (const juce::String&) override { if (window != nullptr) window->toFront (true); }
 
 private:
-    std::unique_ptr<MainWindow> window;
+    bool recorderMode = false;
+    std::unique_ptr<juce::FileLogger> logger;
+    std::unique_ptr<RecorderWindow> window;
+    std::unique_ptr<RecorderService> service;
 };
 } // namespace td::live
 

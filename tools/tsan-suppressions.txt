@@ -1,0 +1,7 @@
+# ThreadSanitizer suppressions (fermata:Live 0.2.0).
+# The recorder's memory buffer (src/live/Ring.h) is a lossy broadcast ring: the audio thread writes over the oldest samples whether or not a
+# drive has read them, and a drive finds out afterwards, from the writer's published positions (acquire loads after its copy), whether what it
+# copied was still whole - so the copies themselves are unsynchronised on purpose, and the sanitizer sees them as a race. Everything else in the
+# ring (the positions) is atomic, and tests/live_recorder_test.cpp checks that no torn or stale copy is ever accepted.
+race:td::live::Ring::push
+race:td::live::Ring::take

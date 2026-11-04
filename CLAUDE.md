@@ -28,6 +28,8 @@ Run these on Linux against JUCE 8.0.9 (`git clone --depth 1 --branch 8.0.9 https
 - `tools/syntax-check-ui.sh <JUCE>`: compiles both programs' window code (src/ui, src/Main.cpp, src/live).
 - `tools/check-windows-code.sh <JUCE>`: the Windows-only code, and names that Windows' headers break.
 - `tools/sandbox-check.sh <JUCE>`: the shared core's tests (long; run it in the background).
+- `tools/live-check.sh <JUCE>`: fermata:Live's recorder core tests (fake audio, drives that fail and stall); `tools/tool-checks.sh <JUCE> live`
+  runs them under the address, thread and realtime checks.
 
 The programs themselves only build on Windows (MSVC), on GitHub: every upload builds both and runs the compatibility check (`.github/workflows/build-windows.yml`).
 Say plainly what could and could not be checked here.

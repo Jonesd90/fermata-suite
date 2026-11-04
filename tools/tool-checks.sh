@@ -17,13 +17,14 @@
 #             allocation, lock, sleep, file or socket call made while inside AudioEngine::process, with the place it came from
 #   longsession  (3.1.3) tests/long_session_test.cpp: LONG_HOURS simulated hours (default 2) of takes, saves, meters and playbacks, faster than real
 #             time, watching for memory that grows, lists that never shrink and timing that drifts (about 3 minutes per simulated hour)
+#   live      (fermata:Live 0.2.0) the recorder core's tests under the address, thread and realtime checks
 #   all       all of the above, one after another
 #
 # Usage: tools/tool-checks.sh /path/to/JUCE <mode> [out folder]          (out folder: default /tmp/fermata-tool-checks)
 # Each mode ends with a summary line per program or a count per file; the logs are in the out folder.
 # Two core test programs must never run at the same time (they share a temporary folder): run one mode at a time.
 JUCE=${1:?path to JUCE}
-MODE=${2:?mode: asan tsan fuzz warnings tidy query valgrind coverage rtcheck longsession all}
+MODE=${2:?mode: asan tsan fuzz warnings tidy query valgrind coverage rtcheck longsession live all}
 OUT=${3:-/tmp/fermata-tool-checks}
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 mkdir -p "$OUT"
@@ -262,8 +263,42 @@ run_longsession ()
     echo "long_session_test exit $rc"
 }
 
+# fermata:Live's recorder core (0.2.0): tests/live_recorder_test.cpp under the address, thread and realtime checks (LIVE_TEST_PACE slows the fake
+# audio for the sanitizers; the ring's unsynchronised copies are listed in tools/tsan-suppressions.txt, see there)
+run_live ()
+{
+    local LIVE_SRC="$HERE/src/live/DriveWriter.cpp $HERE/src/live/LiveRecorder.cpp $HERE/src/live/Merge.cpp"
+    for san in asan tsan; do
+        local O="$OUT/$san" FL
+        if [ $san = asan ]; then FL="-fsanitize=address,undefined"; else FL="-fsanitize=thread"; fi
+        local CXX="g++ -std=c++17 -O1 -g -fno-omit-frame-pointer $FL -I$JUCE/modules $CORE_DEFS -w"
+        echo "== live recorder under $san ($O)"
+        build_core "$O" "$CXX"
+        local objs=""
+        for f in $LIVE_SRC; do $CXX -c "$f" -o "$O/live_$(basename $f .cpp).o" 2>"$O/live_$(basename $f .cpp).log" || echo "FAILED $f"; objs="$objs $O/live_$(basename $f .cpp).o"; done
+        $CXX -c "$HERE/tests/live_recorder_test.cpp" -o "$O/t_live_recorder_test.o" 2>"$O/t_live_recorder_test.log" || echo "FAILED live_recorder_test"
+        g++ "$O/t_live_recorder_test.o" $objs $CORE_OBJS $JUCE_OBJS -o "$O/live_recorder_test" $FL -lpthread -ldl -lrt
+        export ASAN_OPTIONS="detect_leaks=1:halt_on_error=0:print_summary=1" LSAN_OPTIONS="suppressions=$OUT/lsan-suppressions.txt" TSAN_OPTIONS="halt_on_error=0:report_signal_unsafe=0:second_deadlock_stack=1:suppressions=$HERE/tools/tsan-suppressions.txt"
+        ( cd "$O" && LIVE_TEST_PACE=4 ./live_recorder_test ) > "$OUT/${san}_live_recorder_test.log" 2>&1
+        report "$OUT/${san}_live_recorder_test.log" $? "ERROR: AddressSanitizer|runtime error:|ERROR: LeakSanitizer|WARNING: ThreadSanitizer" "report(s)"
+    done
+    # the realtime check: nothing inside LiveRecorder::process may allocate, lock, sleep or touch a file
+    local O="$OUT/plain" CXX="g++ -std=c++17 -O1 -g -I$JUCE/modules $CORE_DEFS -w"
+    echo "== live recorder realtime check ($O)"
+    build_core "$O" "$CXX"
+    g++ -std=c++17 -O1 -g -DRTGUARD_LIVE -c "$HERE/tests/realtime_guard.cpp" -o "$O/realtime_guard_live.o" 2>"$O/t_realtime_guard_live.log" || { echo "FAILED realtime_guard (live)"; return; }
+    local objs=""
+    for f in $LIVE_SRC; do $CXX -c "$f" -o "$O/live_$(basename $f .cpp).o" 2>/dev/null || echo "FAILED $f"; objs="$objs $O/live_$(basename $f .cpp).o"; done
+    $CXX -c "$HERE/tests/live_recorder_test.cpp" -o "$O/t_live_recorder_test.o" 2>"$O/t_live_recorder_test.log" || echo "FAILED live_recorder_test"
+    local L="-rdynamic -lpthread -ldl -lrt -Wl,--wrap=_ZN2td11AudioEngine7processEPKPKfiPKPfii -Wl,--wrap=_ZN2td4live12LiveRecorder7processEPKPKfii -Wl,--wrap=_ZNK4juce13WaitableEvent6signalEv -Wl,--wrap=_ZNK4juce6Thread6notifyEv"
+    g++ "$O/t_live_recorder_test.o" "$O/realtime_guard_live.o" $objs $CORE_OBJS $JUCE_OBJS -o "$O/rt_live_recorder_test" $L
+    ( cd "$O" && ./rt_live_recorder_test ) > "$OUT/rtcheck_live_recorder_test.log" 2>&1
+    report "$OUT/rtcheck_live_recorder_test.log" $? "^REALTIME: " "realtime report(s)"
+    grep "^REALTIME: " "$OUT/rtcheck_live_recorder_test.log" | sort | uniq -c | head -20
+}
+
 case "$MODE" in
-    asan) run_asan ;; tsan) run_tsan ;; fuzz) run_fuzz ;; warnings) run_warnings ;; tidy) run_tidy ;; query) run_query ;;
+    asan) run_asan ;; tsan) run_tsan ;; fuzz) run_fuzz ;; warnings) run_warnings ;; tidy) run_tidy ;; query) run_query ;; live) run_live ;;
     valgrind) run_valgrind ;; coverage) run_coverage ;; rtcheck) run_rtcheck ;; longsession) run_longsession ;;
     all) run_asan; run_tsan; run_fuzz; run_warnings; run_tidy; run_query; run_valgrind; run_coverage; run_rtcheck; run_longsession ;;
     *) echo "unknown mode: $MODE"; exit 2 ;;

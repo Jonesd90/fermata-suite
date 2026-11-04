@@ -161,6 +161,15 @@ void __wrap__ZN2td11AudioEngine7processEPKPKfiPKPfii (void* self, const float* c
     RtDepth d;
     __real__ZN2td11AudioEngine7processEPKPKfiPKPfii (self, in, numIn, out, numOut, n);
 }
+#ifdef RTGUARD_LIVE
+// fermata:Live 0.2.0: td::live::LiveRecorder::process (const float* const*, int, int) - the recorder's audio path (tools/tool-checks.sh live)
+void __real__ZN2td4live12LiveRecorder7processEPKPKfii (void* self, const float* const* in, int numIn, int n);
+void __wrap__ZN2td4live12LiveRecorder7processEPKPKfii (void* self, const float* const* in, int numIn, int n)
+{
+    RtDepth d;
+    __real__ZN2td4live12LiveRecorder7processEPKPKfii (self, in, numIn, n);
+}
+#endif
 // juce::WaitableEvent::signal() const and juce::Thread::notify() const (which calls it): how the audio thread wakes the disk writer and the mixer
 // helpers. SetEvent (no lock) on Windows, where the program runs; a mutex and a condition variable on Linux. Allowed through.
 void __real__ZNK4juce13WaitableEvent6signalEv (const void* self);

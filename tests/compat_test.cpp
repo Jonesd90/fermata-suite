@@ -1,12 +1,12 @@
-// The compatibility check between fermata and fermata:Live (fermata 3.30.2 / fermata:Live 0.1.0). Built and run by tools/compat-check.sh, by
+// The compatibility check between fermata and fermata:Live (fermata 3.30.2 / fermata:Live 0.2.0). Built and run by tools/compat-check.sh, by
 // tools/sandbox-check.sh and by the GitHub build on every upload. It checks that:
 //   - COMPATIBILITY.md and the shared code (src/core/Compat.h, Project.h) give the same numbers: the contract, the project file, the sample rates;
 //   - every file COMPATIBILITY.md lists as shared is there;
 //   - the shared code uses nothing from either program's own folders (it is built into both, so it may only use itself);
 //   - a project written by the shared code - as either program writes it - says it is a "Fermata project" of the contract's version, and reads
 //     back the same.
-// When fermata:Live's recorder arrives, its files (the chunk index, the flags, the Fixer's replies) are checked here too: a live recording must open in
-// fermata as a take window.
+// fermata:Live's own files (the live session index, contract 2) are named here; that a live recording merges into a take fermata opens is shown
+// by tests/live_recorder_test.cpp (tools/live-check.sh), which builds the recorder's code too.
 // Usage: compat_test <the repository folder>
 #include "../src/core/Project.h"
 #include "../src/core/Compat.h"
@@ -71,6 +71,9 @@ int main (int argc, char** argv)
     juce::String rates;
     for (auto r : Project::kProjectRates) rates << (rates.isEmpty() ? "" : " ") << juce::String ((int) r);
     check (valueAfter (lines, "Sample rates (Hz)") == rates, "Sample rates (Hz): " + rates + " (COMPATIBILITY.md says \"" + valueAfter (lines, "Sample rates (Hz)") + "\")");
+    const auto liveLine = valueAfter (lines, "Live session index");
+    const auto wantLive = "\"" + juce::String (compat::kLiveSessionFormatName) + "\", version " + juce::String (compat::kLiveSessionFormatVersion);
+    check (liveLine == wantLive, "Live session index: " + wantLive + " (COMPATIBILITY.md says \"" + liveLine + "\")");
 
     std::cout << "== every shared file is there" << std::endl;
     const auto shared = pathsInSection (lines, "## Shared code");

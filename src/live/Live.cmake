@@ -1,6 +1,6 @@
 # fermata:Live - the live-concert recorder, built from the same shared core as fermata (see COMPATIBILITY.md and docs/LIVE-BRIEF.md).
 # Included by the top-level CMakeLists.txt; this file holds everything that is fermata:Live's own, so its work never edits fermata's lines.
-set(FERMATA_LIVE_VERSION 0.1.0)    # fermata:Live's version: the ONE place it is changed (see LIVE-CHANGELOG.md)
+set(FERMATA_LIVE_VERSION 0.2.0)    # fermata:Live's version: the ONE place it is changed (see LIVE-CHANGELOG.md)
 
 # The program is called "fermata:Live" on screen. Windows allows no colon in a file name, so the file is fermata-Live.exe.
 juce_add_gui_app(FermataLive
@@ -12,6 +12,12 @@ juce_add_gui_app(FermataLive
 
 target_sources(FermataLive PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/Main.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/DriveWriter.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/LiveRecorder.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/Merge.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/RecorderService.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/RecorderLink.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/RecorderWindow.cpp
     ${FERMATA_SHARED_SOURCES})
 
 # FERMATA_VERSION_STRING is what the shared code writes as the program's version (AudioEngine stamps "Fermata <it>" into recorded files):
