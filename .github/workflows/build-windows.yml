@@ -1,0 +1,57 @@
+name: Build Windows app
+
+# Builds both programs - fermata and fermata:Live - from the shared core on every upload, and runs the compatibility check between them
+# (COMPATIBILITY.md). Two downloads: "Fermata-windows" (Fermata.exe) and "fermata-Live-windows" (fermata-Live.exe).
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    name: Build fermata and fermata:Live
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get the Steinberg ASIO SDK
+        shell: bash
+        run: |
+          git clone --depth 1 https://github.com/audiosdk/asio.git asiosdk
+          test -f asiosdk/common/iasiodrv.h
+
+      - name: Configure
+        run: cmake -S . -B build -A x64 -DASIO_SDK_DIR="${{ github.workspace }}/asiosdk"
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist/Fermata dist/fermata-Live
+          cp build/Fermata_artefacts/Release/Fermata.exe dist/Fermata/
+          cp README.md dist/Fermata/README.md
+          cp build/FermataLive_artefacts/Release/fermata-Live.exe dist/fermata-Live/
+          cp src/live/README.md dist/fermata-Live/README.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Fermata-windows
+          path: dist/Fermata
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fermata-Live-windows
+          path: dist/fermata-Live
+
+  compatibility:
+    name: Compatibility check (fermata and fermata:Live)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get JUCE 8.0.9
+        run: git clone --depth 1 --branch 8.0.9 https://github.com/juce-framework/JUCE.git "$RUNNER_TEMP/juce"
+
+      - name: Build and run the compatibility check
+        run: bash tools/compat-check.sh "$RUNNER_TEMP/juce" "$RUNNER_TEMP/compat-build"
