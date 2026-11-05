@@ -6,6 +6,33 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.33.0
+Built in the fermata:Live conversation, 5 November. Noise mode and the ReTouch window:
+- **The picture is the edit as you hear it.** It was made from the pieces butted straight together, so every edit point showed a full-height line: a "click" that was never heard. Now the picture is made with the edit's own cross-fades and piece volumes, exactly as it plays, and so are the room tone learned from marks 1 - 2 and a consonant copied in the ReTouch window. (The fixes always worked on the pieces' own files: they were never fooled.)
+- **Harmonics** (key H, on the ReTouch tab): draw a box round a note's lowest line and press Harmonics - a box goes on each of its harmonics (the fundamental is the 1st): 1 to 10 to start with; - and + for fewer or more, or press Harmonics and drag up to add them as you go (down: fewer). There is no limit but the top of the picture.
+  - fermata measures the note's exact pitch inside your box (the fundamental and its note name are shown), so the boxes sit on the lines even when your box is not quite centred.
+  - **My box is the 1st (fundamental) / 2nd / 3rd / 4th harmonic**: if the noise can still be heard, try the next one - the fundamental and the harmonics below your box are then taken too.
+  - **Spread**: 0 = the harmonics exactly 2, 3, 4 ... times the fundamental. Up: each one a little sharper the higher it is, as a piano's are; down: flatter. (The number is how many cents the 10th harmonic moves.)
+  - **Thinning**: 100 % (the standard) = every box as wide in Hz as yours, so the high harmonics get the same few Hz either side as the one you drew and keep clear of their neighbours; lower = wider as they go up. Whatever the setting, no box reaches more than 45 % of the way to the next harmonic.
+  - The boxes are numbered and are ordinary parts of the selection: Alt + drag takes any of them out (every other one, only the odd ones ...). Your own box is outlined dashed: move or resize it and the harmonics follow.
+- **Selection tools**, under Spectrogram settings: **Rectangle** (key S) - a box of any shape, as always; **Time** (key T) - a stretch of time with every pitch in it, from the bottom to the top (half the sample rate); **Brush** (key B) - paint the selection (Size beside it; [ and ] make it smaller and larger). Shift adds and Alt takes out with all three.
+- **A click without a drag moves the playhead** to where you click (and keeps the selection). A drag draws or paints, and the playhead stays where it is.
+- **L, C and R** beside Before <-> After (Side, for a stray consonant), in all three ReTouch methods: only the sound before the box (0 %), both (50 %), only after it (100 %). Keys: Z, \ and X.
+- **Minutes and seconds from 60 s** on the time ruler and in the read-outs (3:47.0 instead of 227.0 s).
+- **Fixed: a part taken out with Alt + drag closed up again** as soon as the mouse was let go (since 3.30.1).
+- Shared: a fix can now be given a painted shape instead of a box (`src/core/AudioOps.h / .cpp`: the fix is made on the shape's box, then only the part under the shape is kept; a fix with a box works exactly as before). fermata:Live does not use it, but is built from the same core: it needs a rebuild and test.
+- Not yet: feathering (next).
+
+## 3.32.0
+Built in the fermata:Live conversation, 5 November.
+- **The automation lanes are easy to tell apart, also on a wide screen.** With Automation showing in the edit window:
+  - **Each lane is washed in its track's colour** right across the timeline, so the colour of the track's name carries on to the far end (the audio tracks blue, the buses violet, or whatever colour you gave them).
+  - **A line under every lane**, the whole width of the timeline. Where one track ends and the next begins the line is stronger; between a track's own lanes (Fader and Pan, say) it is lighter.
+  - **The lane under the mouse is lit**, and so is its name on the left (a yellow frame), so before you click you can see which lane you are about to draw in.
+  - **The lane's name is written again at the right-hand edge** of the screen (for example "Spots · Fader"), so you need not look back to the left. It moves with the window and the scrolling, and steps out of the way when the rows are made very short.
+  - **The dashed line in a lane with nothing written yet is brighter.**
+- Only how the edit window is drawn changes: nothing in the sound, the mixer or the project file.
+
 ## 3.31.0
 Built in the fermata:Live conversation, from your notes of 4 and 5 November.
 - **fermata never changes the audio device by itself.** Until now the audio library did: when the device in use dropped out of its driver's list (an interface pulled out, Windows rearranging its sound devices as something is plugged in), it closed it and opened another one - the saved one or Windows' default - with nobody asked. Now:

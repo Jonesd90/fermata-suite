@@ -366,8 +366,55 @@ void resolvePaste (FixSpec& spec, const juce::Uuid& track)
         spec.pasteChannels = std::shared_ptr<const std::vector<std::vector<float>>> (spec.paste, t);     // (aliases the consonant: no copy, kept alive with it)
 }
 
+/** 3.33.0: keeps only the part of a fix that a soft selection lets through: 'after' = before + mask x (after - before), worked out in a short-time spectrum
+    (a Hann window, three quarters overlapped, which adds up exactly: where the mask is 1 everywhere the fix is kept to the sample). Each channel on its own. */
+static void keepMasked (const std::vector<std::vector<float>>& before, std::vector<std::vector<float>>& after, double sr, long s0, long s1, const FixSpec& spec)
+{
+    const auto& m = *spec.mask;
+    const int N = sr > 64000.0 ? 4096 : 2048, hop = N / 4, bins = N / 2 + 1;
+    std::vector<double> w ((size_t) N);
+    for (int k = 0; k < N; ++k) w[(size_t) k] = 0.5 - 0.5 * std::cos (2.0 * juce::MathConstants<double>::pi * (double) k / (double) N);     // (periodic: the overlaps add up to 1.5)
+    std::vector<double> frame ((size_t) N), back ((size_t) N); std::vector<std::complex<double>> X ((size_t) bins);
+    std::vector<float> gain ((size_t) bins);
+    for (size_t c = 0; c < after.size() && c < before.size(); ++c)
+    {
+        auto& y = after[c]; const auto& x = before[c];
+        const long L = (long) juce::jmin (y.size(), x.size());
+        const long lo = juce::jmax (0L, s0 - N), hi = juce::jmin (L, s1 + N);           // (a fix changes its box and a little round it: its own fades)
+        if (hi - lo < 2) continue;
+        std::vector<double> d ((size_t) (hi - lo)), out ((size_t) (hi - lo), 0.0);
+        bool any = false;
+        for (long n = lo; n < hi; ++n) { d[(size_t) (n - lo)] = (double) y[(size_t) n] - (double) x[(size_t) n]; any = any || d[(size_t) (n - lo)] != 0.0; }
+        if (! any) continue;
+        for (long fs = lo - N + hop; fs < hi; fs += hop)
+        {
+            bool live = false;
+            for (int k = 0; k < N; ++k) { const long n = fs + k; frame[(size_t) k] = n >= lo && n < hi ? d[(size_t) (n - lo)] * w[(size_t) k] : 0.0; live = live || frame[(size_t) k] != 0.0; }
+            if (! live) continue;
+            const double tc = ((double) (fs + N / 2 - s0) + (double) spec.maskLead) / sr;        // the middle of the frame, in the mask's time
+            bool none = true;
+            for (int b = 0; b < bins; ++b) { gain[(size_t) b] = m.at (tc, (double) b * sr / (double) N); none = none && gain[(size_t) b] <= 0.0f; }
+            if (none) continue;
+            denoise::detail::realForward (frame.data(), N, X.data());
+            for (int b = 0; b < bins; ++b) X[(size_t) b] *= (double) gain[(size_t) b];
+            denoise::detail::realInverse (X.data(), N, back.data());
+            for (int k = 0; k < N; ++k) { const long n = fs + k; if (n >= lo && n < hi) out[(size_t) (n - lo)] += back[(size_t) k] * w[(size_t) k] / 1.5; }
+        }
+        for (long n = lo; n < hi; ++n) y[(size_t) n] = (float) ((double) x[(size_t) n] + out[(size_t) (n - lo)]);
+    }
+}
+
 void applyFix (std::vector<std::vector<float>>& chans, double sr, long s0, long s1, const FixSpec& spec, long xfade)
 {
+    if (spec.mask != nullptr && spec.mask->valid() && (spec.kind == FixSpec::Kind::Patch || spec.kind == FixSpec::Kind::Denoise)
+        && (spec.lostKnown ? spec.lost.empty() : ! findsLost (spec, sr, s0, s1)))
+    {   // 3.33.0: a soft selection - the fix on its box, then only what the mask lets through (not with lost samples to put back: they move the timing)
+        const auto before = chans;
+        FixSpec plain = spec; plain.mask = nullptr;
+        applyFix (chans, sr, s0, s1, plain, xfade);
+        keepMasked (before, chans, sr, s0, s1, spec);
+        return;
+    }
     if (spec.kind == FixSpec::Kind::Paste)                                      // a kept consonant, added on top from s0 (s0 may be outside the audio: only the overlap)
     {
         juce::ignoreUnused (s1, xfade);

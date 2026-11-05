@@ -523,9 +523,61 @@ struct SpectralDenoiseSettings
     std::vector<denoise::SelRect> sel;                        // the boxes the room tone was learned from (its time ranges and its part of the spectrum)
 };
 
-/** The tracks of an edit between 'from' and 'to' and, for each, where its audio comes from along that stretch: whoever owns each moment (the piece that is on
-    top there). 'only' (Ctrl + Alt + drag) limits the tracks. Built on the message thread from the regions as they are now; read on any thread. */
-struct TrackPart { juce::File file; juce::int64 fileStart = 0, srcA = 0, n = 0, dst = 0; };     // srcA: the take sample the part starts at; dst: the sample of the stretch it lands on
+/** One piece's file on one track along a stretch of an edit (all times are samples of the stretch: 0 = its start; srcA is the take sample at dst).
+    3.33.0: AS THE EDIT PLAYS IT - over the piece's whole audible span (the start of its fade-in to the end of its fade-out) with its fades and its volume changes,
+    so that where two pieces cross-fade both are read and added together, exactly as they are heard. (It used to be only the piece "on top" there, switched hard
+    at each edit point: two takes butted together, which the pictures of Noise mode and the ReTouch window drew as a full-height line - a "click" never heard.)
+    'shaped' false: the file just as it is (a stream window's own take: no fades, nothing of the other take). */
+struct TrackPart
+{
+    juce::File file; juce::int64 fileStart = 0, srcA = 0, n = 0, dst = 0;
+    bool shaped = false;
+    juce::int64 inStart = 0, inLen = 0, outStart = 0, outLen = 0;         // the fades (length 0 = none)
+    FadeCurve inCurve = FadeCurve::EqualPower, outCurve = FadeCurve::EqualPower;
+    std::vector<GainStep> steps;                                          // the volume changes
+    bool flat() const noexcept { return ! shaped || (inLen == 0 && outLen == 0 && steps.empty()); }
+    /** The gain at stretch sample d: the fades and the volume changes, worked out as PlaybackSession::renderSegments does. */
+    float gainAt (juce::int64 d) const noexcept
+    {
+        if (! shaped) return 1.0f;
+        float g = 1.0f;
+        if (inLen > 0)  g *= d < inStart ? 0.0f : d >= inStart + inLen ? 1.0f : fadeGain (inCurve, (float) (d - inStart) / (float) inLen, true);
+        if (outLen > 0) g *= d < outStart ? 1.0f : d >= outStart + outLen ? 0.0f : fadeGain (outCurve, (float) (d - outStart) / (float) outLen, false);
+        if (! steps.empty())
+        {
+            float s = 1.0f;
+            for (auto& st : steps) { if (d < st.at) break; s = (st.ramp > 0 && d < st.at + st.ramp) ? st.from + (st.to - st.from) * (float) (d - st.at) / (float) st.ramp : st.to; }
+            g *= s;
+        }
+        return g;
+    }
+};
+/** File 'fi' of piece r over [from, to) of the timeline, as it is heard (see TrackPart); false when the piece is not heard there. The fades and the volume
+    changes follow the same rules as playback (core/Playback.cpp, addRegionSegments) - the level given to the piece as a whole holds from its first sound. */
+inline bool heardPart (const EditRegion& r, size_t fi, juce::int64 from, juce::int64 to, TrackPart& p)
+{
+    const auto a = juce::jmax (from, r.fadeInBegin()), b = juce::jmin (to, r.fadeOutFinish());
+    if (b <= a || fi >= r.files.size()) return false;
+    const auto& f = r.files[fi];
+    p = TrackPart();
+    p.file = f.file; p.fileStart = f.fileStart; p.srcA = r.srcIn + (a - r.startSample); p.n = b - a; p.dst = a - from; p.shaped = true;
+    if (r.fadeInFinish() > r.fadeInBegin())   { p.inStart = r.fadeInBegin() - from;  p.inLen = r.fadeInFinish() - r.fadeInBegin();   p.inCurve = r.curve; }
+    if (r.fadeOutFinish() > r.fadeOutBegin()) { p.outStart = r.fadeOutBegin() - from; p.outLen = r.fadeOutFinish() - r.fadeOutBegin(); p.outCurve = r.outCurveValue(); }
+    for (size_t k = 0; k < r.gains.size(); ++k)
+    {
+        const auto& g = r.gains[k];
+        GainStep st;
+        st.at = r.startSample + g.at - from;
+        st.ramp = (juce::int64) std::llround (g.ramp * r.sampleRate);
+        st.from = r.levelAfter (fi, k, g.at);
+        st.to = fi < g.db.size() ? dbToLinear (g.db[fi]) : 1.0f;
+        if (k == 0 && ! g.autoNorm && g.at <= (juce::int64) (0.001 * r.sampleRate)) { st.at = juce::jmin (st.at, r.fadeInBegin() - from); st.ramp = 0; st.from = st.to; }
+        p.steps.push_back (st);
+    }
+    return true;
+}
+/** The tracks of an edit between 'from' and 'to' and, for each, the pieces heard along that stretch (see TrackPart: with their fades, so a cross-fade has both).
+    'only' (Ctrl + Alt + drag) limits the tracks. Built on the message thread from the regions as they are now; read on any thread. */
 struct TrackParts
 {
     std::vector<juce::Uuid> ids; std::vector<juce::String> names; std::vector<std::vector<TrackPart>> parts;
@@ -543,49 +595,84 @@ inline TrackParts buildTrackParts (const EditDef& e, juce::int64 from, juce::int
             if (std::find (tp.ids.begin(), tp.ids.end(), f.trackId) == tp.ids.end()) { tp.ids.push_back (f.trackId); tp.names.push_back (f.trackName); tp.parts.emplace_back(); }
         }
     }
-    std::vector<juce::int64> cuts { from, to };
-    for (auto& r : e.regions) { if (r.startSample > from && r.startSample < to) cuts.push_back (r.startSample); if (r.endSample() > from && r.endSample() < to) cuts.push_back (r.endSample()); }
-    std::sort (cuts.begin(), cuts.end()); cuts.erase (std::unique (cuts.begin(), cuts.end()), cuts.end());
-    for (size_t k = 0; k + 1 < cuts.size(); ++k)
-    {
-        const auto t0 = cuts[k], t1 = cuts[k + 1];
-        const int ri = e.regionAt (t0 + (t1 - t0) / 2);
-        if (ri < 0) continue;
-        const auto& r = e.regions[(size_t) ri];
-        for (auto& f : r.files)
+    for (auto& r : e.regions)
+        for (size_t fi = 0; fi < r.files.size(); ++fi)
         {
-            const auto ti = std::find (tp.ids.begin(), tp.ids.end(), f.trackId);
+            const auto ti = std::find (tp.ids.begin(), tp.ids.end(), r.files[fi].trackId);
             if (ti == tp.ids.end()) continue;
-            tp.parts[(size_t) (ti - tp.ids.begin())].push_back ({ f.file, f.fileStart, r.srcIn + (t0 - r.startSample), t1 - t0, t0 - from });
+            TrackPart p;
+            if (heardPart (r, fi, from, to, p)) tp.parts[(size_t) (ti - tp.ids.begin())].push_back (std::move (p));
         }
-    }
     return tp;
 }
-/** The mono mix of track i over [at, at + n) of the stretch (samples from its start): silence where no piece is heard. Readers are opened as needed
-    ('cache', optional, keeps every reader it opened, for the next call). */
+/** Readers kept open between calls ('cache', optional, keeps every reader it opened, for the next call). */
 struct ReaderCache { std::map<juce::String, std::unique_ptr<juce::AudioFormatReader>> readers; std::mutex lock; };
+/** The part of 'pt' inside [at, at + n) of the stretch: its channels as the file has them ('ch'), and where they land ('o': samples after 'at'). False: nothing there. */
+inline bool readPart (const TrackPart& pt, juce::int64 at, juce::int64 n, std::vector<std::vector<float>>& ch, juce::int64& o, ReaderCache* cache)
+{
+    ch.clear();
+    const auto p0 = juce::jmax (at, pt.dst), p1 = juce::jmin (at + n, pt.dst + pt.n);         // the part of this piece inside the range (stretch samples)
+    if (p1 <= p0) return false;
+    juce::int64 rel = pt.srcA - pt.fileStart + (p0 - pt.dst), cnt = p1 - p0;
+    o = p0 - at;
+    if (rel < 0) { cnt += rel; o -= rel; rel = 0; }                                             // before the start of the file: silence
+    if (cnt <= 0) return false;
+    if (cache != nullptr)
+    {
+        std::lock_guard<std::mutex> l (cache->lock);
+        auto& r = cache->readers[pt.file.getFullPathName()];
+        if (r == nullptr) r = audioops::openReader (formats(), pt.file);
+        if (r == nullptr) return false;
+        audioops::readRange (*r, rel, cnt, ch);
+    }
+    else { auto r = audioops::openReader (formats(), pt.file); if (r == nullptr) return false; audioops::readRange (*r, rel, cnt, ch); }
+    return ! ch.empty();
+}
+/** The mono mix of one track over [at, at + n) of the stretch (samples from its start), as heard: silence where no piece is heard. */
 inline void readTrackMix (const std::vector<TrackPart>& parts, juce::int64 at, juce::int64 n, float* dst, ReaderCache* cache = nullptr)
 {
     std::fill (dst, dst + n, 0.0f);
+    std::vector<std::vector<float>> ch;
     for (auto& pt : parts)
     {
-        const auto p0 = juce::jmax (at, pt.dst), p1 = juce::jmin (at + n, pt.dst + pt.n);     // the part of this piece inside the range (stretch samples)
-        if (p1 <= p0) continue;
-        juce::int64 rel = pt.srcA - pt.fileStart + (p0 - pt.dst), cnt = p1 - p0, o = p0 - at;
-        if (rel < 0) { cnt += rel; o -= rel; rel = 0; }
-        if (cnt <= 0) continue;
-        std::vector<std::vector<float>> ch;
-        if (cache != nullptr)
+        juce::int64 o = 0;
+        if (! readPart (pt, at, n, ch, o, cache)) continue;
+        const float inv = 1.0f / (float) ch.size();
+        const size_t len = ch[0].size();
+        const bool flat = pt.flat();
+        for (size_t k = 0; k < len && o + (juce::int64) k < n; ++k)
         {
-            std::lock_guard<std::mutex> l (cache->lock);
-            auto& r = cache->readers[pt.file.getFullPathName()];
-            if (r == nullptr) r = audioops::openReader (formats(), pt.file);
-            if (r == nullptr) continue;
-            audioops::readRange (*r, rel, cnt, ch);
+            float s = 0.0f;
+            for (auto& x : ch) s += k < x.size() ? x[k] : 0.0f;
+            s *= inv;
+            if (! flat) s *= pt.gainAt (at + o + (juce::int64) k);
+            dst[(size_t) o + k] += s;
         }
-        else { auto r = audioops::openReader (formats(), pt.file); if (r == nullptr) continue; audioops::readRange (*r, rel, cnt, ch); }
-        for (auto& x : ch) for (size_t k = 0; k < x.size(); ++k) dst[(size_t) o + k] += x[k] / (float) ch.size();
     }
+}
+/** Every channel of one track over [at, at + n) of the stretch, as heard: as many channels as the widest of its files (at least one); a file with fewer gives
+    its last channel to the rest (a mono piece among stereo ones). Returns false when no piece is heard there at all ('out' is then one channel of silence). */
+inline bool readTrackChannels (const std::vector<TrackPart>& parts, juce::int64 at, juce::int64 n, std::vector<std::vector<float>>& out, ReaderCache* cache = nullptr)
+{
+    std::vector<std::vector<std::vector<float>>> got (parts.size());
+    std::vector<juce::int64> where (parts.size(), 0);
+    size_t nc = 1; bool any = false;
+    for (size_t i = 0; i < parts.size(); ++i)
+        if (readPart (parts[i], at, n, got[i], where[i], cache)) { nc = juce::jmax (nc, got[i].size()); any = true; }
+    out.assign (nc, std::vector<float> ((size_t) juce::jmax ((juce::int64) 0, n), 0.0f));
+    for (size_t i = 0; i < parts.size(); ++i)
+    {
+        if (got[i].empty()) continue;
+        const auto& pt = parts[i];
+        const bool flat = pt.flat();
+        for (size_t c = 0; c < nc; ++c)
+        {
+            const auto& src = got[i][juce::jmin (c, got[i].size() - 1)];
+            for (size_t k = 0; k < src.size() && where[i] + (juce::int64) k < n; ++k)
+                out[c][(size_t) where[i] + k] += flat ? src[k] : src[k] * pt.gainAt (at + where[i] + (juce::int64) k);
+        }
+    }
+    return any;
 }
 /** The files' room-tone profiles, per track per channel, from the parts of them that lie under the boxes (the boxes' times are seconds from the start of the
     stretch). Empty + error if a track's files hold nothing under the boxes. */
@@ -764,6 +851,7 @@ inline juce::String prepareRepairJobs (const juce::File& fixFolder, const std::v
             if (i1 - i0 < 2) continue;
             if (o.t1 - o.t0 > shortest && i1 - i0 <= shortest) continue;
             mine.push_back (audioops::FixOp { o.spec, r.srcIn + (i0 - r.startSample), r.srcIn + (i1 - r.startSample) });
+            if (mine.back().spec.mask != nullptr) mine.back().spec.maskLead += i0 - (from + o.t0);      // 3.33.0: cut at the piece's start - begun part of the way into its soft mask
             lo = juce::jmin (lo, i0); hi = juce::jmax (hi, i1);
         }
         if (mine.empty() || hi <= lo) continue;

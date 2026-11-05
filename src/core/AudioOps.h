@@ -9,6 +9,32 @@
 
 namespace td
 {
+/** 3.33.0: a soft selection - a shape painted with the brush, or any selection with feathering - for a Patch (ReTouch, Gain) or a Denoise. The fix is made on
+    its box as always ([s0, s1) and f0 .. f1: the box round the shape, the feathering included), then only the part of the change the mask lets through is kept,
+    pitch by pitch, in a short-time spectrum: the sound = before + mask x (after - before) - so where the mask is 1 the fix is as it would have been, where it
+    is 0 nothing changes, and between (the feathering) it fades from one to the other. A grid over time (seconds from the mask's start) and pitch (log2 of the
+    frequency), 0 .. 1, read between its points; beyond its ends its first and last points hold (the shapes the picture makes have nothing at their edges, so
+    nothing is let through there - and a mask of 1 everywhere is exactly the fix, its own short fades just outside the box included). */
+struct SoftMask
+{
+    double seconds = 0.0;                 // how long the grid is
+    double lf0 = 0.0, lf1 = 0.0;          // log2 (Hz) of its bottom and top rows
+    int nt = 0, nf = 0;                   // its points in time and in pitch
+    std::vector<float> v;                 // nt * nf values, time by time: v[t * nf + f]
+    bool valid() const noexcept { return nt > 1 && nf > 1 && v.size() == (size_t) nt * (size_t) nf && seconds > 0.0 && lf1 > lf0; }
+    float at (double t, double hz) const noexcept
+    {
+        if (! valid()) return 0.0f;
+        const double x = juce::jlimit (0.0, 1.0, t / seconds) * (double) (nt - 1);
+        const double lf = hz > 0.0 ? std::log2 (hz) : lf0;
+        const double y = juce::jlimit (0.0, 1.0, (lf - lf0) / (lf1 - lf0)) * (double) (nf - 1);
+        const int x0 = juce::jmin (nt - 2, (int) x), y0 = juce::jmin (nf - 2, (int) y);
+        const float fx = (float) (x - x0), fy = (float) (y - y0);
+        auto g = [this] (int a, int b) { return v[(size_t) a * (size_t) nf + (size_t) b]; };
+        return (g (x0, y0) * (1.0f - fy) + g (x0, y0 + 1) * fy) * (1.0f - fx) + (g (x0 + 1, y0) * (1.0f - fy) + g (x0 + 1, y0 + 1) * fy) * fx;
+    }
+};
+
 /** What a fix does to the audio. */
 struct FixSpec
 {
@@ -58,6 +84,10 @@ struct FixSpec
     std::shared_ptr<const ConsonantAudio> paste;
     double pasteGainDb = 0.0;
     std::shared_ptr<const std::vector<std::vector<float>>> pasteChannels;
+    /** 3.33.0: a soft selection (see SoftMask): null = the box as it is, hard-edged (as before). 'maskLead': how many samples of the mask lie before s0 - a fix
+        that was cut at the start of a piece of an edit begins part of the way into its mask. */
+    std::shared_ptr<const SoftMask> mask;
+    juce::int64 maskLead = 0;
     juce::String shortName() const
     {
         if (kind == Kind::Paste) return "consonant";

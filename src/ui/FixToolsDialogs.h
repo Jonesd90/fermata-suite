@@ -554,6 +554,21 @@ struct SpectroSettings
 };
 inline juce::PropertiesFile* gSpecPrefs = nullptr;                      // the program's settings file (set when a repair window is opened)
 
+/** 3.33.0: a time in the spectral windows (Noise mode, ReTouch): seconds under a minute ("47.3 s"), then minutes and seconds ("3:47.3"), and hours from an hour
+    on ("1:03:47.3"); 'decimals' digits after the seconds, rounded. */
+inline juce::String specTime (double t, int decimals)
+{
+    decimals = juce::jlimit (0, 3, decimals);
+    juce::int64 q = 1; for (int i = 0; i < decimals; ++i) q *= 10;
+    const auto u = (juce::int64) std::llround (juce::jmax (0.0, t) * (double) q);
+    if (u < 60 * q) return juce::String ((double) u / (double) q, decimals) + " s";
+    const auto whole = u / q, frac = u % q;
+    const int hh = (int) (whole / 3600), mm = (int) ((whole / 60) % 60), ss = (int) (whole % 60);
+    juce::String s = (hh > 0 ? juce::String (hh) + ":" + juce::String (mm).paddedLeft ('0', 2) : juce::String (mm)) + ":" + juce::String (ss).paddedLeft ('0', 2);
+    if (decimals > 0) s << "." << juce::String (frac).paddedLeft ('0', decimals);
+    return s;
+}
+
 struct PictureRequest { juce::int64 id = 0; double t0 = 0.0, t1 = 1.0; int w = 0, h = 0; PictureAxis axis; PictureOptions opt; };
 
 class SpectrogramView : public juce::Component
@@ -567,7 +582,7 @@ public:
     {
         const bool same = spec.frames > 0 && std::abs (seconds - duration) < 1.0e-9;
         spec = std::move (s); duration = juce::jmax (0.001, seconds); dT0 = 0.0; dT1 = duration;
-        if (! keepSelection) { boxes.clear(); rects.clear(); hasSel = false; }
+        if (! keepSelection) { const bool hadH = harmBase >= 0; clearMarks(); rects.clear(); softParts.clear(); hasSel = false; if (hadH && onHarmonics) onHarmonics(); }
         if (! same) resetView();
         detailStale = true; scheduleDetail();
         dirty = true; repaint();
@@ -594,19 +609,80 @@ public:
     void setSettings (const SpectroSettings& n) { ss = n; buildLut(); detailStale = ss.sharp ? true : detailStale; dirty = true; repaint(); scheduleDetail(); }
     void resized() override { scheduleDetail(); }
     bool hasSelection() const { return hasSel; }
+    // ---- 3.33.0: the selection tools - Rectangle (S: any box, as before), Time (T: everything, every pitch, over the time dragged) and Brush (B: a circle painted
+    //      over the picture; Shift adds to the selection, Alt takes out, as with the boxes). A click without a drag moves the playhead there and keeps the selection.
+    enum class Tool { rect, time, brush };
+    Tool currentTool() const { return tool; }
+    void setTool (Tool t) { tool = t; drawing = false; mode = Mode::none; repaint(); if (onTool) onTool(); }
+    int brushSize() const { return brushPx; }                     // the brush's radius, in pixels of the picture
+    void setBrushSize (int px) { brushPx = juce::jlimit (3, 150, px); repaint(); if (onTool) onTool(); }
+    std::function<void()> onTool;                                  // the tool or the brush size changed: for the controls
+    /** The selection is soft - painted with the brush: the fixes then keep only what its mask lets through (SoftMask). */
+    bool softSelection() const { return hasSel && hasStrokes(); }
+    /** One part of the selection, fixed on its own: a rectangle (no mask: hard-edged, exactly as before) or a soft shape (the box round it, its feathering
+        and its mask; 'lead': seconds of the mask before t0, where the box was cut at the start of the picture). */
+    struct Part { double t0 = 0.0, t1 = 0.0, f0 = 0.0, f1 = 0.0; std::shared_ptr<const SoftMask> mask; double lead = 0.0; };
+    std::vector<Part> selectionParts() const
+    {
+        if (! softSelection()) { std::vector<Part> v; for (auto& r : rects) v.push_back ({ r.t0, r.t1, r.f0, r.f1, nullptr, 0.0 }); return v; }
+        return softParts;
+    }
     /** 3.29.0: the selection as non-overlapping rectangles (seconds, Hz): every box added (Shift) less every part taken out (Alt). What the tools process, one by one. */
     const std::vector<denoise::SelRect>& selectionRects() const { return rects; }
     /** The stretches of time the selection covers (seconds; merged): what the room tone is learned from. */
-    std::vector<std::pair<double, double>> selectionSpans() const { return denoise::selectedSpans (rects); }
-    int boxCount() const { int n = 0; for (auto& b : boxes) if (b.add) ++n; return n; }     // (3.30.1: the boxes drawn, not the rectangles they come to)
+    std::vector<std::pair<double, double>> selectionSpans() const
+    {
+        if (! hasStrokes()) return denoise::selectedSpans (rects);
+        std::vector<denoise::SelRect> all = rects;                    // (3.33.0: and the time each brush stroke covers)
+        for (auto& st : strokes) if (st.add && ! st.dabs.empty()) { double a = 1.0e30, b = -1.0e30; for (auto& d : st.dabs) { a = juce::jmin (a, d.t - d.rt); b = juce::jmax (b, d.t + d.rt); } all.push_back ({ juce::jmax (0.0, a), juce::jmin (duration, b), 100.0, 200.0, true }); }
+        return denoise::selectedSpans (all);
+    }
+    int boxCount() const { int n = 0; for (auto& b : boxes) if (b.add) ++n; for (auto& st : strokes) if (st.add) ++n; return n; }     // (3.30.1: the boxes drawn, not the rectangles they come to; 3.33.0: and brush strokes)
     /** Shows the sound around the box that the repair learns from (dotted): 'pct' is a % of the box, 'direction' 0 = left and right, 1 = up and down, 2 = both. */
     void setSurround (bool show, double pct, int direction, double afterWeight = 0.5) { showSurround = show; surroundPct = pct; surroundDir = direction; surroundAfter = juce::jlimit (0.0, 1.0, afterWeight); repaint(); }
-    // the whole selection's extent (3.29.0: of every rectangle together; one box = that box)
-    double selT0() const { double v = 1.0e30; for (auto& r : rects) v = juce::jmin (v, r.t0); return rects.empty() ? 0.0 : v; }   // seconds
-    double selT1() const { double v = -1.0e30; for (auto& r : rects) v = juce::jmax (v, r.t1); return rects.empty() ? 0.0 : v; }
-    double selF0() const { double v = 1.0e30; for (auto& r : rects) v = juce::jmin (v, r.f0); return rects.empty() ? 0.0 : v; }   // Hz
-    double selF1() const { double v = -1.0e30; for (auto& r : rects) v = juce::jmax (v, r.f1); return rects.empty() ? 0.0 : v; }
-    void clearSelection() { boxes.clear(); selectionChanged (true); }
+    // the whole selection's extent (3.29.0: of every rectangle together; one box = that box; 3.33.0: and the brush strokes)
+    double selT0() const { return extent().t0; }   // seconds
+    double selT1() const { return extent().t1; }
+    double selF0() const { return extent().f0; }   // Hz
+    double selF1() const { return extent().f1; }
+    void clearSelection() { clearMarks(); selectionChanged (true); }
+
+    // ---- 3.33.0: harmonics. One box of the selection (the last one drawn when they were asked for) is given boxes on the other harmonics of its sound: harmonics
+    //      1 to 'count' of its fundamental - the fundamental IS the 1st harmonic - the box itself being harmonic 'boxIs'. They are ordinary parts of the selection (Alt
+    //      takes a part out of them), they move and resize with that box, and they stop at the top of the picture. 'spreadCents': 0 = harmonics stacked exactly (2x,
+    //      3x ...); more = each one a little sharper the higher it is, as a piano's are (this many cents at the 10th harmonic); less = flatter. 'thinning': 1 (the
+    //      standard) = every box as wide in Hz as yours, so the high ones are as narrow as the one you drew and keep clear of their neighbours; 0 = as wide
+    //      musically as yours (wider in Hz the higher it is); between, in between. Whatever the setting, a box never reaches more than 45 % of the way to the
+    //      harmonic next to it (it would take sound that belongs to that one - or to another instrument).
+    struct Harmonics { int count = 10; int boxIs = 1; double spreadCents = 0.0; double thinning = 1.0; };
+    bool harmonicsOn() const { return harmBase >= 0; }
+    const Harmonics& harmonicSettings() const { return harm; }
+    /** Gives the last box drawn its harmonics, or new settings to the box that has them. False: no box to give them to. */
+    bool setHarmonics (const Harmonics& h)
+    {
+        harm = h;
+        if (harmBase < 0) for (int i = (int) boxes.size(); i-- > 0;) if (boxes[(size_t) i].add && ! isTimeBox (boxes[(size_t) i])) { harmBase = i; break; }     // (not a Time box: it has every pitch)
+        if (harmBase < 0) return false;
+        selectionChanged (true);
+        return harmBase >= 0;
+    }
+    void clearHarmonics() { if (harmBase < 0) return; dropHarmonics(); selectionChanged (true); }
+    /** The pitch (Hz) found for the harmonic in the box itself (the strongest steady line in it; the middle of the box when there is none), and the fundamental's. */
+    double harmonicBoxPitch() const { return harmPitch; }
+    double harmonicFundamental() const { return harmFund; }
+    /** The highest harmonic that is still below the top of the picture, with these settings (at least the box's own). */
+    int maxHarmonic (const Harmonics& h) const
+    {
+        if (harmBase < 0 || harmPitch <= 0.0) return juce::jmax (1, h.boxIs);
+        const double B = spreadB (h.spreadCents);
+        const int k = juce::jmax (1, h.boxIs);
+        const double sk = stretchOf (B, k); if (sk <= 0.0) return k;
+        const double F = harmPitch / ((double) k * sk);
+        int n = k;
+        while (n < 4000) { const double s = stretchOf (B, n + 1); if (s <= 0.0 || F * (n + 1) * s >= maxHz()) break; ++n; }
+        return n;
+    }
+    std::function<void()> onHarmonics;                             // the harmonics came or went (a new box drawn on its own takes them away): for the controls
     /** Seconds from the start of the area; < 0 hides the playhead. */
     void setPlayhead (double t) { if (std::abs (t - playT) > 1.0e-6) { playT = t; repaint(); } }
     /** The playhead you place by clicking the time ruler: where Play starts, and the point the zoom keys keep still. */
@@ -723,13 +799,13 @@ public:
                 if (! major) continue;
                 g.setColour (juce::Colours::white.withAlpha (0.15f)); g.drawVerticalLine (x, (float) plot.getY(), (float) plot.getBottom());
                 g.setColour (juce::Colours::white.withAlpha (0.85f));
-                g.drawText (juce::String (t, step < 0.1 ? 2 : step < 1 ? 1 : 0) + " s", x + 2, ruler.getY(), 60, ruler.getHeight() - 8, juce::Justification::centredLeft);
+                g.drawText (specTime (t, step < 0.1 ? 2 : step < 1 ? 1 : 0), x + 2, ruler.getY(), 70, ruler.getHeight() - 8, juce::Justification::centredLeft);     // (3.33.0: minutes and seconds from 60 s)
             }
         }
         {
             juce::Graphics::ScopedSaveState saved (g);
             g.reduceClipRegion (plot);
-            if (hasSel && showSurround)
+            if (hasSel && showSurround && ! softSelection())
                 for (auto& sr : rects)                                                  // (3.29.0: the surround of every rectangle of the selection: each is repaired on its own)
                 {
                     const double t0 = sr.t0, t1 = sr.t1, f0 = sr.f0, f1 = sr.f1;
@@ -749,7 +825,8 @@ public:
                     if (surroundDir != 1) { box (t0 - 2.0 * dt * (1.0 - surroundAfter), t0, f0, f1); box (t1, t1 + 2.0 * dt * surroundAfter, f0, f1); }      // before and after the box: shared out by the before / after weighting (50/50 = equal, 0 = all before)
                     if (surroundDir != 0) { box (t0, t1, f1, f1 + df); box (t0, t1, f0 - df, f0); }          // above and below it
                 }
-            if (hasSel)
+            if (softSelection()) paintSoft (g, plot);                                  // 3.33.0: a shape painted with the brush
+            else if (hasSel)
             {   // 3.29.0: the selection as one shape: its rectangles filled, and a border round the outside of the shape (a part taken out shows as a hole)
                 juce::RectangleList<int> inner, outer;
                 for (auto& sr : rects) { const auto r = rectOf (sr); inner.add (r); outer.add (r.expanded (2)); }
@@ -757,9 +834,45 @@ public:
                 outer.subtract (inner);
                 g.setColour (juce::Colour (0xffffd24a)); g.fillRectList (outer);
             }
+            if (hasSel && harmBase >= 0 && harmBase < (int) boxes.size())
+            {   // 3.33.0: the box that carries the harmonics, outlined dashed (drag it to move them all), and each harmonic's number at its left
+                const auto br = rectOf (boxes[(size_t) harmBase]).expanded (3);
+                juce::Path p; p.addRectangle (br.toFloat());
+                juce::Path dashed; const float pattern[] = { 5.0f, 3.0f };
+                juce::PathStrokeType (1.5f).createDashedStroke (dashed, p, pattern, 2);
+                g.setColour (juce::Colours::white.withAlpha (0.9f)); g.fillPath (dashed);
+                g.setFont (juce::FontOptions (10.5f, juce::Font::bold));
+                auto number = [&] (const denoise::SelRect& r, int n)
+                {
+                    const auto rr = rectOf (r);
+                    if (rr.getBottom() < plot.getY() || rr.getY() > plot.getBottom()) return;
+                    const int tx = rr.getX() - 22 >= plot.getX() ? rr.getX() - 22 : rr.getX() + 3;       // (left of the box; inside it when the box starts at the edge)
+                    const auto tag = juce::Rectangle<int> (tx, rr.getCentreY() - 7, 19, 14);
+                    g.setColour (juce::Colour (0xd0101418)); g.fillRoundedRectangle (tag.toFloat(), 3.0f);
+                    g.setColour (juce::Colour (0xffffd24a)); g.drawText (juce::String (n), tag, juce::Justification::centred, false);
+                };
+                int lastY = 1 << 30;                                    // (numbers that would sit on each other are left out: the boxes are close together at the top)
+                std::vector<std::pair<const denoise::SelRect*, int>> all;
+                for (size_t i = 0; i < harmBoxes.size(); ++i) all.push_back ({ &harmBoxes[i], harmNums[i] });
+                all.push_back ({ &boxes[(size_t) harmBase], juce::jmax (1, harm.boxIs) });
+                std::sort (all.begin(), all.end(), [] (const auto& x, const auto& y) { return x.second < y.second; });
+                for (auto& [r, n] : all) { const int y = rectOf (*r).getCentreY(); if (lastY - y >= 15) { number (*r, n); lastY = y; } }
+            }
+            if (mode == Mode::paint && ! paintPts.empty())
+            {   // 3.33.0: the stroke being painted (the shape is made when the button comes up)
+                g.setColour (drawAdd ? juce::Colour (0x55ffd24a) : juce::Colour (0x55ff5a4a));
+                const float rr = (float) brushPx;
+                for (auto& q : paintPts) g.fillEllipse ((float) q.x - rr, (float) q.y - rr, 2.0f * rr, 2.0f * rr);
+            }
+            if (tool == Tool::brush && hover.x >= 0 && plot.contains (hover))
+            {   // 3.33.0: the brush, where it would paint
+                g.setColour (juce::Colours::white.withAlpha (0.85f));
+                g.drawEllipse ((float) (hover.x - brushPx), (float) (hover.y - brushPx), 2.0f * (float) brushPx, 2.0f * (float) brushPx, 1.4f);
+            }
             if (mode == Mode::select && drawing)
-            {   // the box being drawn: added (yellow) or taken out (red), outline only until the mouse is let go
-                const auto r = rectOf (denoise::SelRect { juce::jmin (a.x, b.x), juce::jmax (a.x, b.x), juce::jmin (a.y, b.y), juce::jmax (a.y, b.y), drawAdd });
+            {   // the box being drawn: added (yellow) or taken out (red), outline only until the mouse is let go (3.33.0: Time - all of the picture's height)
+                auto r = rectOf (denoise::SelRect { juce::jmin (a.x, b.x), juce::jmax (a.x, b.x), juce::jmin (a.y, b.y), juce::jmax (a.y, b.y), drawAdd });
+                if (tool == Tool::time) r = juce::Rectangle<int> (r.getX(), plot.getY(), r.getWidth(), plot.getHeight());
                 g.setColour (drawAdd ? juce::Colour (0xffffd24a) : juce::Colour (0xffff5a4a)); g.drawRect (r, 2);
                 if (! drawAdd) { g.setColour (juce::Colour (0x55ff5a4a)); g.fillRect (r); }
             }
@@ -801,7 +914,8 @@ public:
         auto pl = plotArea();
         if (e.x < pl.getX() && e.y >= pl.getY() && e.y < pl.getBottom()) { mode = Mode::pitchPan; panF = fLo; panF1 = fHi; return; }
         const bool shift = e.mods.isShiftDown(), alt = e.mods.isAltDown();       // 3.29.0: Shift = another box added to the selection, Alt = a box taken out of it
-        if (! shift && ! alt)
+        downAt = e.getPosition(); moved = false;                                 // 3.33.0: a click without a drag places the playhead
+        if (! shift && ! alt && tool != Tool::brush)
         {
             int hit = -1;
             if (const int ed = edgesAt (e.getPosition(), &hit))               // on an edge or corner of a box: drag it to resize that box
@@ -824,10 +938,12 @@ public:
             }
         }
         if (! pl.contains (e.getPosition())) return;
-        if (alt && boxes.empty()) return;                                      // nothing is selected: nothing to take out
-        if (! shift && ! alt) { boxes.clear(); rects.clear(); hasSel = false; }     // a plain drag starts afresh (3.30.1: the old shape goes at once, as before 3.29.0)
-        drawAdd = ! alt; drawing = true;
-        mode = Mode::select; a = toTF (e.getPosition()); b = a; repaint();
+        if (alt && boxes.empty() && ! hasStrokes()) { mode = Mode::cue; return; }      // nothing is selected: nothing to take out (a click still places the playhead)
+        // a plain drag starts afresh (3.30.1: the old shape goes at once, as before 3.29.0) - 3.33.0: once it IS a drag: a click keeps the selection
+        freshOnDrag = ! shift && ! alt;
+        drawAdd = ! alt; drawing = false;
+        a = toTF (e.getPosition()); b = a;
+        mode = tool == Tool::brush ? Mode::paint : Mode::select;
     }
     void mouseMove (const juce::MouseEvent& e) override
     {
@@ -845,6 +961,18 @@ public:
     void mouseDrag (const juce::MouseEvent& e) override
     {
         auto pl = plotArea();
+        if ((mode == Mode::select || mode == Mode::paint || mode == Mode::cue) && ! moved)
+        {   // 3.33.0: it becomes a drag only once it has gone a few pixels (less is a click: the playhead)
+            if (e.getDistanceFromDragStart() < 3) return;
+            moved = true;
+            if (mode == Mode::cue) return;
+            if (freshOnDrag) { clearMarks(); rects.clear(); softParts.clear(); hasSel = false; }
+            if (mode == Mode::select) drawing = true;
+            if (mode == Mode::paint) { strokes.push_back (Stroke { {}, drawAdd, nextSeq++ }); paintPts.clear(); addDab (downAt); }
+        }
+        if (mode == Mode::paint) { setHover (e.getPosition()); addDab (e.getPosition()); return; }
+        if (mode == Mode::cue) return;
+        if (mode == Mode::move || mode == Mode::resize) moved = moved || e.getDistanceFromDragStart() >= 3;
         if (mode == Mode::select || mode == Mode::resize || mode == Mode::move) setHover (e.getPosition());     // (the read-out follows while a box is drawn or moved)
         if (mode == Mode::select) { b = toTF (e.getPosition()); repaint(); }
         else if (mode == Mode::move)
@@ -856,10 +984,14 @@ public:
             boxedit::moveSpan (t0, t1, dt, 0.0, duration);
             auto toU = [this] (double f) { return mel ? PictureAxis::melOf (f) : warp < 0.5 ? f : std::log (f); };
             auto fromU = [this] (double u) { return mel ? PictureAxis::hzOfMel (u) : warp < 0.5 ? u : std::exp (u); };
-            const double du = -(double) e.getDistanceFromDragStartY() / (double) juce::jmax (1, pl.getHeight() - 1) * (toU (fHi) - toU (fLo));
-            double u0 = toU (moveA.y), u1 = toU (moveB.y);
-            boxedit::moveSpan (u0, u1, du, toU (kMinHz), toU (maxHz()));
-            a = { t0, juce::jmax ((double) kMinHz, fromU (u0)) }; b = { t1, juce::jmin (maxHz(), fromU (u1)) };
+            if (editing >= 0 && editing < (int) boxes.size() && isTimeBox (boxes[(size_t) editing])) { a = { t0, 0.0 }; b = { t1, nyq() }; }     // 3.33.0: a Time box: in time only
+            else
+            {
+                const double du = -(double) e.getDistanceFromDragStartY() / (double) juce::jmax (1, pl.getHeight() - 1) * (toU (fHi) - toU (fLo));
+                double u0 = toU (moveA.y), u1 = toU (moveB.y);
+                boxedit::moveSpan (u0, u1, du, toU (kMinHz), toU (maxHz()));
+                a = { t0, juce::jmax ((double) kMinHz, fromU (u0)) }; b = { t1, juce::jmin (maxHz(), fromU (u1)) };
+            }
             if (editing >= 0 && editing < (int) boxes.size()) { writeBack (editing); selectionChanged (false); }     // (3.29.0: the shape follows while it is moved)
         }
         else if (mode == Mode::resize)
@@ -918,22 +1050,68 @@ public:
             repaint(); return;
         }
         if (m == Mode::pan || m == Mode::pitchPan) { note(); return; }
-        if (m == Mode::move)                                                     // (a click in the box: nothing changes)
+        if ((m == Mode::select || m == Mode::paint || m == Mode::cue) && ! moved) { drawing = false; placeCueAt (downAt); return; }    // 3.33.0: a click: the playhead goes there
+        if (m == Mode::paint) { paintPts.clear(); selectionChanged (true); return; }
+        if (m == Mode::move)                                                     // (a click in the box: nothing changes - 3.33.0: but the playhead goes there)
         {
             if (a != moveA || b != moveB)                                        // (3.30.1: told even when the box slid wholly under a take-out and the selection emptied under the drag)
             {
                 if (editing >= 0 && editing < (int) boxes.size()) writeBack (editing);
                 editing = -1; selectionChanged (true);
             }
+            else if (! moved) placeCueAt (downAt);
             editing = -1; return;
         }
-        if (m == Mode::resize) { if (editing >= 0 && editing < (int) boxes.size()) writeBack (editing); editing = -1; selectionChanged (true); return; }
+        if (m == Mode::resize)
+        {
+            if (! moved) { editing = -1; placeCueAt (downAt); return; }            // (a click on an edge: the playhead)
+            if (editing >= 0 && editing < (int) boxes.size()) writeBack (editing);
+            editing = -1; selectionChanged (true); return;
+        }
         if (m != Mode::select) return;
         drawing = false;
-        const double t0 = juce::jmin (a.x, b.x), t1 = juce::jmax (a.x, b.x), f0 = juce::jmin (a.y, b.y), f1 = juce::jmax (a.y, b.y);
-        if (t1 - t0 >= 0.002 && f1 > f0) boxes.push_back (denoise::SelRect { t0, t1, f0, f1, drawAdd });     // (3.30.1: a flat box selects nothing and is not kept)
+        const double t0 = juce::jmin (a.x, b.x), t1 = juce::jmax (a.x, b.x);
+        const double f0 = tool == Tool::time ? 0.0 : juce::jmin (a.y, b.y), f1 = tool == Tool::time ? nyq() : juce::jmax (a.y, b.y);     // (3.33.0: Time: every pitch)
+        if (t1 - t0 >= 0.002 && f1 > f0) { boxes.push_back (denoise::SelRect { t0, t1, f0, f1, drawAdd }); boxSeq.push_back (nextSeq++); }     // (3.30.1: a flat box selects nothing and is not kept)
         selectionChanged (true);
     }
+    /** 3.33.0: the brush's shape on the screen: the selected part filled (as a box is) and its border drawn round it, made again when the shape or the view changes. */
+    void paintSoft (juce::Graphics& g, juce::Rectangle<int> plot)
+    {
+        const std::array<double, 6> viewNow { vt0, vt1, fLo, fHi, warp, mel ? 1.0 : 0.0 };
+        if (softImageVersion != softVersion || softImageArea != plot || softImageView != viewNow)
+        {
+            softImageVersion = softVersion; softImageArea = plot; softImageView = viewNow;
+            const int W = plot.getWidth(), H = plot.getHeight();
+            softImage = juce::Image();
+            if (W < 2 || H < 2 || sg.nt <= 0) return;
+            std::vector<int> col ((size_t) W), row ((size_t) H);
+            for (int x = 0; x < W; ++x) { const double t = vt0 + ((double) x + 0.5) / (double) W * (vt1 - vt0); const int i = (int) std::floor ((t - sg.t0) / sg.dt); col[(size_t) x] = i >= 0 && i < sg.nt ? i : -1; }
+            for (int y = 0; y < H; ++y) { const double hz = hzOf (1.0 - (double) y / (double) (H - 1)); const int j = (int) std::floor ((std::log2 (juce::jmax (1.0, hz)) - sg.lf0) / sg.dl); row[(size_t) y] = j >= 0 && j < sg.nf ? j : -1; }
+            std::vector<uint8_t> on ((size_t) W * (size_t) H, 0);
+            for (int y = 0; y < H; ++y)
+            {
+                const int j = row[(size_t) y]; if (j < 0) continue;
+                for (int x = 0; x < W; ++x) { const int i = col[(size_t) x]; if (i >= 0 && sg.hard[(size_t) i * (size_t) sg.nf + (size_t) j]) on[(size_t) y * (size_t) W + (size_t) x] = 1; }
+            }
+            softImage = juce::Image (juce::Image::ARGB, W, H, true);
+            juce::Image::BitmapData bd (softImage, juce::Image::BitmapData::writeOnly);
+            const auto fill = juce::Colour (0x44ffd24a), edge = juce::Colour (0xffffd24a);
+            for (int y = 0; y < H; ++y)
+                for (int x = 0; x < W; ++x)
+                {
+                    const bool here = on[(size_t) y * (size_t) W + (size_t) x] != 0;
+                    auto at = [&] (int xx, int yy) { return xx >= 0 && xx < W && yy >= 0 && yy < H && on[(size_t) yy * (size_t) W + (size_t) xx] != 0; };
+                    const bool border = here != at (x + 1, y) || here != at (x, y + 1) || here != at (x - 1, y) || here != at (x, y - 1);
+                    if (here) bd.setPixelColour (x, y, border ? edge : fill);
+                    else if (border) bd.setPixelColour (x, y, edge);
+                }
+        }
+        if (softImage.isValid()) g.drawImageAt (softImage, plot.getX(), plot.getY());
+    }
+    /** 3.33.0: the playhead placed where the picture was clicked (as a click on the ruler does). */
+    void placeCueAt (juce::Point<int> p) { cueT = juce::jlimit (0.0, duration, toTF (p).x); repaint(); if (onCue) onCue(); }
+    std::function<void()> onCue;
     void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override
     {
         if (knobArea().expanded (3).contains (e.getPosition())) { rollColour ((double) w.deltaY * 2.0); return; }
@@ -942,6 +1120,7 @@ public:
     void mouseExit (const juce::MouseEvent&) override { setHover ({ -1, -1 }); }
     /** 3.28.0: the reference A the read-out names notes from (the project's pitch pipe: A = 415 at a Baroque session). */
     void setReferenceA (double hz) { if (hz > 0.0 && std::isfinite (hz)) refA = hz; }
+    double referenceA() const { return refA; }
     void mouseDoubleClick (const juce::MouseEvent& e) override
     {
         if (knobArea().expanded (3).contains (e.getPosition())) { setRoll (0.0); return; }                 // back to the standard colours
@@ -951,7 +1130,7 @@ public:
 private:
     static constexpr double kMinHz = 40.0;
     static constexpr int kPresets = 8;
-    enum class Mode { none, select, pan, pitchPan, knob, resize, move };
+    enum class Mode { none, select, pan, pitchPan, knob, resize, move, paint, cue };
     int edgeMask = 0;                                           // while resizing the box: 1 left, 2 right, 4 top, 8 bottom
     juce::Point<double> moveA, moveB;                           // while moving the box: its corners (lower-left, upper-right) when it was taken hold of
     // 3.29.0: the selection is a list of boxes in the order they were drawn, each added (Shift, or the first) or taken out (Alt); 'rects' is what that comes to
@@ -969,33 +1148,316 @@ private:
     /** The box (added, so that there is something to see) under the point, away from its edges: the last one drawn first. -1: none. */
     int boxAt (juce::Point<int> p) const
     {
-        if (! plotArea().contains (p)) return -1;
+        if (! plotArea().contains (p) || tool == Tool::brush) return -1;
         for (int i = (int) boxes.size(); i-- > 0;) if (boxes[(size_t) i].add && rectOf (boxes[(size_t) i]).contains (p)) return i;
         return -1;
     }
     /** The edited corners a / b written back into box i. */
-    void writeBack (int i) { auto& r = boxes[(size_t) i]; r.t0 = juce::jmin (a.x, b.x); r.t1 = juce::jmax (a.x, b.x); r.f0 = juce::jmin (a.y, b.y); r.f1 = juce::jmax (a.y, b.y); }
+    void writeBack (int i)
+    {
+        auto& r = boxes[(size_t) i]; const bool timeBox = isTimeBox (r);
+        r.t0 = juce::jmin (a.x, b.x); r.t1 = juce::jmax (a.x, b.x);
+        if (timeBox) { r.f0 = 0.0; r.f1 = nyq(); return; }                     // (3.33.0: a Time box keeps every pitch)
+        r.f0 = juce::jmin (a.y, b.y); r.f1 = juce::jmax (a.y, b.y);
+    }
     /** The boxes changed: the rectangles they come to are worked out again; a selection that has nothing left in it is no selection. */
     void selectionChanged (bool tell)
     {
-        rects = denoise::selectionRects (boxes);
-        if (rects.empty()) boxes.clear();
-        else if (tell)
+        makeHarmonics();                                            // (they follow their box: it may have been moved or resized)
+        rects = denoise::selectionRects (allBoxes());
+        if (rects.empty() && ! hasStrokes()) { boxes.clear(); boxSeq.clear(); dropHarmonics(); }
+        else if (tell && ! hasStrokes())                            // (3.33.0: with brush strokes every box stays: a take-out may be taking from a stroke)
         {   // 3.30.1: a box that shows nothing any more (wholly under a later take-out, or a take-out that took nothing) is dropped - it could still be grabbed and
             // moved as an invisible ghost. Only at the end of a drag ('tell'): in the middle of one 'editing' points into the list.
-            auto shows = [this] (const denoise::SelRect& b)
+            // 3.33.0: a box taken out (Alt) is kept when it takes something out of the boxes BEFORE it. It was looked for in what is left - where it never is,
+            // that being what it took out - so every take-out was dropped the moment the mouse was let go, and the hole closed again. The box that carries
+            // harmonics is always kept (they hang on it), even when all of it has been taken out.
+            auto overlaps = [] (const denoise::SelRect& b, const std::vector<denoise::SelRect>& rs)
             {
-                for (auto& r : rects) if (juce::jmin (b.t1, r.t1) > juce::jmax (b.t0, r.t0) && juce::jmin (b.f1, r.f1) > juce::jmax (b.f0, r.f0)) return true;
+                for (auto& r : rs) if (juce::jmin (b.t1, r.t1) > juce::jmax (b.t0, r.t0) && juce::jmin (b.f1, r.f1) > juce::jmax (b.f0, r.f0)) return true;
                 return false;
             };
-            const size_t before = boxes.size();
-            boxes.erase (std::remove_if (boxes.begin(), boxes.end(), [&] (const denoise::SelRect& b) { return ! shows (b); }), boxes.end());
-            if (boxes.size() != before) rects = denoise::selectionRects (boxes);
+            std::vector<denoise::SelRect> kept, sofar; std::vector<int> keptSeq; int base = -1;
+            for (size_t i = 0; i < boxes.size(); ++i)
+            {
+                const auto& bx = boxes[i];
+                const bool carries = (int) i == harmBase;
+                if (! carries && ! (bx.add ? overlaps (bx, rects) : overlaps (bx, denoise::selectionRects (sofar)))) continue;
+                if (carries) base = (int) kept.size();
+                kept.push_back (bx); keptSeq.push_back (i < boxSeq.size() ? boxSeq[i] : 0); sofar.push_back (bx);
+                if (carries) sofar.insert (sofar.end(), harmBoxes.begin(), harmBoxes.end());
+            }
+            if (kept.size() != boxes.size()) { boxes = std::move (kept); boxSeq = std::move (keptSeq); harmBase = base; rects = denoise::selectionRects (allBoxes()); }
             editing = -1;
         }
-        hasSel = ! rects.empty();
+        if (tell) editing = -1;
+        hasSel = ! rects.empty() || hasAddStrokes();
+        softParts.clear(); ++softVersion;
+        if (hasStrokes() && hasSel) { buildSoft(); if (softParts.empty()) { clearMarks(); rects.clear(); hasSel = false; } }     // (3.33.0: the brush's shape and its parts)
         repaint();
         if (tell && onSelection) onSelection();
+        if (tell && onHarmonics) onHarmonics();
+    }
+    // ---- 3.33.0: the harmonics (see setHarmonics)
+    int harmBase = -1;                                          // the box (an index into boxes) that carries them; -1: none
+    Harmonics harm;
+    std::vector<denoise::SelRect> harmBoxes;                    // the boxes made on its harmonics (not the box itself), lowest first
+    std::vector<int> harmNums;                                  // the harmonic number of each
+    double harmPitch = 0.0, harmFund = 0.0;                     // the pitch found in the box, and the fundamental worked out from it (Hz)
+    void dropHarmonics() { harmBase = -1; harmBoxes.clear(); harmNums.clear(); harmPitch = harmFund = 0.0; }
+    /** The boxes in the order they were drawn, the harmonics straight after the box they belong to (so a later take-out takes from them too). */
+    std::vector<denoise::SelRect> allBoxes() const
+    {
+        std::vector<denoise::SelRect> v; v.reserve (boxes.size() + harmBoxes.size());
+        for (size_t i = 0; i < boxes.size(); ++i) { v.push_back (boxes[i]); if ((int) i == harmBase) v.insert (v.end(), harmBoxes.begin(), harmBoxes.end()); }
+        return v;
+    }
+    /** 'Spread' as the stiffness of a string (the inharmonicity B in f(n) = n f sqrt (1 + B (n^2 - 1))): the 10th harmonic is 'cents' sharp (or flat, below 0). */
+    static double spreadB (double cents) { return (std::pow (2.0, cents / 600.0) - 1.0) / 99.0; }
+    static double stretchOf (double B, int n) { const double q = 1.0 + B * ((double) n * (double) n - 1.0); return q > 1.0e-4 ? std::sqrt (q) : 0.0; }
+    void makeHarmonics()
+    {
+        harmBoxes.clear(); harmNums.clear(); harmPitch = harmFund = 0.0;
+        if (harmBase < 0 || harmBase >= (int) boxes.size() || ! boxes[(size_t) harmBase].add) { harmBase = -1; return; }
+        const auto& b = boxes[(size_t) harmBase];
+        if (b.f1 <= b.f0 || b.f0 <= 0.0) return;
+        const int k = juce::jmax (1, harm.boxIs);
+        const double fm = measurePitch (b);
+        const double B = spreadB (harm.spreadCents);
+        const double sk = stretchOf (B, k);
+        if (sk <= 0.0) return;
+        harmPitch = fm; harmFund = fm / ((double) k * sk);
+        const double lowHz = juce::jmax (0.0, fm - b.f0), highHz = juce::jmax (0.0, b.f1 - fm);       // how far the box reaches below and above the pitch in it
+        const double thin = juce::jlimit (0.0, 1.0, harm.thinning);
+        auto centre = [this, B] (int n) { const double s = stretchOf (B, n); return s > 0.0 ? harmFund * (double) n * s : -1.0; };
+        for (int n = 1; n <= juce::jmax (k, harm.count); ++n)
+        {
+            const double c = centre (n);
+            if (c <= 0.0) break;
+            if (c >= maxHz()) break;                                // the top of the picture: no more
+            if (n == k) continue;                                   // (the box itself)
+            const double scale = std::pow ((double) n / (double) k, 1.0 - thin);       // thinning 1: as wide in Hz as yours; 0: wider in step with the pitch
+            double lo = lowHz * scale, hi = highHz * scale;
+            if (const double cp = n > 1 ? centre (n - 1) : -1.0; cp > 0.0) lo = juce::jmin (lo, 0.45 * (c - cp));     // never into the room of the harmonic below ...
+            if (const double cn = centre (n + 1); cn > 0.0) hi = juce::jmin (hi, 0.45 * (cn - c));                   // ... or above
+            const double f0 = juce::jmax ((double) kMinHz, c - lo), f1 = juce::jmin (maxHz(), c + hi);
+            if (f1 <= f0) continue;                                 // (below the bottom of the picture)
+            harmBoxes.push_back (denoise::SelRect { b.t0, b.t1, f0, f1, true }); harmNums.push_back (n);
+        }
+    }
+    /** The pitch of the strongest steady line in a box: the level of each analysis bin across it, averaged over the box's time, its peak placed between bins by
+        the parabola through the three around it. The middle of the box (in pitch) when no bin stands 6 dB above the rest, or the box is narrower than three bins. */
+    double measurePitch (const denoise::SelRect& b) const
+    {
+        const double middle = std::sqrt (b.f0 * b.f1);
+        if (spec.frames <= 1 || dT1 <= dT0 || spec.bins < 4) return middle;
+        const double ta = juce::jmax (b.t0, dT0), tb = juce::jmin (b.t1, dT1);
+        if (tb <= ta) return middle;
+        auto frameOf = [this] (double t) { return juce::jlimit (0, spec.frames - 1, (int) std::lround ((t - dT0) / (dT1 - dT0) * (double) (spec.frames - 1))); };
+        const int fa = frameOf (ta), fb = juce::jmax (fa, frameOf (tb)), stepF = juce::jmax (1, (fb - fa + 1) / 160);
+        const bool low = spec.lowBins >= 2 && spec.lowBinHz > 0.0 && middle < std::sqrt (spec.crossLo * spec.crossHi);     // the long (bass) analysis below the cross-over
+        const double binHz = low ? spec.lowBinHz : spec.sampleRate / spec.fftSize;
+        const int nb = low ? spec.lowBins : spec.bins;
+        const int b0 = juce::jmax (1, (int) std::ceil (b.f0 / binHz)), b1 = juce::jmin (nb - 2, (int) std::floor (b.f1 / binHz));
+        if (b1 - b0 < 2) return middle;
+        std::vector<double> db ((size_t) (b1 - b0 + 3), 0.0);                         // bins b0 - 1 .. b1 + 1
+        for (int bin = b0 - 1; bin <= b1 + 1; ++bin)
+        {
+            double p = 0.0; int n = 0;
+            for (int fr = fa; fr <= fb; fr += stepF)
+            {
+                const float v = low ? spec.lowDb[(size_t) fr * (size_t) spec.lowBins + (size_t) bin] : spec.at (fr, bin);
+                p += std::pow (10.0, (double) v / 10.0); ++n;
+            }
+            db[(size_t) (bin - b0 + 1)] = 10.0 * std::log10 (juce::jmax (1.0e-30, p / (double) juce::jmax (1, n)));
+        }
+        int pk = b0;
+        for (int bin = b0; bin <= b1; ++bin) if (db[(size_t) (bin - b0 + 1)] > db[(size_t) (pk - b0 + 1)]) pk = bin;
+        std::vector<double> inside (db.begin() + 1, db.end() - 1);
+        std::nth_element (inside.begin(), inside.begin() + (long) inside.size() / 2, inside.end());
+        if (db[(size_t) (pk - b0 + 1)] - inside[inside.size() / 2] < 6.0) return middle;      // nothing stands out: no steady line to measure
+        const double l = db[(size_t) (pk - b0)], c = db[(size_t) (pk - b0 + 1)], r = db[(size_t) (pk - b0 + 2)];
+        const double den = l - 2.0 * c + r;
+        const double d = den < -1.0e-9 ? juce::jlimit (-0.5, 0.5, 0.5 * (l - r) / den) : 0.0;
+        return juce::jlimit (b.f0, b.f1, ((double) pk + d) * binHz);
+    }
+    // ---- 3.33.0: the selection tools, the brush strokes and the soft shape they make
+    Tool tool = Tool::rect;
+    int brushPx = 18;
+    juce::Point<int> downAt; bool moved = false, freshOnDrag = false;  // where the button went down; whether it has become a drag; a plain drag starts afresh
+    /** One circle of a brush stroke: its middle (seconds, log2 Hz) and how far it reaches (seconds; octaves up and down - the picture's pitch scale is not even). */
+    struct Dab { double t = 0.0, lf = 0.0, rt = 0.0, up = 0.0, down = 0.0; };
+    struct Stroke { std::vector<Dab> dabs; bool add = true; int seq = 0; };
+    std::vector<Stroke> strokes;
+    std::vector<int> boxSeq;                                    // the order each box was drawn in, beside the strokes' (a later take-out takes from what came before)
+    int nextSeq = 1;
+    std::vector<juce::Point<int>> paintPts;                     // the stroke being painted, on the screen (drawn as it goes; the shape is made when the button comes up)
+    std::vector<Part> softParts;                                // the soft shape's parts (when there are brush strokes)
+    int softVersion = 0;
+    /** The soft shape on a grid over time and pitch (log2 Hz): which cells are selected, and which part each belongs to (0: none). */
+    struct SoftGrid { double t0 = 0.0, dt = 1.0, lf0 = 0.0, dl = 1.0; int nt = 0, nf = 0; std::vector<uint8_t> hard; } sg;
+    juce::Image softImage; int softImageVersion = -1; juce::Rectangle<int> softImageArea; std::array<double, 6> softImageView {};
+    bool hasStrokes() const { for (auto& st : strokes) if (! st.dabs.empty()) return true; return false; }
+    bool hasAddStrokes() const { for (auto& st : strokes) if (st.add && ! st.dabs.empty()) return true; return false; }
+    double nyq() const { return spec.sampleRate * 0.5; }
+    bool isTimeBox (const denoise::SelRect& r) const { return r.f0 <= 0.0 && r.f1 >= nyq() * 0.999; }
+    void clearMarks() { boxes.clear(); boxSeq.clear(); strokes.clear(); paintPts.clear(); dropHarmonics(); softParts.clear(); sg = SoftGrid(); ++softVersion; }
+    struct Ext { double t0 = 0.0, t1 = 0.0, f0 = 0.0, f1 = 0.0; };
+    Ext extent() const
+    {
+        Ext e { 1.0e30, -1.0e30, 1.0e30, -1.0e30 }; bool any = false;
+        for (auto& r : rects) { any = true; e.t0 = juce::jmin (e.t0, r.t0); e.t1 = juce::jmax (e.t1, r.t1); e.f0 = juce::jmin (e.f0, r.f0); e.f1 = juce::jmax (e.f1, r.f1); }
+        for (auto& st : strokes)
+            if (st.add)
+                for (auto& d : st.dabs)
+                {
+                    any = true;
+                    e.t0 = juce::jmin (e.t0, d.t - d.rt); e.t1 = juce::jmax (e.t1, d.t + d.rt);
+                    e.f0 = juce::jmin (e.f0, std::exp2 (d.lf - d.down)); e.f1 = juce::jmax (e.f1, std::exp2 (d.lf + d.up));
+                }
+        if (! any) return {};
+        e.t0 = juce::jmax (0.0, e.t0); e.t1 = juce::jmin (duration, e.t1);
+        return e;
+    }
+    /** A circle of the brush at p (the stroke being painted): its size is the brush's on the screen, so it reaches further in time when zoomed out, and as far up
+        and down as the pitch scale shows there. The gap from the last one is filled, so a quick stroke has no holes. */
+    void addDab (juce::Point<int> p)
+    {
+        if (strokes.empty()) return;
+        auto& st = strokes.back();
+        const auto pl = plotArea();
+        p = { juce::jlimit (pl.getX(), pl.getRight() - 1, p.x), juce::jlimit (pl.getY(), pl.getBottom() - 1, p.y) };
+        const auto c = toTF (p);
+        const double hz = juce::jmax (1.0, c.y);
+        Dab d;
+        d.t = c.x; d.lf = std::log2 (hz);
+        d.rt = (double) brushPx / (double) juce::jmax (1, pl.getWidth()) * (vt1 - vt0);
+        d.up = juce::jmax (1.0e-3, std::log2 (juce::jmax (1.0, toTF ({ p.x, p.y - brushPx }).y) / hz));
+        d.down = juce::jmax (1.0e-3, std::log2 (hz / juce::jmax (1.0, toTF ({ p.x, p.y + brushPx }).y)));
+        if (p.y - brushPx < pl.getY()) d.up = juce::jmax (d.up, d.down);          // (at the top or bottom of the picture: as far as on the other side)
+        if (p.y + brushPx >= pl.getBottom()) d.down = juce::jmax (d.down, d.up);
+        if (! st.dabs.empty())
+        {
+            const auto q = st.dabs.back();
+            const double gap = juce::jmax (std::abs (d.t - q.t) / juce::jmax (1.0e-9, d.rt), std::abs (d.lf - q.lf) / juce::jmax (1.0e-6, juce::jmin (d.up, d.down)));
+            const int n = (int) std::ceil (gap / 0.3);
+            for (int i = 1; i < n && n < 2000; ++i)
+            {
+                const double f = (double) i / (double) n;
+                st.dabs.push_back ({ q.t + f * (d.t - q.t), q.lf + f * (d.lf - q.lf), q.rt + f * (d.rt - q.rt), q.up + f * (d.up - q.up), q.down + f * (d.down - q.down) });
+            }
+        }
+        st.dabs.push_back (d);
+        paintPts.push_back (p);
+        repaint (juce::Rectangle<int> (p.x - brushPx - 2, p.y - brushPx - 2, 2 * brushPx + 4, 2 * brushPx + 4).getUnion (paintPts.size() > 1
+                     ? juce::Rectangle<int> (paintPts[paintPts.size() - 2].x - brushPx - 2, paintPts[paintPts.size() - 2].y - brushPx - 2, 2 * brushPx + 4, 2 * brushPx + 4) : juce::Rectangle<int>()));
+    }
+    /** The brush's shape: the boxes (the harmonics with theirs) and the strokes, each added or taken out in the order it was drawn, on a grid over time and
+        pitch; then each piece of it that stands on its own is one part - its box and its mask (the cells of that piece 1, everything else 0). */
+    void buildSoft()
+    {
+        softParts.clear(); sg = SoftGrid();
+        const auto ex = extent();
+        if (ex.t1 <= ex.t0) return;
+        const double lfBottom = std::log2 (16.0), lfTop = std::log2 (juce::jmax (32.0, nyq()));
+        const double ta = ex.t0, tb = ex.t1;
+        const double la = juce::jmax (lfBottom, ex.f0 > 16.0 ? std::log2 (ex.f0) : lfBottom), lb = juce::jmin (lfTop, std::log2 (juce::jmax (17.0, ex.f1)));
+        if (tb <= ta || lb <= la) return;
+        const bool atBottom = la <= lfBottom + 1.0e-9, atTop = lb >= lfTop - 1.0e-9;
+        const int ct = juce::jlimit (8, 1600, (int) std::ceil ((tb - ta) / 0.004)), cf = juce::jlimit (8, 720, (int) std::ceil ((lb - la) * 64.0));
+        sg.dt = (tb - ta) / ct; sg.dl = (lb - la) / cf;
+        sg.nt = ct + 4; sg.nf = cf + 4;                                         // (two empty cells round it, so a part's mask is 0 at its edges)
+        sg.t0 = ta - 2.0 * sg.dt; sg.lf0 = la - 2.0 * sg.dl;
+        sg.hard.assign ((size_t) sg.nt * (size_t) sg.nf, 0);
+        const int nt = sg.nt, nf = sg.nf;
+        auto cellT = [this] (int i) { return sg.t0 + ((double) i + 0.5) * sg.dt; };
+        auto cellL = [this] (int j) { return sg.lf0 + ((double) j + 0.5) * sg.dl; };
+        auto span = [] (double lo, double hi, double base, double step, int n, int& i0, int& i1)
+        {   // the cells whose middles lie in [lo, hi] - at least the one under the middle, for a box thinner than a cell
+            i0 = (int) std::ceil ((lo - base) / step - 0.5); i1 = (int) std::floor ((hi - base) / step - 0.5);
+            if (i1 < i0) i0 = i1 = (int) std::floor ((0.5 * (lo + hi) - base) / step);
+            i0 = juce::jmax (0, i0); i1 = juce::jmin (n - 1, i1);
+        };
+        auto paintBox = [&] (const denoise::SelRect& r)
+        {
+            int i0, i1, j0, j1;
+            span (r.t0, r.t1, sg.t0, sg.dt, nt, i0, i1);
+            if (isTimeBox (r)) { j0 = 0; j1 = nf - 1; }
+            else span (std::log2 (juce::jmax (1.0, r.f0)), std::log2 (juce::jmax (1.0, r.f1)), sg.lf0, sg.dl, nf, j0, j1);
+            for (int i = i0; i <= i1; ++i) for (int j = j0; j <= j1; ++j) sg.hard[(size_t) i * (size_t) nf + (size_t) j] = r.add ? 1 : 0;
+        };
+        auto paintStroke = [&] (const Stroke& st)
+        {
+            for (auto& d : st.dabs)
+            {
+                int i0, i1, j0, j1;
+                span (d.t - d.rt, d.t + d.rt, sg.t0, sg.dt, nt, i0, i1);
+                span (d.lf - d.down, d.lf + d.up, sg.lf0, sg.dl, nf, j0, j1);
+                for (int i = i0; i <= i1; ++i)
+                {
+                    const double x = (cellT (i) - d.t) / juce::jmax (1.0e-9, d.rt);
+                    for (int j = j0; j <= j1; ++j)
+                    {
+                        const double dl = cellL (j) - d.lf, y = dl / (dl >= 0.0 ? d.up : d.down);
+                        if (x * x + y * y <= 1.0) sg.hard[(size_t) i * (size_t) nf + (size_t) j] = st.add ? 1 : 0;
+                    }
+                }
+            }
+        };
+        // in the order they were drawn (the harmonics straight after their box)
+        std::vector<std::pair<int, int>> order;                                 // (seq, index: boxes from 0, strokes from 1000000)
+        for (size_t i = 0; i < boxes.size(); ++i) order.push_back ({ i < boxSeq.size() ? boxSeq[i] : 0, (int) i });
+        for (size_t k = 0; k < strokes.size(); ++k) order.push_back ({ strokes[k].seq, 1000000 + (int) k });
+        std::stable_sort (order.begin(), order.end(), [] (const auto& x, const auto& y) { return x.first < y.first; });
+        for (auto& o : order)
+        {
+            if (o.second >= 1000000) { paintStroke (strokes[(size_t) (o.second - 1000000)]); continue; }
+            paintBox (boxes[(size_t) o.second]);
+            if (o.second == harmBase) for (auto& hb : harmBoxes) paintBox (hb);
+        }
+        // the pieces that stand on their own: each one a part
+        std::vector<int> label ((size_t) nt * (size_t) nf, 0);
+        std::vector<int> stack;
+        int parts = 0;
+        for (int i0 = 0; i0 < nt; ++i0)
+            for (int j0 = 0; j0 < nf; ++j0)
+            {
+                const size_t c0 = (size_t) i0 * (size_t) nf + (size_t) j0;
+                if (! sg.hard[c0] || label[c0] != 0) continue;
+                ++parts;
+                int lo_i = i0, hi_i = i0, lo_j = j0, hi_j = j0;
+                stack.assign (1, (int) c0); label[c0] = parts;
+                while (! stack.empty())
+                {
+                    const int c = stack.back(); stack.pop_back();
+                    const int i = c / nf, j = c % nf;
+                    lo_i = juce::jmin (lo_i, i); hi_i = juce::jmax (hi_i, i); lo_j = juce::jmin (lo_j, j); hi_j = juce::jmax (hi_j, j);
+                    const int nb[4][2] = { { i - 1, j }, { i + 1, j }, { i, j - 1 }, { i, j + 1 } };
+                    for (auto& q : nb)
+                    {
+                        if (q[0] < 0 || q[0] >= nt || q[1] < 0 || q[1] >= nf) continue;
+                        const size_t cq = (size_t) q[0] * (size_t) nf + (size_t) q[1];
+                        if (sg.hard[cq] && label[cq] == 0) { label[cq] = parts; stack.push_back ((int) cq); }
+                    }
+                }
+                // its mask: one empty cell round it (0 at its edges), the cells of this piece 1
+                const int a0 = juce::jmax (0, lo_i - 1), a1 = juce::jmin (nt - 1, hi_i + 1), b0 = juce::jmax (0, lo_j - 1), b1 = juce::jmin (nf - 1, hi_j + 1);
+                auto m = std::make_shared<SoftMask>();
+                m->nt = a1 - a0 + 1; m->nf = b1 - b0 + 1;
+                if (m->nt < 2 || m->nf < 2) continue;
+                m->seconds = (double) (m->nt - 1) * sg.dt; m->lf0 = cellL (b0); m->lf1 = cellL (b1);
+                m->v.assign ((size_t) m->nt * (size_t) m->nf, 0.0f);
+                for (int i = a0; i <= a1; ++i) for (int j = b0; j <= b1; ++j) if (label[(size_t) i * (size_t) nf + (size_t) j] == parts) m->v[(size_t) (i - a0) * (size_t) m->nf + (size_t) (j - b0)] = 1.0f;
+                Part pt;
+                const double T0 = cellT (a0);
+                pt.t0 = juce::jmax (0.0, T0); pt.lead = pt.t0 - T0; pt.t1 = juce::jmin (duration, T0 + m->seconds);
+                pt.f0 = lo_j <= 2 && atBottom ? 0.0 : std::exp2 (m->lf0);                    // (down to the bottom of the picture: every pitch below it too)
+                pt.f1 = hi_j >= nf - 3 && atTop ? nyq() : juce::jmin (nyq(), std::exp2 (m->lf1));
+                if (pt.t1 - pt.t0 < 1.0e-4 || pt.f1 <= pt.f0) continue;
+                pt.mask = m;
+                softParts.push_back (pt);
+            }
+        ++softVersion;
     }
     juce::Point<int> hover { -1, -1 };                          // 3.28.0: where the pointer is over the picture, for the read-out (-1: not over it)
     double refA = 440.0;
@@ -1005,8 +1467,11 @@ private:
     {
         if (! plotArea().contains (p)) p = { -1, -1 };
         if (p == hover) return;
+        const auto was = hover;
         hover = p;
         const auto pl = plotArea();
+        if (tool == Tool::brush)                                                  // (3.33.0: the brush's circle, where it was and where it is)
+            for (auto q : { was, p }) if (q.x >= 0) repaint (q.x - brushPx - 3, q.y - brushPx - 3, 2 * brushPx + 6, 2 * brushPx + 6);
         repaint (0, 0, pl.getX(), getHeight());                                   // the tag on the pitch scale
         repaint (0, pl.getBottom(), getWidth(), getHeight() - pl.getBottom());    // the line under the picture
     }
@@ -1024,7 +1489,7 @@ private:
         g.setColour (juce::Colours::black); g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
         g.drawText (hzText, tag.reduced (2, 0), juce::Justification::centredRight, false);
         const auto noteText = tuning::nearestNote (hz, refA);
-        const juce::String line = juce::String (hz, hz < 100.0 ? 1 : 0) + " Hz" + (noteText.isNotEmpty() ? "   " + noteText : juce::String()) + "   " + juce::String (tf.x, 3) + " s";
+        const juce::String line = juce::String (hz, hz < 100.0 ? 1 : 0) + " Hz" + (noteText.isNotEmpty() ? "   " + noteText : juce::String()) + "   " + specTime (tf.x, 3);
         g.setColour (juce::Colours::white.withAlpha (0.9f)); g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
         g.drawText (line, juce::Rectangle<int> (pl.getRight() - 360, pl.getBottom() + 4, 360, getHeight() - pl.getBottom() - 6), juce::Justification::centredRight, false);
     }
@@ -1105,7 +1570,7 @@ private:
     juce::Rectangle<int> plotArea() const { return getLocalBounds().withTrimmedLeft (46).withTrimmedTop (22).withTrimmedBottom (30); }
     juce::Rectangle<int> rulerArea() const { auto pl = plotArea(); return { pl.getX(), 0, pl.getWidth(), pl.getY() }; }
     juce::Rectangle<int> knobArea() const { return { 8, getHeight() - 28, 24, 24 }; }
-    void note() { if (onNote) onNote ("Showing " + juce::String (vt0, 2) + " - " + juce::String (vt1, 2) + " s.  Right / left arrows zoom in / out in time, down / up in pitch; click the ruler to place the playhead, drag it to move; double-click the ruler to see it all."); }
+    void note() { if (onNote) onNote ("Showing " + specTime (vt0, 2) + " - " + specTime (vt1, 2) + ".  Right / left arrows zoom in / out in time, down / up in pitch; click the ruler to place the playhead, drag it to move; double-click the ruler to see it all."); }
     void setWindow (double t0, double span)
     {
         span = juce::jlimit (juce::jmin (0.05, duration), duration, span);
@@ -1135,12 +1600,14 @@ private:
         gets the box (the last one drawn first; the boxes added, not those taken out). */
     int edgesAt (juce::Point<int> p, int* which = nullptr) const
     {
-        if (! hasSel) return 0;
+        if (! hasSel || tool == Tool::brush) return 0;
         for (int i = (int) boxes.size(); i-- > 0;)
         {
             if (! boxes[(size_t) i].add) continue;
-            const auto r = rectOf (boxes[(size_t) i]);                        // (the rules - sides belong to one axis, only a real corner takes both - are in core/BoxEdges.h, with a test)
-            if (const int ed = boxedit::edgesAt ({ r.getX(), r.getY(), r.getWidth(), r.getHeight() }, p.x, p.y)) { if (which != nullptr) *which = i; return ed; }
+            const auto r = rectOf (boxes[(size_t) i]).getIntersection (plotArea().expanded (1));      // (the rules - sides belong to one axis, only a real corner takes both - are in core/BoxEdges.h, with a test)
+            int ed = boxedit::edgesAt ({ r.getX(), r.getY(), r.getWidth(), r.getHeight() }, p.x, p.y);
+            if (isTimeBox (boxes[(size_t) i])) ed &= 3;                        // (3.33.0: a Time box has every pitch: only its two sides in time)
+            if (ed != 0) { if (which != nullptr) *which = i; return ed; }
         }
         return 0;
     }
@@ -1208,6 +1675,226 @@ private:
     bool showSurround = false; double surroundPct = 100.0; int surroundDir = 0; double surroundAfter = 0.5;
 };
 
+/** 3.33.0: the harmonics of ReTouch, in the ReTouch window and in Noise mode: they give the box you drew boxes on the other harmonics of its sound (see
+    SpectrogramView::setHarmonics). Harmonics (H) adds them or takes them away; pressed and dragged up it adds more as the mouse goes up (down: fewer); - and +
+    take one away or add one; "My box is the" says which harmonic the box is on (the fundamental is the 1st); Spread and Thinning shape them. The count, the spread
+    and the thinning are remembered in the program's settings. */
+class HarmonicsBar : public juce::Component
+{
+public:
+    explicit HarmonicsBar (SpectrogramView& v) : view (v)
+    {
+        if (gSpecPrefs != nullptr)
+        {
+            h.count = juce::jlimit (1, 4000, gSpecPrefs->getIntValue ("harmCount", 10));
+            h.spreadCents = juce::jlimit (-100.0, 100.0, gSpecPrefs->getDoubleValue ("harmSpread", 0.0));
+            h.thinning = juce::jlimit (0.0, 1.0, gSpecPrefs->getDoubleValue ("harmThin", 1.0));
+        }
+        harmBtn.setButtonText ("Harmonics");
+        harmBtn.setColour (juce::TextButton::buttonOnColourId, theme::accent);
+        harmBtn.setMouseCursor (juce::MouseCursor::UpDownResizeCursor);
+        harmBtn.setTooltip ("Harmonics (key H): a box on each harmonic of the note in the box you drew - the fundamental is the 1st harmonic. Click to add them, click again "
+                            "to take them away. Press and drag up to add more as you go (down: fewer); they go as high as the picture. Alt + drag in the picture takes any of them out again.");
+        harmBtn.onClick = [this] { if (view.harmonicsOn()) view.clearHarmonics(); else apply(); refresh(); };
+        harmBtn.onPress = [this] { if (! view.harmonicsOn()) apply(); dragFrom = h.count; };
+        harmBtn.onSteps = [this] (int s) { setCount (dragFrom + s); };
+        for (auto* b : { &minusBtn, &plusBtn }) { b->setConnectedEdges (b == &minusBtn ? juce::Button::ConnectedOnRight : juce::Button::ConnectedOnLeft); addAndMakeVisible (*b); }
+        minusBtn.setTooltip ("One harmonic fewer."); plusBtn.setTooltip ("One harmonic more (as many as you like, up to the top of the picture).");
+        minusBtn.onClick = [this] { if (! view.harmonicsOn()) apply(); setCount (h.count - 1); };
+        plusBtn.onClick  = [this] { if (! view.harmonicsOn()) apply(); setCount (h.count + 1); };
+        countLbl.setJustificationType (juce::Justification::centred); countLbl.setColour (juce::Label::textColourId, theme::text);
+        addAndMakeVisible (countLbl); addAndMakeVisible (harmBtn);
+        for (int i = 1; i <= 4; ++i) boxIsBox.addItem (i == 1 ? "1st (fundamental)" : i == 2 ? "2nd harmonic" : i == 3 ? "3rd harmonic" : "4th harmonic", i);
+        boxIsBox.setSelectedId (1, juce::dontSendNotification);
+        boxIsBox.setTooltip ("Which harmonic your box is on. If the noise can still be heard after ReTouch, try 2nd, 3rd or 4th: the fundamental and the harmonics below your box are then taken too.");
+        boxIsBox.onChange = [this] { h.boxIs = juce::jmax (1, boxIsBox.getSelectedId()); h.count = juce::jmax (h.count, h.boxIs); if (view.harmonicsOn()) apply(); refresh(); };
+        addAndMakeVisible (boxIsBox);
+        auto cap = [this] (juce::Label& l, const juce::String& t) { l.setText (t, juce::dontSendNotification); l.setColour (juce::Label::textColourId, theme::text); addAndMakeVisible (l); };
+        cap (boxIsCap, "My box is the"); cap (spreadCap, "Spread"); cap (thinCap, "Thinning");
+        auto slider = [this] (juce::Slider& sl, double lo, double hi, double step, double v, const juce::String& suffix, double home)
+        {
+            sl.setSliderStyle (juce::Slider::LinearHorizontal); sl.setRange (lo, hi, step); sl.setValue (v, juce::dontSendNotification); sl.setScrollWheelEnabled (false);
+            sl.setTextBoxStyle (juce::Slider::TextBoxRight, false, 54, 22); sl.setTextValueSuffix (suffix); sl.setDoubleClickReturnValue (true, home);
+            sl.onValueChange = [this] { h.spreadCents = spread.getValue(); h.thinning = thin.getValue() / 100.0; if (view.harmonicsOn()) apply(); refresh(); };
+            addAndMakeVisible (sl);
+        };
+        slider (spread, -100.0, 100.0, 1.0, h.spreadCents, " c", 0.0); slider (thin, 0.0, 100.0, 1.0, h.thinning * 100.0, " %", 100.0);
+        spread.textFromValueFunction = [] (double x) { return (x > 0.0 ? "+" : "") + juce::String ((int) std::lround (x)); };     // (the slider adds " c")
+        spread.updateText();
+        spread.setTooltip ("0: the harmonics exactly 2, 3, 4 ... times the fundamental. Up: each one a little sharper the higher it is, as a piano's upper harmonics are; "
+                           "down: a little flatter. The number is how many cents the 10th harmonic moves. Double-click for 0.");
+        thin.setTooltip ("How the boxes narrow as they go up. 100 % (the standard): every box as wide in Hz as yours - draw it snugly round the line, and the high "
+                         "harmonics get the same few Hz either side, so they keep clear of the harmonics next to them. 0 %: as wide musically as yours (wider in Hz the higher "
+                         "it is). Whatever this is, no box reaches more than 45 % of the way to the next harmonic. Double-click for 100 %.");
+        readout.setColour (juce::Label::textColourId, theme::dimText); readout.setMinimumHorizontalScale (0.75f);
+        addAndMakeVisible (readout);
+        view.onHarmonics = [this] { refresh(); };
+        refresh();
+    }
+    /** H: harmonics on or off. */
+    void toggle() { harmBtn.triggerClick(); }
+    /** The width that takes everything in one row (without the read-out); narrower, the windows give the bar two rows: the count and the box on the first,
+        Spread and Thinning on the second. */
+    static constexpr int kFirstW = 96 + 4 + 24 + 34 + 24 + 12 + 88 + 2 + 140 + 12, kSecondW = 50 + 2 + 170 + 12 + 62 + 2 + 170 + 12, kOneRowW = kFirstW + kSecondW;
+    static constexpr int kReadoutMinW = 220;
+    void resized() override
+    {
+        const bool twoRows = getHeight() >= 40;
+        auto r = twoRows ? getLocalBounds().removeFromTop (getHeight() / 2 - 2) : getLocalBounds();
+        auto put = [&r] (juce::Component& c, int w, int gap) { c.setBounds (r.removeFromLeft (juce::jmin (w, juce::jmax (0, r.getWidth())))); r.removeFromLeft (juce::jmin (gap, r.getWidth())); };
+        put (harmBtn, 96, 4); put (minusBtn, 24, 0); put (countLbl, 34, 0); put (plusBtn, 24, 12);
+        put (boxIsCap, 88, 2); put (boxIsBox, 140, 12);
+        auto rest = r;
+        if (twoRows) r = getLocalBounds().removeFromBottom (getHeight() / 2 - 2);
+        put (spreadCap, 50, 2); put (spread, 170, 12);
+        put (thinCap, 62, 2); put (thin, 170, 12);
+        if (! twoRows) rest = r;
+        readoutFits = rest.getWidth() >= kReadoutMinW;
+        readout.setBounds (readoutFits ? rest : juce::Rectangle<int>());
+        refresh();
+    }
+private:
+    struct DragKey : juce::TextButton
+    {
+        std::function<void()> onPress;                            // the drag has begun (it went more than a few pixels)
+        std::function<void (int)> onSteps;                        // how far it is up from where it began, in harmonics (down: below 0)
+        void mouseDown (const juce::MouseEvent& e) override { dragged = false; last = 0; juce::TextButton::mouseDown (e); }
+        void mouseDrag (const juce::MouseEvent& e) override
+        {
+            juce::TextButton::mouseDrag (e);
+            if (! dragged && std::abs (e.getDistanceFromDragStartY()) < 5) return;
+            if (! dragged) { dragged = true; if (onPress) onPress(); }
+            const int s = -e.getDistanceFromDragStartY() / 8;          // one harmonic every 8 pixels
+            if (s != last) { last = s; if (onSteps) onSteps (s); }
+        }
+        void mouseUp (const juce::MouseEvent& e) override
+        {
+            if (dragged) { dragged = false; setState (juce::Button::buttonNormal); return; }      // (a drag is not a click)
+            juce::TextButton::mouseUp (e);
+        }
+        bool dragged = false; int last = 0;
+    };
+    void apply()
+    {
+        if (! view.setHarmonics (h)) readout.setText ("Draw a box round a note first (its fundamental, or any harmonic of it), then press Harmonics.", juce::dontSendNotification);
+        save();
+    }
+    void setCount (int n)
+    {
+        const int top = view.harmonicsOn() ? view.maxHarmonic (h) : n;
+        h.count = juce::jlimit (juce::jmax (1, h.boxIs), juce::jmax (h.boxIs, top), n);
+        if (view.harmonicsOn()) view.setHarmonics (h);
+        save(); refresh();
+    }
+    void save()
+    {
+        if (gSpecPrefs == nullptr) return;
+        gSpecPrefs->setValue ("harmCount", h.count); gSpecPrefs->setValue ("harmSpread", h.spreadCents); gSpecPrefs->setValue ("harmThin", h.thinning);
+    }
+    void refresh()
+    {
+        const bool on = view.harmonicsOn();
+        harmBtn.setToggleState (on, juce::dontSendNotification);
+        countLbl.setText (juce::String (h.count), juce::dontSendNotification);
+        if (! on) { readout.setText ("Draw a box round a note, then press Harmonics (H) - or press it and drag up.", juce::dontSendNotification); countLbl.setTooltip (countTip); return; }
+        const int top = juce::jmin (h.count, view.maxHarmonic (h));
+        const double f = view.harmonicFundamental();
+        const auto nt = tuning::nearestNote (f, view.referenceA());
+        readout.setText ("Fundamental " + juce::String (f, f < 100.0 ? 1 : 0) + " Hz" + (nt.isNotEmpty() ? " (" + nt + ")" : juce::String())
+                         + "   harmonics 1 - " + juce::String (top) + (top < h.count ? " (the top of the picture)" : juce::String()), juce::dontSendNotification);
+        countLbl.setTooltip (readoutFits ? countTip : readout.getText());          // (no room for the read-out: it is the count's tooltip)
+    }
+    bool readoutFits = true;
+    const juce::String countTip { "How many harmonics: 1 to this number (the fundamental is the 1st)." };
+    SpectrogramView& view;
+    SpectrogramView::Harmonics h;
+    int dragFrom = 10;
+    DragKey harmBtn;
+    juce::TextButton minusBtn { "-" }, plusBtn { "+" };
+    juce::Label countLbl, boxIsCap, spreadCap, thinCap, readout;
+    juce::ComboBox boxIsBox;
+    juce::Slider spread, thin;
+};
+
+/** 3.33.0: the selection tools, under Spectrogram settings in the ReTouch window and in Noise mode: Rectangle (S: a box of any shape, as always), Time (T: a
+    stretch of time, every pitch from the bottom to the top), Brush (B: paint the selection; [ and ] make it smaller and larger). The tool and the brush's size
+    are remembered in the program's settings. */
+class SelectToolsBar : public juce::Component
+{
+public:
+    explicit SelectToolsBar (SpectrogramView& v) : view (v)
+    {
+        cap.setText ("Select:", juce::dontSendNotification); cap.setColour (juce::Label::textColourId, theme::text); cap.setJustificationType (juce::Justification::centredRight);
+        addAndMakeVisible (cap);
+        const char* tips[] = { "Rectangle (key S): a box of any shape round the sound, as always. Shift + drag adds another box, Alt + drag takes a part out.",
+                               "Time (key T): a stretch of time, with every pitch in it - from the bottom to the top (half the sample rate). Drag across the time you want; "
+                               "Shift adds another stretch, Alt takes one out.",
+                               "Brush (key B): paint the selection - whatever the circle passes over is selected. Shift paints more onto it, Alt paints parts out again. "
+                               "[ and ] make the brush smaller and larger (or use Size)." };
+        juce::TextButton* bs[] = { &rectBtn, &timeBtn, &brushBtn };
+        for (int i = 0; i < 3; ++i)
+        {
+            auto* b = bs[i];
+            b->setClickingTogglesState (false); b->setTooltip (tips[i]);
+            b->setColour (juce::TextButton::buttonOnColourId, theme::accent);
+            b->setConnectedEdges (i == 0 ? juce::Button::ConnectedOnRight : i == 2 ? juce::Button::ConnectedOnLeft : juce::Button::ConnectedOnLeft | juce::Button::ConnectedOnRight);
+            b->onClick = [this, i] { view.setTool ((SpectrogramView::Tool) i); };
+            addAndMakeVisible (*b);
+        }
+        sizeCap.setText ("Size", juce::dontSendNotification); sizeCap.setColour (juce::Label::textColourId, theme::text); sizeCap.setJustificationType (juce::Justification::centredRight);
+        addAndMakeVisible (sizeCap);
+        size.setSliderStyle (juce::Slider::LinearHorizontal); size.setRange (3.0, 150.0, 1.0); size.setScrollWheelEnabled (false);
+        size.setTextBoxStyle (juce::Slider::TextBoxRight, false, 54, 22); size.setTextValueSuffix (" px"); size.setSkewFactorFromMidPoint (30.0);
+        size.setTooltip ("The brush's size (its radius on the screen). Keys: [ smaller, ] larger.");
+        size.onValueChange = [this] { view.setBrushSize ((int) size.getValue()); };
+        addAndMakeVisible (size);
+        if (gSpecPrefs != nullptr)
+        {
+            view.setBrushSize (gSpecPrefs->getIntValue ("brushPx", 18));
+            view.setTool ((SpectrogramView::Tool) juce::jlimit (0, 2, gSpecPrefs->getIntValue ("selTool", 0)));
+        }
+        view.onTool = [this] { refresh(); };
+        refresh();
+    }
+    static constexpr int kWidth = 52 + 108 + 80 + 86 + 10 + 36 + 160;
+    void resized() override
+    {
+        auto r = getLocalBounds();
+        cap.setBounds (r.removeFromLeft (52)); r.removeFromLeft (4);
+        rectBtn.setBounds (r.removeFromLeft (104)); timeBtn.setBounds (r.removeFromLeft (80)); brushBtn.setBounds (r.removeFromLeft (86));
+        r.removeFromLeft (10);
+        sizeCap.setBounds (r.removeFromLeft (36)); r.removeFromLeft (2);
+        size.setBounds (r.removeFromLeft (juce::jmin (160, r.getWidth())));
+    }
+    /** S, T, B, [ and ] (no other key held). */
+    bool key (const juce::KeyPress& k)
+    {
+        if (k.getModifiers().isAnyModifierKeyDown()) return false;
+        const auto ch = k.getTextCharacter();
+        if (ch == 's' || ch == 'S') { view.setTool (SpectrogramView::Tool::rect); return true; }
+        if (ch == 't' || ch == 'T') { view.setTool (SpectrogramView::Tool::time); return true; }
+        if (ch == 'b' || ch == 'B') { view.setTool (SpectrogramView::Tool::brush); return true; }
+        if (ch == '[' || ch == ']') { view.setBrushSize (view.brushSize() + (ch == '[' ? -1 : 1) * juce::jmax (1, view.brushSize() / 6)); return true; }
+        return false;
+    }
+private:
+    void refresh()
+    {
+        const auto t = view.currentTool();
+        rectBtn.setToggleState (t == SpectrogramView::Tool::rect, juce::dontSendNotification);
+        timeBtn.setToggleState (t == SpectrogramView::Tool::time, juce::dontSendNotification);
+        brushBtn.setToggleState (t == SpectrogramView::Tool::brush, juce::dontSendNotification);
+        const bool brush = t == SpectrogramView::Tool::brush;
+        size.setVisible (brush); sizeCap.setVisible (brush);
+        size.setValue (view.brushSize(), juce::dontSendNotification);
+        if (gSpecPrefs != nullptr) { gSpecPrefs->setValue ("selTool", (int) t); gSpecPrefs->setValue ("brushPx", view.brushSize()); }
+    }
+    SpectrogramView& view;
+    juce::Label cap, sizeCap;
+    juce::TextButton rectBtn { "Rectangle [S]" }, timeBtn { "Time [T]" }, brushBtn { "Brush [B]" };
+    juce::Slider size;
+};
+
 class RepairDialog : public JobDialogBase
 {
 public:
@@ -1216,6 +1903,7 @@ public:
         setSize (1100, 760);
         intro.setText (ctx.what, juce::dontSendNotification); intro.setColour (juce::Label::textColourId, theme::text); intro.setJustificationType (juce::Justification::topLeft);
         addAndMakeVisible (intro); addAndMakeVisible (view); addAndMakeVisible (info);
+        addAndMakeVisible (harmBar); addAndMakeVisible (toolsBar);
         info.setColour (juce::Label::textColourId, theme::text);
         dirBox.addItem ("Direction: Horizontal", 1); dirBox.addItem ("Direction: Vertical", 2); dirBox.addItem ("Direction: 2D (both)", 3);
         dirBox.setSelectedId (1, juce::dontSendNotification); dirBox.onChange = [this] { refreshControls(); invalidate(); };
@@ -1251,6 +1939,7 @@ public:
         addAndMakeVisible (quietBox);
         strength.setTooltip ("How much of the repair replaces the original sound inside the box. 100 % is a full repair; less keeps some of the original.");
         surround.setTooltip ("How much of the sound around the box is used, as a percentage of the box: its length in time (left and right) and its height in pitch (up and down).");
+        setupSides();                                                            // 3.33.0: L, C and R beside the slider
         weight.setTooltip ("0 uses only the sound before the box, 100 only the sound after it, 50 uses both equally (a cross-fade). Applies to left and right.\n"
                            "Attenuate a stray consonant: leave it at 50 and Fermata finds, for every track, the side away from the main consonant; move it to choose a side yourself.");
         methodBox.addItem ("Method: Attenuate", 1); methodBox.addItem ("Method: Replace", 2);
@@ -1428,14 +2117,14 @@ public:
     static constexpr int kRowH = 24, kRowGap = 4, kPanelPad = 6, kTabW = 104, kTabGap = 12, kCapGap = 12, kTransportH = 26, kActionW = 116;      // (kActionW: the button that does the work, the same size and in the same place on every tab)
     static constexpr int sliderW = 140;                                           // a slider with its number: short on purpose
     static constexpr int kChoicesW = 184 + 8 + 180 + 8 + 96 + 8 + 132 + 8 + 112;                       // the five choices of ReTouch in a row
-    static constexpr int kAmountsW = (58 + sliderW) + kCapGap + (116 + sliderW) + kCapGap + (100 + sliderW) + 16 + kActionW;   // its three sliders and the button in a row
+    static constexpr int kAmountsW = (58 + sliderW) + kCapGap + (116 + sliderW) + kCapGap + (100 + sliderW) + 3 * 26 + kCapGap + 16 + kActionW;   // its three sliders (L C R after the last) and the button in a row
     static constexpr int kListenW = 70 + 6 + 60 + 6 + 64 + 12 + 62 + 170, kBarMinW = 90, kFixesW = 120 + 8 + 70 + 8 + 176 + 8 + 96;
     int tab = kTabTouch;
     juce::TextButton tabBtn[kTabCount];
     juce::Label gainHint;
     juce::Rectangle<int> panelR, contentR;                                       // the tool panel and the part of it that holds the controls (set by layoutBottom)
-    /** ReTouch has two rows (the choices; the sliders and the button) and, where the window is narrow, one more for each that does not fit in a row. */
-    static int reTouchRows (int w) { return (w >= kChoicesW ? 1 : 2) + (w >= kAmountsW ? 1 : 2); }
+    /** ReTouch has three rows (the choices; the sliders and the button; the harmonics) and, where the window is narrow, one more for each that does not fit in a row. */
+    static int reTouchRows (int w) { return (w >= kChoicesW ? 1 : 2) + (w >= kAmountsW ? 1 : 2) + (w - kActionW - 16 >= HarmonicsBar::kOneRowW ? 1 : 2); }
     static int transportRows (int w) { return w >= kListenW + 8 + kBarMinW + 16 + kFixesW ? 1 : 2; }
     static juce::Rectangle<int> rowOf (juce::Rectangle<int> inner, int row) { return { inner.getX(), inner.getY() + row * (kRowH + kRowGap), inner.getWidth(), kRowH }; }
     /** Puts a control at the left of the row (nothing if it is hidden: the ones after it move up to fill the space). */
@@ -1454,7 +2143,7 @@ public:
     {
         switch (t)
         {
-            case kTabTouch:   return { &methodBox, &dirBox, &bandsBox, &multiBtn, &linkBtn, &strengthCap, &strength, &surroundCap, &surround, &weightCap, &weight, &previewBtn };
+            case kTabTouch:   return { &methodBox, &dirBox, &bandsBox, &multiBtn, &linkBtn, &strengthCap, &strength, &surroundCap, &surround, &weightCap, &weight, &sideL, &sideC, &sideR, &previewBtn, &harmBar };
             case kTabGain:    return { &gainBtn, &gainHint, &gainCap, &gainSlider };
             case kTabClick:   return { &sensCap, &sens, &declickBtn };
             case kTabConsonant: return { &copyBtn, &copyMoveBtn, &consHint, &consCap, &consBox, &renameBtn, &forgetBtn, &levelCap, &level,
@@ -1506,15 +2195,19 @@ public:
                 if (in.getWidth() >= kAmountsW)
                 {
                     previewBtn.setBounds (action); r.removeFromRight (kActionW + 16);
-                    putSlider (r, strengthCap, strength, 58); putSlider (r, surroundCap, surround, 116); putSlider (r, weightCap, weight, 100);
+                    putSlider (r, strengthCap, strength, 58); putSlider (r, surroundCap, surround, 116); putSlider (r, weightCap, weight, 100); putSides (r);
                 }
                 else                                                                                           // narrow: Before <-> After and the button go on a second row
                 {
                     putSlider (r, strengthCap, strength, 58); putSlider (r, surroundCap, surround, 116);
                     r = rowOf (in, row++);
-                    putSlider (r, weightCap, weight, 100);
+                    putSlider (r, weightCap, weight, 100); putSides (r);
                     previewBtn.setBounds (action);
                 }
+                r = rowOf (in, row++);                                                                         // 3.33.0: the harmonics (beside the button, on the last row)
+                if (in.getWidth() - kActionW - 16 < HarmonicsBar::kOneRowW) r = r.getUnion (rowOf (in, row++));      // (narrow: two rows)
+                if (r.getBottom() >= action.getY()) r.removeFromRight (kActionW + 16);
+                harmBar.setBounds (r);
                 break;
             }
             case kTabGain:
@@ -1611,7 +2304,7 @@ public:
         auto bottom = r.removeFromBottom (bottomH);
         layoutBottom (bottom, true);
         r.removeFromBottom (4);
-        status.setBounds (r.removeFromBottom (22).reduced (2, 0));
+        { auto sr = r.removeFromBottom (22); toolsBar.setBounds (sr.removeFromRight (juce::jmin (SelectToolsBar::kWidth, sr.getWidth() / 2))); status.setBounds (sr.reduced (2, 0)); }     // (3.33.0: the tools under Spectrogram settings)
         { auto ir = r.removeFromBottom (22); specBtn.setBounds (ir.removeFromRight (150)); ir.removeFromRight (6); scaleBox.setBounds (ir.removeFromRight (300)); ir.removeFromRight (6); detailBox.setBounds (ir.removeFromRight (210)); info.setBounds (ir.reduced (2, 0)); }
         view.setBounds (r);
         repaint (bottom.expanded (2));
@@ -1631,6 +2324,14 @@ protected:
             if (previewBtn.isEnabled()) preview (0);
             return true;
         }
+        if ((k.getTextCharacter() == 'h' || k.getTextCharacter() == 'H') && ! k.getModifiers().isAnyModifierKeyDown())      // 3.33.0: H: the harmonics of the box, on or off
+        {
+            selectTab (kTabTouch);
+            harmBar.toggle();
+            return true;
+        }
+        if (sideKey (k)) return true;                                                                                         // 3.33.0: Z, \ and X: L, C and R
+        if (toolsBar.key (k)) return true;                                                                                    // 3.33.0: S, T, B, [ and ]
         if ((k.getTextCharacter() == 'n' || k.getTextCharacter() == 'N') && ! k.getModifiers().isAnyModifierKeyDown())      // N: denoise the box
         {
             selectTab (kTabDenoise);
@@ -1684,8 +2385,8 @@ private:
     /** The same in a few words, for the little caption in the Denoise box (the full sentence is its tooltip). */
     juce::String roomSpanText() const
     {
-        if (rtSpans.size() > 1) return juce::String ((int) rtSpans.size()) + " stretches, " + juce::String (rtBoxT0, 2) + " - " + juce::String (rtBoxT1, 2) + " s";
-        return "box at " + juce::String (rtBoxT0, 2) + " - " + juce::String (rtBoxT1, 2) + " s";
+        if (rtSpans.size() > 1) return juce::String ((int) rtSpans.size()) + " stretches, " + specTime (rtBoxT0, 2) + " - " + specTime (rtBoxT1, 2);
+        return "box at " + specTime (rtBoxT0, 2) + " - " + specTime (rtBoxT1, 2);
     }
     juce::String roomShortText() const
     {
@@ -1805,10 +2506,11 @@ private:
         weightCap.setText (cons ? "Side (50 = auto)" : "Before <-> After", juce::dontSendNotification);
         bandsBox.setVisible (att); multiBtn.setVisible (att); linkBtn.setVisible (att);
         weight.setVisible (lookingAcross()); weightCap.setVisible (lookingAcross());
+        for (auto* b : { &sideL, &sideC, &sideR }) b->setVisible (lookingAcross());               // 3.33.0: L C R go with the slider
         sens.setVisible (true); sensCap.setVisible (true);
         for (int t = 0; t < kTabCount; ++t) if (t != tab) for (auto* c : tabControls (t)) c->setVisible (false);      // only the tab that is showing
         if (view.hasSelection())
-            info.setText ("Selected: " + (view.boxCount() > 1 ? juce::String (view.boxCount()) + " boxes, " : juce::String()) + juce::String (view.selT0(), 3) + " - " + juce::String (view.selT1(), 3) + " s  ("
+            info.setText ("Selected: " + (view.boxCount() > 1 ? juce::String (view.boxCount()) + " boxes, " : juce::String()) + specTime (view.selT0(), 3) + " - " + specTime (view.selT1(), 3) + "  ("
                           + juce::String ((view.selT1() - view.selT0()) * 1000.0, 0) + " ms),  " + juce::String ((int) view.selF0()) + " - " + juce::String ((int) view.selF1()) + " Hz"
                           + (committed.empty() ? juce::String() : juce::String ("      ") + juce::String ((int) history.size()) + " fix(es) made"), juce::dontSendNotification);
         else info.setText (juce::String ("Nothing selected")
@@ -1892,10 +2594,10 @@ private:
             for (auto& sp : view.selectionSpans()) group.push_back ({ spec, (juce::int64) std::llround (sp.first * ctx.rate), (juce::int64) std::llround (sp.second * ctx.rate) });
             return group;
         }
-        const bool clickBox = audioops::findsLost (spec, ctx.rate, (juce::int64) std::llround (view.selT0() * ctx.rate), (juce::int64) std::llround (view.selT1() * ctx.rate));
-        for (auto& r : view.selectionRects())
+        const bool clickBox = ! view.softSelection() && audioops::findsLost (spec, ctx.rate, (juce::int64) std::llround (view.selT0() * ctx.rate), (juce::int64) std::llround (view.selT1() * ctx.rate));
+        for (auto& r : view.selectionParts())                                   // (3.33.0: a rectangle, or a piece of a brush shape with its mask)
         {
-            auto sp = spec; sp.f0 = r.f0; sp.f1 = r.f1;
+            auto sp = spec; sp.f0 = r.f0; sp.f1 = r.f1; sp.mask = r.mask; sp.maskLead = (juce::int64) std::llround (r.lead * ctx.rate);
             if (! clickBox) { sp.lostKnown = true; sp.lost.clear(); }           // (nothing to look for: the shape is no click box, whatever this piece of it is)
             group.push_back ({ sp, (juce::int64) std::llround (r.t0 * ctx.rate), (juce::int64) std::llround (r.t1 * ctx.rate) });
         }
@@ -2174,7 +2876,46 @@ private:
     RepairContext ctx;
     InfoNote intro; juce::Label info, sensCap, strengthCap, surroundCap, weightCap, amountCap, residualCap, roomCap;
     SpectrogramView view; juce::ComboBox dirBox, scaleBox, detailBox, methodBox, bandsBox; juce::ToggleButton multiBtn { "Multi-resolution" }, linkBtn { "Link stereo" }; juce::TextButton specBtn { "Spectrogram settings..." };
+    HarmonicsBar harmBar { view };                                 // 3.33.0: the harmonics of the box (after the picture: it works on it)
+    SelectToolsBar toolsBar { view };                              // 3.33.0: Rectangle, Time, Brush
     std::shared_ptr<std::atomic<bool>> detailCancel; juce::Slider sens, strength, surround, weight, amount, residual;
+    // 3.33.0: L, C and R beside Before <-> After (Side, for a stray consonant): the sound before the box only (0 %), both / found for each track (50 %), after it only (100 %)
+    juce::TextButton sideL { "L" }, sideC { "C" }, sideR { "R" };
+    static constexpr int kSideW = 26;
+    void setupSides()
+    {
+        const double at[] = { 0.0, 50.0, 100.0 };
+        const char* tips[] = { "L (key Z): only the sound before the box (0 %).",
+                               "C (key \\): both sides (50 %) - for a stray consonant, the side is found for each track.",
+                               "R (key X): only the sound after the box (100 %)." };
+        juce::TextButton* bs[] = { &sideL, &sideC, &sideR };
+        for (int i = 0; i < 3; ++i)
+        {
+            auto* b = bs[i];
+            b->setConnectedEdges (i == 0 ? juce::Button::ConnectedOnRight : i == 2 ? juce::Button::ConnectedOnLeft : juce::Button::ConnectedOnLeft | juce::Button::ConnectedOnRight);
+            b->setTooltip (tips[i]);
+            b->onClick = [this, v = at[i]] { weight.setValue (v, juce::sendNotificationSync); };
+            addAndMakeVisible (*b);
+        }
+    }
+    /** Z, \\ and X: L, C and R (the ReTouch tab comes to the front, so the change can be seen). */
+    bool sideKey (const juce::KeyPress& k)
+    {
+        if (k.getModifiers().isAnyModifierKeyDown()) return false;
+        const auto ch = k.getTextCharacter();
+        const double v = (ch == 'z' || ch == 'Z') ? 0.0 : ch == '\\' ? 50.0 : (ch == 'x' || ch == 'X') ? 100.0 : -1.0;
+        if (v < 0.0) return false;
+        selectTab (kTabTouch);
+        weight.setValue (v, juce::sendNotificationSync);
+        return true;
+    }
+    /** L, C and R after the slider, when it shows. */
+    void putSides (juce::Rectangle<int>& r)
+    {
+        if (! weight.isVisible()) return;
+        for (auto* b : { &sideL, &sideC, &sideR }) b->setBounds (r.removeFromLeft (juce::jmin (kSideW, r.getWidth())));
+        r.removeFromLeft (juce::jmin (kCapGap, r.getWidth()));
+    }
     juce::TextButton roomBtn { "This box is the room tone [L]" }, denoiseBtn { "Denoise [N]" }; double rtBoxT0 = -1.0, rtBoxT1 = -1.0;
     std::vector<std::pair<double, double>> rtSpans; bool rtQuietest = false; juce::ToggleButton quietBox;      // 3.29.0: the room tone's stretches; learned from the quietest moments
     juce::Slider gainSlider; juce::Label gainCap;                                                             // 3.29.0: the Gain tab's amount, in the panel (G applies it at once)

@@ -723,7 +723,13 @@ public:
         }
 
         if (lanesOn (*e))
-            for (size_t i = 0; i < tracks.size(); ++i) paintLane (g, *e, info[i], top + (int) i * rowH);
+            for (size_t i = 0; i < tracks.size(); ++i)
+            {
+                const int laneTop = top + (int) i * rowH;
+                if (laneTop > clip.getBottom() || laneTop + rowH < clip.getY()) continue;              // (off the part being drawn: the lit lane redraws only its own row)
+                const bool lastOfTrack = i + 1 == tracks.size() || info[i + 1].block != info[i].block;
+                paintLane (g, *e, info[i], laneTop, tracks[i].name, lastOfTrack, (int) i == hoverRow);
+            }
         if (lanesOn (*e) && autoDragIndex >= 0)                                    // the value of the point being set or moved, in a little box beside it
             if (auto* L = e->findLane (autoDragLane); L != nullptr && juce::isPositiveAndBelow (autoDragIndex, (int) L->pts.size()))
             {
@@ -760,6 +766,11 @@ public:
                 const auto sel = juce::Rectangle<int> (sx, rowTop, kNameW, rowH);
                 g.setColour (juce::Colour (0xff29b6ff).withAlpha (0.22f)); g.fillRect (sel);
                 g.setColour (juce::Colour (0xff29b6ff)); g.drawRect (sel.reduced (1), 2);
+            }
+            if (lanesOn (*e) && (int) i == hoverRow)                                        // 3.32.0: the lane under the mouse - its name is lit too
+            {
+                g.setColour (juce::Colours::white.withAlpha (0.08f)); g.fillRect (sx, rowTop, kNameW, rowH);
+                g.setColour (juce::Colour (0xffffc83d)); g.drawRect (juce::Rectangle<int> (sx, rowTop, kNameW, rowH).reduced (1), 2);
             }
             g.setColour (theme::text); g.setFont (14.0f);
             if (lanesOn (*e))
@@ -825,7 +836,27 @@ public:
     void mouseDown (const juce::MouseEvent& e0) override { hdrShift = stickyShift (e0); mouseDownImpl (shifted (e0, hdrShift)); }
     void mouseDrag (const juce::MouseEvent& e0) override { mouseDragImpl (shifted (e0, hdrShift)); }
     void mouseUp (const juce::MouseEvent& e0) override { const int by = hdrShift; hdrShift = 0; mouseUpImpl (shifted (e0, by)); }
-    void mouseMove (const juce::MouseEvent& e0) override { mouseMoveImpl (shifted (e0, stickyShift (e0))); }
+    void mouseMove (const juce::MouseEvent& e0) override { const auto e = shifted (e0, stickyShift (e0)); updateHoverRow (e.y); mouseMoveImpl (e); }
+    void mouseExit (const juce::MouseEvent&) override { setHoverRow (-1); }
+
+    // ---- 3.32.0: the automation lane under the mouse is lit (the row and its name), so on a wide screen it is clear which lane a click will draw in
+    int hoverRow = -1;
+    void updateHoverRow (int y)
+    {
+        auto* ed = edit();
+        int row = -1;
+        if (ed != nullptr && lanesOn (*ed) && y >= bandH())
+            if (const int r = (y - bandH()) / juce::jmax (1, rowH); r < (int) rowInfo.size()) row = r;
+        setHoverRow (row);
+    }
+    void setHoverRow (int row)
+    {
+        if (row == hoverRow) return;
+        auto rowArea = [this] (int r) { const auto v = viewport.getViewArea(); return juce::Rectangle<int> (v.getX(), bandH() + r * rowH, v.getWidth(), rowH); };
+        if (hoverRow >= 0) repaint (rowArea (hoverRow));
+        hoverRow = row;
+        if (hoverRow >= 0) repaint (rowArea (hoverRow));
+    }
 
     void mouseDownImpl (const juce::MouseEvent& e)
     {
@@ -1604,14 +1635,41 @@ private:
         return db <= -59.5f ? AutoLane::kFaderOff : db;                       // the very bottom is 'off'
     }
 
-    void paintLane (juce::Graphics& g, EditDef& ed, const RowInfo& inf, int rowTop)
+    /** One automation row across the timeline. 3.32.0: so each lane can be followed across a wide screen - the lane is washed in its track's colour, a line runs under
+        it (a stronger one under a track's last lane, where the next track starts), the lane under the mouse is lit ('lit'), the lane's name is written again at the
+        right-hand edge of the screen, and the dashed line of a lane with nothing written yet is brighter. */
+    static constexpr int kLaneNameMaxW = 360;      // the widest the lane's name at the right-hand edge gets
+    void paintLane (juce::Graphics& g, EditDef& ed, const RowInfo& inf, int rowTop, const juce::String& name, bool lastOfTrack, bool lit)
     {
         const double rate = juce::jmax (1.0, ed.sampleRate);
         const auto s = ed.laneShown (inf.node, inf.lane);
         const auto* lane = ed.findLane (inf.node, s.param, s.mixer);
         const bool locked = lane != nullptr && lane->locked;
         const float x0 = (float) kNameW, x1 = (float) getWidth();
-        g.setColour (juce::Colours::black.withAlpha (0.18f)); g.fillRect (juce::Rectangle<float> (x0, (float) rowTop, x1 - x0, (float) rowH));
+        const auto rowArea = juce::Rectangle<float> (x0, (float) rowTop, x1 - x0, (float) rowH);
+        const auto tc = chan::of (app.project, inf.node);
+        g.setColour (juce::Colours::black.withAlpha (0.18f)); g.fillRect (rowArea);
+        g.setColour (tc.withAlpha (0.11f)); g.fillRect (rowArea);                                  // the track's colour, right across
+        if (lit) { g.setColour (juce::Colours::white.withAlpha (0.09f)); g.fillRect (rowArea); }   // the lane under the mouse
+        if (lastOfTrack)                                                                             // under the track's last lane: its colour, then a dark edge before the next track
+        {
+            g.setColour (tc.withAlpha (0.80f)); g.fillRect (x0, (float) (rowTop + rowH - 2), x1 - x0, 1.0f);
+            g.setColour (juce::Colours::black.withAlpha (0.55f)); g.fillRect (x0, (float) (rowTop + rowH - 1), x1 - x0, 1.0f);
+        }
+        else { g.setColour (tc.withAlpha (0.40f)); g.fillRect (x0, (float) (rowTop + rowH - 1), x1 - x0, 1.0f); }     // between one track's own lanes
+        if (const auto view = viewport.getViewArea(); rowH >= 22 && g.getClipBounds().getRight() >= view.getRight() - 8 - kLaneNameMaxW)   // the lane's name again, at the right-hand edge
+        {                                                                                            // of what is on the screen (not worked out for a strip drawn further left: the playhead's)
+            const juce::String label = name + "  " + juce::String::charToString (0x00b7) + "  " + paramLabel (ed, inf.node, inf.lane);
+            const juce::Font f (juce::FontOptions (11.5f));
+            const int w = juce::jmin (kLaneNameMaxW, juce::GlyphArrangement::getStringWidthInt (f, label) + 12);     // (a long plug-in name is cut short, with "...")
+            const auto box = juce::Rectangle<int> (view.getRight() - 8 - w, rowTop + rowH - 18, w, 15);
+            if (box.getX() > view.getX() + kNameW + 40)                                                // (not when the window is so narrow it would sit on the names)
+            {
+                g.setColour (juce::Colours::black.withAlpha (0.45f)); g.fillRoundedRectangle (box.toFloat(), 3.0f);
+                g.setColour (lit ? juce::Colours::white : tc.interpolatedWith (juce::Colours::white, 0.5f).withAlpha (0.9f));
+                g.setFont (f); g.drawText (label, box.reduced (6, 0), juce::Justification::centredRight, true);
+            }
+        }
         const AutoLane dummy = [&] { AutoLane d; d.param = s.param; return d; }();
         const AutoLane& L = lane != nullptr ? *lane : dummy;
         const juce::Colour line = locked ? juce::Colour (0xff9aa0a6) : juce::Colour (0xffffc83d);
@@ -1620,7 +1678,7 @@ private:
         if (L.pts.empty())
         {
             const float dash[] = { 4.0f, 4.0f };
-            g.setColour (line.withAlpha (0.35f)); g.drawDashedLine (juce::Line<float> (x0, zeroY, x1, zeroY), dash, 2, 1.0f);
+            g.setColour (line.withAlpha (0.62f)); g.drawDashedLine (juce::Line<float> (x0, zeroY, x1, zeroY), dash, 2, 1.0f);
             return;
         }
         const int steps = stepsOfLane (L);                                  // a switch or selector: drawn as the steps it really has (the value holds until the next point)

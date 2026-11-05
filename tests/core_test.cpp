@@ -2737,6 +2737,43 @@ int main()
                 audioops::applyFix (ch, sr, t0, t1, spec, 0);
                 CHECK (std::abs ((bandDb (ch[0], t0 + 4096, t1 - 4096, 200, 800) - bandDb (messy, t0 + 4096, t1 - 4096, 200, 800)) + 6.0) < 1.0);
             }
+            // 3.33.0: a soft selection (the brush, feathering): the fix is made on its box, then only what the mask lets through is kept
+            {
+                const long t0 = (long) (0.4 * sr), t1 = (long) (1.0 * sr);
+                FixSpec spec; spec.kind = FixSpec::Kind::Patch; spec.f0 = 0.0; spec.f1 = sr * 0.5; spec.lostKnown = true;
+                spec.repair.mode = RepairMode::Gain; spec.repair.gainDb = -200.0; spec.repair.strength = 1.0;     // (silence: the box made silent)
+                std::vector<std::vector<float>> plain { messy }; audioops::applyFix (plain, sr, t0, t1, spec, 0);
+                auto maskOf = [&] (std::function<float (double, double)> f)
+                {
+                    auto m = std::make_shared<SoftMask>(); m->seconds = (double) (t1 - t0) / sr; m->lf0 = std::log2 (20.0); m->lf1 = std::log2 (sr * 0.5); m->nt = 61; m->nf = 121;
+                    m->v.resize ((size_t) (m->nt * m->nf));
+                    for (int a = 0; a < m->nt; ++a) for (int b = 0; b < m->nf; ++b)
+                        m->v[(size_t) (a * m->nf + b)] = f (m->seconds * a / (m->nt - 1), m->lf0 + (m->lf1 - m->lf0) * b / (m->nf - 1));
+                    return m;
+                };
+                auto run = [&] (std::shared_ptr<SoftMask> m) { auto s = spec; s.mask = m; std::vector<std::vector<float>> ch { messy }; audioops::applyFix (ch, sr, t0, t1, s, 0); return ch[0]; };
+                auto worstGap = [] (const std::vector<float>& a, const std::vector<float>& b) { double w = 0; for (size_t n = 0; n < a.size() && n < b.size(); ++n) w = juce::jmax (w, (double) std::abs (a[n] - b[n])); return w; };
+                const auto all = run (maskOf ([] (double, double) { return 1.0f; }));
+                const auto none = run (maskOf ([] (double, double) { return 0.0f; }));
+                const auto low = run (maskOf ([] (double, double lf) { return lf < std::log2 (1500.0) ? 1.0f : 0.0f; }));
+                const auto half = run (maskOf ([] (double, double) { return 0.5f; }));
+                const long m0 = t0 + 4096, m1 = t1 - 4096;
+                std::printf ("  soft selection: mask 1 vs no mask %.2g, mask 0 vs untouched %.2g; low band only: %.1f dB below 1 kHz, %.2f dB at 4.5 - 9 kHz; half: %.2f dB\n",
+                             worstGap (all, plain[0]), worstGap (none, messy), bandDb (low, m0, m1, 200, 1000) - bandDb (messy, m0, m1, 200, 1000),
+                             bandDb (low, m0, m1, 4500, 9000) - bandDb (messy, m0, m1, 4500, 9000), bandDb (half, m0, m1, 200, 9000) - bandDb (messy, m0, m1, 200, 9000));
+                CHECK (worstGap (all, plain[0]) < 1.0e-4);                                       // all 1: just as without a mask
+                CHECK (worstGap (none, messy) < 1.0e-6);                                         // all 0: nothing changes
+                CHECK (bandDb (low, m0, m1, 200, 1000) - bandDb (messy, m0, m1, 200, 1000) < -30.0);      // under the mask: silenced
+                CHECK (std::abs (bandDb (low, m0, m1, 4500, 9000) - bandDb (messy, m0, m1, 4500, 9000)) < 1.0);   // above it: as it was
+                CHECK (std::abs ((bandDb (half, m0, m1, 200, 9000) - bandDb (messy, m0, m1, 200, 9000)) + 6.02) < 0.5);   // half: half the sound (-6 dB)
+                auto lead = spec; lead.mask = maskOf ([] (double t, double) { return t < 0.2 ? 0.0f : 1.0f; }); lead.maskLead = (juce::int64) (0.3 * sr);     // begun 0.3 s into its mask
+                std::vector<std::vector<float>> lch { messy }; audioops::applyFix (lch, sr, t0, t1, lead, 0);
+                double lg = 0; for (long n = t0; n < t1; ++n) lg = juce::jmax (lg, (double) std::abs (lch[0][(size_t) n] - plain[0][(size_t) n]));
+                CHECK (lg < 1.0e-4);                                                             // (all of the box is past 0.2 s of the mask: the whole fix there)
+                auto noLead = lead; noLead.maskLead = 0;                                         // (and without the lead, its first 0.2 s are left alone)
+                std::vector<std::vector<float>> nch { messy }; audioops::applyFix (nch, sr, t0, t1, noLead, 0);
+                CHECK (bandDb (nch[0], t0 + 2048, t0 + (long) (0.15 * sr), 200, 9000) - bandDb (messy, t0 + 2048, t0 + (long) (0.15 * sr), 200, 9000) > -0.5);
+            }
             // the main consonant itself, outside the boxes, is untouched
             const double mainBefore = bandDb (messy, (long) (1.52 * sr), (long) (1.70 * sr), 4000, 12000);
             auto both = messy; RepairParams p; p.mode = RepairMode::Attenuate; p.strength = 1.0; p.consonant = true;

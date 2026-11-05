@@ -1364,22 +1364,10 @@ private:
             if (self == nullptr) return;
             std::vector<std::pair<juce::Uuid, juce::String>> tracks;
             for (size_t i = 0; i < tp->ids.size(); ++i) tracks.push_back ({ tp->ids[i], tp->names[i] });
-            // each track's channels over the stretch: the pieces heard there, file by file (a track is one file per piece; the first piece's channel count rules)
-            self->learn (tracks, [tp, rate] (size_t i, juce::int64 start, int n, std::vector<std::vector<float>>& out)
+            // each track's channels over the stretch, as heard (3.33.0: with the cross-fades - the pieces used to be switched hard at each edit point)
+            self->learn (tracks, [tp] (size_t i, juce::int64 start, int n, std::vector<std::vector<float>>& out)
             {
-                out.clear();
-                for (auto& pt : tp->parts[i])
-                {
-                    const auto p0 = juce::jmax (start, pt.dst), p1 = juce::jmin (start + n, pt.dst + pt.n);
-                    if (p1 <= p0) continue;
-                    juce::int64 rel = pt.srcA - pt.fileStart + (p0 - pt.dst), cnt = p1 - p0, o = p0 - start;
-                    if (rel < 0) { cnt += rel; o -= rel; rel = 0; }
-                    if (cnt <= 0) continue;
-                    auto r = audioops::openReader (formats(), pt.file); if (r == nullptr) continue;
-                    std::vector<std::vector<float>> ch; audioops::readRange (*r, rel, cnt, ch);
-                    if (out.empty()) out.assign (ch.size(), std::vector<float> ((size_t) n, 0.0f));
-                    for (size_t c = 0; c < ch.size() && c < out.size(); ++c) for (size_t k = 0; k < ch[c].size() && o + (juce::int64) k < n; ++k) out[c][(size_t) o + k] = ch[c][k];
-                }
+                if (! readTrackChannels (tp->parts[i], start, n, out)) out.clear();       // (nothing heard there: no audio, as before)
             }, to - from, rate, text);
         });
     }

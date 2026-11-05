@@ -1779,3 +1779,60 @@ fermata moved to a new repository that also holds its companion, fermata:Live (t
   surface-looking port with the lowest number at the end of its name ("Euphonix EuMidi1", not "...EuMidi11"). SurfacePanel: the intro's height from
   its text (`TextLayout`), the action rows in two columns when the keys area is at least 964 px wide (the window now opens 1300 wide); the new setup text (MIDI Setup, then
   Applications +, then EuMidi1). The user found that the S1's top-row keys other than Bank and Nudge never arrive (EuControl keeps them).
+
+## 3.32.0: the automation lanes told apart (built in the fermata:Live conversation, 5 November 2026)
+- The user's screenshot (a 2000 px wide edit window, LV08): with Automation on, every lane looked the same - the rows' two shades (`theme::wave`
+  0xff0f1821 / `waveAlt` 0xff131e2a) differ by four steps, `paintLane` then darkened every row by 18 %, and only the name column had a line under
+  each row. All in `EditTimeline` (src/ui/EditWindow.cpp); nothing shared, nothing saved.
+- **`paintLane (g, ed, inf, rowTop, name, lastOfTrack, lit)`**: after the 18 % black, the node's channel colour (`chan::of`) at 11 % over the whole
+  row; a line at the row's foot - under a track's last lane (`lastOfTrack`: the next row is another `RowInfo::block`) the colour at 80 % and a
+  black 55 % line below it, between a node's own lanes the colour at 40 %; `lit` adds white 9 %. The dashed default line of an empty lane: 35 % -> 62 %.
+- **The lane's name at the right-hand edge**: "<name> · <paramLabel>" in a black 45 % rounded box at the right of `viewport.getViewArea()`, at the
+  foot of the row (the low end of the range, where the line seldom is), drawn BEFORE the automation line so points and line stay on top; only for
+  rows of 22 px or more, and not when it would come within 40 px of the names. Width at most `kLaneNameMaxW` (360, then "..."), and only worked
+  out when the clip reaches that far right (the playhead's and the meters' narrow repaints skip it). EditViewport repaints the whole timeline on
+  every scroll (`visibleAreaChanged`), so the fixed-on-screen name is never left behind.
+- **The lit lane**: `hoverRow`, set by `updateHoverRow` from `mouseMove` (the sticky band's shift applied first: over the band, no row) and cleared
+  by `mouseExit`; `setHoverRow` repaints only the old and the new row (the visible width). Scrolling and the row-height keys move the timeline
+  component, and JUCE then sends a fake mouse move (`Component::sendFakeMouseMove` in setBounds), so the lit row follows. The name column of the lit
+  row: white 8 % and a 2 px yellow frame (drawn after the blue frame of a selected track). Lane rows off the clip are no longer painted at all.
+- Checked on Linux (the Linux build of fermata, a 2000 x 800 screen, a project like LV08: four tracks with audio, Room with a Fader and a Pan
+  lane, three Int Buses, an Ext Bus, a VCA; points on Solo, Room's pan and Spots): the colours, lines and names as above; the lit lane follows
+  the mouse and leaves nothing behind; the names are hidden at the shortest rows and move with the window's edge when the vertical scroll
+  bar comes and goes. Not checked: the look on the user's own screen and colours.
+
+## 3.33.0: Noise mode and the ReTouch window - the picture as heard, harmonics, the selection tools (built in the fermata:Live conversation, 5 November 2026)
+- **The picture as heard** (src/ui/FixToolsCommon.h). `TrackPart` was "the piece on top" over each stretch between the pieces' starts and ends, switched hard at every
+  edit point: Noise mode's pyramid, the ReTouch window's picture (`openRepair`, which built its own such parts), its consonant copy and the room tone learned from
+  marks 1 - 2 all read two takes butted together - a full-height line at every join (the user's LV08: "a click that does not sound"). Now a part is one piece's
+  file over its whole audible span (`heardPart`: fadeInBegin .. fadeOutFinish) with its fades and volume changes (`TrackPart::gainAt`, the rules of Playback.cpp's
+  addRegionSegments - the piece's own level holds from its first sound), and the readers add them: `readTrackMix` (mono), `readTrackChannels` (every channel, the
+  widest file's count). A stream window's parts stay plain (`shaped` false). `learnFileProfiles` reads each part's file as it is (the noise of the files the fixes
+  work on). Checked with a scratch program against PlaybackSession::renderSegments over two cross-fades (equal power, linear), a piece level and a volume change on
+  a mono and a stereo track: equal to the sample (4.5e-8); the old reader's step at the edit point 24 x the music's own, now gone.
+- **Alt take-outs** (SpectrogramView::selectionChanged): the 3.30.1 tidy-up kept a box only if it overlapped what was left - a take-out never does (that is what it
+  took out), so every take-out was dropped at mouse-up and the hole closed (shown by a scratch program on denoise::selectionRects). A take-out is now kept when it
+  overlaps the selection made by the boxes before it; the box carrying harmonics is always kept; with brush strokes no box is tidied away.
+- **Harmonics** (SpectrogramView::setHarmonics / makeHarmonics; HarmonicsBar): `harmBase` (a box index) carries `harmBoxes`, put straight after it in
+  `allBoxes()` so a later take-out takes from them. The box's pitch (`measurePitch`): the analysis bins across the box averaged in power over its time (the long
+  bass layer below the cross-over), the peak 6 dB above the median or the box's middle, placed by a parabola on the dB of three bins. Harmonic n of fundamental
+  F = pitch / (k stretch(k)), k = "my box is", at F n sqrt (1 + B (n^2 - 1)), B from Spread (the 10th harmonic that many cents off). Widths in Hz: the box's
+  reach below / above its pitch times (n / k)^(1 - thinning) (thinning 1, the standard: the same Hz), clamped to 45 % of the distance to harmonics n - 1 and n + 1
+  (the user: "at 10,000 Hz it should only have 30 Hz either side as well"); up to the top of the picture (maxHz). Not on a Time box. The count, spread and
+  thinning are in the settings ("harmCount", "harmSpread", "harmThin").
+- **The selection tools** (SpectrogramView::Tool, SelectToolsBar): Rectangle; Time (f0 0, f1 = half the rate: `isTimeBox` - moved and resized in time only);
+  Brush - strokes of `Dab`s (seconds and log2 Hz, the reach up and down from the pitch scale at that height, so the circle on the screen is what is painted; gaps
+  filled at a third of the radius), ordered with the boxes by `seq` (`boxSeq` beside `boxes`). A plain drag (or stroke) starts afresh only once it has moved 3 px;
+  a click places the playhead (`placeCueAt`, as the ruler's click). "selTool" and "brushPx" in the settings.
+- **A brush shape to the fixes** (shared: src/core/AudioOps.h / .cpp): `SoftMask` (a grid over time and log2 Hz, 0 .. 1, edges held beyond its ends) and
+  FixSpec::mask / maskLead. applyFix for a Patch or a Denoise with a mask (and no lost samples to put back): the fix on its box as before, then `keepMasked` -
+  after = before + mask x (after - before), in a Hann STFT three-quarters overlapped (N 2048, 4096 above 64 kHz; exact where the mask is 1). The picture's
+  `buildSoft` paints the boxes and strokes in order on a grid (4 ms x 1/64 octave, at most 1600 x 720 cells, two empty cells round it); each 4-connected piece is
+  one `Part` (its box and its mask; f0 0 / f1 half the rate when it reaches the picture's bottom / top). Both windows build their fixes from
+  `selectionParts()` (rectangles exactly as before when there is no stroke); Noise mode's prepareRepairJobs adds to maskLead where a fix is cut at a piece's start.
+  core_test: a mask of 1 = no mask (1e-4), 0 = nothing changes, a low band only, half = -6 dB, a mask begun part of the way in. Checked in Noise mode on Linux
+  (a piano-like test edit): the masked fix changed only under the stroke.
+- **L C R** (both windows' `setupSides` / `sideKey`): the Before <-> After (Side) slider to 0 / 50 / 100, keys Z \ X, shown with the slider in every method.
+- **specTime**: seconds under a minute, then m:ss(.d), then h:mm:ss - the ruler, the read-out, "Showing", the selection and room-tone texts.
+- Not done: feathering (the user: ship the rest first). The plan: a feather in time (ms) and pitch (semitones) for every tool, as a soft edge on the same grid
+  (a distance transform from the shape, a raised-cosine fall over the feather) - the masks and keepMasked are already made for it.
