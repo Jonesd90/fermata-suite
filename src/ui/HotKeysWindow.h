@@ -215,7 +215,7 @@ inline const std::vector<Line>& lines()
 
         // ---------------------------------------------------------------------------------------------------- noise mode
         { "Noise mode", "Space", "Play from the red playhead (or the left of the page) to the end of the edit, turning the pages (Loop repeats the page), or stop." },
-        { "Noise mode", "R / G / D / L / N", "As in Spectral Repair, but each fix goes straight into the edit; D with no box covers the whole edit." },
+        { "Noise mode", "R / G / D / L / N", "As in Spectral Repair, but each fix goes straight into the edit; D with no box covers the whole edit, and asks first (3.38.1: Enter and Esc are Cancel)." },
         { "Noise mode", "H / S / T / B / [ / ] / Z / \\ / X / Click", "As in Spectral Repair: harmonics, the selection tools and the brush's size, L / C / R, and a click for the playhead (3.33.0)." },
         { "Noise mode", "C / P / , / .", "Consonants (3.36.0), as in Spectral Repair: C the tab, P pastes the chosen consonant at the playhead, comma and full stop nudge the one just pasted 1 ms (with Shift 5 ms)." },
         { "Noise mode", "Home / End", "Playhead to the start / the end of the edit." },

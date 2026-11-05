@@ -6,6 +6,14 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.38.1
+Built in the fermata:Live conversation, 5 November.
+- **Noise mode asks before a De-click of the whole piece.** With nothing selected, D (or the De-click button) used to go straight through the whole piece on
+  every track - a long job that cannot be stopped once it has started, so a D pressed by accident locked the window up for a long time. It now asks first:
+  "De-click the whole piece?", with the piece's length and how many audio tracks it would go through. **De-click the whole piece** (on the left) starts
+  it; **Cancel** (on the right), Enter or Esc does nothing, and no key starts it by habit - Space does nothing either. With a box or a Time selection drawn,
+  De-click goes ahead as before.
+
 ## 3.38.0
 Built in the fermata:Live conversation, 5 November.
 - **After a fix, only the part of the sharp picture it changed is made again.** ReTouch, Gain, Denoise, De-click and Consonants, in Noise mode and in the

@@ -2014,3 +2014,21 @@ fermata moved to a new repository that also holds its companion, fermata:Live (t
   Show fixed each re-made only [282, 499) of 926; drags both ways [656, 926) and [0, 400); the ReHarmoniSer - Shift+wheel made [518, 574) of 574 in 0.3 s
   (whole 1.9 s); Noise mode playing (the pretend-play copy) - a fix at 32-34 s kept the next page (49.6-68.8 s), which the turn then used.
 
+## 3.38.1: Noise mode asks before a whole-piece De-click (built in the fermata:Live conversation, 5 November 2026)
+- Asked for: "In noise mode with the whole track loaded, if I click d by accident it does a declick of the whole piece on every channel and takes absolutely
+  ages to process ... (b, better I think) if the user makes a process over the entire piece (ie with no selection made) then there is a splash screen to ask
+  the user 'do you really want to make this process on the whole piece on all (insert number of audio tracks) audio tracks?'". Then: "can we have the
+  positive action option on the left and the cancel option on the right. In general, that is how I prefer the options to exist."
+- Only De-click runs with no selection in Noise mode (ReTouch, Gain and Denoise need one). retouch (declick, wholeAsked): no selection and not yet asked ->
+  askDeclickWhole(): a juce::AlertWindow (warning icon) with the length (m:ss, or h:mm:ss) and cur->parts.size() tracks; buttons "De-click the whole piece"
+  (1, left) and "Cancel" (0, right, with Escape AND Return as its keys); every child's setWantsKeyboardFocus (false), so a Space pressed by habit presses
+  nothing; the callback runs retouch (true, true). Checked on Linux: D -> the box; Return, Escape, Space then Escape: nothing done ("0 fix(es)"); the
+  button: the whole piece de-clicked (1 fix); a box then D: no question, de-clicked (2 fixes).
+- The other question boxes were checked for the order asked for: all already have the action first and Cancel last (confirmAsync, the AlertWindows,
+  fermata:Live's close box).
+- Also found while looking at the user's pictures (no change made, at the user's wish): Click sensitivity 10 sets the time-domain finder's threshold to 3
+  sigma of the prediction residual, which plain noise crosses a few hundred times a second; on a test of church-like rumble with two soft high clicks
+  (fftbench/declick.cpp) 10 mended 211 bits of noise as well as the two clicks, and 3 of those mends left a click of their own; 9 mended 8 and added none;
+  2 to 8 mended just the two (found by the picture check, findLines). The user will keep it lower. (If it is ever wanted: undo any mend that leaves more
+  sound above about 2 kHz round it than there was, and map 10 to about 5 sigma.)
+

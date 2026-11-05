@@ -667,7 +667,7 @@ public:
         finishBtn.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff1f7a46));
         gainBtn.setTooltip ("Gain: makes the sound inside the box louder or quieter (fading in and out at its edges), and nothing else. Key: G");
         retouchBtn.setTooltip ("ReTouch: rebuilds or turns down the box you drew from its surroundings, on every track, and puts it into the edit at once. Key: R");
-        declickBtn.setTooltip ("De-click: finds and mends the clicks in the time span of the box (or of the whole edit if there is no box). Key: D");
+        declickBtn.setTooltip ("De-click: finds and mends the clicks in the time span of the box (or of the whole edit if there is no box - it asks first). Key: D");
         learnBtn.setTooltip ("Draw a box over a part of the picture that holds nothing but the room (its pitch range does not matter: the whole spectrum is learned) and press this: that box is the room tone for Denoise here, instead of the project's (the edit window's Room tone button). Several boxes (Shift): every stretch they cover. Key: L");
         // 3.29.0: a noise only ever heard under the music (a car outside during the quiet passages): no clean stretch to learn from, so the quietest moments of a box WITH music are taken
         quietBox.setButtonText ("The box has music in it: learn the room tone from its quietest moments");
@@ -1346,14 +1346,37 @@ private:
         spec.repair.contextPct = surround.getValue(); spec.repair.weighting = weight.getValue() / 100.0;
         return spec;
     }
-    void retouch (bool declick)
+    void retouch (bool declick, bool wholeAsked = false)
     {
         if (! declick && ! view.hasSelection()) return;
+        if (declick && ! view.hasSelection() && ! wholeAsked) { askDeclickWhole(); return; }     // 3.38.1
         const auto ops = opsForSelection (repairSpec (declick));
         const juce::int64 t0 = opsStart (ops), t1 = opsEnd (ops);
         const auto folder = fixFolder; const double sr = rate; const auto len = length; const auto onlyT = only;
         runFix (declick ? "De-click" : "ReTouch", declick ? "declick" : "repair", (double) t0 / rate, (double) t1 / rate,
                 [folder, sr, len, onlyT, ops] (const std::vector<EditRegion>& regions, std::vector<RegionJob>& jobs, AudioJob& j) { return prepareRepairJobs (folder, regions, 0, len, sr, ops, onlyT, jobs, j); });
+    }
+    /** 3.38.1: De-click with nothing selected goes through the whole piece on every track - a long job that cannot be stopped once it has started, and
+        one D pressed by accident set it going - so it asks first. Enter and Escape are both Cancel, and no button takes the keyboard, so a key pressed by
+        habit (Space to play, say) never starts it: only a click on "De-click the whole piece" does. */
+    void askDeclickWhole()
+    {
+        if (! built || running || cur == nullptr) return;
+        const int n = (int) cur->parts.size();
+        const int secs = (int) std::lround (seconds());
+        const juce::String len = secs >= 3600 ? juce::String (secs / 3600) + ":" + juce::String ((secs / 60) % 60).paddedLeft ('0', 2) + ":" + juce::String (secs % 60).paddedLeft ('0', 2)
+                                              : juce::String (secs / 60) + ":" + juce::String (secs % 60).paddedLeft ('0', 2);
+        auto* w = new juce::AlertWindow ("De-click the whole piece?",
+                                         "Nothing is selected, so De-click would go through the whole piece (" + len + ") on "
+                                             + (n == 1 ? juce::String ("its audio track") : "all " + juce::String (n) + " audio tracks")
+                                             + ". That takes a long time, and it cannot be stopped once it has started.\n\n"
+                                             "To de-click part of it, draw a box (or a Time selection) round that part first.",
+                                         juce::MessageBoxIconType::WarningIcon, this);
+        w->addButton ("De-click the whole piece", 1);                                   // (the action on the left, Cancel on the right - asked for on 5 November 2026)
+        w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey), juce::KeyPress (juce::KeyPress::returnKey));
+        for (auto* c : w->getChildren()) c->setWantsKeyboardFocus (false);
+        juce::Component::SafePointer<NoiseModeDialog> self (this);
+        w->enterModalState (true, juce::ModalCallbackFunction::create ([self] (int r) { if (self != nullptr && r == 1) self->retouch (true, true); }), true);
     }
     /** G: the gain set in the panel applied to the selection (3.29.0: no pop-up - the slider sits in the panel), straight into the edit. */
     void applyGain()
