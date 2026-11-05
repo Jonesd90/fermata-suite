@@ -1322,7 +1322,8 @@ public:
 /** The little pictures on the buttons of the edit and take windows. Each is drawn from a 24 x 24 grid so it stays sharp at any size. */
 enum class Icon { Start, Rewind, Play, Stop, Forward, End, Record, Trim, Bounce, Pitch, Repair, Reharm, Tracks, Feedback, Mixer, Earlier, Later, Delete, Undo, Automation,
                   ExportProc, ImportMulti, Markers, FeedbackMarkers, SlipLeft, SlipRight, Shuffle, InsertFlag, NextAtEnd,
-                  Overdub, Mark1, Mark2, ToEdit, ToPlayhead, Flag, EditWin, ArmAll, ArmNone, ImportTakes, Search, Denoise, Align, TakeSheet, RoomTone, NoiseMode, ReTimEr, VideoExport, AafExport, Guide };
+                  Overdub, Mark1, Mark2, ToEdit, ToPlayhead, Flag, EditWin, ArmAll, ArmNone, ImportTakes, Search, Denoise, Align, TakeSheet, RoomTone, NoiseMode, ReTimEr, VideoExport, AafExport, Guide,
+                  Snip, Glue };            // (3.35.0: the edit window's Snip - scissors - and Glue - a glue pot; added at the end, so the others keep their numbers)
 
 inline void drawIcon (juce::Graphics& g, Icon ic, juce::Rectangle<float> area, juce::Colour ink = theme::text)
 {
@@ -1585,11 +1586,35 @@ inline void drawIcon (juce::Graphics& g, Icon ic, juce::Rectangle<float> area, j
         case Icon::Record:  g.setColour (Rd); g.fillEllipse (5, 5, 14, 14); break;
         case Icon::Trim:
         {
-            seg (3, 3.5f, 14, 3.5f, 2.2f, W); seg (8.5f, 3.5f, 8.5f, 9.5f, 2.2f, W);
-            g.setColour (W); g.drawEllipse (3.6f, 17.6f, 4.0f, 4.0f, 1.3f); g.drawEllipse (9.4f, 17.6f, 4.0f, 4.0f, 1.3f);
-            seg (6.6f, 17.9f, 12.5f, 10.5f, 1.3f, W); seg (10.4f, 17.9f, 4.5f, 10.5f, 1.3f, W);
-            seg (21, 4, 15.5f, 20.5f, 1.3f, Ye);
-            P th; th.startNewSubPath (20, 8.5f); th.cubicTo (17, 10, 22.5f, 11.5f, 19, 13.3f); th.cubicTo (16.5f, 14.8f, 21, 15.8f, 17.6f, 17.7f); stroke (th, 1.0f, Bl);
+            // a T with a needle and thread (3.35.0: its scissors are the Snip button's now)
+            seg (2.8f, 4.0f, 14.2f, 4.0f, 2.4f, W); seg (8.5f, 4.0f, 8.5f, 20.5f, 2.4f, W);
+            seg (21, 3, 15.2f, 21, 1.4f, Ye);                                 // the needle
+            g.setColour (Dk); g.fillEllipse (19.7f, 4.6f, 1.5f, 2.4f);          // its eye
+            P th; th.startNewSubPath (20.4f, 5.8f); th.cubicTo (23.5f, 8.0f, 13.0f, 10.0f, 18.6f, 12.6f); th.cubicTo (22.6f, 14.4f, 13.4f, 16.2f, 16.8f, 18.8f);
+            stroke (th, 1.1f, Bl);                                             // the thread through it
+            break;
+        }
+        case Icon::Snip:
+        {
+            // scissors: the edit window's snip (F1)
+            g.setColour (W); g.drawEllipse (3.6f, 14.6f, 6.2f, 6.2f, 1.7f); g.drawEllipse (14.2f, 14.6f, 6.2f, 6.2f, 1.7f);
+            seg (8.6f, 15.4f, 17.6f, 2.8f, 1.9f, W); seg (15.4f, 15.4f, 6.4f, 2.8f, 1.9f, W);
+            g.setColour (Rd); g.fillEllipse (11.0f, 9.6f, 2.0f, 2.0f);           // the pivot
+            break;
+        }
+        case Icon::Glue:
+        {
+            // a pot of superglue, tilted so its nozzle points to the top left (it is also the mouse pointer in glue mode): F3, glue a snip back together
+            g.saveState();
+            g.addTransform (juce::AffineTransform::rotation (-juce::MathConstants<float>::pi * 0.25f, 12.0f, 12.0f));
+            const Colour body (0xffe8b923), band (0xffe5484d), edge (0xff20242c);
+            P b; b.addRoundedRectangle (6.6f, 10.0f, 10.8f, 11.6f, 2.6f); fill (b, body);
+            g.setColour (edge); g.strokePath (b, juce::PathStrokeType (1.0f));
+            rect (6.6f, 13.6f, 10.8f, 3.6f, 0.0f, band);                       // the label
+            P n; n.addRoundedRectangle (9.4f, 7.0f, 5.2f, 3.4f, 0.8f); fill (n, juce::Colour (0xffd8dde6)); g.setColour (edge); g.strokePath (n, juce::PathStrokeType (0.9f));
+            P tip; tip.addTriangle (9.9f, 7.2f, 14.1f, 7.2f, 12.0f, 1.6f); fill (tip, juce::Colour (0xffd8dde6)); g.setColour (edge); g.strokePath (tip, juce::PathStrokeType (0.9f));
+            g.setColour (juce::Colours::white.withAlpha (0.9f)); g.fillEllipse (11.1f, 0.2f, 1.8f, 1.8f);    // a drop at the tip
+            g.restoreState();
             break;
         }
         case Icon::Bounce:

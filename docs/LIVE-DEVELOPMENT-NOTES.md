@@ -2,6 +2,42 @@
 
 The brief is in `docs/LIVE-BRIEF.md`, and the rules shared with fermata are in `COMPATIBILITY.md`. Newest entries come first.
 
+## 0.4.0: fermata's ReTouch window in the Fixer (5 November 2026, built with fermata 3.35.0)
+Asked for on 5 November 2026: "Yes, it absolutely should be the same tool as fermata. Definitely! Remember though, it will only be avaliable to the fixer
+and not the primary!"
+- **The same window, not a copy.** fermata's ReTouch window moved into `src/ui/SpectralWindow.h` (shared, COMPATIBILITY.md) and knows neither program: a
+  program hands it a `RepairContext` (fermata 3.35.0's notes). Only `FixerWindow.cpp` includes it: the Primary has no ReTouch.
+- **The Fixer's RepairContext** (`FixerComponent::openReTouchWindow`): the area is the part dragged on the timeline plus 2 s either side, inside the take and
+  what is on the disk. `load` and `readChannels` read the take's own samples per track (`readTakeSpan`: the session's chunks for a take of the session, else the
+  take's file - the same reading Try it uses, now shared with it). `prepare` makes the audition (`renderOps`): every op of the window on each track one after
+  the other, as AudioOps' fixWholeFile makes fermata's new files (the take's samples round the changes read: 8 s of context for a ReTouch or a denoise, 1 s
+  for the rest; a lost-sample mend reaches half a second past its box), a denoise with its room-tone box learned from the take (or the project's room tone
+  for the track), a pasted consonant with its track's part. The audition is the span from the first changed sample to the last, per track.
+  `apply` / `unapply` put it in and take it out of the Fixer's player (`setAudition`). `play` plays from the window's start through the Fixer's mixer (Follow
+  off, as Try it); not looping, `position` stops it at the right edge of the view (fermata's playTake stops there); looping uses the player's loop.
+  `accept` keeps it as a fix version (`keepVersion`, which Keep as a fix version under Try it uses too: the files in the take's Fixes folder, `announceFix`,
+  the note, the reply, the chosen flag), then takes the audition away. `mayAccept` refuses with no project or no session (the fixes stay in the window).
+  Consonants: the project's list and loading, read only (no copy, rename or forget: the Fixer never writes the project).
+- The window is modal, in a DialogWindow of the Fixer's own (`ReTouchWindow`: asks before closing with fixes not kept, remembers its bounds as
+  "retouchWindow" in the Fixer's settings). The Fixer's window behind it keeps showing flags; a flag that comes in while it is open is not chosen by itself
+  (the version kept belongs to the flag chosen for it). Closing the Fixer deletes it first (it plays through the app).
+- Shared: `FixVersion`'s `flagId` / `replaces` / `takeId` start as null (fermata 3.35.0's notes): the Primary's `FixVersion v;` gave a version with no flag a
+  made-up flag and earlier attempt.
+
+### Checked here (Linux, the Test signal device, the test display)
+- fermata:Live linked on Linux from the shared core, src/live and the shared look's .cpp files only.
+- A test project (two 30 s takes on Mic L and Mic R, a cough at 12.0 s of take 1). Without a recorder: the timeline, the part chosen, the window opened on
+  both tracks (the picture, every tab and tool); a ReTouch on the cough; Keep refused with no session ("the Primary must start it first"), the fix still in the
+  window; Escape asked "1 fix has not been kept yet ... (Keep as a fix version keeps it.)", Throw it away closed it, nothing left playing.
+- With the Primary, the recorder and a session (Pre-take): Play through the window (its playhead and the Fixer's clock together: 9.166 s area start + 1.96 s
+  = 11.129 s), the stop at the view's edge (15.993 s), Loop going round from the view's start; Keep as a fix version: "Fix version kept by the recorder
+  (version 1 of take 1)", the versions list "ReTouch window: ReTouch", two files of 0.521 s (exactly the box) in Fixes, the cough's band 19 dB down in them
+  and nothing above the box changed; the Primary put the version into the project (take id, span, files) - and showed the made-up flag and earlier attempt,
+  fixed above.
+
+### Not checked here
+- The MSVC build (GitHub builds it); hearing it (here only the playhead and the meters show the sound); the window on Windows' own title bar.
+
 ## 0.3.2: the polarity key (5 November 2026, built with fermata 3.31.0)
 - `MixStrip::polarity`, `MixModel::hasPolarity / setPolarity` (the Primary's model: the processing mixer's `StripState::polarity`, shared with fermata;
   the Fixer's own mixer: none yet). The strip shows M | S | Ø.

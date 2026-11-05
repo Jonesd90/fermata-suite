@@ -24,6 +24,7 @@
 #include <set>
 #include <limits>
 #include "../core/AudioFormats.h"
+#include "SpectralWindow.h"                                    // 3.35.0: the ReTouch window, shared with fermata:Live
 
 namespace td { namespace fixtools
 {
@@ -37,17 +38,6 @@ inline bool heldByRec (AppContext& app, const juce::String& what, juce::Componen
     return app.recModeHolds (what, [sp, again] { again (sp.getComponent()); });
 }
 
-/** The program's own little settings file for the things the offline windows remember (their size and place, the way they look). */
-inline juce::PropertiesFile& uiPrefs()
-{
-    static juce::PropertiesFile* f = [] ()
-    {
-        juce::PropertiesFile::Options o; o.applicationName = "ui-windows"; o.filenameSuffix = ".settings"; o.folderName = "Fermata"; o.osxLibrarySubFolder = "Application Support";
-        o.storageFormat = juce::PropertiesFile::storeAsXML; o.millisecondsBeforeSaving = 0; o.ignoreCaseOfKeyNames = true;
-        return new juce::PropertiesFile (o);                     // (kept for the whole run: it saves itself at every change)
-    }();
-    return *f;
-}
 /** Remembers where a window was and how big, until the next time it opens (a window that can be resized). */
 struct BoundsKeeper : juce::ComponentListener
 {
@@ -360,87 +350,9 @@ inline std::shared_ptr<StreamPair> makePair (AppContext& app, const juce::Uuid& 
     return p;
 }
 
-inline void closeDialogOf (juce::Component* c)
-{
-    if (auto* dw = c->findParentComponentOfClass<juce::DialogWindow>())
-    {
-        if (auto* sw = dynamic_cast<StreamWindow*> (dw)) { sw->closeButtonPressed(); return; }          // one stream window closes the pair
-        dw->exitModalState (0);
-    }
-}
-
-
-inline juce::AudioFormatManager& formats()
-{
-    // (3.30.1: registered inside the static's own initialisation, which the language runs once under a lock: it is now called from several worker threads at once)
-    static juce::AudioFormatManager& fm = [] () -> juce::AudioFormatManager& { static juce::AudioFormatManager m; td::registerAudioFormats (m); return m; }();
-    return fm;
-}
-
-/** The common look of a dialog: a title line, a progress bar and the Apply / Cancel buttons are laid out by each dialog itself. */
-class JobDialogBase : public juce::Component, protected juce::Timer
-{
-public:
-    JobDialogBase() : bar (progressValue)
-    {
-        getProperties().set (ownsRKeyProperty(), true);     // R here runs the window's own job (audition / do the fix): it does not start a recording
-        addChildComponent (bar); addAndMakeVisible (status);
-        status.setColour (juce::Label::textColourId, theme::warn); status.setMinimumHorizontalScale (1.0f);
-    }
-    ~JobDialogBase() override { stopTimer(); job.release(); }          // (asks the work to stop and never waits for it: see AudioJob::release)
-protected:
-    void timerCallback() override { progressValue = (double) job.progress(); }
-    /** 'ifGone' (optional) runs instead of 'done' when the window has been closed before the job ended: it tidies away what the job made (its files). */
-    void runJob (AudioJob::Work w, std::function<void (const juce::String&)> done, std::function<void (const juce::String&)> ifGone = {})
-    {
-        bar.setVisible (true); progressValue = 0.0; startTimerHz (10);
-        juce::Component::SafePointer<JobDialogBase> self (this);
-        job.start (std::move (w), [self, done, ifGone] (const juce::String& err)
-        {
-            if (self == nullptr) { if (ifGone) ifGone (err); return; }
-            self->stopTimer(); self->bar.setVisible (false);
-            self->running = false; self->jobEnded (err);
-            if (done) done (err);
-        });
-        running = true;
-    }
-    virtual void jobEnded (const juce::String&) {}
-    AudioJob& job = *new AudioJob();                                   // (handed back with release() in the destructor: it may outlive this window)
-    bool running = false;
-    double progressValue = 0.0; juce::ProgressBar bar; juce::Label status;
-};
-
-
-// ======================================================================================================== the repair dialog
-/** One change made in the repair window: what to do and where (samples from the start of the loaded area). */
-struct RepairOp { FixSpec spec; juce::int64 t0 = 0, t1 = 0; juce::int64 placed = -1; };      // placed: a pasted consonant - where it was first put (its nudges are counted from there)
-
-struct RepairContext
-{
-    juce::String title, what;
-    double rate = 48000.0;
-    double refA = 440.0;                                                                // 3.28.0: the project's reference A (the pitch pipe), for the picture's note read-out
-    juce::int64 length = 0;                                                             // samples in the scanned area
-    std::function<std::vector<std::vector<float>> (AudioJob&)> load;                     // job thread: one mono vector per track, 'length' samples
-    std::function<juce::String (const std::vector<RepairOp>&, AudioJob&)> prepare;      // job thread: makes the repaired files with ALL these changes, covering the whole loaded area; nothing is changed yet
-    std::function<bool()> apply;                                                        // message thread: puts the prepared files in place (so playing / the edit window use them)
-    std::function<void()> unapply, discard, accept, stop;                               // message thread: back to the original / delete the prepared files / keep what is in place / stop playing
-    std::function<void (double fromSec, double toSec, bool loop)> play;                 // message thread: plays from..to (seconds from the start of the area), optionally looped
-    std::function<void (bool)> setLooping, hold;                                        // message thread
-    std::function<double()> position;                                                   // message thread: seconds from the start of the area, or < 0 when this is not playing
-    std::function<void (std::function<bool()>)> pairWritten;                            // one stream window of an OUT / IN pair: 'Write back' only makes this stream ready (the pair puts both into the edit together)
-    std::vector<denoise::Profile> roomMono;                                             // the project's room tone for each picture track (the mono mix; an invalid profile = none for that track)
-    juce::String roomSource;                                                            // where the project's room tone came from ("" = none learned)
-    // ---- consonants (3.6.0): copied per track and channel, kept with the project, pasted on top ----
-    std::vector<juce::Uuid> trackIds; std::vector<juce::String> trackNames;            // the picture's tracks, in its order (one row of 'load' each)
-    std::function<std::vector<std::vector<std::vector<float>>> (juce::int64 a, juce::int64 b, AudioJob&)> readChannels;   // job thread: [a, b) of the area, per track ALL its channels, as the files are (before this window's fixes)
-    juce::String where; double areaStart = 0.0;                                         // the take or edit, and the time of the area's start in it (for a kept consonant's "from")
-    std::function<std::vector<ConsonantDef>()> consonantList;                           // message thread: the project's kept consonants
-    std::function<juce::String (const ConsonantAudio&, const juce::String& name, const juce::String& from, juce::Uuid& id)> keepConsonant;   // message thread: keeps one (its files and the list); "" or why not
-    std::function<void (const juce::Uuid&, const juce::String&)> renameConsonant;
-    std::function<void (const juce::Uuid&)> forgetConsonant;
-    std::function<std::shared_ptr<const ConsonantAudio> (const juce::Uuid&, juce::String& error)> loadConsonant;
-};
+/** 3.35.0: the ReTouch window is shared with fermata:Live (SpectralWindow.h); an OUT / IN STREAM window closes its pair. */
+inline const bool streamCloseHooked = [] { closeDialogHook() = [] (juce::DialogWindow* dw) { if (auto* sw = dynamic_cast<StreamWindow*> (dw)) { sw->closeButtonPressed(); return true; } return false; }; return true; }();
+inline const bool fermataDialogsHooked = [] { openDialogHook() = [] (std::unique_ptr<juce::Component> c, const juce::String& t, juce::Component* around) { launchDialog (std::move (c), t, around); }; return true; }();
 
 // ======================================================================================================== applying a fix to the model
 inline juce::File takeFixDest (const juce::File& orig, const FixSpec& spec)

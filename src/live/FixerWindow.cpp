@@ -2,6 +2,8 @@
 #include "LiveTakeView.h"
 #include "LiveDesk.h"
 #include "../core/AudioOps.h"
+#include "../ui/SpectralWindow.h"                 // fermata's ReTouch window (shared: COMPATIBILITY.md)
+#include <mutex>
 #include <set>
 
 namespace td::live
@@ -49,28 +51,42 @@ struct FixTry
     std::map<juce::Uuid, std::vector<std::vector<float>>> fixed;
 };
 
+/** The session's chunks, ready to read (a take of the session); nothing for a take of the project. */
+static void openTimeline (const FixTry& t, ChunkTimeline& timeline)
+{
+    if (t.session) { timeline.setSession (t.sessionFolder); timeline.setWrittenTo (t.writtenTo); }
+}
+/** One track's take samples [at, at + n), every channel: from the session's chunks for a take of the session, else from the take's file. False when
+    it could not be read (then 'buf' holds silence). */
+static bool readTakeSpan (const FixTry& t, const FixTry::Track& tr, ChunkTimeline& timeline, juce::int64 at, int n, std::vector<std::vector<float>>& buf)
+{
+    buf.assign ((size_t) juce::jmax (1, tr.channels), std::vector<float> ((size_t) juce::jmax (0, n), 0.0f));
+    if (n <= 0) return true;
+    std::vector<float*> dest; for (auto& b : buf) dest.push_back (b.data());
+    bool got = false;
+    if (t.session && tr.sessionIndex >= 0 && timeline.valid()) got = timeline.read (tr.sessionIndex, t.sessionStart + at, n, dest.data());
+    if (! got && tr.file.existsAsFile())
+    {
+        RawWavReader r;
+        if (r.open (tr.file)) got = r.read (at, n, dest.data(), tr.channels) > 0;
+    }
+    return got;
+}
+
 static juce::String runFix (FixTry& t, AudioJob& job)
 {
     const juce::int64 ctx = (juce::int64) std::llround (1.0 * t.rate);
     const juce::int64 c0 = juce::jmax ((juce::int64) 0, t.from - ctx), c1 = juce::jmin (t.takeLength > 0 ? t.takeLength : t.to + ctx, t.to + ctx);
     if (c1 <= c0 || t.to <= t.from) return "Nothing to fix there.";
     ChunkTimeline timeline;
-    if (t.session) { timeline.setSession (t.sessionFolder); timeline.setWrittenTo (t.writtenTo); }
+    openTimeline (t, timeline);
     const int n = (int) (c1 - c0);
     int done = 0;
     for (auto& tr : t.tracks)
     {
         if (job.cancelled()) return "Cancelled.";
-        std::vector<std::vector<float>> buf ((size_t) tr.channels, std::vector<float> ((size_t) n, 0.0f));
-        std::vector<float*> dest; for (auto& b : buf) dest.push_back (b.data());
-        bool got = false;
-        if (t.session && tr.sessionIndex >= 0 && timeline.valid()) got = timeline.read (tr.sessionIndex, t.sessionStart + c0, n, dest.data());
-        if (! got && tr.file.existsAsFile())
-        {
-            RawWavReader r;
-            if (r.open (tr.file)) got = r.read (c0, n, dest.data(), tr.channels) > 0;
-        }
-        if (! got) return "The audio of " + tr.name + " could not be read there (is it on the disk yet?).";
+        std::vector<std::vector<float>> buf;
+        if (! readTakeSpan (t, tr, timeline, c0, n, buf)) return "The audio of " + tr.name + " could not be read there (is it on the disk yet?).";
         auto spec = t.spec;
         if (spec.kind == FixSpec::Kind::Denoise)                     // the room tone learned from the quietest moments around the box, per channel
         {
@@ -87,6 +103,151 @@ static juce::String runFix (FixTry& t, AudioJob& job)
     }
     return {};
 }
+
+/** 0.4.0, fermata's ReTouch window in the Fixer: every change made in the window (its ops, in samples from the start of the window's area 't.from'),
+    put on each track's audio of the take one after the other - as fermata makes its new files (AudioOps' fixWholeFile): the take's own samples round
+    the changes are read (8 s of context for a ReTouch or a denoise, 1 s for the rest), a denoise gets its room tone (learned from its room-tone box,
+    from the take itself, or the project's for the track), a pasted consonant its track's part. 'out' holds what changed: each track's channels from
+    the first changed sample to the last. Job thread. */
+static juce::String renderOps (const FixTry& t, const std::vector<fixtools::RepairOp>& ops, const std::shared_ptr<const Project::RoomTone>& room, AudioJob& job, Player::Audition& out)
+{
+    if (ops.empty()) return "Nothing to do.";
+    const double sr = t.rate;
+    const juce::int64 len = t.takeLength;
+    std::vector<audioops::FixOp> fo;
+    juce::int64 lo = len, hi = 0, margin = 0;
+    for (auto& o : ops)
+    {
+        audioops::FixOp op { o.spec, t.from + o.t0, t.from + o.t1 };
+        if (op.spec.kind == FixSpec::Kind::Paste)                                  // a pasted consonant keeps its own start
+        {
+            const auto a = juce::jlimit ((juce::int64) 0, len, op.s0), b = juce::jlimit ((juce::int64) 0, len, op.s1);
+            if (b <= a) continue;
+            lo = juce::jmin (lo, a); hi = juce::jmax (hi, b);
+            fo.push_back (op);
+            continue;
+        }
+        op.s0 = juce::jlimit ((juce::int64) 0, len, op.s0); op.s1 = juce::jlimit ((juce::int64) 0, len, op.s1);
+        if (op.s1 <= op.s0) continue;
+        const auto reach = audioops::findsLost (op.spec, sr, op.s0, op.s1) ? audioops::lostReach (sr) : 0;       // (putting lost samples back reaches past the box)
+        lo = juce::jmin (lo, juce::jmax ((juce::int64) 0, op.s0 - reach)); hi = juce::jmax (hi, juce::jmin (len, op.s1 + reach));
+        margin = juce::jmax (margin, (juce::int64) ((op.spec.kind == FixSpec::Kind::Patch || op.spec.kind == FixSpec::Kind::Denoise ? 8.0 : 1.0) * sr));
+        fo.push_back (op);
+    }
+    if (fo.empty() || hi <= lo) return "Nothing to do.";
+    const juce::int64 r0 = juce::jmax ((juce::int64) 0, lo - margin), r1 = juce::jmin (len, hi + margin);
+    ChunkTimeline timeline;
+    openTimeline (t, timeline);
+    out = {}; out.takeNumber = t.takeNumber; out.from = lo;
+    int done = 0;
+    for (auto& tr : t.tracks)
+    {
+        if (job.cancelled()) return "Cancelled.";
+        std::vector<std::vector<float>> seg;
+        if (! readTakeSpan (t, tr, timeline, r0, (int) (r1 - r0), seg)) return "The audio of " + tr.name + " could not be read (is it on the disk yet?).";
+        std::map<juce::String, std::shared_ptr<const std::vector<denoise::Profile>>> boxes;     // a denoise's room tone from its box: per channel of this track
+        for (auto op : fo)
+        {
+            if (op.spec.kind == FixSpec::Kind::Denoise)
+            {
+                op.spec.dnProfiles = nullptr;
+                if (op.spec.dnBoxT1 > op.spec.dnBoxT0)
+                {
+                    const auto key = op.spec.roomKey();
+                    if (boxes.count (key) == 0)
+                    {
+                        std::vector<std::vector<std::vector<float>>> regions ((size_t) juce::jmax (1, tr.channels));      // [channel][stretch of the box]
+                        juce::int64 total = 0;
+                        for (auto& sp : op.spec.roomSpans())
+                        {
+                            const juce::int64 a = juce::jmax ((juce::int64) 0, t.from + (juce::int64) std::llround (sp.first * sr));
+                            const juce::int64 b = juce::jmin (juce::jmin (len, t.from + (juce::int64) std::llround (sp.second * sr)), a + (juce::int64) (60.0 * sr));   // (a minute says everything)
+                            if (b <= a) continue;
+                            std::vector<std::vector<float>> ch;
+                            if (! readTakeSpan (t, tr, timeline, a, (int) (b - a), ch)) return "The room tone of " + tr.name + " could not be read.";
+                            for (size_t c = 0; c < ch.size() && c < regions.size(); ++c) regions[c].push_back (std::move (ch[c]));
+                            total += b - a;
+                        }
+                        if (total < (juce::int64) (0.5 * sr)) return "The marked room tone is too short (mark at least half a second, better two or more).";
+                        auto prof = std::make_shared<std::vector<denoise::Profile>>();
+                        for (auto& r : regions)
+                        {
+                            prof->push_back (denoise::learnProfile (r, sr, op.spec.dn));
+                            if (! prof->back().valid()) return "The marked room tone is too short for the analysis window.";
+                        }
+                        boxes[key] = prof;
+                    }
+                    op.spec.dnProfiles = boxes[key];
+                }
+                else if (room != nullptr)
+                {
+                    if (const auto* rt = room->forTrack (tr.id); rt != nullptr && ! rt->perChannel.empty())
+                        op.spec.dnProfiles = std::make_shared<const std::vector<denoise::Profile>> (rt->perChannel);
+                }
+            }
+            if (op.spec.kind == FixSpec::Kind::Paste) audioops::resolvePaste (op.spec, tr.id);
+            audioops::applyFix (seg, sr, (long) (op.s0 - r0), (long) (op.s1 - r0), op.spec, (long) (0.02 * sr));
+        }
+        std::vector<std::vector<float>> span;
+        for (auto& ch : seg) span.emplace_back (ch.begin() + (std::ptrdiff_t) (lo - r0), ch.begin() + (std::ptrdiff_t) (hi - r0));
+        out.tracks[tr.id] = std::move (span);
+        job.setProgress ((float) ++done / (float) juce::jmax ((size_t) 1, t.tracks.size()));
+    }
+    return {};
+}
+
+/** What a version made in the ReTouch window holds, for the versions list and fermata's review ("ReTouch window: ReTouch x3, De-click"). */
+static juce::String describeOps (const std::vector<fixtools::RepairOp>& ops)
+{
+    std::map<juce::String, int> count; std::vector<juce::String> order;
+    for (auto& o : ops)
+    {
+        juce::String k;
+        switch (o.spec.kind)
+        {
+            case FixSpec::Kind::Declick: k = "De-click"; break;
+            case FixSpec::Kind::Denoise: k = "Denoise"; break;
+            case FixSpec::Kind::Paste:   k = "consonant pasted"; break;
+            case FixSpec::Kind::Patch:   k = o.spec.repair.mode == RepairMode::Gain ? "Gain" : "ReTouch"; break;
+            default:                     k = "fix"; break;
+        }
+        if (count[k]++ == 0) order.push_back (k);
+    }
+    juce::String s ("ReTouch window: ");
+    for (size_t i = 0; i < order.size(); ++i) s << (i > 0 ? ", " : "") << order[i] << (count[order[i]] > 1 ? " x" + juce::String (count[order[i]]) : juce::String());
+    return s;
+}
+
+/** fermata's ReTouch window in a window of the Fixer's own: modal, as in fermata (the Fixer's window behind it keeps showing the flags as they come);
+    closing it with fixes not kept asks first. Its size and place are remembered. */
+class ReTouchWindow final : public juce::DialogWindow
+{
+public:
+    ReTouchWindow (const juce::String& title, std::unique_ptr<fixtools::RepairDialog> content, juce::PropertiesFile* s, juce::Component* around)
+        : juce::DialogWindow (title, theme::window, true, true), settings (s)
+    {
+        dlg = content.get();
+        setContentOwned (content.release(), true);
+        setUsingNativeTitleBar (true);
+        setResizable (true, false);
+        setResizeLimits (760, 520, 8000, 6000);
+        centreAroundComponent (around, getWidth(), getHeight());
+        if (settings != nullptr)
+        {
+            auto saved = juce::Rectangle<int>::fromString (settings->getValue ("retouchWindow"));
+            const auto& displays = juce::Desktop::getInstance().getDisplays();
+            if (saved.getWidth() >= 760 && saved.getHeight() >= 520)
+                if (const auto* d = displays.getDisplayForRect (saved); d != nullptr && d->userArea.contains (saved.getCentre()))
+                    setBounds (saved.getIntersection (d->userArea));
+        }
+    }
+    ~ReTouchWindow() override { if (settings != nullptr) settings->setValue ("retouchWindow", getBounds().toString()); }
+    void closeButtonPressed() override { if (dlg == nullptr || dlg->mayClose()) setVisible (false); }   // (not visible = out of its modal state, and deleted)
+    bool escapeKeyPressed() override { closeButtonPressed(); return true; }
+private:
+    juce::Component::SafePointer<fixtools::RepairDialog> dlg;
+    juce::PropertiesFile* settings = nullptr;
+};
 
 /** The flags with their notes and replies, newest first - the session's, with a reply box for the one chosen, and those the project already has
     from earlier sessions (its take window's flag markers: shown, and gone to, but not replied to - a reply goes through the session). */
@@ -221,7 +382,7 @@ public:
     {
         setWantsKeyboardFocus (true);
         for (auto* c : std::initializer_list<juce::Component*> { &badge, &pieceLabel, &followBtn, &delayLabel, &delayBox, &backBtn, &playBtn, &fwdBtn, &playhead, &behind, &mixerBtn,
-                                                                 &status, &flags, &view, &fixTitle, &selLabel, &fixKind, &amount, &amountLabel, &tryBtn, &abBtn, &saveBtn, &fixNote, &tellPrimary,
+                                                                 &status, &flags, &view, &fixTitle, &selLabel, &fixKind, &amount, &amountLabel, &tryBtn, &abBtn, &saveBtn, &fixNote, &tellPrimary, &retouchBtn,
                                                                  &versions, &progressLabel })
             addAndMakeVisible (c);
         pieceLabel.setFont (juce::FontOptions (16.0f, juce::Font::bold)); pieceLabel.setColour (juce::Label::textColourId, desk::pal().cream);
@@ -269,13 +430,17 @@ public:
         abBtn.onClick = [this] { app.setAudition (abBtn.getToggleState() ? lastTry : nullptr); abBtn.setButtonText (abBtn.getToggleState() ? "Hearing: FIXED" : "Hearing: ORIGINAL"); };
         abBtn.setTooltip ("Switch between the fixed sound and the original while it plays");
         saveBtn.onClick = [this] { saveVersion(); };
+        retouchBtn.onClick = [this] { openReTouchWindow(); };
+        retouchBtn.setColour (juce::TextButton::buttonColourId, theme::accent);
+        retouchBtn.setTooltip ("fermata's own ReTouch window on the part chosen (and 2 seconds either side), all its tracks as one picture: draw a box round the noise in time and pitch, "
+                               "ReTouch, Gain, De-click, Denoise, harmonics, brush and feathering - then keep it as a fix version (the recording is never changed).");
         saveBtn.setTooltip ("Keeps the fix as a new version (its own files; the recording is not changed). fermata's review takes it from there.");
         fixNote.setTextToShowWhenEmpty ("a note for the review (optional)", theme::dimText.withAlpha (0.6f));
         tellPrimary.setToggleState (true, juce::dontSendNotification);
         tellPrimary.setTooltip ("Also tell the Primary (a reply to the chosen flag)");
         versions.setModel (this); versions.setRowHeight (20); versions.setColour (juce::ListBox::backgroundColourId, theme::field);
         progressLabel.setFont (juce::FontOptions (12.0f)); progressLabel.setColour (juce::Label::textColourId, juce::Colour (0xffffd070));
-        for (juce::Button* b : std::initializer_list<juce::Button*> { &followBtn, &tellPrimary, &mixerBtn, &tryBtn, &abBtn, &saveBtn })
+        for (juce::Button* b : std::initializer_list<juce::Button*> { &followBtn, &tellPrimary, &mixerBtn, &tryBtn, &abBtn, &saveBtn, &retouchBtn })
             b->setWantsKeyboardFocus (false);                         // (a button with the keyboard presses itself on Enter or Space)
         refreshFixControls();
         app.addChangeListener (this);
@@ -284,6 +449,7 @@ public:
     ~FixerComponent() override
     {
         app.removeChangeListener (this);
+        if (retouchWindow != nullptr) delete retouchWindow.getComponent();      // (its fixes not kept go with it; it plays through the app, which goes next)
         if (job != nullptr) job->release();
         mixerWindow.reset();
     }
@@ -295,7 +461,7 @@ public:
         const bool fresh = ! f.removed && seenFlags.insert (f.id).second && (juce::Time::getCurrentTime() - f.pinnedAt).inSeconds() < 15.0;
         if (! fresh) return;
         flashUntil = juce::Time::getMillisecondCounter() + 2500;
-        const bool fixing = lastTry != nullptr || (job != nullptr && job->isRunning());
+        const bool fixing = lastTry != nullptr || (job != nullptr && job->isRunning()) || retouchWindow != nullptr;
         if (! fixing) flags.choose (f.id);
         else app.say ("FLAG from the Primary" + (f.note.isNotEmpty() ? ": " + f.note : juce::String()) + " - not chosen, as a fix is being tried (click it in the list to answer it)");
     }
@@ -332,7 +498,7 @@ public:
             auto right = fix.removeFromRight (juce::jmin (430, fix.getWidth() / 2));
             versions.setBounds (right.withTrimmedLeft (8));
             selLabel.setBounds (fix.removeFromTop (22));
-            fixKind.setBounds (fix.removeFromTop (26).reduced (0, 1));
+            { auto x = fix.removeFromTop (26); retouchBtn.setBounds (x.removeFromRight (176).reduced (0, 1)); x.removeFromRight (6); fixKind.setBounds (x.reduced (0, 1)); }
             { auto x = fix.removeFromTop (26); amountLabel.setBounds (x.removeFromLeft (150)); amount.setBounds (x); }
             fix.removeFromTop (4);
             { auto x = fix.removeFromTop (28); tryBtn.setBounds (x.removeFromLeft (110)); x.removeFromLeft (6); abBtn.setBounds (x.removeFromLeft (150)); x.removeFromLeft (6); saveBtn.setBounds (x.removeFromLeft (190)); x.removeFromLeft (6); progressLabel.setBounds (x); }
@@ -456,6 +622,7 @@ private:
         else selLabel.setText ("Take " + juce::String (t->number) + ", " + hmsF (selA - t->start) + " - " + hmsF (selB - t->start) + " (" + juce::String (selB - selA, 2) + " s) on " + juce::String ((int) selTracks.size()) + " track(s)", juce::dontSendNotification);
         saveBtn.setEnabled (lastTry != nullptr);
         abBtn.setEnabled (lastTry != nullptr);
+        retouchBtn.setEnabled (t != nullptr && ! selTracks.empty());
         if (lastTry == nullptr) { abBtn.setToggleState (false, juce::dontSendNotification); abBtn.setButtonText ("Fixed / original"); }   // (lit only while a try can be heard)
     }
     void tryFix()
@@ -512,45 +679,214 @@ private:
             safe->refreshFixControls();
         });
     }
-    void saveVersion()
+    /** Why a fix version cannot be kept now ("" = it can). */
+    juce::String whyNoVersion()
     {
-        if (lastFix == nullptr || lastTry == nullptr) return;
-        auto* w = app.pieceWindow();
-        if (w == nullptr || ! app.hasProject()) { app.say ("No project to keep the version in"); return; }
+        if (app.pieceWindow() == nullptr || ! app.hasProject()) return "No project to keep the version in.";
         // the session keeps the fix versions (every drive's index) and the Primary puts them into the project: with no session there is nowhere
-        // safe for one - nothing is written, and the try stays to be kept once the Primary has started the session (Pre-take is enough)
-        if (! app.model.sessionOn) { app.say ("A fix version is kept by the session: the Primary must start it first (Pre-take is enough). Nothing was saved - keep it again then."); return; }
-        const auto& fx = *lastFix;
+        // safe for one - nothing is written, and the fix stays to be kept once the Primary has started the session (Pre-take is enough)
+        if (! app.model.sessionOn) return "A fix version is kept by the session: the Primary must start it first (Pre-take is enough). Nothing was saved - keep it again then.";
+        return {};
+    }
+    /** Keeps a fix as a new version of the take - its own files in the take's Fixes folder (the recording is not changed) - and tells the recorder, which
+        keeps it with the session and hands it to the Primary's window for the project. 'fixed': each track's channels for the take's samples [from, to). */
+    bool keepVersion (int takeNumber, juce::int64 from, juce::int64 to, double rate, const std::vector<FixTry::Track>& tracks,
+                      const std::map<juce::Uuid, std::vector<std::vector<float>>>& fixed, const juce::String& what)
+    {
+        if (const auto why = whyNoVersion(); why.isNotEmpty()) { app.say (why); return false; }
+        auto* w = app.pieceWindow();
         // the attempt number: one more than the versions already made over this place of this take
         int n = 0; juce::String replaces;
         for (auto& v : versionRows())                                  // (the session's and the project's)
-            if (v.take == fx.takeNumber && v.from < fx.to && v.to > fx.from && v.version > n) { n = v.version; replaces = v.id; }
+            if (v.take == takeNumber && v.from < to && v.to > from && v.version > n) { n = v.version; replaces = v.id; }
         const auto folder = app.project.takeFolder (*w).getChildFile ("Fixes");
         folder.createDirectory();
         juce::Array<juce::var> files;
-        for (auto& tr : fx.tracks)
+        for (auto& tr : tracks)
         {
-            auto it = fx.fixed.find (tr.id);
-            if (it == fx.fixed.end()) continue;
-            auto f = audioops::uniqueFile (folder.getChildFile (juce::String (fx.takeNumber).paddedLeft ('0', 3) + " fix " + juce::String (n + 1) + " at " + hmsF ((double) fx.from / fx.rate).replaceCharacter (':', '-') + " - " + sanitiseForFile (tr.name) + ".wav"));
-            if (! audioops::writeWav (f, it->second, fx.rate)) { app.say ("The fix could not be written to " + f.getFullPathName()); return; }
+            auto it = fixed.find (tr.id);
+            if (it == fixed.end()) continue;
+            auto f = audioops::uniqueFile (folder.getChildFile (juce::String (takeNumber).paddedLeft ('0', 3) + " fix " + juce::String (n + 1) + " at " + hmsF ((double) from / rate).replaceCharacter (':', '-') + " - " + sanitiseForFile (tr.name) + ".wav"));
+            if (! audioops::writeWav (f, it->second, rate)) { app.say ("The fix could not be written to " + f.getFullPathName()); return false; }
             auto x = obj(); put (x, "track", tr.id.toString()); put (x, "trackName", tr.name); put (x, "file", f.getFullPathName()); put (x, "channels", tr.channels);
             files.add (x);
         }
         auto v = obj();
-        put (v, "id", juce::Uuid().toString()); put (v, "takeNumber", fx.takeNumber); put (v, "from", fx.from); put (v, "to", fx.to); put (v, "rate", fx.rate);
-        put (v, "files", files); put (v, "what", fx.what); put (v, "note", fixNote.getText().trim()); put (v, "by", "Fixer"); put (v, "madeAt", juce::Time::getCurrentTime().toMilliseconds());
+        put (v, "id", juce::Uuid().toString()); put (v, "takeNumber", takeNumber); put (v, "from", from); put (v, "to", to); put (v, "rate", rate);
+        put (v, "files", files); put (v, "what", what); put (v, "note", fixNote.getText().trim()); put (v, "by", "Fixer"); put (v, "madeAt", juce::Time::getCurrentTime().toMilliseconds());
         put (v, "version", n + 1); put (v, "window", w->name);
         if (replaces.isNotEmpty()) put (v, "replaces", replaces);
         if (flags.chosen.isNotEmpty()) put (v, "flag", flags.chosen);   // (a flag already in the project too: the review shows what it was for)
         app.announceFix (v);
         if (tellPrimary.getToggleState() && flags.chosenIsLive())
-            app.reply (flags.chosen, "Fix version " + juce::String (n + 1) + " saved (take " + juce::String (fx.takeNumber) + ", " + hmsF ((double) fx.from / fx.rate, false) + "): " + fx.what
+            app.reply (flags.chosen, "Fix version " + juce::String (n + 1) + " saved (take " + juce::String (takeNumber) + ", " + hmsF ((double) from / rate, false) + "): " + what
                                      + (fixNote.getText().trim().isNotEmpty() ? " - " + fixNote.getText().trim() : juce::String()));
-        app.say ("Kept as fix version " + juce::String (n + 1) + " of take " + juce::String (fx.takeNumber) + " (" + juce::String (files.size()) + " file(s) in " + folder.getFileName() + "). The recording is unchanged.");
+        app.say ("Kept as fix version " + juce::String (n + 1) + " of take " + juce::String (takeNumber) + " (" + juce::String (files.size()) + " file(s) in " + folder.getFileName() + "). The recording is unchanged.");
         fixNote.clear();
+        return true;
+    }
+    void saveVersion()
+    {
+        if (lastFix == nullptr || lastTry == nullptr) return;
+        const auto& fx = *lastFix;
+        if (! keepVersion (fx.takeNumber, fx.from, fx.to, fx.rate, fx.tracks, fx.fixed, fx.what)) return;
         lastTry.reset(); lastFix.reset(); app.setAudition (nullptr);
         refreshFixControls();
+    }
+
+    // ---- 0.4.0: fermata's ReTouch window, on the part chosen (the Fixer only: the Primary has none)
+    void openReTouchWindow()
+    {
+        if (retouchWindow != nullptr) { retouchWindow->toFront (true); return; }
+        const auto* t = selectedTake();
+        const auto L = app.layout();
+        if (t == nullptr || L == nullptr || selTracks.empty()) { app.say ("Choose a part of one take first (drag over the tracks), then open the ReTouch window"); return; }
+        const double we = app.writtenEndSeconds();
+        if (t->recording && we >= 0.0 && selB > we) { app.say ("That part is not on the disk yet: wait a moment"); return; }
+        // the area: the part chosen and 2 seconds either side (the clean sound round a fix), inside the take and what is on the disk
+        auto src = std::make_shared<FixTry>();
+        src->takeNumber = t->number; src->rate = t->rate; src->session = t->session; src->sessionStart = t->sessionStart;
+        src->sessionFolder = L->sessionFolder; src->writtenTo = app.model.writtenTo();
+        src->takeLength = t->recording ? (juce::int64) std::llround (((we >= 0.0 ? we : t->end()) - t->start) * t->rate) : t->lengthSamples;
+        constexpr double pad = 2.0;
+        src->from = juce::jmax ((juce::int64) 0, (juce::int64) std::llround ((selA - t->start - pad) * t->rate));
+        src->to = juce::jmin (src->takeLength, (juce::int64) std::llround ((selB - t->start + pad) * t->rate));
+        if (src->to - src->from < (juce::int64) (0.2 * t->rate)) { app.say ("That part is too short for the ReTouch window"); return; }
+        for (auto& id : selTracks)
+            if (auto* lt = L->findTrack (id))
+            {
+                FixTry::Track tr; tr.id = id; tr.name = lt->name; tr.channels = lt->channels; tr.sessionIndex = lt->sessionIndex;
+                for (auto& f : t->files) if (f.trackId == id) tr.file = f.file;
+                src->tracks.push_back (tr);
+            }
+        if (src->tracks.empty()) { app.say ("None of the tracks chosen are in that take"); return; }
+        lastTry.reset(); lastFix.reset(); app.setAudition (nullptr);           // (one thing heard at a time: what was being tried here goes)
+        refreshFixControls();
+
+        const double rate = t->rate;
+        const double areaStart = t->start + (double) src->from / rate, areaEnd = t->start + (double) src->to / rate;     // (on the window's timeline)
+        struct State
+        {
+            std::mutex lock; std::shared_ptr<Player::Audition> prepared; juce::String what;   // (made on the job's thread, used on the message thread)
+            bool ours = false, looping = false; double playA = 0.0, playB = 0.0;               // what the ReTouch window asked to play (window seconds)
+        };
+        auto st = std::make_shared<State>();
+        auto room = std::make_shared<const Project::RoomTone> (app.project.roomTone);
+        FixerApp* ap = &app;
+        juce::Component::SafePointer<FixerComponent> safe (this);
+
+        fixtools::RepairContext c;
+        c.rate = rate; c.length = src->to - src->from; c.refA = app.project.pitchPipe.refA;
+        c.roomSource = room->source;
+        for (auto& tr : src->tracks)
+        {
+            const auto* rt = room->forTrack (tr.id);
+            c.roomMono.push_back (rt != nullptr ? rt->mono : denoise::Profile());
+            c.trackIds.push_back (tr.id); c.trackNames.push_back (tr.name);
+        }
+        c.where = "take " + juce::String (t->number); c.areaStart = (double) src->from / rate;
+        c.title = "ReTouch - take " + juce::String (t->number);
+        c.what = "The " + juce::String ((int) src->tracks.size()) + (src->tracks.size() == 1 ? " track" : " tracks") + " chosen of take " + juce::String (t->number) + ", "
+                 + hmsF ((double) src->from / rate, false) + " - " + hmsF ((double) src->to / rate, false) + " (what you chose and 2 seconds either side), as one picture. "
+                 "Draw a box round the noise (time and pitch) and press ReTouch (or De-click for clicks, Denoise for the room noise), listen, then Keep as a fix version: "
+                 "a new version for fermata's review. The recording is never changed.";
+        c.load = [src] (AudioJob& j)
+        {
+            std::vector<std::vector<float>> tracks;
+            ChunkTimeline timeline; openTimeline (*src, timeline);
+            const int n = (int) (src->to - src->from);
+            for (size_t i = 0; i < src->tracks.size(); ++i)
+            {
+                if (j.cancelled()) break;
+                j.setProgress ((float) i / (float) juce::jmax ((size_t) 1, src->tracks.size()));
+                std::vector<std::vector<float>> ch;
+                readTakeSpan (*src, src->tracks[i], timeline, src->from, n, ch);           // (what cannot be read shows as silence)
+                std::vector<float> mono ((size_t) n, 0.0f);
+                for (auto& x : ch) for (size_t k = 0; k < mono.size() && k < x.size(); ++k) mono[k] += x[k] / (float) ch.size();
+                tracks.push_back (std::move (mono));
+            }
+            return tracks;
+        };
+        c.readChannels = [src] (juce::int64 a, juce::int64 b, AudioJob& j)
+        {
+            std::vector<std::vector<std::vector<float>>> out;
+            ChunkTimeline timeline; openTimeline (*src, timeline);
+            for (auto& tr : src->tracks)
+            {
+                if (j.cancelled()) break;
+                std::vector<std::vector<float>> ch;
+                readTakeSpan (*src, tr, timeline, src->from + a, (int) juce::jmax ((juce::int64) 0, b - a), ch);
+                out.push_back (std::move (ch));
+            }
+            return out;
+        };
+        c.prepare = [src, st, room] (const std::vector<fixtools::RepairOp>& ops, AudioJob& j) -> juce::String
+        {
+            auto a = std::make_shared<Player::Audition>();
+            const auto err = renderOps (*src, ops, room, j, *a);
+            if (err.isNotEmpty()) return err;
+            const std::lock_guard<std::mutex> g (st->lock);
+            st->prepared = a; st->what = describeOps (ops);
+            return {};
+        };
+        auto prepared = [st] { const std::lock_guard<std::mutex> g (st->lock); return st->prepared; };
+        c.apply = [ap, prepared] { auto a = prepared(); if (a == nullptr) return false; ap->setAudition (a); return true; };
+        c.unapply = [ap] { ap->setAudition (nullptr); };
+        c.discard = [st] { const std::lock_guard<std::mutex> g (st->lock); st->prepared.reset(); };
+        c.acceptText = "Keep as a fix version";
+        c.acceptTip = "Keeps all the fixes made here as one new fix version of this take (its own files: the recording and the project are never changed). fermata's review takes it "
+                      "from there. The note and \"Tell the Primary\" under the Fixer's ReTouch go with it.";
+        c.mayAccept = [safe] () -> juce::String { return safe == nullptr ? juce::String ("The Fixer's window has closed.") : safe->whyNoVersion(); };
+        c.accept = [safe, src, st, prepared, ap]
+        {
+            if (auto a = prepared(); a != nullptr && safe != nullptr && ! a->tracks.empty() && ! a->tracks.begin()->second.empty())
+            {
+                const auto length = (juce::int64) a->tracks.begin()->second.front().size();
+                juce::String what; { const std::lock_guard<std::mutex> g (st->lock); what = st->what; }
+                safe->keepVersion (src->takeNumber, a->from, a->from + length, src->rate, src->tracks, a->tracks, what);
+            }
+            ap->setAudition (nullptr);                                         // (kept: it is a version now, for the review; the Fixer hears the recording again)
+        };
+        c.play = [ap, st, areaStart, safe] (double a, double b, bool loop)
+        {
+            if (ap->follow) { ap->setFollow (false); if (safe != nullptr) safe->followBtn.setToggleState (false, juce::dontSendNotification); }
+            st->ours = true; st->looping = loop; st->playA = areaStart + a; st->playB = areaStart + b;
+            if (ap->player != nullptr) ap->player->setLoop (loop, st->playA, st->playB);
+            ap->play (st->playA);
+        };
+        c.setLooping = [ap, st] (bool on) { st->looping = on; if (ap->player != nullptr) ap->player->setLoop (on && st->ours, st->playA, st->playB); };
+        c.position = [ap, st, areaStart, areaEnd] () -> double
+        {
+            if (! ap->isPlaying())
+            {
+                if (st->ours) { st->ours = false; if (ap->player != nullptr) ap->player->setLoop (false, 0.0, 0.0); }
+                return -1.0;
+            }
+            const double p = ap->playheadSeconds();
+            if (st->ours && ! st->looping && p >= st->playB) { ap->stop(); st->ours = false; return -1.0; }    // (the end of what is in view: as fermata stops there)
+            return p >= areaStart && p <= areaEnd ? p - areaStart : -1.0;
+        };
+        c.stop = [ap, st]
+        {
+            if (ap->isPlaying()) ap->stop();
+            st->ours = false;
+            if (ap->player != nullptr) ap->player->setLoop (false, 0.0, 0.0);
+        };
+        // the consonants the project keeps can be pasted (read from the project; the Fixer never writes it - copying one is done in fermata)
+        c.consonantList = [ap] { return ap->project.consonants; };
+        c.loadConsonant = [ap] (const juce::Uuid& id, juce::String& err) -> std::shared_ptr<const ConsonantAudio>
+        {
+            const auto* d = ap->project.findConsonant (id);
+            if (d == nullptr) { err = "That consonant is no longer kept in this project."; return nullptr; }
+            return consonants::load (*d, fixtools::formats(), err);
+        };
+        fixtools::gSpecPrefs = app.settings.get();
+        const auto title = c.title + "  -  fermata:Live Fixer";
+        auto* w = new ReTouchWindow (title, std::make_unique<fixtools::RepairDialog> (std::move (c)), app.settings.get(), getTopLevelComponent());
+        retouchWindow = w;
+        w->setVisible (true);
+        w->enterModalState (true, juce::ModalCallbackFunction::create ([safe] (int) { if (safe != nullptr) safe->refreshFixControls(); }), true);
+        app.say ("ReTouch window open on take " + juce::String (t->number) + ": what is kept there becomes a fix version.");
     }
     // the versions list: the session's fix versions, and those the project already has (made in an earlier session; fermata's review state)
     struct VersionRow { juce::String id; int take = 0; juce::int64 from = 0, to = 0; double rate = 48000.0; int version = 1; juce::String what; int state = -1; };
@@ -594,7 +930,8 @@ private:
     juce::TextEditor delayBox, fixNote;
     IconButton backBtn, playBtn, fwdBtn;
     FixerTimeBox playhead { "PLAYHEAD  H : M : S . MS", 30.0f }, behind { "BEHIND LIVE", 26.0f };
-    juce::TextButton mixerBtn { "Mixer" }, tryBtn { "Try it" }, abBtn { "Hearing: FIXED" }, saveBtn { "Keep as a fix version" };
+    juce::TextButton mixerBtn { "Mixer" }, tryBtn { "Try it" }, abBtn { "Hearing: FIXED" }, saveBtn { "Keep as a fix version" }, retouchBtn { "ReTouch window..." };
+    juce::Component::SafePointer<ReTouchWindow> retouchWindow;                // (0.4.0: fermata's ReTouch window, while it is open)
     juce::ComboBox fixKind;
     juce::Slider amount;
     FixerFlags flags;

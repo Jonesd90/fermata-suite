@@ -1836,3 +1836,77 @@ fermata moved to a new repository that also holds its companion, fermata:Live (t
 - **specTime**: seconds under a minute, then m:ss(.d), then h:mm:ss - the ruler, the read-out, "Showing", the selection and room-tone texts.
 - Not done: feathering (the user: ship the rest first). The plan: a feather in time (ms) and pitch (semitones) for every tool, as a soft edge on the same grid
   (a distance transform from the shape, a raised-cosine fall over the feather) - the masks and keepMasked are already made for it.
+
+## 3.34.0: feathering (built in the fermata:Live conversation, 5 November 2026)
+- SpectrogramView: `featherT` (s) and `featherP` (octaves); `softSelection()` is now strokes OR feathering, so every tool's selection goes through the soft
+  shape (3.33.0: `buildSoft`, `SoftMask`, core `keepMasked` - nothing new in the core). The grid is widened by the feather; after the boxes and strokes are
+  painted, the squared distance to the selection in feathers (time and pitch each in their own: (dt / featherT)^2 and (dl / featherP)^2 per cell) by two 1-D
+  lower-envelope passes (`distance1d`, Felzenszwalb - Huttenlocher; an axis without feather is not passed, so the distance across it stays "none"); the value
+  is 1 inside, 0.5 + 0.5 cos (pi d) out to one feather. The parts are the 4-connected pieces of the soft values (so feathered boxes that meet are one part),
+  their masks the soft values. While a box is dragged (selectionChanged without 'tell') the shape is not made again (`softStale`): it shows as a plain box until
+  let go. paintSoft: the selection's edge solid, the feathering shaded by its value, its outer edge dotted; drawn at full opacity (a JUCE image takes the
+  opacity of the colour last set - the shape had been drawn faint after a translucent grid line).
+- A box round a click (findsLost on the hard shape, no brush strokes) is mended from `hardParts()`, exactly as before, feathering or not.
+- FeatherPanel (a CallOutBox from SelectToolsBar's Feather button): in time 0 - 1000 ms, in pitch 0 - 24 semitones, Off. "featherMs" / "featherSt" in the settings.
+- Checked on Linux in Noise mode (the drawing; the fixes through the same masks as the brush, checked in 3.33.0 and by core_test).
+
+## 3.35.0: Glue (the snip taken away), a click clears the ReTouch selection, the ReTouch window shared with fermata:Live's Fixer (built in the fermata:Live conversation, 5 November 2026)
+- Asked for (glue): "a way to sort of 'reverse' the cut. Like glue it back together as though it was never there ... the 'Trim Window' button changes to a T
+  and a needle & thread and then we get a button for cut or split ... (the f1 action) and then glue ... another f key ... like a superglue pot ... the user
+  clicks on the glue button to go into glue mode and then they can click on an sn ... point and it glues it back together. They then click the glue to come
+  out of glue mode. Or they can right click on an sn fade and click 'remove snip'." F3 was chosen for it: F1 is the snip, F2 the Trim window's Audition, and
+  F3 means nothing anywhere else in fermata.
+- Shared: `EditDef::glueSnip (k, why)` (src/core/Edit.h). Refused unless join k is a snip (both flags), neither side waits for processed audio, and both
+  play the same files (file, track, fileStart per file; rate; take length). The glued piece is the first one with srcOut = the second's srcOut: it plays the
+  take on from its own start, so a moment rolled out at the snip (the Trim window's slipIn / slipOut move one side's audio under the join) comes back, or one
+  doubled goes. It keeps the first one's start, fade-in, snipIn / fixIn, normaliseIn, and the second one's fade-out (its curve), snipOut / fixOut, barOut.
+  Volume changes: the first one's before `cut` (= where the second one's audio began, b.srcIn - a.srcIn), then the second one's moved by `cut`; the step
+  that splitRegion put at the second one's start (the level the first had reached, no ramp, no group) is dropped when it changes nothing; the autoNorm
+  glide is left to refreshNormalised. The pieces after it move by (glued end - old second end), so the next join keeps its crossfade exactly; overdubs,
+  markers and fixed automation stay put (the Trim window's slips do not move them either: this undoes a slip). Points pinned to the second piece are
+  pinned to the glued one (resolveAutomation puts them on their audio). insertIndex follows. Undo: Project::changed() records it like any edit change.
+  core_test: glued at once = the edit before the snip (ids, source range, fades, volume change); with a quarter of a second rolled out = the moment back,
+  the next piece and its crossfade back in place, the volume change on its audio, a pinned point on its audio; refused across an offline fix; undo.
+- The edit window (EditWindow.cpp): `snipButton` (Icon::Snip, = F1) and `glueButton` (Icon::Glue, lit in glue mode) beside the Trim button;
+  `EditWindowComponent::setGlueMode` (F3, Esc leaves) and `glueSnip` (stops this edit's playback only when the timing changes; the notice says how much moved).
+  EditTimeline: `glueMode`, `snipNear` (the flag or line within 10 px, or a point inside the snip's crossfade), the glue pot as the cursor (drawIcon into an
+  image, hot spot on the nozzle), the snips drawn in yellow in glue mode (the one under the pointer brighter, its crossfade shaded); `showSnipMenu` on a
+  right-click on a snip's flag (Remove snip, Open in the Trim window) and "Remove snip" first in the piece menu on a snip's crossfade. HotKeysWindow: F3, Esc.
+- Shared: Uikit.h - Icon::Snip (scissors), Icon::Glue (a pot tilted 45 degrees, nozzle to the top left), added at the end of the enum; Icon::Trim is a T with
+  a needle and thread (its scissors went to Snip). fermata:Live draws none of the three.
+- Asked for (the click): "when I click and it moves the playhead, I ALSO want it to remove the selection box". SpectrogramView::clickPlaces: a click without a
+  drag in the picture - on nothing, inside a box (move), on an edge (resize), with the brush - places the playhead and, when plain (no Shift / Alt), clears
+  the selection (boxes, strokes, harmonics: clearSelection). Shift / Alt clicks keep it; the time ruler's click only places the playhead, as before.
+
+### The ReTouch window shared with fermata:Live's Fixer
+- Asked for: "it absolutely should be the same tool as fermata ... it will only be available to the fixer and not the primary". So the window was moved, not
+  copied (COMPATIBILITY.md rule 1): `src/ui/SpectralWindow.h` holds everything from SpectroSettings to RepairDialog and SpectroSettingsDialog, with RepairOp,
+  RepairContext, JobDialogBase, `uiPrefs()` and `formats()`. It includes only the shared look (`Uikit.h`, `TimeReadout.h`) and src/core, so the check lets
+  fermata:Live include it. FixToolsDialogs.h keeps the pitch dialogs; FixToolsCommon.h includes the new file.
+- The two things the window needed from fermata's windows are hooks now: `openDialogHook()` (how it opens its spectrogram settings; fermata sets it to
+  launchDialog, else a plain DialogWindow) and `closeDialogHook()` (how it closes itself; fermata's closes an OUT / IN STREAM window's pair). fermata sets both
+  in FixToolsCommon.h (`fermataDialogsHooked`, `streamCloseHooked`), so fermata behaves exactly as in 3.34.0.
+- RepairContext gained `acceptText` / `acceptTip` (the keep button's name; "" = "Write back to file") and `mayAccept` (asked before keeping; "" = go ahead,
+  else the reason is shown and the window stays open). The window's texts name the keep button as it is named. Rename / Forget of a consonant are greyed
+  out when the program gives no way to do them, and the Consonants tab says copying is done in fermata when it gives no `keepConsonant`.
+- Shared: `FixVersion` (src/core/Takes.h): `takeId`, `flagId` and `replaces` start as `juce::Uuid::null()`. A juce::Uuid made with no value is a new random id,
+  so a version that answered no flag (or was a first attempt) was put into the project by fermata:Live's Primary - and made again on every load - pointing at
+  a flag and an earlier attempt that never existed. Found while trying the Fixer's ReTouch window. compat_test: a version with no flag and no earlier attempt
+  keeps none through a save and a load.
+- Checked: the window-code compile of both programs; fermata:Live linked on Linux with the shared core and the shared look only (nothing else from src/ui).
+
+## 3.35.1: RX's Overwrite Original File; files coming back together; more times on the ruler (built in the fermata:Live conversation, 5 November 2026)
+- Asked for: "when RX does a 'Save' it actually saves the project files and NOT the audio file ... 'Overwrite Original File' (CTRL+ALT+S) ... Can you make
+  it so THAT is the trigger". It already was: the Watcher (RxLink.cpp) looks at the sent WAVs themselves (RxSaveWatch: a newer time, the same twice
+  running); RX's Save writes an RX document and leaves them alone. What was wrong was `howToSave` ("press Save (Ctrl+S) on each tab"): now File > Overwrite
+  Original File (Ctrl+Alt+S), and `howToSaveShort` for the status line. explainOnce's key for RX gained "_overwrite", so the corrected explanation shows once.
+- Shared: RxSaveWatch::ready - when ready files meet another watched file that is still being written (it changed since the last look, or is missing for a
+  moment while it is replaced), they wait (at most maxHold = 30 looks), so Composite View's overwrite of every file in a row comes in as one bringIn - one
+  undo step, one notice. core_test: three files written in turn come back together; one that keeps changing holds the rest for maxHold looks only.
+- Asked for: "the timeline timecode has become so spaced out ... please bring back some of the numbers. Unless it's acting differently on different
+  resolution screens?" Not the screen: timefmt::rulerSteps went from 10 s to 60 s labels at 8 px/s (at 4.65 px/s - the user's 6 1/2 minutes across a
+  wide window - 280 px apart), and from 5 to 10 minutes. Now (shared, src/core/TimeFormat.h) below 60 px/s the shortest of 2, 5, 10, 15, 30 s, 1, 2, 5, 10,
+  15, 30 min, 1, 2, 3, 6, 12 h, a day with labels >= 64 px apart (kRulerLabelGap); the faint lines the finest step (or 1 s) dividing it, >= 10 px apart.
+  Logical pixels, which the desktop scale factor scales with the text. core_test: >= 64 px, never wider than needed, the minors divide.
+- And in the edit window the times were under the edit points' number badges (the same rows of the ruler: labels kRulerTop + 2 .. 18, badges kRulerH - 16
+  .. - 1), so with edits close together most were hidden: the ruler is 10 px taller (kRulerH = 32 + kRulerTop) and the times sit on its top line.

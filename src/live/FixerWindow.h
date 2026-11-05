@@ -1,7 +1,8 @@
 #pragma once
 /** fermata:Live 0.3.0: the Fixer's window - the take window delayed (the timeline fills as the audio reaches the disk), Follow Primary, the
     Primary's flags at once with a reply box, the Fixer's own mixer, and ReTouch: a part of the takes chosen by dragging (time and tracks), a fix
-    (De-click, Repair, Denoise, Gain - fermata's own processing), tried in place, then kept as a fix version. */
+    (De-click, Repair, Denoise, Gain - fermata's own processing), tried in place, then kept as a fix version. 0.4.0: or fermata's own ReTouch window on
+    that part (src/ui/SpectralWindow.h, shared), whose fixes are kept as one fix version. */
 #include "FixerApp.h"
 #include "../ui/Uikit.h"
 

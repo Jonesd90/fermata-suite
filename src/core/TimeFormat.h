@@ -53,21 +53,26 @@ inline juce::String minSecText (double seconds, int decimals = 0)
 }
 
 /** 3.23.0: the time ruler of the take and edit windows at this zoom: seconds between the labelled lines ('step') and between the fainter lines in between
-    ('minor'; equal to 'step' = none). Close in, the steps as they always were (0.5 s up to 5 minutes). Further out the labels keep at least 90 pixels apart -
-    10, 15, 30 minutes, 1, 2, 3, 6, 12 hours, a day - so the times never run into each other, and the fainter lines thin out with them (never closer than 10 px). */
+    ('minor'; equal to 'step' = none). Close in (60 pixels a second and more) the steps as they always were (0.5 s, 1 s). 3.35.1: further out, the
+    shortest of 2, 5, 10, 15, 30 seconds, 1, 2, 5, 10, 15, 30 minutes, 1, 2, 3, 6, 12 hours or a day whose labels are at least 64 pixels apart (about twice
+    a label's width) - until now it jumped from every 10 seconds to every minute, and from every 5 minutes to every 10, so far out a label could be 300
+    pixels from the next. The fainter lines: the finest of those steps (or 1 s) that divides the labelled one and is at least 10 pixels apart. In the
+    windows' own units, which Windows' display scaling scales with the text, so it looks the same on any screen. */
 struct RulerSteps { double step = 1.0, minor = 1.0; };
+inline constexpr double kRulerLabelGap = 64.0;
 inline RulerSteps rulerSteps (double pixelsPerSecond)
 {
     const double pps = pixelsPerSecond;
-    if (pps >= 3.0)
-        return { pps >= 200 ? 0.5 : pps >= 60 ? 1.0 : pps >= 24 ? 5.0 : pps >= 8 ? 10.0 : 60.0,
-                 pps >= 450 ? 0.1 : pps >= 200 ? 0.25 : pps >= 60 ? 0.5 : pps >= 24 ? 1.0 : pps >= 8 ? 5.0 : 10.0 };
-    static const double big[] = { 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400 };
-    double step = big[std::size (big) - 1];
-    for (double b : big) if (b * pps >= 90.0) { step = b; break; }
+    if (pps >= 60.0) return { pps >= 200 ? 0.5 : 1.0, pps >= 450 ? 0.1 : pps >= 200 ? 0.25 : 0.5 };
+    static const double nice[] = { 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400 };
+    double step = nice[std::size (nice) - 1];
+    for (size_t i = 1; i < std::size (nice); ++i) if (nice[i] * pps >= kRulerLabelGap) { step = nice[i]; break; }
     double minor = step;
-    for (int k : { 5, 4, 3, 2 })
-        if (std::fmod (step, (double) k) == 0.0 && step / k * pps >= 10.0) { minor = step / k; break; }
+    for (double c : nice)
+    {
+        if (c >= step) break;
+        if (std::fmod (step, c) == 0.0 && c * pps >= 10.0) { minor = c; break; }
+    }
     return { step, minor };
 }
 

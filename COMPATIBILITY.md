@@ -44,6 +44,11 @@ Everything listed here is built into BOTH programs, so a change to any of it cha
 - **fermata's closing log and closing safety net** (fermata 3.15.0 / 3.17.0; shared from fermata:Live 0.3.1, which uses them in its window, its
   recorder and its Fixer): `src/ui/ClosingLog.h`. It stays in fermata's folder, unchanged, under the same rules as the look files above. A change to
   it changes how both programs close. (Its safety net's log lines name "Fermata" in fermata:Live's logs too.)
+- **fermata's ReTouch window** (fermata 3.35.0; shared from fermata:Live 0.4.0, whose Fixer opens it - the Primary has none): `src/ui/SpectralWindow.h`.
+  The spectral picture with its selection tools (Rectangle, Time, Brush, feathering) and harmonics, and the window round it (ReTouch, Gain,
+  De-click, Denoise, Consonants). It stays in fermata's folder under the same rules as the look files above (it includes only them and `src/core`).
+  It knows neither program: each hands it a `RepairContext` - how to read the audio, make the fixes, play them and keep them (fermata: new files
+  in the take or edit; the Fixer: a fix version). A change to it changes both programs' ReTouch: build and try both.
 
 A file from one program's own folder joins this list as soon as the other program uses it (as fermata's look did in contract 3). From then on it is
 shared, and the rules below apply to it.
@@ -123,3 +128,5 @@ copies it like everything else, which is fine.
 - **Contract 3** (fermata 3.30.2, fermata:Live 0.3.0): flags (with notes and replies) on take window markers, fix versions in take windows (above),
   and fermata's look shared with fermata:Live (the `src/ui` files listed under Shared code). fermata's own behaviour is unchanged: an ordinary marker
   and a take window without fix versions are saved byte for byte as before.
+  - Still contract 3 (fermata 3.35.0, fermata:Live 0.4.0): fermata's ReTouch window (`src/ui/SpectralWindow.h`) joined the shared files, for the
+    Fixer. No file format changed, so the number stays.

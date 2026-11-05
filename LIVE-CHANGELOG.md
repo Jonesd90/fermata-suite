@@ -8,6 +8,17 @@ fermata:Live is the live-concert recorder that goes with fermata (see `docs/LIVE
 
 A line that starts with **Shared:** is a change to the code fermata shares (see `COMPATIBILITY.md`), so fermata's next build mentions it too.
 
+## 0.4.0
+**fermata's own ReTouch window, in the Fixer** (the Fixer only - the Primary has none). Drag over the tracks on the Fixer's timeline as before, then press **ReTouch window...** (beside the fix's menu): the part you chose, and 2 seconds either side, opens in fermata's ReTouch window, all the chosen tracks as one picture.
+- **Everything fermata's window has**: ReTouch (all three methods), Gain, De-click, Denoise, harmonics, the Rectangle / Time / Brush selections with feathering, L C R, the spectrogram settings, Show before / Show fixed, Undo - the same window and the same processing as fermata's, not a copy of it.
+- **Listening**: Space or Play plays what is in view through the Fixer's own mixer and output pair, and stops at the right edge of the picture (Loop goes round); "Listen to" chooses the fixed sound or the original. The playhead moves on the picture and on the Fixer's clock. Playing switches Follow Primary off, as Try it does.
+- **Keep as a fix version** (the window's green button) keeps every fix made in the window as one new fix version of the take, for fermata's review: one file per track holding the part that changed, and the versions list shows it ("ReTouch window: ReTouch x2, De-click"). The recording and the project are never changed. The note for the review, Tell the Primary and the flag chosen in the Fixer's window go with it, as with Keep as a fix version there. With no session running it says so and the fixes stay in the window to be kept once the Primary has started it.
+- **A click** in the picture (no drag) puts the playhead there and takes the selection away; Shift or Alt + click keeps it, as does a click on the time ruler (as in fermata 3.35.0).
+- **Closing the window** with fixes not kept asks first. Its size and place are remembered.
+- **Consonants**: the consonants kept with the project can be pasted; copying one (which keeps it with the project) is done in fermata, since the Fixer never writes the project.
+- **Room tone for Denoise**: a room-tone box drawn in the window (key L), or the project's room tone if it has one.
+- Shared: fermata's ReTouch window (`src/ui/SpectralWindow.h`, moved there from fermata's own files; built for fermata 3.35.0) and a fix version's flag and earlier attempt starting as none (`src/core/Takes.h`: a version that answered no flag was put into the project pointing at a flag, and an earlier attempt, that never existed); also, from fermata 3.35.0's own work, the edit's glue (`src/core/Edit.h`) and three icons (`src/ui/Uikit.h`), which fermata:Live does not use - fermata needs a rebuild and test (it is in the same zip).
+
 ## 0.3.2
 - **A polarity key (Ø) on the mixer's strips**, beside M and S: inverts every channel of the track in what you hear live, in playback and in Bounce out (the recording is never changed). It is the same setting as on fermata's mixer strips (the project's processing mixer), so fermata shows it too. The Fixer's own mixer does not have it yet.
 - The pretend "Test signal" device no longer says it has more channels than its 16 inputs and 2 outputs when asked for more.

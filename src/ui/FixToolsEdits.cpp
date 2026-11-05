@@ -1182,8 +1182,8 @@ private:
             return ops;
         }
         // 3.30.1: "a box round a click" is decided from the whole shape drawn, not from each rectangle (a sliver left by a cut-out is no click box)
-        const bool clickBox = ! view.softSelection() && audioops::findsLost (spec, rate, (juce::int64) std::llround (view.selT0() * rate), (juce::int64) std::llround (view.selT1() * rate));
-        for (auto& r : view.selectionParts())                                   // (3.33.0: a rectangle, or a piece of a brush shape with its mask)
+        const bool clickBox = ! view.brushed() && audioops::findsLost (spec, rate, (juce::int64) std::llround (view.selT0() * rate), (juce::int64) std::llround (view.selT1() * rate));
+        for (auto& r : clickBox ? view.hardParts() : view.selectionParts())     // (3.33.0: a rectangle, or a piece of a brush shape with its mask; 3.34.0: or feathered - a box round a click is mended exactly)
         {
             auto sp = spec; sp.f0 = r.f0; sp.f1 = r.f1; sp.mask = r.mask; sp.maskLead = (juce::int64) std::llround (r.lead * rate);
             if (! clickBox) { sp.lostKnown = true; sp.lost.clear(); }

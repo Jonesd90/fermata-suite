@@ -103,15 +103,17 @@ struct FixFile
 struct FixVersion
 {
     juce::Uuid   id;
-    juce::Uuid   takeId;                    // the take (TakeGroup) of this window it is a version of; null while that take is not in the project yet
+    juce::Uuid   takeId = juce::Uuid::null();   // the take (TakeGroup) of this window it is a version of; null while that take is not in the project yet
+                                            // (0.4.0: these three start as null - a juce::Uuid made with no value is a NEW random id, so a version that answered no
+                                            // flag was saved pointing at a flag, and an earlier attempt, that never were)
     int          takeNumber = 0;            // the take's number (it finds the take before its id is known)
     juce::int64  startSample = 0, endSample = 0;   // the span it replaces, in the take's own samples
     double       sampleRate = 48000.0;
     std::vector<FixFile> files;             // one per track fixed
     juce::String what;                      // what was done: "De-click (sensitivity 6)"
     juce::String note;                      // the Fixer's own words
-    juce::Uuid   flagId;                    // the flag (a Marker of this window) it answers; null = none
-    juce::Uuid   replaces;                  // the version it is another attempt at; null = the first attempt
+    juce::Uuid   flagId = juce::Uuid::null();     // the flag (a Marker of this window) it answers; null = none
+    juce::Uuid   replaces = juce::Uuid::null();   // the version it is another attempt at; null = the first attempt
     int          versionNumber = 1;         // 1, 2, 3 ... for the attempts at the same place
     juce::String by;                        // who made it ("Fixer")
     juce::Time   madeAt;

@@ -29,7 +29,8 @@ static constexpr int kInsH = 14;                                           // th
 static constexpr int kFbH = 14;                                            // the strip with the listeners' comment flags (its own line, under the markers)
 static constexpr int kInsY = markerui::kStripH + kFbH;                     // where the insert strip starts
 static constexpr int kRulerTop = kInsY + kInsH;                            // where the ruler's numbers start
-static constexpr int kRulerH = 22 + kRulerTop, kLaneH = 38;                // (the top band: the marker strip, then the feedback strip, then the insert flag, then the ruler)
+static constexpr int kRulerH = 32 + kRulerTop, kLaneH = 38;                // (the top band: the marker strip, then the feedback strip, then the insert flag, then the ruler -
+                                                                           //  3.35.1: its times on a line of their own, above the edit points' numbers, which hid them)
 static int kNameW = 210;                        // width of the track-name column (drag its right edge to change it; shared by all edit windows)
 
 class EditTimeline : public juce::Component, private juce::ChangeListener, private juce::Timer
@@ -62,6 +63,62 @@ public:
     bool isSelected (const juce::Uuid& id) const { return std::find (selectedRegions.begin(), selectedRegions.end(), id) != selectedRegions.end() || id == selectedRegion; }
     int selectedJoin = -1;                 // the selected edit point: 0 = the start of the edit, k = the join before regions[k], n = the end of the edit; -1 = none
     bool slipLeft = false, slipRight = false, shuffleMode = false;
+    // ---- 3.35.0: glue mode (the glue button, F3): a click on a snip glues its two sides back together; the snips are lit and the cursor is the glue pot
+    bool glueMode = false;
+    int glueHover = -1;                    // (the snip under the mouse in glue mode)
+    std::function<void (int)> onGlue;      // glues the snip at join k (the window does it: EditWindowComponent::glueSnip)
+    void setGlueMode (bool on)
+    {
+        if (on == glueMode) return;
+        glueMode = on; glueHover = -1;
+        setMouseCursor (on ? glueCursor() : juce::MouseCursor::NormalCursor);
+        repaint();
+    }
+    static juce::MouseCursor glueCursor()
+    {
+        static const juce::MouseCursor c = []
+        {
+            juce::Image im (juce::Image::ARGB, 28, 28, true);
+            { juce::Graphics g (im); drawIcon (g, Icon::Glue, juce::Rectangle<float> (0, 0, 28, 28)); }
+            return juce::MouseCursor (im, 5, 5);                       // (the hot spot: the tip of the nozzle)
+        }();
+        return c;
+    }
+    /** The snip a click at p means: its flag or line within 10 pixels, or a point inside its crossfade. -1 = none there. */
+    int snipNear (const EditDef& ed, juce::Point<int> p, double rate) const
+    {
+        int best = -1; double bestD = 10.5;
+        for (int k = 1; k < (int) ed.regions.size(); ++k)
+        {
+            if (! ed.isSnipJoin (k)) continue;
+            const auto& a = ed.regions[(size_t) k - 1]; const auto& b = ed.regions[(size_t) k];
+            double d = std::abs ((double) xOf ((double) editPointSample (ed, k) / rate) - p.x);
+            const int x0 = xOf ((double) juce::jmin (a.fadeOutBegin(), b.fadeInBegin()) / rate), x1 = xOf ((double) juce::jmax (a.fadeOutFinish(), b.fadeInFinish()) / rate);
+            if (p.x >= x0 - 1 && p.x <= x1 + 1) d = juce::jmin (d, 0.5);
+            if (d < bestD) { bestD = d; best = k; }
+        }
+        return best;
+    }
+    /** Right-click on a snip's flag: Remove snip (glue), or open it in the Trim window. */
+    void showSnipMenu (const EditDef& ed, int k)
+    {
+        if (! ed.isSnipJoin (k)) return;
+        const auto bid = ed.regions[(size_t) k].id;
+        juce::PopupMenu m;
+        m.addSectionHeader ("Snip (F1)");
+        m.addItem (1, "Remove snip (glue it back together)");
+        m.addItem (2, "Open it in the Trim window");
+        juce::Component::SafePointer<EditTimeline> me (this);
+        m.showMenuAsync (juce::PopupMenu::Options(), [me, bid] (int r)
+        {
+            if (me == nullptr || r == 0) return;
+            auto* e2 = me->edit(); if (e2 == nullptr) return;
+            const int k2 = e2->indexOf (bid);
+            if (k2 < 1 || ! e2->isSnipJoin (k2)) return;
+            if (r == 1 && me->onGlue) me->onGlue (k2);
+            if (r == 2 && me->app.showTrim) me->app.showTrim (me->editId, bid, false);
+        });
+    }
     double cursorSeconds = -1.0;
     juce::String selectedFeedback;              // the key of the first comment of the flag that was clicked last
 
@@ -501,7 +558,7 @@ public:
         {
             const int x = xOf (s);
             g.setColour (theme::grid); g.drawVerticalLine (x, (float) kRulerH - 8, (float) getHeight());
-            g.setColour (theme::dimText); g.drawText (formatTimeShort (s, 0), x + 3, 2 + kRulerTop, 60, 16, juce::Justification::left);
+            g.setColour (theme::dimText); g.drawText (formatTimeShort (s, 0), x + 3, kRulerTop, 64, 14, juce::Justification::left);
         }
 
         paintGuideLane (g, *e);
@@ -597,6 +654,23 @@ public:
             if (x + 12 < clip.getX() || x - 12 > clip.getRight())                                // (3.27.1: a flag off the clip is not drawn - every one used to be, at every playhead frame; the numbers still count)
             {
                 if (! e->isUnnumberedJoin (k)) ++editNumber;
+                continue;
+            }
+            if (glueMode && e->isSnipJoin (k))                                                  // 3.35.0: glue mode - every snip lit, the one under the glue pot most
+            {
+                const bool hot = glueHover == k;
+                const auto glue = juce::Colour (0xffe8b923);
+                const auto& a = e->regions[(size_t) k - 1]; const auto& b = e->regions[(size_t) k];
+                const int x0 = xOf ((double) juce::jmin (a.fadeOutBegin(), b.fadeInBegin()) / rate), x1 = xOf ((double) juce::jmax (a.fadeOutFinish(), b.fadeInFinish()) / rate);
+                g.setColour (glue.withAlpha (hot ? 0.30f : 0.12f)); g.fillRect (x0, kRulerH, juce::jmax (2, x1 - x0), rowsEnd - kRulerH);
+                g.setColour (glue.withAlpha (hot ? 1.0f : 0.8f)); g.fillRect (x - (hot ? 1 : 0), kRulerH, hot ? 3 : 1, rowsEnd - kRulerH);
+                juce::Path tri; tri.addTriangle ((float) x - 5, (float) kRulerH, (float) x + 5, (float) kRulerH, (float) x, (float) kRulerH + 8);
+                g.fillPath (tri);
+                const auto badge = juce::Rectangle<int> (x - 9, kRulerH - 14, 18, 13);
+                g.setColour (glue); g.fillRoundedRectangle (badge.toFloat(), 3.0f);
+                if (hot) { g.setColour (juce::Colours::white); g.drawRoundedRectangle (badge.toFloat().expanded (1.0f), 3.5f, 1.2f); }
+                g.setColour (juce::Colour (0xff20242c)); g.setFont (juce::FontOptions (9.0f, juce::Font::bold));
+                g.drawText ("sn", badge, juce::Justification::centred);
                 continue;
             }
             if (e->isUnnumberedJoin (k))                                                         // an offline fix's join ("fx") or a snip ("sn"): no number
@@ -890,6 +964,12 @@ public:
         }
         if (inGuideLane (e.y) && std::abs (e.x - (viewport.getViewPositionX() + kNameW)) > 4) { guideMouseDown (e, *ed); return; }     // the visual guide
         const double rate = juce::jmax (1.0, ed->sampleRate);
+        if (glueMode && ! e.mods.isPopupMenu() && e.x >= viewport.getViewPositionX() + kNameW && e.y >= kRulerH - 16)      // 3.35.0: glue mode - a click on a snip glues it
+        {
+            if (const int k = snipNear (*ed, e.getPosition(), rate); k > 0) { if (onGlue) onGlue (k); }
+            else app.setNotice ("Glue: click on a snip - its \"sn\" flag, or its crossfade - to glue it back together. The glue button (or F3, or Esc) leaves glue mode.");
+            return;
+        }
         if (! e.mods.isCommandDown() && ! e.mods.isCtrlDown() && ! e.mods.isPopupMenu() && ! (e.x > kNameW && e.y >= bandH()))   // a click anywhere but on the audio lets go of the selected pieces
         { selectedRegion = juce::Uuid::null(); selectedRegions.clear(); moveRegion = juce::Uuid::null(); repaint(); }
         {
@@ -1013,6 +1093,7 @@ public:
             }
         if (bestJoin >= 0 && e.x > kNameW && e.y >= kRulerH - 16)
         {
+            if (e.mods.isPopupMenu() && ed->isSnipJoin (bestJoin)) { selectedJoin = bestJoin; repaint(); showSnipMenu (*ed, bestJoin); return; }     // 3.35.0
             const bool atEnd = bestJoin >= (int) ed->regions.size();
             selectedJoin = bestJoin; selectedRegion = ed->regions[(size_t) (atEnd ? bestJoin - 1 : bestJoin)].id;
             if (e.getNumberOfClicks() > 1 && app.showTrim) app.showTrim (editId, selectedRegion, atEnd);
@@ -1270,6 +1351,13 @@ public:
     void mouseMoveImpl (const juce::MouseEvent& e)
     {
         auto* ed = edit(); EditRegion* fr = nullptr; bool isIn = true;
+        if (glueMode)                                                         // 3.35.0: the glue pot, and the snip it would glue lit
+        {
+            setMouseCursor (glueCursor());
+            const int k = ed != nullptr && e.x >= viewport.getViewPositionX() + kNameW && e.y >= kRulerH - 16 ? snipNear (*ed, e.getPosition(), juce::jmax (1.0, ed->sampleRate)) : -1;
+            if (k != glueHover) { glueHover = k; repaint(); }
+            return;
+        }
         if (std::abs (e.x - (viewport.getViewPositionX() + kNameW)) <= 4 && e.y >= kRulerH) { setMouseCursor (juce::MouseCursor::LeftRightResizeCursor); return; }
         if (inGuideLane (e.y) && e.x >= viewport.getViewPositionX() + kNameW) { setMouseCursor (juce::MouseCursor::DraggingHandCursor); return; }     // the guide: drag it sideways
         const bool overMark = ed != nullptr && ! e.mods.isAnyModifierKeyDown() && markLineAt (*ed, e.getPosition()) != 0;      // 3.25.0: a mark's line can be dragged
@@ -1987,6 +2075,9 @@ private:
         const bool isOver = ed.isOverdub (rid), hasGains = ! piece->gains.empty();
         juce::PopupMenu m;
         m.addSectionHeader (piece->takeName + (isOver ? "  (overdub)" : ""));
+        const int snipK = isOver ? -1 : snipNear (ed, e.getPosition(), rate);         // 3.35.0: on a snip's crossfade: glue it back together
+        const juce::Uuid snipB = snipK > 0 ? ed.regions[(size_t) snipK].id : juce::Uuid::null();
+        if (snipK > 0) { m.addItem (50, "Remove snip (glue it back together)"); m.addSeparator(); }
         const auto hit = gainMarkAt (ed, e.getPosition(), rate);                     // 3.18.5: on a volume change's line: change it again
         if (hit) { m.addItem (10, "Change this volume change..."); m.addSeparator(); }
         // the area between marks 1 and 2 for all tracks or the ones chosen with Ctrl + Alt + drag
@@ -2031,8 +2122,15 @@ private:
         auto* appPtr = &app;
         juce::Component::SafePointer<juce::Component> self (this);
         juce::Component::SafePointer<EditTimeline> me (this);
-        m.showMenuAsync (juce::PopupMenu::Options(), [appPtr, eid, rid, rel, self, rangeFrom, rangeTo, redrawFiles, hit, me] (int r)
+        m.showMenuAsync (juce::PopupMenu::Options(), [appPtr, eid, rid, rel, self, rangeFrom, rangeTo, redrawFiles, hit, me, snipB] (int r)
         {
+            if (r == 50)
+            {
+                if (me == nullptr) return;
+                auto* e2 = me->edit(); const int k2 = e2 != nullptr ? e2->indexOf (snipB) : -1;
+                if (k2 >= 1 && e2->isSnipJoin (k2) && me->onGlue) me->onGlue (k2);
+                return;
+            }
             if (r == 10) { if (hit && me != nullptr) me->openGainChange (*hit); return; }
             if (r == 8) { appPtr->redrawWaveforms (redrawFiles); return; }
             if (r == 9) { if (appPtr->showVersions) appPtr->showVersions (eid, self.getComponent()); return; }
@@ -2333,6 +2431,8 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     endTransportButton.onClick = [this] { goToEnd(); };
     for (auto* b : { &startButton, &backButton, &fwdButton, &endTransportButton }) { addAndMakeVisible (b); b->setWantsKeyboardFocus (false); }
     trimButton.onClick = [this] { trimSelected(); };
+    snipButton.onClick = [this] { snipAtPlayhead(); };                                      // 3.35.0: Snip (F1) and Glue (F3) beside the Trim window
+    glueButton.onClick = [this] { setGlueMode (! timeline->glueMode); };
     deleteButton.onClick = [this] { deleteSelected(); };
     leftButton.onClick = [this] { moveSelected (-1); };
     rightButton.onClick = [this] { moveSelected (1); };
@@ -2419,6 +2519,7 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
         }
     };
     timeline->onGuideChanged = [this] { refreshGuideButton(); };
+    timeline->onGlue = [this] (int k) { glueSnip (k); };
     refreshGuideButton();
     mixerButton.onClick = [this] { if (auto* m = app.project.mixerOfEdit (editId)) { if (app.showMixer) app.showMixer (m->id); } };
     zoomInButton.onClick = [this] { timeline->zoom (1.5); };
@@ -2435,7 +2536,7 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     timeline->slipLeft = app.trimSlipLeft; timeline->slipRight = app.trimSlipRight;
     slipLeftToggle.onClick  = [this] { timeline->slipLeft = slipLeftToggle.getToggleState(); app.setTrimSlip (slipLeftToggle.getToggleState(), app.trimSlipRight); };     // (the other one as it is now)
     slipRightToggle.onClick = [this] { timeline->slipRight = slipRightToggle.getToggleState(); app.setTrimSlip (app.trimSlipLeft, slipRightToggle.getToggleState()); };
-    for (auto* b : std::initializer_list<juce::Button*> { &playButton, &trimButton, &deleteButton, &leftButton, &rightButton, &endButton, &zoomInButton, &zoomOutButton, &bounceButton, &videoButton, &aafButton, &mixerButton, &ltcButton, &guideToggle, &automationButton, &pitchButton, &repairButton, &roomToneButton, &noiseModeButton, &reharmoniserButton, &retimerButton, &exportProcButton, &undoFixButton, &alignButton,
+    for (auto* b : std::initializer_list<juce::Button*> { &playButton, &trimButton, &snipButton, &glueButton, &deleteButton, &leftButton, &rightButton, &endButton, &zoomInButton, &zoomOutButton, &bounceButton, &videoButton, &aafButton, &mixerButton, &ltcButton, &guideToggle, &automationButton, &pitchButton, &repairButton, &roomToneButton, &noiseModeButton, &reharmoniserButton, &retimerButton, &exportProcButton, &undoFixButton, &alignButton,
                                                           &slipLeftToggle, &slipRightToggle, &shuffleToggle, &insertFlagToggle })
     {
         addAndMakeVisible (b);
@@ -2444,7 +2545,9 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     trimButton.setColour (juce::TextButton::buttonOnColourId, theme::accent);          // lit (gold) only while this edit's Trim window is open (see timerCallback)
     playButton.setIcon (Icon::Play, "Play / Stop [Space]"); startButton.setIcon (Icon::Start, "Return to start [Home]"); backButton.setIcon (Icon::Rewind, "Rewind 5 seconds");
     fwdButton.setIcon (Icon::Forward, "Forward 5 seconds"); endTransportButton.setIcon (Icon::End, "Go to the end [End]");
-    trimButton.setIcon (Icon::Trim, "Trim Window [T]"); deleteButton.setIcon (Icon::Delete, "Delete piece"); leftButton.setIcon (Icon::Earlier, "Move earlier"); rightButton.setIcon (Icon::Later, "Move later");
+    trimButton.setIcon (Icon::Trim, "Trim Window [T]"); snipButton.setIcon (Icon::Snip, "Snip at the playhead [F1]"); glueButton.setIcon (Icon::Glue, "Glue mode [F3]: click a snip to glue it back together");
+    glueButton.setColour (juce::TextButton::buttonOnColourId, theme::accent);          // lit while glue mode is on
+    deleteButton.setIcon (Icon::Delete, "Delete piece"); leftButton.setIcon (Icon::Earlier, "Move earlier"); rightButton.setIcon (Icon::Later, "Move later");
     bounceButton.setIcon (Icon::Bounce, "Bounce Out"); videoButton.setIcon (Icon::VideoExport, "Export for video edit"); aafButton.setIcon (Icon::AafExport, "Export AAF"); mixerButton.setIcon (Icon::Mixer, "Edit Mixer"); automationButton.setIcon (Icon::Automation, "Automation");
     guideToggle.setIcon (Icon::Guide, "Visual guide (show / hide)");
     pitchButton.setIcon (Icon::Pitch, "Pitch & Pitch curve"); repairButton.setIcon (Icon::Repair, "ReTouch, DeClick & Denoise [Enter]"); reharmoniserButton.setIcon (Icon::Reharm, "ReHarmoniSer [H]"); alignButton.setIcon (Icon::Align, "Align spot mics");
@@ -2496,7 +2599,7 @@ void EditWindowComponent::resized()
     const std::vector<FlowItem> items
     {
         { &startButton, IW, IH, 2 }, { &backButton, IW, IH, 2 }, { &playButton, IW, IH, 2 }, { &fwdButton, IW, IH, 2 }, { &endTransportButton, IW, IH, 6 }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &waveCompressBtn, 34, grid::btnH, 2 }, { &loopToggle, 34, grid::btnH, 14 },
-        { &trimButton, IW, IH, 2 }, { &deleteButton, IW, IH, 14 },
+        { &trimButton, IW, IH, 2 }, { &snipButton, IW, IH, 2 }, { &glueButton, IW, IH, 8 }, { &deleteButton, IW, IH, 14 },
         { &leftButton, IW, IH, 2 }, { &rightButton, IW, IH, 6 }, { &endButton, IW, IH, 14 },
         { &bounceButton, IW, IH, 2 }, { &videoButton, IW, IH, 2 }, { &aafButton, IW, IH, 2 }, { &mixerButton, IW, IH, 6 }, { &ltcButton, 74, grid::btnH, 6 }, { &guideToggle, IW, IH, 14 },
         { &automationButton, IW, IH, 14 },
@@ -3037,6 +3140,43 @@ void EditWindowComponent::snipAtPlayhead()
     timeline->repaint();
 }
 
+/** 3.35.0, glue mode (the glue button, F3; Esc or F3 again leaves it): the snips are lit and the cursor is the glue pot; a click on one glues it. */
+void EditWindowComponent::setGlueMode (bool on)
+{
+    timeline->setGlueMode (on);
+    glueButton.setToggleState (on, juce::dontSendNotification);
+    if (on)
+    {
+        int n = 0; if (auto* e = edit()) for (int k = 1; k < (int) e->regions.size(); ++k) if (e->isSnipJoin (k)) ++n;
+        app.setNotice (n == 0 ? juce::String ("Glue mode: there are no snips in this edit (F1 makes one). The glue button, F3 or Esc leaves glue mode.")
+                              : "Glue mode: click a snip (its \"sn\" flag or its crossfade, lit in yellow) to glue it back together, as though it had never been made. The glue button, F3 or Esc leaves glue mode.");
+    }
+    else app.setNotice ("Glue mode off.");
+}
+
+/** 3.35.0: the snip at join k glued back together (EditDef::glueSnip): one piece again, the take playing straight on. Undo brings the snip back. */
+void EditWindowComponent::glueSnip (int k)
+{
+    auto* e = edit();
+    if (e == nullptr || ! e->isSnipJoin (k)) return;
+    const double rate = e->sampleRate > 0 ? e->sampleRate : 48000.0;
+    const double t = (double) e->editPointSample (k) / rate;
+    const auto& a = e->regions[(size_t) k - 1]; const auto& b = e->regions[(size_t) k];
+    const juce::int64 rolled = (a.startSample - a.srcIn) - (b.startSample - b.srcIn);    // > 0: a moment had been rolled out at the snip (it comes back, and what follows moves later)
+    if (rolled != 0 && app.isPlaying() && app.playInfo.kind == AppContext::PlayInfo::Kind::Edit && app.playInfo.id == editId) app.stopPlayback();   // (the timing changes)
+    juce::String why;
+    const int i = e->glueSnip (k, why);
+    if (i < 0) { app.setNotice ("Glue: " + why); return; }
+    timeline->selectedJoin = -1; timeline->selectedRegion = e->regions[(size_t) i].id; timeline->selectedRegions = { timeline->selectedRegion };
+    app.project.changed();
+    const auto ms = juce::String (std::abs ((double) rolled) / rate * 1000.0, 0);
+    app.setNotice ("Snip at " + formatTimeShort (t, 3) + " glued: the take plays straight on there again"
+                   + (rolled > 0 ? " (the " + ms + " ms rolled out of it is back; what follows moved " + ms + " ms later)"
+                                 : rolled < 0 ? " (the " + ms + " ms it played twice has gone; what follows moved " + ms + " ms earlier)" : juce::String())
+                   + ". Undo brings the snip back.");
+    timeline->repaint();
+}
+
 /** P: with pieces selected, marks 1 and 2 go to the very start of the first and the very end of the last of them (sample-exact). */
 void EditWindowComponent::markWholeSelected()
 {
@@ -3077,6 +3217,8 @@ bool EditWindowComponent::keyPressed (const juce::KeyPress& k)
     if (c == 'p') { markWholeSelected(); return true; }
     if ((c == '1' || c == '2') && ! k.getModifiers().isAnyModifierKeyDown()) { setFixMark (c == '1'); return true; }
     if (k == juce::KeyPress::F1Key && ! k.getModifiers().isAnyModifierKeyDown()) { snipAtPlayhead(); return true; }
+    if (k == juce::KeyPress::F3Key && ! k.getModifiers().isAnyModifierKeyDown()) { setGlueMode (! timeline->glueMode); return true; }      // 3.35.0
+    if (k == juce::KeyPress::escapeKey && timeline->glueMode) { setGlueMode (false); return true; }
     if (c == '5' && ! k.getModifiers().isAnyModifierKeyDown())            // 5: take the 1 / 2 flags away; a piece selected whole is then what the process windows load
     {
         if (auto* e = edit()) { e->fixIn = -1.0; e->fixOut = -1.0; e->fixTracks.clear(); app.project.changed(); }

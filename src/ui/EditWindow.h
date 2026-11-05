@@ -47,6 +47,8 @@ private:
     void moveSelected (int delta);
     void setFixMark (bool in);
     void snipAtPlayhead();                        // F1: a snip (an unnumbered join with a normal crossfade) at the playhead
+    void setGlueMode (bool on);                   // 3.35.0: F3 / the glue button: a click on a snip glues it back together
+    void glueSnip (int k);                        // 3.35.0: the snip at join k glued (EditDef::glueSnip)
     void markWholeSelected();
     void openBounce();
     void showTracksMenu();
@@ -76,7 +78,7 @@ private:
     static constexpr int kClockH = 58;
     juce::TextEditor nameEditor;
     StackedField nameBlock { nameCaption, nameEditor };      // "Piece / Edit Window Name:" above the name box
-    IconButton playButton { "Play [Space]" }, startButton { "|<" }, backButton { "<<" }, fwdButton { ">>" }, endTransportButton { ">|" }, trimButton { "Trim Window [T]" }, deleteButton { "Delete piece" },
+    IconButton playButton { "Play [Space]" }, startButton { "|<" }, backButton { "<<" }, fwdButton { ">>" }, endTransportButton { ">|" }, trimButton { "Trim Window [T]" }, snipButton { "Snip [F1]" }, glueButton { "Glue [F3]" }, deleteButton { "Delete piece" },
                leftButton { "Move earlier" }, rightButton { "Move later" }, bounceButton { "Bounce Out..." }, videoButton { "Export for video edit..." }, aafButton { "Export AAF..." }, mixerButton { "Edit Mixer" }, automationButton { "Automation" },
                pitchButton { "Pitch..." }, repairButton { "Repair & DeClick..." }, reharmoniserButton { "ReHarmoniSer..." }, retimerButton { "ReTimEr..." }, undoFixButton { "Undo fix" }, tracksButton { "Tracks..." }, feedbackButton { "Feedback..." },
                endButton { "Next goes at end" }, exportProcButton { "Export for Processing..." }, importButton { "Import..." }, alignButton { "Align spot mics" }, roomToneButton { "Room tone" }, noiseModeButton { "Noise mode" },

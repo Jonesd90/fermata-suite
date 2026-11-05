@@ -740,6 +740,56 @@ struct EditDef
         return k;
     }
 
+    /** 3.35.0, GLUE (the edit window's glue tool, or "Remove snip"): the snip at join k is taken away as though it had never been made. Its two pieces become one
+        again, playing the take straight on from the first one's start: a moment rolled out at the snip in the Trim window comes back (and one played twice
+        goes). The piece keeps the first one's start, fade-in and volume changes, and the second one's end, fade-out and volume changes (from where the second
+        one began in the take); every piece after it moves with the second one's end, so the next join stays exactly as it is. Automation points pinned to the
+        second piece's audio go with it. Returns the index of the glued piece, or -1 with 'why' when join k is not a snip, its two sides no longer play the same
+        files (an offline fix or Export for Processing changed one of them), or a piece waits for corrected audio. */
+    int glueSnip (int k, juce::String& why)
+    {
+        if (! isSnipJoin (k)) { why = "That is not a snip: only an \"sn\" join (made with F1) can be glued."; return -1; }
+        const auto& a = regions[(size_t) k - 1]; const auto& b = regions[(size_t) k];
+        if (a.waiting.active() || b.waiting.active()) { why = "A piece of this snip is waiting for corrected audio (Export for Processing): re-link it first, then glue it."; return -1; }
+        bool same = a.files.size() == b.files.size() && std::abs (a.sampleRate - b.sampleRate) < 0.5 && a.sourceLength == b.sourceLength;
+        for (size_t i = 0; same && i < a.files.size(); ++i)
+            same = a.files[i].file == b.files[i].file && a.files[i].trackId == b.files[i].trackId && a.files[i].fileStart == b.files[i].fileStart;
+        if (! same) { why = "The two sides of this snip no longer play the same audio (an offline fix was made on one of them), so they cannot be glued: undo that fix first."; return -1; }
+        if (b.srcOut <= a.srcIn + (juce::int64) (0.01 * a.sampleRate)) { why = "The two sides of this snip overlap too far in the take to be glued."; return -1; }
+
+        EditRegion m = a;                                                                   // the glued piece: the first one's id, start and fade-in
+        const auto cut = juce::jlimit ((juce::int64) 0, b.srcOut - a.srcIn, b.srcIn - a.srcIn);    // where the second one's audio began, in the glued piece
+        m.srcOut = b.srcOut;
+        m.outStart = b.outStart; m.outEnd = b.outEnd; m.setOutCurve (b.outCurveValue());
+        m.snipOut = b.snipOut; m.fixOut = b.fixOut; m.barOut = b.barOut;
+        // the volume changes: the first one's up to 'cut', then the second one's; the step to the same level that the snip itself put at the second one's start goes
+        m.gains.clear();
+        for (auto& g : a.gains) if (! g.autoNorm && g.at < cut) m.gains.push_back (g);
+        for (size_t i = 0; i < b.gains.size(); ++i)
+        {
+            const auto& g = b.gains[i];
+            if (g.autoNorm) continue;
+            if (i == 0 && g.at == 0 && g.ramp <= 0.0 && g.group.isEmpty())
+            {
+                bool flat = true;
+                for (size_t f = 0; f < m.files.size() && f < g.db.size(); ++f) flat = flat && std::abs (m.levelDbAt (f, cut) - g.db[f]) < 0.01f;
+                if (flat) continue;
+            }
+            auto c = g; c.at += cut; m.gains.push_back (c);
+        }
+        std::stable_sort (m.gains.begin(), m.gains.end(), [] (const GainChange& x, const GainChange& y) { return x.at < y.at; });
+
+        const juce::int64 shift = m.endSample() - b.endSample();                            // (not 0 when a moment had been rolled out, or in)
+        const auto bid = b.id, mid = m.id;
+        regions[(size_t) k - 1] = std::move (m);
+        regions.erase (regions.begin() + k);
+        for (size_t j = (size_t) k; j < regions.size(); ++j) regions[j].startSample += shift;
+        if (insertIndex > k) --insertIndex; else if (insertIndex == k) insertIndex = k + 1 <= (int) regions.size() ? k : -1;   // (the next take's place: at the glued piece's end)
+        for (auto& lane : lanes) for (auto& p : lane.pts) if (p.region == bid) p.region = mid;   // (they find their audio in the glued piece: resolveAutomation)
+        clampAll();
+        return k - 1;
+    }
+
     /** The audio of piece i exists only for the take range [from,to) (a corrected file from an offline fix or an external program). A crossfade at one of its FIX joins must not
         start before there is audio to fade in, or end after it has run out: the whole crossfade is slid inside (same length), and the neighbouring piece's matching fade with it. */
     void keepFixFadesInside (int i, juce::int64 from, juce::int64 to)

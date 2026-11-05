@@ -20,7 +20,8 @@ because the program is not signed: click **More info**, then **Run anyway**.
    and put into the project (the Merge square is blue meanwhile). The R key never stops a take.
 4. **Fixer** (in the menu) opens the Fixer's window: the same takes, a few seconds behind the disk (Follow Primary). The Primary's flags appear
    at once on the right: click one and type a reply. To fix something: drag over the tracks, choose the fix, **Try it** (it plays from a second
-   before), then **Keep as a fix version**. The recording itself is never changed; the version goes into the project for fermata's review.
+   before), then **Keep as a fix version**. Or press **ReTouch window...** for fermata's own ReTouch window on that part (draw a box round the
+   noise, ReTouch, listen, **Keep as a fix version**). The recording itself is never changed; the version goes into the project for fermata's review.
 5. **Mixer**: what you hear (live and when playing back) and what **Bounce out** uses. The Fixer's **Mixer** button opens its own, on its own
    outputs (3-4 unless you choose others; 1-2 on a device with two outputs).
 6. **Bounce out**: a take, whole or between marks 1 and 2 (keys 1 and 2 in the take window), to a stereo WAV in the project's Bounced Media folder.

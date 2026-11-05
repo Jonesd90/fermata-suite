@@ -171,6 +171,8 @@ int main (int argc, char** argv)
             FixFile ff; ff.trackId = p.tracks[1].id; ff.trackName = "Soloist"; ff.file = tmp.getChildFile ("Recorded Media/First half/Fixes/004 fix 1 - Soloist.wav"); ff.numChannels = 1;
             v.files.push_back (ff); v.what = "De-click (sensitivity 6)"; v.note = "the click at 0:34"; v.flagId = f.id; v.versionNumber = 2; v.replaces = juce::Uuid();
             v.by = "Fixer"; v.madeAt = juce::Time (1762250090000); w.fixVersions.push_back (v);
+            FixVersion first; first.id = juce::Uuid(); first.takeNumber = 5; first.startSample = 10; first.endSample = 20;   // (0.4.0: a first attempt that answers no flag)
+            first.what = "ReTouch window: ReTouch"; first.by = "Fixer"; w.fixVersions.push_back (first);
         }
         p.syncMixers();
         if (! p.mixers.empty())                                          // 3.31.0: the strips' polarity key (one strip inverted, the other not)
@@ -202,13 +204,16 @@ int main (int argc, char** argv)
                                 && b.markers[1].replies.size() == 1 && b.markers[1].replies[0].text == "fixed, version 1" && b.markers[1].replies[0].by == "Fixer"
                                 && b.markers[1].replies[0].at == a.markers[1].replies[0].at && b.markers[1].name == "Flag: horn crack bar 34 | Fixer: fixed, version 1";
             check (flagOk, "a flag keeps its note, its time and the Fixer's reply (contract 3)");
-            const bool fixOk = b.fixVersions.size() == 1 && b.fixVersions[0].id == a.fixVersions[0].id && b.fixVersions[0].takeId == a.fixVersions[0].takeId
+            const bool fixOk = b.fixVersions.size() == 2 && b.fixVersions[0].id == a.fixVersions[0].id && b.fixVersions[0].takeId == a.fixVersions[0].takeId
                                && b.fixVersions[0].takeNumber == 4 && b.fixVersions[0].startSample == 1000 && b.fixVersions[0].endSample == 49000
                                && b.fixVersions[0].sampleRate == 96000.0 && b.fixVersions[0].files.size() == 1 && b.fixVersions[0].files[0].trackName == "Soloist"
                                && b.fixVersions[0].files[0].file == a.fixVersions[0].files[0].file && b.fixVersions[0].what == "De-click (sensitivity 6)"
                                && b.fixVersions[0].flagId == a.markers[1].id && b.fixVersions[0].versionNumber == 2 && b.fixVersions[0].replaces == a.fixVersions[0].replaces
                                && b.fixVersions[0].madeAt == a.fixVersions[0].madeAt && b.fixVersions[0].state == 0;
             check (fixOk, "a fix version keeps its take, span, files, flag and attempt number (contract 3)");
+            check (b.fixVersions.size() == 2 && b.fixVersions[1].flagId.isNull() && b.fixVersions[1].replaces.isNull() && b.fixVersions[1].takeId.isNull()
+                     && a.fixVersions[1].flagId.isNull() && a.fixVersions[1].replaces.isNull(),
+                   "a fix version that answers no flag, a first attempt, keeps no flag and no earlier attempt (0.4.0: they were made-up ids)");
             // and in the file itself: the ordinary marker has none of the flag's keys
             const auto wf = tmp.getChildFile ("Take Windows").findChildFiles (juce::File::findFiles, false, "*.fmtake");
             bool plainKeys = false;

@@ -72,12 +72,21 @@ static juce::String jobLabel (const juce::String& programName)
     return l.isNotEmpty() ? l : juce::String ("Edit");
 }
 
-/** How a file gets back from this program, as a sentence fragment ("press Save (Ctrl+S) on each tab"). */
+/** How a file gets back from this program, as a sentence fragment. What brings a file back is the WAV that was sent being written over: fermata watches
+    those files themselves. (3.35.1: RX's Save - Ctrl+S - keeps an RX document and leaves the WAV as it was, so it never brought anything back; its
+    File > Overwrite Original File - Ctrl+Alt+S - writes the WAV, and in Composite View every file of the view, one after another.) */
 static juce::String howToSave (const juce::String& programName)
 {
     if (isMelodyne (programName)) return "choose File > Replace Audio for each one (Melodyne's own Save only keeps a Melodyne document; Replace Audio writes the WAV and keeps the original as an 'orig' copy)";
-    if (programName.containsIgnoreCase ("RX")) return "press Save (Ctrl+S) on each tab";
+    if (programName.containsIgnoreCase ("RX")) return "choose File > Overwrite Original File (Ctrl+Alt+S) - in Composite View that writes every file at once. (RX's Save, Ctrl+S, only keeps an RX document: it does not write the files, so nothing comes back)";
     return "save each file over itself (File > Save, the same name and format)";
+}
+/** The same, as a few words for the status line. */
+static juce::String howToSaveShort (const juce::String& programName)
+{
+    if (isMelodyne (programName)) return "use File > Replace Audio";
+    if (programName.containsIgnoreCase ("RX")) return "choose File > Overwrite Original File (Ctrl+Alt+S; in Composite View, all of them at once)";
+    return "save it over itself";
 }
 
 // ---- finding the programs where their installers put them
@@ -338,13 +347,15 @@ static bool openInProgram (const juce::File& exe, const std::vector<juce::File>&
 static void explainOnce (AppContext& app, const Program& p, const juce::File& folder)
 {
     auto* st = app.props.getUserSettings();
-    const auto key = "extExplained_" + p.name.toLowerCase().retainCharacters ("abcdefghijklmnopqrstuvwxyz0123456789");
+    const auto key = "extExplained_" + p.name.toLowerCase().retainCharacters ("abcdefghijklmnopqrstuvwxyz0123456789")
+                     + (p.name.containsIgnoreCase ("RX") ? "_overwrite" : "");     // (3.35.1: shown once more for RX, now that it says Overwrite Original File)
     if (st == nullptr || st->getBoolValue (key, false)) return;
     st->setValue (key, true); app.props.saveIfNeeded();
     const juce::String text ("The marked part is opening in " + p.name + ", one file per track, with 2 seconds extra each side so you hear it in context "
                              "(markers in the files show where the marked part starts and ends).\n\n"
                              "Mend it there, then " + howToSave (p.name) + ". Each file that comes back replaces only the marked part of its track - "
-                             "a second or two after it is saved - and Ctrl+Z takes it out again. Do it again later and the new version comes in.\n\n"
+                             "a second or two after it is written (files written one after another come back together, as one step) - and Ctrl+Z takes it out again. "
+                             "Do it again later and the new version comes in.\n\n"
                              "Keep the length the same (no stretching or cutting). Until a file comes back, its part shows as 'In " + jobLabel (p.name) + " ...' and plays as it was. "
                              "Right-click that block to bring in what has been saved, open it again, show the files, or cancel and keep the original audio."
                              + (isMelodyne (p.name) ? juce::String ("\n\nIf Melodyne opens without the files, drag them in from their folder (Show the files).") : juce::String()));
@@ -462,7 +473,7 @@ static void send (AppContext& app, const juce::Uuid& eid, std::shared_ptr<std::v
             return;
         }
         app.setNotice ("Opened in " + program.name + ": " + juce::String ((int) all.size()) + (all.size() == 1 ? " file" : " files") + ". Mend it there and "
-                       + (isMelodyne (program.name) ? juce::String ("use File > Replace Audio") : juce::String ("save it")) + ": it comes back into the edit by itself.");
+                       + howToSaveShort (program.name) + ": it comes back into the edit by itself.");
         explainOnce (app, program, job->folder);
     };
     fixtools::runSimpleJob ("Writing the marked part for " + program.name + "...", work, onSuccess, title, parent);

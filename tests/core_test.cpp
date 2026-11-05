@@ -8624,6 +8624,69 @@ int main()
         CHECK (! e->isFixJoin (1) && ! e->isFixJoin (2));
     }
 
+    SECTION ("3.35.0 glue: a snip taken away as though it had never been made - the moment rolled out comes back, the volume, fades and the next join kept");
+    {
+        Project q; q.setInputCount (4); q.setOutputCount (2); q.tracks.clear();
+        const auto t1 = q.addTrack ("SPOT1", TrackFormat::Mono, 0).id;
+        auto& tw = q.addTakeWindow ("Piece"); const auto twId = tw.id;
+        auto& ed = q.addEdit ("Edit", twId); const auto edId = ed.id;
+        const double sr = 48000.0;
+        auto piece = [&] (juce::int64 len, const char* nm)
+        {
+            EditRegion r; r.id = juce::Uuid(); r.windowId = twId; r.takeId = juce::Uuid(); r.takeName = nm; r.sampleRate = sr;
+            r.srcIn = 48000; r.srcOut = 48000 + len; r.sourceLength = 48000 * 30;
+            RegionFile f; f.trackId = t1; f.trackName = "SPOT1"; f.file = tmp.getChildFile (juce::String (nm) + ".wav"); r.files.push_back (f);
+            return r;
+        };
+        ed.insertRegion (piece (48000 * 10, "001"));
+        ed.insertRegion (piece (48000 * 10, "002"));
+        q.undoReset();
+        auto* e = q.findEdit (edId);
+        // a volume change in the first piece (after the snip) and a fade-out of its own at its end, to see that they come back as they were
+        GainChange gc; gc.at = 6 * 48000; gc.ramp = 0.0; gc.db = { -4.0f }; e->regions[0].gains.push_back (gc);
+        e->regions[0].outStart = -0.2; e->regions[0].outEnd = 0.05;
+        const auto before = e->regions;
+        juce::String why;
+        CHECK (e->glueSnip (1, why) < 0 && why.isNotEmpty() && e->regions.size() == 2);           // a real edit point cannot be glued
+        why.clear();
+        const int k = e->snipAt (4 * 48000, why);
+        CHECK (k == 1 && e->regions.size() == 3 && ! e->regions[1].gains.empty());               // (the second side starts at the level the first one had)
+        // glued straight away: the edit is as it was before the snip
+        CHECK (e->glueSnip (1, why) == 0 && why.isEmpty() && e->regions.size() == 2);
+        {
+            const auto& g = e->regions[0]; const auto& o = before[0];
+            CHECK (g.id == o.id && g.srcIn == o.srcIn && g.srcOut == o.srcOut && g.startSample == o.startSample);
+            CHECK (g.inStart == o.inStart && g.inEnd == o.inEnd && std::abs (g.outStart - o.outStart) < 1e-9 && std::abs (g.outEnd - o.outEnd) < 1e-9);
+            CHECK (! g.snipIn && ! g.snipOut && g.gains.size() == 1 && g.gains[0].at == 6 * 48000 && g.gains[0].db[0] == -4.0f);
+            CHECK (e->regions[1].startSample == before[1].startSample && e->regions[1].srcIn == before[1].srcIn && ! e->isSnipJoin (1));
+        }
+        // snipped again, then a quarter of a second rolled out of it (the second side slid on in the take, the rest of the edit with it, as the Trim window does)
+        CHECK (e->snipAt (4 * 48000, why) == 1);
+        const auto pinned = e->regions[1].id;
+        AutoLane lane; AutoPoint p; p.id = juce::Uuid(); p.region = pinned; p.take = e->regions[1].takeId; p.srcPos = e->regions[1].srcIn + 48000; p.time = e->regions[1].startSample + 48000;
+        lane.pts.push_back (p); e->lanes.push_back (lane);
+        CHECK (e->slipIn (1, -12000, true) == -12000);
+        CHECK (e->regions[1].srcIn == e->regions[0].srcOut + 12000 && e->regions[2].startSample == before[1].startSample - 12000);
+        CHECK (e->glueSnip (1, why) == 0 && e->regions.size() == 2);
+        CHECK (e->regions[0].srcIn == before[0].srcIn && e->regions[0].srcOut == before[0].srcOut);                // the moment is back: the take plays straight on
+        CHECK (e->regions[1].startSample == before[1].startSample && e->regions[1].fadeInBegin() == before[1].fadeInBegin());   // the rest of the edit back in its place, its join as it was
+        CHECK (e->regions[0].gains.size() == 1 && e->regions[0].gains[0].at == 6 * 48000 + 12000);                 // the volume change on the audio it was on after the roll
+        CHECK (e->lanes[0].pts[0].region == e->regions[0].id);
+        e->resolveAutomation();
+        CHECK (e->lanes[0].pts[0].time == e->regions[0].startSample + (p.srcPos - e->regions[0].srcIn));         // the pinned point stays on its audio
+        // refused: the two sides playing different files (an offline fix on one of them)
+        CHECK (e->snipAt (4 * 48000, why) == 1);
+        e->regions[1].files[0].file = tmp.getChildFile ("fixed.wav");
+        CHECK (e->glueSnip (1, why) < 0 && why.isNotEmpty() && e->regions.size() == 3);
+        // undo brings the snip back (the project's undo writes and reads the edit)
+        e->regions[1].files[0].file = e->regions[0].files[0].file;
+        q.changed(); q.undoTick (false, true);
+        e = q.findEdit (edId);
+        CHECK (e->glueSnip (1, why) == 0);
+        q.changed(); q.undoTick (false, true);
+        CHECK (q.undo() && q.findEdit (edId)->regions.size() == 3 && q.findEdit (edId)->isSnipJoin (1));
+    }
+
     SECTION ("2.101 the pitch pipe's keyboard sound: true pitch, a strike that settles to a steady held level, a quick release");
     {
         PitchPipeVoices v;
@@ -11712,6 +11775,25 @@ int main()
             CHECK (! sw.later ("x", 3) && sw.later ("x", 3));                                               // the third failure: say so
             CHECK (sw.ready ({ look ("y", 5, 1) }, seen).empty() && sw.pending.empty());                    // a file no longer watched is forgotten
         }
+        // 3.35.1: files written one after another (RX's Overwrite Original File in Composite View) come back together, once none is still being written
+        {
+            RxSaveWatch sw; std::map<juce::String, juce::int64> seen;
+            auto look = [] (const char* p, juce::int64 t, juce::int64 sz, bool exists = true) { RxSaveWatch::Look l; l.path = p; l.exists = exists; l.modified = t; l.size = sz; return l; };
+            CHECK (sw.ready ({ look ("a", 1, 10), look ("b", 1, 10), look ("c", 1, 10) }, seen).empty());       // first sight
+            CHECK (sw.ready ({ look ("a", 2, 10), look ("b", 1, 10), look ("c", 1, 10) }, seen).empty());       // a written
+            CHECK (sw.ready ({ look ("a", 2, 10), look ("b", 2, 10), look ("c", 1, 10) }, seen).empty());       // a ready, b being written: a waits
+            CHECK (sw.ready ({ look ("a", 2, 10), look ("b", 2, 10), look ("c", 2, 10, false) }, seen).empty()); // c being replaced: both wait
+            CHECK (sw.ready ({ look ("a", 2, 10), look ("b", 2, 10), look ("c", 2, 10) }, seen).empty());       // c back, just written
+            const auto all = sw.ready ({ look ("a", 2, 10), look ("b", 2, 10), look ("c", 2, 10) }, seen);      // nothing changing: all three at once
+            CHECK (all.size() == 3);
+            for (auto& p : all) sw.done (p, 2, seen);
+            // one that keeps changing holds the others back for at most maxHold looks
+            CHECK (sw.ready ({ look ("a", 3, 10), look ("b", 2, 10) }, seen, 2).empty());
+            int t = 3;
+            CHECK (sw.ready ({ look ("a", 3, 10), look ("b", ++t, 10) }, seen, 2).empty() && sw.ready ({ look ("a", 3, 10), look ("b", ++t, 10) }, seen, 2).empty());
+            const auto one = sw.ready ({ look ("a", 3, 10), look ("b", ++t, 10) }, seen, 2);
+            CHECK (one.size() == 1 && one[0] == "a");
+        }
     }
 
     SECTION ("3.23.0 the send dials leave out where the fader already sends: Main by default, the main Ext Bus back (first) when the fader goes elsewhere");
@@ -11755,20 +11837,23 @@ int main()
         juce::ignoreUnused (B);
     }
 
-    SECTION ("3.23.0 the time ruler zoomed far out: the labels step on past 5 minutes and never run into each other");
+    SECTION ("3.23.0 / 3.35.1 the time ruler: the shortest step whose labels are at least 64 px apart, never far more; the fainter lines divide it");
     {
         using timefmt::rulerSteps;
-        CHECK (rulerSteps (300.0).step == 0.5 && rulerSteps (300.0).minor == 0.25 && rulerSteps (30.0).step == 5.0 && rulerSteps (5.0).step == 60.0);      // (close in: as before)
-        CHECK (rulerSteps (2.99).step == 300.0 && rulerSteps (2.99).minor == 60.0 && rulerSteps (0.3).step == 300.0);                                   // (5 minutes, as before, while they fit)
-        CHECK (rulerSteps (0.29).step == 600.0 && rulerSteps (0.1).step == 900.0 && rulerSteps (0.05).step == 1800.0 && rulerSteps (0.02).step == 7200.0 && rulerSteps (0.01).step == 10800.0);
-        bool apart = true, minorOk = true;
-        for (double pps = 0.005; pps < 3.0; pps *= 1.07)
+        CHECK (rulerSteps (300.0).step == 0.5 && rulerSteps (300.0).minor == 0.25 && rulerSteps (100.0).step == 1.0 && rulerSteps (100.0).minor == 0.5);  // (close in: as before)
+        CHECK (rulerSteps (30.0).step == 5.0 && rulerSteps (4.65).step == 15.0 && rulerSteps (4.65).minor == 5.0);       // (3.35.1: the edit of 6 1/2 minutes across a wide screen: every 15 s, not every minute)
+        CHECK (rulerSteps (2.99).step == 30.0 && rulerSteps (0.3).step == 300.0 && rulerSteps (0.1).step == 900.0 && rulerSteps (0.01).step == 7200.0);
+        static const double nice[] = { 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400 };
+        bool apart = true, notTooFar = true, minorOk = true;
+        for (double pps = 0.002; pps < 60.0; pps *= 1.05)
         {
             const auto r = rulerSteps (pps);
-            if (r.step * pps < 90.0 && r.step < 86400.0) apart = false;                                  // labels at least 90 px apart (a day is the widest step)
+            if (r.step * pps < 64.0 && r.step < 86400.0) apart = false;                                  // labels at least 64 px apart (a day is the widest step)
+            for (size_t i = 1; i < std::size (nice); ++i)                                                // and the step before it would not fit: no wider than it must be
+                if (nice[i] == r.step && nice[i - 1] >= 2.0 && nice[i - 1] * pps >= 64.0) notTooFar = false;
             if (r.minor < r.step && (r.minor * pps < 10.0 || std::fmod (r.step, r.minor) != 0.0)) minorOk = false;
         }
-        CHECK (apart && minorOk);
+        CHECK (apart && notTooFar && minorOk);
     }
 
     SECTION ("3.23.0 a stereo track from two mono tracks: the files joined exactly, the takes and the edits' pieces follow, the mono tracks go");
