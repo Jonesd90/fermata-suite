@@ -6,6 +6,23 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.36.0
+Built in the fermata:Live conversation, 5 November.
+- **Consonants in Noise mode**, as in the ReTouch window - a fifth tab, **Consonants [C]**, so the consonant tidying can be done on the final pass without leaving Noise mode:
+  - **Copy consonant**: draw the box round the consonant (from about 2 kHz up) and copy it - every track and every channel, as each microphone heard it, read as the edit plays (with the fixes already made here). Name it; it is kept with the project.
+  - **Copy and remove**, for an early or late consonant: it is kept (as "moved") and taken out where it is.
+  - **Paste here [P]**: click the time ruler where it should start (a click on the picture takes the box away), choose it in the list and press P. Each track gets its own part of it, across an edit point too.
+  - **Level**, and **Nudge** with comma and full stop (1 ms; with Shift 5 ms): they change the consonant just pasted, which stays one fix (one Undo takes it off).
+  - **Rename** and **Delete**. It is the same list as the ReTouch windows': a consonant copied in one can be pasted in the other.
+  - Like Noise mode's other fixes, each goes into the edit at once, Undo takes it off and Write back to clip keeps it.
+- **Noise mode turns the page straight to the sharp picture while it plays.** As soon as the page you are looking at has its sharp picture, the next page's is made
+  in the background, so when the playhead turns the page the sharp picture is already there (it used to show the quick, blurry one for a second or so while it
+  was made). A fix you make while it plays changes the audio, so the next page is made again once the page in view has its own new picture; if the page turns
+  before it is ready, it carries on and appears as soon as it is done. Not with Loop (the page does not turn), and not when zoomed so far out that there is no
+  sharp picture.
+- Shared: `src/ui/SpectralWindow.h` - the picture can now be asked what the next page's sharp picture would need, take one made ahead, and say whether its own
+  is showing (only Noise mode uses them). fermata:Live's Fixer uses this file: it needs a rebuild only.
+
 ## 3.35.1
 Built in the fermata:Live conversation, 5 November.
 - **iZotope RX: Overwrite Original File is what sends the audio back.** fermata has always watched the WAV files it sends to RX, and brings each one back when it is written. RX's Save (Ctrl+S) only keeps an RX document and never writes those files, so it never brought anything back; **File > Overwrite Original File** (Ctrl+Alt+S) writes them. fermata's instructions now say so (they told you to press Save), and the explanation shows once more the next time you open something in RX.

@@ -1910,3 +1910,40 @@ fermata moved to a new repository that also holds its companion, fermata:Live (t
   Logical pixels, which the desktop scale factor scales with the text. core_test: >= 64 px, never wider than needed, the minors divide.
 - And in the edit window the times were under the edit points' number badges (the same rows of the ruler: labels kRulerTop + 2 .. 18, badges kRulerH - 16
   .. - 1), so with edits close together most were hidden: the ruler is 10 px taller (kRulerH = 32 + kRulerTop) and the times sit on its top line.
+
+## 3.36.0: Consonants in Noise mode (built in the fermata:Live conversation, 5 November 2026)
+- Asked for: "the 'Consonants' functionality in the 'Noise' mode from ReTouch ... I usually do my consonant tidying on the final pass which is when I use the noise
+  mode". NoiseModeDialog's fifth tab (kTabConsonant), the ReTouch window's controls and wording (SpectralWindow.h's RepairDialog: copy, copy and remove, the kept
+  list, Level, Nudge, Paste), worked against Noise mode's own fixes: each paste is a Step (Step::paste, Step::pasteOp) put into the edit by runFix like the
+  others; a nudge or a level change takes it off (takeOffLast - Undo without the picture's refresh) and puts it in again, so it stays one step; nudges pressed
+  while it is being made (pasteRunning, or the picture after it) wait in pendingNudge / pendingLevel and follow when the picture is done (followPending, from
+  refreshPicture's end). The list and its files: a RepairContext of its own given wireConsonants, so it is the ReTouch windows' list.
+- Copy reads every track's channels round the box (1 s plus twice the box each side) as the edit plays them (readTrackChannels through the pieces' fades -
+  this window's fixes are in the edit already), finds the background side on the tracks' mixes (SpectralRepair::consonantSides) and keeps
+  consonants::extract's difference. The spec is consonants::copySpec of the ReTouch tab's settings (the box's extent and pitch range).
+- prepareRepairJobs (FixToolsCommon.h; only Noise mode uses it): a Paste op is given to each piece it reaches with its own start (unclipped - the core adds
+  only the overlap), as the edit's ReTouch window always did. It used to be clipped to the piece like a box, which would have started the consonant again at
+  an edit point.
+- Keys: C (the tab), P (paste), comma / full stop and < / > (nudge 1 / 5 ms, only while the last fix is a paste). HotKeysWindow: the Noise mode line.
+- Checked on Linux (the Prelude test edit, a note's attack as the "consonant"): Copy (kept "t", 349 ms), Paste at the ruler's playhead, five 1 ms nudges, a
+  5 ms one and one back (+10 ms, still one fix), Undo; a paste across the edit point at 20 s (each piece its part, the lines unbroken); Copy and remove
+  (kept "moved", taken out, two fixes).
+
+### 3.36.0: the next page's sharp picture, made ahead while Noise mode plays
+- Asked for: "it seems that fermata waits until the page turns to generate the next view - for about 1.5 seconds I get the low resolution view before the high
+  resolution one appears ... as soon as it has rendered the page it is looking at, to get it to begin rendering the next chunk".
+- SpectrogramView (shared, SpectralWindow.h): requestForPage (t0) - the PictureRequest that requestDetailNow would make for the page from t0 at this page's
+  width (clamped as setWindow clamps it), size, axis and settings; takeReadyDetail (picture, options) - shows a picture made ahead if it fits the view exactly
+  (bumps detailSeq so a render still running for the page is ignored, stops the debounce); detailShowing() - the paint's own test of whether the sharp picture
+  covers the view. Nothing else uses them; the Fixer's ReTouch window is unchanged.
+- NoiseModeDialog: renderSharp (the old startDetail thread body) and sharpAllowed (kDetailMaxSeconds and the 512 MB guard) are shared by startDetail and
+  prepareNextPage. prepareNextPage runs on every tick while playing (not Loop, not the last page) and starts one render at a time (aheadBusy, aheadCancel) of
+  requestForPage (visT1) once the page in view has its own (view.detailShowing()) and no fix or picture refresh is running; one for a page no longer next is
+  called off. aheadDone (message thread, with aheadBusy cleared there so the next is not begun before this one is in place) keeps it if it is still for aheadRq
+  and the same audio (audioGen, bumped with audioChanged() by runFix's completion and takeOffLast - Undo and the paste's take-off). At the turn, tick() calls
+  useNextPage: takeReadyDetail, or, if the one for this page is still being made, adoptAhead - startDetail then waits for it instead of starting the same
+  picture again, and aheadDone shows it (or asks the view for its own if it came to nothing).
+- Checked on Linux with a test-only copy of the dialog that pretends to play (there is no audio device on the test display) and logs each step: the turn
+  used the picture made ahead every time (19 s pages, about 8 s per sharp picture on the test machine); a fix while playing threw the one being made away and
+  made it again after the page's own; a zoom while playing called it off; a turn onto a page whose picture was half made showed it 3 s later instead of
+  starting again.

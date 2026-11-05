@@ -683,6 +683,7 @@ public:
         ticker.owner = this; ticker.startTimerHz (30);
         app.undoHold += 1;
         setupTabs();
+        setupConsonants();                                                       // 3.36.0
         loadControls();
         setWantsKeyboardFocus (true);
         for (auto* ch : getChildren()) if (dynamic_cast<juce::Button*> (ch) != nullptr || dynamic_cast<juce::ComboBox*> (ch) != nullptr) ch->setWantsKeyboardFocus (false);
@@ -695,12 +696,13 @@ public:
         saveControls();
         ticker.stopTimer(); ticker.owner = nullptr;
         if (detailCancel != nullptr) detailCancel->store (true);
+        if (aheadCancel != nullptr) aheadCancel->store (true);
         app.stopPlayback();
         discardUncommitted();
         app.undoHold -= 1;
     }
     // ---- the tools at the bottom: one tab for each tool (only one set of controls shows at a time, so the picture keeps the room), then the transport and the fixes ----
-    enum { kTabTouch, kTabGain, kTabClick, kTabDenoise, kTabCount };
+    enum { kTabTouch, kTabGain, kTabClick, kTabDenoise, kTabConsonant, kTabCount };       // (3.36.0: Consonants, as in the ReTouch window)
     static constexpr int kRowH = 24, kRowGap = 4, kPanelPad = 6, kTabW = 104, kTabGap = 12, kCapGap = 12, kTransportH = 26, kActionW = 116;      // (kActionW: the button that does the work, the same size and in the same place on every tab)
     static constexpr int sliderW = 140;                                           // a slider with its number: short on purpose
     static constexpr int kChoicesW = 184 + 8 + 180 + 8 + 96 + 8 + 132 + 8 + 112;                       // the five choices of ReTouch in a row
@@ -734,6 +736,8 @@ public:
             case kTabTouch:   return { &methodBox, &dirBox, &bandsBox, &multiBtn, &linkBtn, &strengthCap, &strength, &surroundCap, &surround, &weightCap, &weight, &sideL, &sideC, &sideR, &retouchBtn, &harmBar };
             case kTabGain:    return { &gainBtn, &gainHint, &gainCap, &gainSlider };
             case kTabClick:   return { &sensCap, &sens, &declickBtn };
+            case kTabConsonant: return { &copyBtn, &copyMoveBtn, &consHint, &consCap, &consBox, &renameBtn, &forgetBtn, &levelCap, &level,
+                                         &nudgeCap, &nudgeL5, &nudgeL1, &nudgeRead, &nudgeR1, &nudgeR5, &pasteBtn };
             default:          return { &amountCap, &amount, &residualCap, &residual, &learnBtn, &roomCap, &denoiseBtn, &quietBox };
         }
     }
@@ -747,9 +751,10 @@ public:
     }
     void setupTabs()
     {
-        const char* names[] = { "ReTouch [R]", "Gain [G]", "De-click [D]", "Denoise [N]" };
+        const char* names[] = { "ReTouch [R]", "Gain [G]", "De-click [D]", "Denoise [N]", "Consonants [C]" };
         const char* tips[] = { "ReTouch: rebuilds or turns down the box you drew from its surroundings (key R).", "Gain: makes the sound in the box louder or quieter (key G).",
-                               "De-click: finds and mends clicks (key D).", "Denoise: takes the room noise out of the box (keys L and N)." };
+                               "De-click: finds and mends clicks (key D).", "Denoise: takes the room noise out of the box (keys L and N).",
+                               "Consonants: copy a consonant (every track, every channel, as each heard it), move an early or late one, or paste a kept one where one is missing (key C; P pastes; comma and full stop nudge the one just pasted)." };
         for (int i = 0; i < kTabCount; ++i)
         {
             auto& t = tabBtn[i]; t.setButtonText (names[i]); t.setTooltip (tips[i]); t.setClickingTogglesState (false);
@@ -807,6 +812,22 @@ public:
                 auto r = rowOf (in, 0);
                 sensCap.setBounds (r.removeFromLeft (112)); r.removeFromLeft (8); sens.setBounds (r.removeFromLeft (sliderW));
                 declickBtn.setBounds (action);
+                break;
+            }
+            case kTabConsonant:
+            {   // 3.36.0, as in the ReTouch window: copy; the kept ones; then the level, the nudge and Paste (in the action corner)
+                auto r0 = rowOf (in, 0);
+                putLeft (r0, copyBtn, 150); putLeft (r0, copyMoveBtn, 150, 12); consHint.setBounds (r0);
+                auto r1 = rowOf (in, 1);
+                consCap.setBounds (r1.removeFromLeft (44)); r1.removeFromLeft (4);
+                forgetBtn.setBounds (r1.removeFromRight (70)); r1.removeFromRight (6); renameBtn.setBounds (r1.removeFromRight (84)); r1.removeFromRight (8);
+                consBox.setBounds (r1.withWidth (juce::jmin (r1.getWidth(), 520)));
+                pasteBtn.setBounds (action);
+                levelCap.setBounds (lastRow.removeFromLeft (44)); level.setBounds (lastRow.removeFromLeft (sliderW)); lastRow.removeFromLeft (kCapGap + 4);
+                nudgeCap.setBounds (lastRow.removeFromLeft (48));
+                nudgeL5.setBounds (lastRow.removeFromLeft (34)); lastRow.removeFromLeft (3); nudgeL1.setBounds (lastRow.removeFromLeft (28)); lastRow.removeFromLeft (3);
+                nudgeRead.setBounds (lastRow.removeFromLeft (70)); lastRow.removeFromLeft (3);
+                nudgeR1.setBounds (lastRow.removeFromLeft (28)); lastRow.removeFromLeft (3); nudgeR5.setBounds (lastRow.removeFromLeft (34));
                 break;
             }
             default:
@@ -901,6 +922,16 @@ protected:
             if (ch == 'd' || ch == 'D') { selectTab (kTabClick); if (declickBtn.isEnabled()) retouch (true); return true; }
             if (ch == 'l' || ch == 'L') { selectTab (kTabDenoise); if (learnBtn.isEnabled()) roomFromBox(); return true; }
             if (ch == 'n' || ch == 'N') { selectTab (kTabDenoise); if (denoiseBtn.isEnabled()) denoise(); return true; }
+            if (ch == 'c' || ch == 'C') { selectTab (kTabConsonant); return true; }                         // 3.36.0: the Consonants tab
+            if (ch == 'p' || ch == 'P') { selectTab (kTabConsonant); if (pasteBtn.isEnabled()) pasteConsonant(); return true; }    // P: the chosen consonant at the playhead
+        }
+        {   // 3.36.0: , and . nudge the consonant just pasted 1 ms earlier / later; < and > (Shift with them) 5 ms
+            const int ms = ch == ',' ? -1 : ch == '.' ? 1 : ch == '<' ? -5 : ch == '>' ? 5 : 0;
+            if (ms != 0 && ! k.getModifiers().isCommandDown() && ! k.getModifiers().isAltDown())
+            {
+                if (built && (lastIsPaste() || (running && pasteRunning))) { selectTab (kTabConsonant); nudge (ms); }
+                return true;
+            }
         }
         if (k == juce::KeyPress::homeKey) { if (built && ! running) goTo (0.0); return true; }
         if (k == juce::KeyPress::endKey)  { if (built && ! running) goTo (seconds()); return true; }
@@ -908,7 +939,8 @@ protected:
         return false;
     }
 private:
-    struct Step { std::vector<EditRegion> before; std::vector<RegionJob> jobs; juce::String label; double t0 = 0.0, t1 = 0.0; };
+    struct Step { std::vector<EditRegion> before; std::vector<RegionJob> jobs; juce::String label; double t0 = 0.0, t1 = 0.0;
+                  bool paste = false; RepairOp pasteOp; };                     // (3.36.0: a pasted consonant - nudged, or its level changed, it is taken off and put in again)
     juce::String prefKey (const char* k) const { return juce::String ("noisemode.") + k; }
     void loadControls()
     {
@@ -945,8 +977,12 @@ private:
         // the page turns with the playhead: when it reaches the right edge of the page it was on, the next page comes (until the end of the edit)
         if (playing && ! loopBtn.getToggleState() && lastTickPos >= view.visT0() && lastTickPos < view.visT1()
             && pos >= view.visT1() - 0.01 * view.pageSpan() && view.visT1() < seconds() - 1.0e-6)
+        {
             view.showFrom (view.visT1());
+            useNextPage();                                                       // 3.36.0: straight to the sharp picture, when it was made ahead
+        }
         lastTickPos = pos;
+        if (playing) prepareNextPage();                                          // 3.36.0: (returns at once when there is nothing to do)
     }
     struct Ticker : juce::Timer { NoiseModeDialog* owner = nullptr; void timerCallback() override { if (owner != nullptr) owner->tick(); } } ticker;
     bool consonantMethod() const { return methodBox.getSelectedId() == 3; }
@@ -971,6 +1007,15 @@ private:
         learnBtn.setEnabled (ready && view.hasSelection()); denoiseBtn.setEnabled (ready && view.hasSelection() && haveRoomTone());
         revertBtn.setEnabled (ready && ! steps.empty()); finishBtn.setEnabled (ready && ! steps.empty());
         roomCap.setText (roomShortText(), juce::dontSendNotification); roomCap.setTooltip (roomText());
+        refreshConsonantList();                                                  // 3.36.0: the Consonants tab
+        const bool canCopy = ready && view.hasSelection();
+        copyBtn.setEnabled (canCopy); copyMoveBtn.setEnabled (canCopy);
+        const bool haveCons = selectedConsonant() != nullptr;
+        consBox.setEnabled (! consList.empty()); renameBtn.setEnabled (haveCons); forgetBtn.setEnabled (haveCons);
+        pasteBtn.setEnabled (ready && haveCons);
+        const bool adj = built && (lastIsPaste() || (running && pasteRunning));
+        for (auto* b : { &nudgeL5, &nudgeL1, &nudgeR1, &nudgeR5 }) b->setEnabled (adj);
+        nudgeRead.setText (nudgeText(), juce::dontSendNotification);
         juce::String t;
         if (view.hasSelection()) t << (view.boxCount() > 1 ? "Selected: " + juce::String (view.boxCount()) + " boxes, " : juce::String ("Box: ")) << specTime (view.selT0(), 2) << " - " << specTime (view.selT1(), 2) << ", " << (int) view.selF0() << " - " << (int) view.selF1() << " Hz.  ";
         t << juce::String ((int) steps.size()) << " fix(es) not yet written back";
@@ -1048,42 +1093,116 @@ private:
                     self->pyramidBusy = false;
                     self->sliceForView(); self->view.invalidateDetail();
                     self->refreshControls();
+                    self->followPending();                                   // (3.36.0: nudges / a level change pressed while the paste was being made)
                 });
         refreshControls();                                                   // (the fixes and Undo wait until the picture is made again)
     }
+    /** Whether the sharp picture of 'rq' may be made: not zoomed far out (the quick picture is all there is then - the sharp one would read the whole edit), and not
+        too much to read into memory (36 tracks of 3 minutes at 96 kHz were 2.5 GB: a long view of many tracks is left to the quick picture). */
+    bool sharpAllowed (const PictureRequest& rq) const
+    {
+        if (cur == nullptr || rq.w <= 0 || rq.t1 - rq.t0 > kDetailMaxSeconds) return false;
+        const double samples = (rq.t1 - rq.t0 + 1.0) * rate * (double) cur->parts.size();
+        return samples * sizeof (float) <= 512.0 * 1024.0 * 1024.0;
+    }
+    /** The sharp picture of one request, every track read from the pieces as they are (on a thread of its own); nothing if it was called off. */
+    static std::shared_ptr<DetailPicture> renderSharp (const std::shared_ptr<TrackParts>& parts, const PictureRequest& rq, double sr, const std::shared_ptr<std::atomic<bool>>& cancel)
+    {
+        const double margin = 0.5;
+        const juce::int64 s0 = juce::jmax<juce::int64> (0, (juce::int64) std::llround ((rq.t0 - margin) * sr)), s1 = (juce::int64) std::llround ((rq.t1 + margin) * sr);
+        std::vector<std::vector<float>> tracks (parts->parts.size());
+        ReaderCache cache;
+        for (size_t i = 0; i < parts->parts.size(); ++i)
+        {
+            if (cancel->load()) return nullptr;                                  // (a newer view, or the window closed: let go before reading more)
+            tracks[i].assign ((size_t) juce::jmax<juce::int64> (0, s1 - s0), 0.0f);
+            readTrackMix (parts->parts[i], s0, s1 - s0, tracks[i].data(), &cache);
+        }
+        const double off = (double) s0 / sr;
+        auto pic = picture::render (tracks, sr, rq.t0 - off, rq.t1 - off, rq.w, rq.h, rq.axis, rq.opt, [cancel] { return cancel->load(); });
+        pic.id = rq.id; pic.t0 = rq.t0; pic.t1 = rq.t1;
+        if (cancel->load()) return nullptr;
+        return std::make_shared<DetailPicture> (std::move (pic));
+    }
     void startDetail (const PictureRequest& rq)
     {
-        if (! built || cur == nullptr) return;
-        if (rq.t1 - rq.t0 > kDetailMaxSeconds) return;                               // zoomed far out: the quick picture is all there is (the sharp one would read the whole edit)
+        if (! built || cur == nullptr || ! sharpAllowed (rq)) return;
         if (detailCancel != nullptr) detailCancel->store (true);
+        if (aheadBusy != nullptr && aheadBusy->load() && aheadMaking == audioGen && sameRequest (aheadRq, rq))
+        {
+            adoptAhead = true; return;                                           // (3.36.0: the page turned before its picture made ahead was ready: that one is shown when it is)
+        }
+        adoptAhead = false;
         auto cancel = std::make_shared<std::atomic<bool>> (false); detailCancel = cancel;
         auto parts = cur; const double sr = rate; juce::Component::SafePointer<NoiseModeDialog> self (this);
-        {   // every track of the view is read into memory: a long view of many tracks is left to the quick picture (36 tracks of 3 minutes at 96 kHz were 2.5 GB)
-            const double samples = (rq.t1 - rq.t0 + 1.0) * sr * (double) parts->parts.size();
-            if (samples * sizeof (float) > 512.0 * 1024.0 * 1024.0) return;
-        }
         std::thread ([parts, rq, sr, cancel, self]
         {
             try                                                                  // (nothing may escape a thread: out of memory leaves the quick picture, nothing worse)
             {
-                const double margin = 0.5;
-                const juce::int64 s0 = juce::jmax<juce::int64> (0, (juce::int64) std::llround ((rq.t0 - margin) * sr)), s1 = (juce::int64) std::llround ((rq.t1 + margin) * sr);
-                std::vector<std::vector<float>> tracks (parts->parts.size());
-                ReaderCache cache;
-                for (size_t i = 0; i < parts->parts.size(); ++i)
-                {
-                    if (cancel->load()) return;                                  // (a newer view, or the window closed: let go before reading more)
-                    tracks[i].assign ((size_t) juce::jmax<juce::int64> (0, s1 - s0), 0.0f);
-                    readTrackMix (parts->parts[i], s0, s1 - s0, tracks[i].data(), &cache);
-                }
-                const double off = (double) s0 / sr;
-                auto pic = picture::render (tracks, sr, rq.t0 - off, rq.t1 - off, rq.w, rq.h, rq.axis, rq.opt, [cancel] { return cancel->load(); });
-                pic.id = rq.id; pic.t0 = rq.t0; pic.t1 = rq.t1;
-                if (cancel->load()) return;
-                juce::MessageManager::callAsync ([self, p = std::make_shared<DetailPicture> (std::move (pic))] { if (self != nullptr) self->view.setDetail (std::move (*p)); });
+                if (auto p = renderSharp (parts, rq, sr, cancel))
+                    juce::MessageManager::callAsync ([self, p] { if (self != nullptr) self->view.setDetail (std::move (*p)); });
             }
             catch (...) {}
         }).detach();
+    }
+    // ---- 3.36.0: while it plays through the pages, the NEXT page's sharp picture is made as soon as the page in view has its own, so the page turns straight
+    //      to it (it used to show the quick picture for a second or so first). Made again if the view changes; thrown away when a fix changes the audio.
+    void prepareNextPage()
+    {
+        if (! built || cur == nullptr || ! isPlayingNow() || loopBtn.getToggleState()) return;
+        if (view.visT1() >= seconds() - 1.0e-6) return;                           // (the last page)
+        const auto rq = view.requestForPage (view.visT1());
+        if (aheadBusy != nullptr && aheadBusy->load())                            // (one at a time: one for a page no longer next - zoomed meanwhile - is called off)
+        {
+            if (! adoptAhead && aheadCancel != nullptr && (aheadMaking != audioGen || ! sameRequest (aheadRq, rq))) aheadCancel->store (true);
+            return;
+        }
+        if (running || pyramidBusy || ! view.detailShowing()) return;            // (the page in view first: its own sharp picture, and any fix and its picture)
+        if (! sharpAllowed (rq)) return;
+        if (ahead != nullptr && aheadGen == audioGen && sameRequest (aheadRq, rq)) return;     // (made already)
+        auto cancel = std::make_shared<std::atomic<bool>> (false); aheadCancel = cancel;
+        auto busy = std::make_shared<std::atomic<bool>> (true); aheadBusy = busy;
+        ahead.reset(); aheadRq = rq; aheadMaking = audioGen;
+        auto parts = cur; const double sr = rate; const int gen = audioGen; juce::Component::SafePointer<NoiseModeDialog> self (this);
+        std::thread ([parts, rq, sr, cancel, busy, gen, self]
+        {
+            std::shared_ptr<DetailPicture> p;
+            try { p = renderSharp (parts, rq, sr, cancel); } catch (...) {}
+            juce::MessageManager::callAsync ([self, p, gen, rq, busy]
+            {
+                busy->store (false);                                             // (here, so the next is not begun before this one is in place)
+                if (self != nullptr) self->aheadDone (p, gen, rq);
+            });
+        }).detach();
+    }
+    void aheadDone (const std::shared_ptr<DetailPicture>& p, int gen, const PictureRequest& rq)
+    {
+        const bool adopt = adoptAhead; adoptAhead = false;
+        const bool good = p != nullptr && gen == audioGen && sameRequest (aheadRq, rq);       // (not called off, and no fix has changed the audio meanwhile)
+        if (good) { ahead = p; aheadGen = gen; aheadOpt = rq.opt; }
+        if (adopt)                                                               // (the page in view is waiting for it)
+        {
+            if (good && view.takeReadyDetail (*p, rq.opt)) ahead.reset();
+            else view.invalidateDetail();                                        // (its own, then)
+        }
+    }
+    static bool sameRequest (const PictureRequest& a, const PictureRequest& b)
+    {
+        return a.w == b.w && a.h == b.h && std::abs (a.t0 - b.t0) < 1.0e-9 && std::abs (a.t1 - b.t1) < 1.0e-9 && a.axis.same (b.axis)
+            && a.opt.reassign == b.opt.reassign && std::abs (a.opt.detail - b.opt.detail) < 1.0e-9 && std::abs (a.opt.reduceAboveSec - b.opt.reduceAboveSec) < 1.0e-9;
+    }
+    /** The page has just turned: its sharp picture, if it was made ahead (and is still right for it). */
+    void useNextPage()
+    {
+        if (ahead != nullptr && aheadGen == audioGen && view.takeReadyDetail (*ahead, aheadOpt)) ahead.reset();
+        else if (aheadBusy != nullptr && aheadBusy->load() && aheadMaking == audioGen && sameRequest (aheadRq, view.requestForPage (view.visT0())))
+            adoptAhead = true;                                                   // (not ready yet: it carries on, and is shown when it is)
+    }
+    /** The audio changed (a fix went in or came out): a page made ahead shows what it was, so it goes. */
+    void audioChanged()
+    {
+        ++audioGen; ahead.reset(); adoptAhead = false;
+        if (aheadCancel != nullptr) aheadCancel->store (true);
     }
     void openSpectroSettings()
     {
@@ -1136,34 +1255,40 @@ private:
     }
     // ---- the fixes: each is made on the job thread from the pieces as they are now, then put into the edit (the next one works on the result)
     using Prepare = std::function<juce::String (const std::vector<EditRegion>& regions, std::vector<RegionJob>& jobs, AudioJob& j)>;
-    void runFix (const juce::String& label, const juce::String& suffix, double t0, double t1, Prepare prepare)
+    void runFix (const juce::String& label, const juce::String& suffix, double t0, double t1, Prepare prepare, std::shared_ptr<const RepairOp> paste = nullptr)
     {
         auto* e = edit(); if (e == nullptr || running || ! built) return;
+        pasteRunning = paste != nullptr;
         auto regions = std::make_shared<std::vector<EditRegion>> (e->regions);
         auto jobs = std::make_shared<std::vector<RegionJob>>();
         status.setText (label + "...", juce::dontSendNotification);
         juce::Component::SafePointer<NoiseModeDialog> self (this);
         refreshControls();
-        for (auto* b : { &gainBtn, &retouchBtn, &declickBtn, &learnBtn, &denoiseBtn, &revertBtn, &finishBtn }) b->setEnabled (false);
+        for (auto* b : { &gainBtn, &retouchBtn, &declickBtn, &learnBtn, &denoiseBtn, &revertBtn, &finishBtn, &copyBtn, &copyMoveBtn, &pasteBtn }) b->setEnabled (false);
         runJob ([regions, jobs, prepare] (AudioJob& j) { return prepare (*regions, *jobs, j); },
-                [self, regions, jobs, label, suffix, t0, t1] (const juce::String& err)
+                [self, regions, jobs, label, suffix, t0, t1, paste] (const juce::String& err)
                 {
                     if (self == nullptr) return;
+                    self->pasteRunning = false;
+                    const auto note = self->nextNote; self->nextNote.clear();
                     auto deleteFiles = [jobs] { for (auto& rj : *jobs) for (auto& r : rj.results) r.file.deleteFile(); jobs->clear(); };
                     if (err.isNotEmpty()) { deleteFiles(); self->status.setText (err, juce::dontSendNotification); self->refreshControls(); return; }
                     auto* ed = self->edit();
                     if (ed == nullptr) { deleteFiles(); return; }
                     Step st; st.before = ed->regions; st.jobs = std::move (*jobs); st.label = label; st.t0 = t0; st.t1 = t1;
+                    if (paste != nullptr) { st.paste = true; st.pasteOp = *paste; }
                     if (! applyRegionJobs (*ed, st.before, st.jobs, suffix))
                     {
                         ed->regions = st.before; for (auto& rj : st.jobs) for (auto& r : rj.results) r.file.deleteFile();
                         self->status.setText ("The fix could not be put into the edit (" + gApplyWhy + ").", juce::dontSendNotification); self->refreshControls(); return;
                     }
                     self->steps.push_back (std::move (st));
+                    self->audioChanged();                                        // 3.36.0
                     self->app.project.changed();
                     self->cur = std::make_shared<TrackParts> (buildTrackParts (*ed, 0, self->length, self->only));
                     self->restartIfPlaying();
-                    self->status.setText (label + " done and in the edit (" + juce::String ((int) self->steps.size()) + " fix(es) not yet written back). Play to listen; Undo takes it off; Write back to clip keeps it.", juce::dontSendNotification);
+                    self->status.setText (note + label + " done and in the edit (" + juce::String ((int) self->steps.size()) + " fix(es) not yet written back). Play to listen; Undo takes it off; Write back to clip keeps it."
+                                          + (paste != nullptr ? juce::String (" Comma and full stop nudge it (1 ms; with Shift 5 ms); Level changes how loud it goes in.") : juce::String()), juce::dontSendNotification);
                     self->refreshControls();
                     self->refreshPicture (t0, t1);
                 },
@@ -1285,10 +1410,21 @@ private:
     }
     void revert()
     {
-        auto* e = edit(); if (e == nullptr || steps.empty() || running) return;
+        if (edit() == nullptr || steps.empty() || running) return;
+        const auto label = steps.back().label; const double t0 = steps.back().t0, t1 = steps.back().t1;
+        takeOffLast();
+        restartIfPlaying();
+        status.setText (label + " taken off again (" + juce::String ((int) steps.size()) + " fix(es) left).", juce::dontSendNotification);
+        refreshPicture (t0, t1);
+    }
+    /** The last fix taken off the edit (its files deleted), with nothing else: Undo, and a nudge of a pasted consonant (taken off, then put in again). */
+    void takeOffLast()
+    {
+        auto* e = edit(); if (e == nullptr || steps.empty()) return;
         auto st = std::move (steps.back()); steps.pop_back();
         e->regions = st.before;
         for (auto& rj : st.jobs) for (auto& r : rj.results) r.file.deleteFile();
+        audioChanged();                                                          // 3.36.0
         app.project.changed();
         cur = std::make_shared<TrackParts> (buildTrackParts (*e, 0, length, only));
         if (rtParts != nullptr)                                                 // the room-tone box marked on the sound of this fix: its files are gone, so the sound as it is now
@@ -1297,9 +1433,261 @@ private:
             for (auto& tps : rtParts->parts) for (auto& pt : tps) for (auto& rj : st.jobs) for (auto& r : rj.results) gone = gone || pt.file == r.file;
             if (gone) rtParts = cur;
         }
-        restartIfPlaying();
-        status.setText (st.label + " taken off again (" + juce::String ((int) steps.size()) + " fix(es) left).", juce::dontSendNotification);
-        refreshPicture (st.t0, st.t1);
+    }
+
+    // ---- 3.36.0: Consonants, as in the ReTouch window (the same kept list: wireConsonants). Copy / Copy and remove keep what the stray-consonant ReTouch takes
+    //      out of the box - every track, every channel, read as the edit plays it (this window's fixes are already in the edit); Paste adds a kept one at the
+    //      playhead, through every piece it reaches; the last paste is nudged, or its level changed, by taking it off and putting it in again ----
+    void setupConsonants()
+    {
+        wireConsonants (cons, app);
+        auto label = [this] (juce::Label& l, const juce::String& t, bool dim = false)
+        {
+            l.setText (t, juce::dontSendNotification); l.setColour (juce::Label::textColourId, dim ? theme::dimText : theme::text); l.setMinimumHorizontalScale (0.8f); addChildComponent (l);
+        };
+        label (consHint, "Draw the box round the consonant from about 2 kHz up, then Copy.", true);
+        label (consCap, "Kept:"); label (levelCap, "Level"); label (nudgeCap, "Nudge");
+        nudgeRead.setText ({}, juce::dontSendNotification); nudgeRead.setJustificationType (juce::Justification::centred); nudgeRead.setColour (juce::Label::textColourId, theme::text); addChildComponent (nudgeRead);
+        nudgeRead.setTooltip ("How far the consonant just pasted has been nudged from where it was first put.");
+        copyBtn.setTooltip ("Keeps the consonant in the box with the project: what the stray-consonant ReTouch would take out of it (the consonant itself, above the vowel and the room), "
+                            "on EVERY track and every channel, each as that microphone heard it - nothing is mixed down. The audio here is not changed. "
+                            "It can be pasted here, or in any ReTouch window of this project, today or weeks later (until you delete it).");
+        copyMoveBtn.setTooltip ("For an early or late consonant: keeps it (as Copy consonant does) and takes it out here, as the stray-consonant ReTouch does at full strength. "
+                                "Then click the time ruler where it should sound and press Paste here [P]: each track's own part of it goes back on that track.");
+        renameBtn.setTooltip ("Gives the chosen consonant another name (t, s, sh, soft d ...).");
+        forgetBtn.setTooltip ("Takes the chosen consonant off this project's list and deletes its audio. Fixes already made with it stay as they are.");
+        pasteBtn.setTooltip ("Adds the chosen consonant on top of the sound, the start of the box it was copied from at the red playhead (click the time ruler to place it - a click on the picture "
+                             "takes the box away). Each track gets its own part of it (a track it was not copied from gets nothing), across an edit point too. Like the other fixes: it is in the "
+                             "edit at once, Undo takes it off, Write back to clip keeps it. Key: P");
+        consBox.setTooltip ("The consonants kept with this project - the same list as the ReTouch windows' (Copy consonant adds one; Copy and remove adds one too). Paste uses the one chosen here.");
+        consBox.onChange = [this]
+        {
+            const int i = consBox.getSelectedItemIndex();
+            if (juce::isPositiveAndBelow (i, (int) consList.size())) consSel = consList[(size_t) i].id;
+            refreshControls();
+        };
+        level.setSliderStyle (juce::Slider::LinearHorizontal); level.setRange (-24.0, 12.0, 0.5); level.setValue (0.0, juce::dontSendNotification); level.setScrollWheelEnabled (false);
+        level.setTextBoxStyle (juce::Slider::TextBoxRight, false, 60, 22); level.setTextValueSuffix (" dB"); level.setDoubleClickReturnValue (true, 0.0);
+        level.setTooltip ("How loud the consonant goes in, against how it was copied (0 dB = as it was). Changing it changes the consonant just pasted, too. Double-click for 0 dB.");
+        level.onValueChange = [this] { if (! level.isMouseButtonDown()) levelChanged(); };
+        level.onDragEnd = [this] { levelChanged(); };
+        addChildComponent (level);
+        auto nb = [this] (juce::TextButton& b, int ms, const juce::String& tip) { b.setTooltip (tip); b.onClick = [this, ms] { nudge (ms); }; b.setWantsKeyboardFocus (false); addChildComponent (b); };
+        nb (nudgeL5, -5, "The consonant just pasted 5 ms earlier (Shift + comma)."); nb (nudgeL1, -1, "The consonant just pasted 1 ms earlier (comma).");
+        nb (nudgeR1, 1, "The consonant just pasted 1 ms later (full stop)."); nb (nudgeR5, 5, "The consonant just pasted 5 ms later (Shift + full stop).");
+        copyBtn.onClick = [this] { copyConsonant (false); };
+        copyMoveBtn.onClick = [this] { copyConsonant (true); };
+        renameBtn.onClick = [this] { renamePressed(); };
+        forgetBtn.onClick = [this] { forgetPressed(); };
+        pasteBtn.onClick = [this] { pasteConsonant(); };
+        pasteBtn.setColour (juce::TextButton::buttonColourId, theme::accent);
+        for (auto* c : std::initializer_list<juce::Component*> { &copyBtn, &copyMoveBtn, &renameBtn, &forgetBtn, &pasteBtn, &consBox }) { addChildComponent (c); c->setWantsKeyboardFocus (false); }
+    }
+    const ConsonantDef* selectedConsonant() const { for (auto& c : consList) if (c.id == consSel) return &c; return nullptr; }
+    bool lastIsPaste() const { return ! steps.empty() && steps.back().paste; }
+    juce::String nudgeText() const
+    {
+        if (! lastIsPaste() || steps.back().pasteOp.placed < 0) return {};
+        const double ms = 1000.0 * (double) (steps.back().pasteOp.t0 - steps.back().pasteOp.placed) / rate;
+        return (ms > 0.04 ? "+" : "") + juce::String (ms, std::abs (ms - std::round (ms)) < 0.05 ? 0 : 1) + " ms";
+    }
+    /** The list, from the project (made again only when the project's list has changed). */
+    void refreshConsonantList()
+    {
+        if (! cons.consonantList) return;
+        auto list = cons.consonantList();
+        juce::String key; for (auto& c : list) key << c.id.toString() << c.name << c.from << ";";
+        if (key == consListKey) return;
+        consListKey = key; consList = std::move (list);
+        consBox.clear (juce::dontSendNotification);
+        for (int i = 0; i < (int) consList.size(); ++i) consBox.addItem (consList[(size_t) i].listText(), i + 1);
+        int at = -1; for (int i = 0; i < (int) consList.size(); ++i) if (consList[(size_t) i].id == consSel) at = i;
+        if (at < 0 && ! consList.empty()) { at = (int) consList.size() - 1; consSel = consList.back().id; }      // (none chosen yet: the newest)
+        if (at >= 0) consBox.setSelectedItemIndex (at, juce::dontSendNotification);
+        consBox.setTextWhenNothingSelected (consList.empty() ? "None kept yet: draw a box round a consonant and press Copy" : "Choose one");
+    }
+    static void askName (const juce::String& title, const juce::String& message, const juce::String& suggestion, std::function<void (const juce::String&)> done)
+    {
+        auto* aw = new juce::AlertWindow (title, message, juce::MessageBoxIconType::NoIcon);
+        aw->addTextEditor ("n", suggestion);
+        aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
+        aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+        aw->enterModalState (true, juce::ModalCallbackFunction::create ([aw, done] (int res)
+        {
+            const auto n = aw->getTextEditorContents ("n").trim();
+            delete aw;
+            if (res == 1 && n.isNotEmpty() && done) done (n);
+        }));
+    }
+    /** Copy (and remove): on a job thread, every track's channels round the box are read as the edit plays them, and the stray-consonant ReTouch's difference
+        kept (consonants::extract). Then it is named (Copy), or named "moved" and taken out here like the ReTouch (Copy and remove). */
+    void copyConsonant (bool remove)
+    {
+        if (! built || running || ! view.hasSelection() || cur == nullptr || ! cons.keepConsonant) return;
+        const auto t0 = (juce::int64) std::llround (view.selT0() * rate), t1 = (juce::int64) std::llround (view.selT1() * rate);
+        if (t1 - t0 < (juce::int64) (0.005 * rate)) { status.setText ("The box is too short to hold a consonant.", juce::dontSendNotification); return; }
+        const auto spec = consonants::copySpec (repairSpec (false));               // (the box's pitch range, the window's bands, multi-resolution, linked stereo and side)
+        const auto pad = (juce::int64) std::llround ((1.0 + 2.0 * (double) (t1 - t0) / rate) * rate);       // (the ReTouch measures the sound round the box)
+        const auto a = juce::jmax ((juce::int64) 0, t0 - pad), b = juce::jmin (length, t1 + pad);
+        auto parts = cur; const double sr = rate;
+        auto out = std::make_shared<ConsonantAudio>();
+        status.setText (remove ? "Copying the consonant (every track) and taking it out here..." : "Copying the consonant (every track)...", juce::dontSendNotification);
+        for (auto* x : { &copyBtn, &copyMoveBtn, &pasteBtn }) x->setEnabled (false);
+        juce::Component::SafePointer<NoiseModeDialog> self (this);
+        runJob ([parts, sr, out, spec, t0, t1, a, b] (AudioJob& j) -> juce::String
+                {
+                    std::vector<std::vector<std::vector<float>>> tracks (parts->parts.size());
+                    std::vector<std::vector<float>> mono (parts->parts.size());
+                    ReaderCache cache;
+                    for (size_t i = 0; i < parts->parts.size(); ++i)
+                    {
+                        if (j.cancelled()) return "Cancelled.";
+                        if (! readTrackChannels (parts->parts[i], a, b - a, tracks[i], &cache)) tracks[i].clear();     // (a track with no audio there: nothing of it)
+                        mono[i].assign ((size_t) (b - a), 0.0f);
+                        for (auto& ch : tracks[i]) for (size_t n = 0; n < mono[i].size() && n < ch.size(); ++n) mono[i][n] += ch[n] / (float) tracks[i].size();
+                    }
+                    // which side of the box is the background: one answer for all the tracks, as the ReTouch finds it
+                    auto sp = spec;
+                    if (std::abs (sp.repair.weighting - 0.5) < 0.04)
+                    {
+                        std::vector<const std::vector<float>*> tp; for (auto& m : mono) tp.push_back (&m);
+                        const auto d = SpectralRepair::consonantSides (tp, sr, (long) (t0 - a), (long) (t1 - a), sp.f0, sp.f1);
+                        sp.repair.consonantBefore = d.first; sp.repair.consonantEdge = d.second;
+                    }
+                    *out = consonants::extract (parts->ids, parts->names, tracks, sr, (long) (t0 - a), (long) (t1 - a), sp);
+                    if (out->tracks.empty()) return "Nothing to copy: the ReTouch found nothing in the box that stands out from the sound beside it. Draw the box round the consonant only, from about 2 kHz up.";
+                    return {};
+                },
+                [self, out, remove, spec, t0, t1] (const juce::String& err)
+                {
+                    if (self == nullptr) return;
+                    if (err.isNotEmpty()) { self->status.setText (err, juce::dontSendNotification); self->refreshControls(); return; }
+                    auto* e = self->edit();
+                    const auto from = (e != nullptr ? e->name : juce::String ("the edit")) + ", " + timefmt::minSecText ((double) t0 / self->rate, 2);
+                    if (remove)
+                    {
+                        juce::Uuid id; const auto er = self->cons.keepConsonant (*out, "moved", from, id);
+                        if (er.isNotEmpty()) { self->status.setText (er, juce::dontSendNotification); self->refreshControls(); return; }
+                        self->consSel = id; self->consCache[id.toString()] = out;
+                        self->refreshControls();
+                        self->nextNote = "Copied (kept as \"moved\") and taken out here. Now click the time ruler where it should start and press Paste here [P]. ";
+                        self->takeOutConsonant (spec, t0, t1);                    // (taken out here as the stray-consonant ReTouch does, at full strength)
+                        return;
+                    }
+                    auto keep = [self, out, from] (const juce::String& name)
+                    {
+                        if (self == nullptr) return;
+                        juce::Uuid id; const auto er = self->cons.keepConsonant (*out, name, from, id);
+                        if (er.isNotEmpty()) { self->status.setText (er, juce::dontSendNotification); self->refreshControls(); return; }
+                        self->lastConsName = name; self->consSel = id; self->consCache[id.toString()] = out;
+                        self->status.setText ("Kept \"" + name + "\" (" + juce::String ((int) out->tracks.size()) + (out->tracks.size() == 1 ? " track, " : " tracks, ")
+                                              + juce::String (juce::roundToInt (1000.0 * (double) out->length() / out->sampleRate)) + " ms) with the project: paste it here, or in any ReTouch window of this project, whenever you need it.",
+                                              juce::dontSendNotification);
+                        self->refreshControls();
+                    };
+                    askName ("Keep this consonant", "A name for it (t, s, sh, soft d ...). It is kept with the project, every track and channel as recorded.", self->lastConsName, keep);
+                    self->refreshControls();
+                });
+    }
+    /** Copy and remove's second half: the box turned down as the stray-consonant ReTouch does (one change over the whole box). */
+    void takeOutConsonant (const FixSpec& spec, juce::int64 t0, juce::int64 t1)
+    {
+        const std::vector<RepairOp> ops { RepairOp { spec, t0, t1 } };
+        const auto folder = fixFolder; const double sr = rate; const auto len = length; const auto onlyT = only;
+        runFix ("Consonant taken out", "consonant", (double) t0 / sr, (double) t1 / sr,
+                [folder, sr, len, onlyT, ops] (const std::vector<EditRegion>& regions, std::vector<RegionJob>& jobs, AudioJob& j) { return prepareRepairJobs (folder, regions, 0, len, sr, ops, onlyT, jobs, j); });
+    }
+    void renamePressed()
+    {
+        const auto* c = selectedConsonant(); if (c == nullptr || ! cons.renameConsonant) return;
+        const auto id = c->id;
+        juce::Component::SafePointer<NoiseModeDialog> self (this);
+        askName ("Rename consonant", "A new name for \"" + c->name + "\" (" + c->from + ").", c->name, [self, id] (const juce::String& n)
+        {
+            if (self == nullptr) return;
+            self->cons.renameConsonant (id, n); self->refreshControls();
+        });
+    }
+    void forgetPressed()
+    {
+        const auto* c = selectedConsonant(); if (c == nullptr || ! cons.forgetConsonant) return;
+        const auto id = c->id;
+        juce::Component::SafePointer<NoiseModeDialog> self (this);
+        confirmAsync ("Delete consonant", "Take \"" + c->name + "\" (" + c->from + ") off this project's list and delete its audio? Fixes already made with it stay as they are.", "Delete",
+                      [self, id] { if (self == nullptr) return; self->cons.forgetConsonant (id); self->consCache.erase (id.toString()); self->consSel = juce::Uuid::null(); self->refreshControls(); });
+    }
+    std::shared_ptr<const ConsonantAudio> consonantAudio (const ConsonantDef& c)
+    {
+        auto it = consCache.find (c.id.toString());
+        if (it != consCache.end()) return it->second;
+        if (! cons.loadConsonant) return nullptr;
+        juce::String err;
+        auto a = cons.loadConsonant (c.id, err);
+        if (a == nullptr) { status.setText (err.isNotEmpty() ? err : "The consonant's audio could not be read.", juce::dontSendNotification); return nullptr; }
+        consCache[c.id.toString()] = a;
+        return a;
+    }
+    /** Paste: the chosen consonant, the start of the box it was copied from at the red playhead, at the level set; a fix like the others, through every piece it reaches. */
+    void pasteConsonant()
+    {
+        if (! built || running || cur == nullptr) return;
+        const auto* c = selectedConsonant();
+        if (c == nullptr) { status.setText ("Choose a kept consonant in the list first (or copy one: draw a box round it and press Copy consonant).", juce::dontSendNotification); return; }
+        const double cue = view.cueTime();
+        if (cue < 0.0) { status.setText ("Click the time ruler where the consonant should start (a red playhead appears), then press Paste here [P].", juce::dontSendNotification); return; }
+        auto audio = consonantAudio (*c);
+        if (audio == nullptr) return;
+        if (std::abs (audio->sampleRate - rate) > 0.5) { status.setText ("\"" + c->name + "\" was copied at " + juce::String (audio->sampleRate / 1000.0, 1) + " kHz and this edit is at " + juce::String (rate / 1000.0, 1) + " kHz: it cannot be pasted here.", juce::dontSendNotification); return; }
+        int here = 0; for (auto& id : cur->ids) if (audio->forTrack (id) != nullptr) ++here;
+        if (here == 0)
+        {
+            status.setText ("None of the tracks \"" + c->name + "\" was copied from (" + juce::StringArray (audio->trackNames.data(), (int) audio->trackNames.size()).joinIntoString (", ")
+                            + ") are in this window, so there is nothing to paste on.", juce::dontSendNotification);
+            return;
+        }
+        const auto t0 = (juce::int64) std::llround (cue * rate) - audio->lead, t1 = t0 + audio->length();
+        if (t0 < 0 || t1 > length) { status.setText ("The consonant would run past the start or the end of the edit. Place the playhead further in.", juce::dontSendNotification); return; }
+        FixSpec spec; spec.kind = FixSpec::Kind::Paste; spec.paste = audio; spec.pasteGainDb = level.getValue();
+        startPaste (RepairOp { spec, t0, t1, t0 }, "Consonant \"" + c->name + "\" pasted", (double) t0 / rate, (double) t1 / rate);
+    }
+    void startPaste (const RepairOp& op, const juce::String& label, double pictureT0, double pictureT1)
+    {
+        const std::vector<RepairOp> ops { op };
+        const auto folder = fixFolder; const double sr = rate; const auto len = length; const auto onlyT = only;
+        runFix (label, "consonant", pictureT0, pictureT1,
+                [folder, sr, len, onlyT, ops] (const std::vector<EditRegion>& regions, std::vector<RegionJob>& jobs, AudioJob& j) { return prepareRepairJobs (folder, regions, 0, len, sr, ops, onlyT, jobs, j); },
+                std::make_shared<const RepairOp> (op));
+    }
+    /** The consonant just pasted, again: moved by 'ms' (and at the level set now). It is taken off and put in again, so Undo still takes it off in one go. */
+    void nudge (int ms)
+    {
+        const auto d = (juce::int64) std::llround ((double) ms * 0.001 * rate);
+        if (running) { if (pasteRunning || lastIsPaste()) pendingNudge += d; return; }     // (pressed while the paste, or its picture, is being made: it follows then)
+        adjustPaste (d);
+    }
+    void levelChanged()
+    {
+        if (running) { if (pasteRunning || lastIsPaste()) pendingLevel = true; return; }
+        if (lastIsPaste() && std::abs (steps.back().pasteOp.spec.pasteGainDb - level.getValue()) >= 0.01) adjustPaste (0);
+    }
+    /** A paste (or a nudge of one) and its picture have been made: the nudges and level change that came in meanwhile follow now, in one go. */
+    void followPending()
+    {
+        const auto d = pendingNudge; const bool lv = pendingLevel;
+        pendingNudge = 0; pendingLevel = false;
+        if (running) return;
+        if (d != 0 || (lv && lastIsPaste() && std::abs (steps.back().pasteOp.spec.pasteGainDb - level.getValue()) >= 0.01)) adjustPaste (d);
+    }
+    void adjustPaste (juce::int64 delta)
+    {
+        if (! built || running || ! lastIsPaste()) return;
+        auto op = steps.back().pasteOp;
+        op.t0 += delta; op.t1 += delta; op.spec.pasteGainDb = level.getValue();
+        if (op.t0 < 0 || op.t1 > length) { status.setText ("It cannot go further: it would run past the start or the end of the edit.", juce::dontSendNotification); return; }
+        const auto label = steps.back().label;
+        const double p0 = juce::jmin (steps.back().t0, (double) op.t0 / rate), p1 = juce::jmax (steps.back().t1, (double) op.t1 / rate);   // (the picture: where it was and where it goes)
+        takeOffLast();
+        startPaste (op, label, p0, p1);
     }
     /** Write back to clip: what has been done stays in the edit (one Undo fix step back to 'base'); the window carries on. */
     void writeBack()
@@ -1397,6 +1785,10 @@ private:
     juce::TextButton gainBtn { "Gain [G]" }, retouchBtn { "ReTouch [R]" }, declickBtn { "De-click [D]" }, learnBtn { "Room tone [L]" }, denoiseBtn { "Denoise [N]" };
     juce::TextButton revertBtn { "Undo" }, finishBtn { "Write back to clip" }, doneBtn { "Finished de-noising" };
     std::shared_ptr<std::atomic<bool>> detailCancel;
+    std::shared_ptr<DetailPicture> ahead; PictureOptions aheadOpt; int aheadGen = -1, audioGen = 0;     // 3.36.0: the next page's, made ahead (and for which audio)
+    PictureRequest aheadRq; int aheadMaking = -1;                      //         (what it is, or is being, made for)
+    bool adoptAhead = false;                                           //         (the page turned onto it before it was ready: it is shown when it is)
+    std::shared_ptr<std::atomic<bool>> aheadCancel, aheadBusy;
     std::shared_ptr<SpectralPyramid> pyramid; bool pyramidBusy = false, built = false;
     std::shared_ptr<TrackParts> cur;                                    // the tracks and their pieces as the edit is now (replaced after every fix)
     std::shared_ptr<TrackParts> rtParts;                                // ... as they were when the room-tone box was marked (L): it is learned from that sound - once the
@@ -1410,6 +1802,21 @@ private:
     juce::ToggleButton quietBox;
     juce::Slider gainSlider; juce::Label gainCap;                       // 3.29.0: the Gain tab's amount, in the panel (G applies it at once)
     double lastPlayTo = 0.0;
+    // ---- 3.36.0: the Consonants tab
+    RepairContext cons;                                                 // (only its consonant list functions are used: wireConsonants - the project's list, the ReTouch windows' too)
+    juce::TextButton copyBtn { "Copy consonant" }, copyMoveBtn { "Copy and remove" }, renameBtn { "Rename..." }, forgetBtn { "Delete" }, pasteBtn { "Paste here [P]" };
+    juce::TextButton nudgeL5 { "<<" }, nudgeL1 { "<" }, nudgeR1 { ">" }, nudgeR5 { ">>" };
+    juce::Label consHint, consCap, levelCap, nudgeCap, nudgeRead;
+    juce::ComboBox consBox;
+    juce::Slider level;
+    std::vector<ConsonantDef> consList;                                 // the project's kept consonants, as the list shows them
+    juce::String consListKey;                                           // (what the list was made from: it is made again only when that changes)
+    juce::Uuid consSel;                                                 // the one chosen in the list
+    std::map<juce::String, std::shared_ptr<const ConsonantAudio>> consCache;    // the audio of the ones pasted while this window is open
+    juce::String lastConsName { "t" };
+    juce::String nextNote;                                              // said first when the fix under way is done (Copy and remove: what to do next)
+    bool pasteRunning = false;                                          // the fix under way is a paste (or a nudge of one)
+    juce::int64 pendingNudge = 0; bool pendingLevel = false;            // nudges / a level change pressed while it is being made
 };
 
 void noiseModeEdit (AppContext& app, const juce::Uuid& eid, juce::Component* parent)

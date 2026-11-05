@@ -220,6 +220,37 @@ public:
         if (p.id != detailSeq || ! p.valid()) return;
         detail = std::move (p); detailStale = false; detailOpt = lastOpt; dirty = true; repaint();
     }
+    /** 3.36.0: the sharp-picture request for the page that would show from t0 - this page's width, and the picture's size, pitch scale and settings as they are
+        now (Noise mode makes the next page's ahead of time while it plays, so the page turns straight to its sharp picture). w = 0 when there is none to make. */
+    PictureRequest requestForPage (double t0) const
+    {
+        PictureRequest rq;
+        if (! ss.sharp || spec.frames <= 0) return rq;
+        const auto pl = plotArea();
+        if (pl.getWidth() < 50 || pl.getHeight() < 50) return rq;
+        const double span = vt1 - vt0;
+        t0 = juce::jlimit (0.0, juce::jmax (0.0, duration - span), t0);            // (as setWindow puts it)
+        rq.t0 = t0; rq.t1 = t0 + span; rq.w = pl.getWidth(); rq.h = pl.getHeight(); rq.axis = axisNow();
+        rq.opt.reassign = ss.reassign; rq.opt.detail = ss.detail; rq.opt.reduceAboveSec = ss.reduceAbove;
+        return rq;
+    }
+    /** 3.36.0: a sharp picture made ahead (with options 'opt') for exactly the page now in view: shown at once, and none is asked for. False, and nothing
+        changes, when it is not for this page any more (the view, its size, the pitch scale or the settings have changed since it was asked for). */
+    bool takeReadyDetail (DetailPicture p, const PictureOptions& opt)
+    {
+        const auto rq = requestForPage (vt0);
+        if (rq.w == 0 || ! p.valid() || p.w != rq.w || p.h != rq.h || std::abs (p.t0 - rq.t0) > 1.0e-9 || std::abs (p.t1 - rq.t1) > 1.0e-9 || ! p.axis.same (rq.axis)) return false;
+        if (opt.reassign != rq.opt.reassign || std::abs (opt.detail - rq.opt.detail) > 1.0e-9 || std::abs (opt.reduceAboveSec - rq.opt.reduceAboveSec) > 1.0e-9) return false;
+        debounce.stopTimer();
+        p.id = ++detailSeq;                                                        // (a sharp picture still being made for this page is not wanted now)
+        detail = std::move (p); detailStale = false; detailOpt = opt; lastOpt = opt; dirty = true; repaint();
+        return true;
+    }
+    /** 3.36.0: whether the sharp picture of the view as it is now is showing (not still being made, nor the quick picture standing in for it). */
+    bool detailShowing() const
+    {
+        return ss.sharp && detail.valid() && ! detailStale && std::abs (detail.t0 - vt0) < 1.0e-6 && std::abs (detail.t1 - vt1) < 1.0e-6 && detail.axis.same (axisNow());
+    }
     const SpectroSettings& settings() const { return ss; }
     void setSettings (const SpectroSettings& n) { ss = n; buildLut(); detailStale = ss.sharp ? true : detailStale; dirty = true; repaint(); scheduleDetail(); }
     void resized() override { scheduleDetail(); }

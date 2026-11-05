@@ -761,6 +761,12 @@ inline juce::String prepareRepairJobs (const juce::File& fixFolder, const std::v
         {
             const auto i0 = juce::jmax (r0, from + o.t0), i1 = juce::jmin (r1, from + o.t1);
             if (i1 - i0 < 2) continue;
+            if (o.spec.kind == FixSpec::Kind::Paste)                            // 3.36.0 (Noise mode's Consonants): a pasted consonant keeps its own start, even where it reaches
+            {                                                                   // across this piece's start - each piece adds its own part of it, in the right place
+                mine.push_back (audioops::FixOp { o.spec, r.srcIn + (from + o.t0 - r.startSample), r.srcIn + (from + o.t1 - r.startSample) });
+                lo = juce::jmin (lo, i0); hi = juce::jmax (hi, i1);
+                continue;
+            }
             if (o.t1 - o.t0 > shortest && i1 - i0 <= shortest) continue;
             mine.push_back (audioops::FixOp { o.spec, r.srcIn + (i0 - r.startSample), r.srcIn + (i1 - r.startSample) });
             if (mine.back().spec.mask != nullptr) mine.back().spec.maskLead += i0 - (from + o.t0);      // 3.33.0: cut at the piece's start - begun part of the way into its soft mask
