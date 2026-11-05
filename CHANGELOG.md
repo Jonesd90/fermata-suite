@@ -6,6 +6,24 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.38.0
+Built in the fermata:Live conversation, 5 November.
+- **After a fix, only the part of the sharp picture it changed is made again.** ReTouch, Gain, Denoise, De-click and Consonants, in Noise mode and in the
+  ReTouch window (and its Undo, and Show before / Show fixed): the rest of the picture stays sharp, and only round the fix - the change itself and about a
+  third of a second either side, the reach of the picture's analysis - shows the quick picture until it is made again. A 0.25 s fix on a 10 s page makes
+  about a tenth of the picture again; on the test machine a ReTouch box in Noise mode re-made 17% of a 19 s page, in 1.4 s instead of 7.7 s.
+- **Dragging the view along keeps the sharp picture of what stays in view.** Drag the time ruler (Noise mode, the ReTouch windows) or scroll the
+  ReHarmoniSer sideways (Shift and the wheel): what was already in view moves with it, still sharp, and only the strip it uncovers is made. Moving 10 s of a
+  20 s view makes half of it; a nudge, a few percent. Zooming still makes it all again.
+- **Noise mode, while playing: a fix no longer throws away the next page's picture made ahead** when it does not reach that page (a fix on the page you
+  are on, away from its very end), so the page still turns straight to the sharp picture.
+- The parts are made from exactly the analysis points the whole picture has there (on one grid from the start of the audio, in whole pixels), so they
+  join it without a seam - checked pixel for pixel against the whole picture. (The sharp picture now sits on whole pixels of the timeline: up to half a
+  pixel from where it was, which nothing can see.)
+- Fixed too: a sharp picture that was being made while a fix went in could be shown after it - the sound before the fix - until the view moved.
+- Shared: `src/core/SpectralPicture.h` (the picture made in parts) and `src/ui/SpectralWindow.h` (the picture view keeps its sharp picture through
+  fixes and drags; the ReTouch window redraws only round its fixes). fermata:Live's Fixer uses both: it needs a rebuild and test.
+
 ## 3.37.0
 Built in the fermata:Live conversation, 5 November.
 - **The spectral pictures and the ReTouch fixes are several times quicker, with the same results.** The sharp picture (Noise mode and the ReTouch windows), the

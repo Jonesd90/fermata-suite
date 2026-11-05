@@ -51,7 +51,9 @@ struct PictureOptions
 struct DetailPicture
 {
     int w = 0, h = 0; double t0 = 0.0, t1 = 0.0; PictureAxis axis; juce::int64 id = 0;
+    int c0 = 0, c1 = -1;           // 3.38.0: the columns it holds, [c0, c1) (-1 = to the end); a part made again (see RenderPart) holds only those
     std::vector<float> db;
+    bool whole() const { return c0 <= 0 && (c1 < 0 || c1 >= w); }
     bool valid() const { return w > 1 && h > 1 && db.size() == (size_t) w * (size_t) h; }
 };
 
@@ -67,12 +69,35 @@ inline double windowSigma (double sr, double span, int W, const PictureOptions& 
 }
 inline int fftSize (double sigma) { int N = 512; while ((double) N < 13.6 * sigma && N < 65536) N <<= 1; return N; }
 
-/** The picture of [t0,t1] seconds (from the first sample of the tracks) of every track, the loudest track at every point. Returns an invalid picture if cancelled. */
+/** 3.38.0: the timeline's column (whole pixels from time 0) that a picture of [t0, t1] at W columns starts at - its column x is this + x. The analysis points
+    sit on one grid from time 0 too, so a view moved by whole pixels has every column it shares with the picture before exactly as it was: only the strip
+    it uncovers is made. (The picture is then up to half a pixel from t0, which nothing can see.) */
+inline juce::int64 firstColumn (double t0, double t1, int W) { return (juce::int64) std::llround (t0 * (double) W / (t1 - t0)); }
+/** How far (seconds) a change in the sound reaches in the picture: a frame half a window either side of it hears it, and moves its points up to half a
+    window further - a whole window each way (and two pixels more). */
+inline double reach (double sr, double t0, double t1, int W, const PictureOptions& opt)
+{
+    return (double) fftSize (windowSigma (sr, t1 - t0, W, opt)) / sr + 2.0 * (t1 - t0) / (double) juce::jmax (1, W);
+}
+/** 3.38.0: a part of the picture: where the tracks start on the timeline t0 and t1 are on (they may be a stretch read for this picture), and the columns
+    to make. The columns made are exactly what the whole picture has there (the same analysis points, added in the same order), so a part made again -
+    round a fix, or the strip a drag uncovered - joins the rest without a seam. */
+struct RenderPart
+{
+    juce::int64 firstSample = 0;   // the timeline sample of the tracks' first sample
+    int c0 = 0, c1 = -1;           // [c0, c1) of the W columns (-1 = to the end); the others are left at -200 dB
+};
+
+/** The picture of [t0,t1] seconds (of the timeline: the tracks' first sample is part.firstSample on it) of every track, the loudest track at every point
+    (or all of them added, PictureOptions::sumTracks). Returns an invalid picture if cancelled. */
 inline DetailPicture render (const std::vector<std::vector<float>>& tracks, double sr, double t0, double t1, int W, int H, const PictureAxis& axis, const PictureOptions& opt,
-                             const std::function<bool()>& cancelled = {}, const std::function<void (float)>& progress = {})
+                             const std::function<bool()>& cancelled = {}, const std::function<void (float)>& progress = {}, const RenderPart& part = {})
 {
     DetailPicture pic; pic.w = W; pic.h = H; pic.t0 = t0; pic.t1 = t1; pic.axis = axis;
     if (tracks.empty() || W < 2 || H < 2 || t1 <= t0 || sr < 8000.0) return pic;
+    const int cFrom = juce::jlimit (0, W, part.c0), cTo = juce::jlimit (cFrom, W, part.c1 < 0 ? W : part.c1), Wp = cTo - cFrom;
+    pic.c0 = cFrom; pic.c1 = cTo;
+    if (Wp <= 0) return pic;
     const double span = t1 - t0;
     const double sigma = windowSigma (sr, span, W, opt);                         // samples
     const int N = fftSize (sigma);
@@ -80,7 +105,13 @@ inline DetailPicture render (const std::vector<std::vector<float>>& tracks, doub
     const bool reduced = span > opt.reduceAboveSec;
     const double framesWanted = juce::jmin (6000.0, (reduced ? 1.0 : 1.5) * (double) W);
     const double hop = juce::jmax (1.0, span * sr / framesWanted);
-    const long F = (long) std::ceil (span * sr / hop);
+    // 3.38.0: the columns are whole pixels of the timeline from time 0 and the analysis points every 'hop' samples from time 0: the frames are those whose
+    // points can land in the columns asked for (a point is moved at most half a window), so the columns of a part are exactly the whole picture's
+    const juce::int64 A0 = firstColumn (t0, t1, W);
+    const double colsPerSample = (double) W / (span * sr);
+    const double sLo = (double) (A0 + cFrom) / colsPerSample, sHi = (double) (A0 + cTo) / colsPerSample;
+    const juce::int64 mFrom = juce::jmax ((juce::int64) 0, (juce::int64) std::floor ((sLo - 0.5 * Nd - 2.0) / hop - 0.5) - 1);
+    const juce::int64 mTo = (juce::int64) std::ceil ((sHi + 0.5 * Nd + 2.0) / hop) + 1;
     const int kLo = juce::jmax (1, (int) std::floor (axis.fLo * Nd / sr) - 1), kHi = juce::jmin (N / 2 - 1, (int) std::ceil (axis.fHi * Nd / sr) + 1);
     if (kHi <= kLo) return pic;
     // the window
@@ -108,10 +139,8 @@ inline DetailPicture render (const std::vector<std::vector<float>>& tracks, doub
         rowOfBin[(size_t) k] = (float) ((1.0 - axis.posOf (hz)) * (double) (H - 1));
         rowSlope[(size_t) k] = dh > 0.0 ? (float) (-(p1 - p0) / dh * (double) (H - 1)) : 0.0f;
     }
-    const long startSample = (long) std::llround (t0 * sr);
-    const long totalSamples = [&] { long n = 0; for (auto& t : tracks) n = juce::jmax (n, (long) t.size()); return n; }();
     const dsp::FastFFT fft (N);                                                 // (3.37.0: pocketfft - the same picture, several times sooner)
-    const size_t npx = (size_t) W * (size_t) H;
+    const size_t npx = (size_t) Wp * (size_t) H;
     std::atomic<int> nextTrack { 0 }, doneTracks { 0 }; std::atomic<bool> stop { false };
     const int nT = workers::threadsFor ((int) tracks.size());                  // (3.37.0: every core it may use - it stopped at 8)
     std::vector<std::vector<float>> best ((size_t) nT);
@@ -128,10 +157,10 @@ inline DetailPicture render (const std::vector<std::vector<float>>& tracks, doub
             if (g2 <= 0.0f) { if (progress) progress ((float) (doneTracks.fetch_add (1) + 1) / (float) tracks.size()); continue; }
             const auto& x = tracks[(size_t) ti]; const long L = (long) x.size();
             std::fill (acc.begin(), acc.end(), 0.0f);
-            for (long m = 0; m < F; ++m)
+            for (juce::int64 m = mFrom; m < mTo; ++m)
             {
                 if ((m & 15) == 0 && cancelled && cancelled()) { stop = true; break; }
-                const long c = startSample + (long) std::llround ((double) m * hop + 0.5 * hop);
+                const long c = (long) ((juce::int64) std::llround (((double) m + 0.5) * hop) - part.firstSample);       // (in the tracks)
                 if (c + N / 2 < 0 || c - N / 2 >= L) continue;
                 double energy = 0.0;
                 for (int i = 0; i < N; ++i)
@@ -162,19 +191,19 @@ inline DetailPicture render (const std::vector<std::vector<float>>& tracks, doub
                         if (std::abs (dHz) > 2.0 * sr / Nd) continue;
                         tHat += dt; rowF += (double) rowSlope[(size_t) k] * dHz;
                     }
-                    const int col = (int) std::floor ((tHat / sr - t0) / span * (double) W);
+                    const juce::int64 col = (juce::int64) std::floor ((tHat + (double) part.firstSample) * colsPerSample) - A0 - cFrom;
                     const int row = (int) std::floor (rowF + 0.5);
-                    if (col < 0 || col >= W || row < 0 || row >= H) continue;
-                    acc[(size_t) row * (size_t) W + (size_t) col] += (float) P;
+                    if (col < 0 || col >= Wp || row < 0 || row >= H) continue;
+                    acc[(size_t) row * (size_t) Wp + (size_t) col] += (float) P;
                 }
             }
             if (stop.load()) break;
             for (int r = 0; r < H; ++r)
             {
                 const float sc = rowScale[(size_t) r] * g2;
-                float* a = acc.data() + (size_t) r * (size_t) W; float* d = mx.data() + (size_t) r * (size_t) W;
-                if (opt.sumTracks) for (int cx = 0; cx < W; ++cx) d[cx] += a[cx] * sc;
-                else               for (int cx = 0; cx < W; ++cx) { const float v = a[cx] * sc; if (v > d[cx]) d[cx] = v; }
+                float* a = acc.data() + (size_t) r * (size_t) Wp; float* d = mx.data() + (size_t) r * (size_t) Wp;
+                if (opt.sumTracks) for (int cx = 0; cx < Wp; ++cx) d[cx] += a[cx] * sc;
+                else               for (int cx = 0; cx < Wp; ++cx) { const float v = a[cx] * sc; if (v > d[cx]) d[cx] = v; }
             }
             if (progress) progress ((float) (doneTracks.fetch_add (1) + 1) / (float) tracks.size());
         }
@@ -184,15 +213,16 @@ inline DetailPicture render (const std::vector<std::vector<float>>& tracks, doub
     worker (0);
     for (auto& th : pool) th.join();
     if (stop.load()) return DetailPicture();
-    pic.db.assign (npx, -200.0f);
-    for (size_t i = 0; i < npx; ++i)
-    {
-        float v = 0.0f;
-        if (opt.sumTracks) { for (auto& b : best) if (! b.empty()) v += b[i]; }
-        else for (auto& b : best) if (! b.empty() && b[i] > v) v = b[i];
-        if (v > 1.0e-20f) pic.db[i] = 10.0f * std::log10 (v);
-    }
-    (void) totalSamples;
+    pic.db.assign ((size_t) W * (size_t) H, -200.0f);
+    for (int r = 0; r < H; ++r)
+        for (int cx = 0; cx < Wp; ++cx)
+        {
+            const size_t i = (size_t) r * (size_t) Wp + (size_t) cx;
+            float v = 0.0f;
+            if (opt.sumTracks) { for (auto& b : best) if (! b.empty()) v += b[i]; }
+            else for (auto& b : best) if (! b.empty() && b[i] > v) v = b[i];
+            if (v > 1.0e-20f) pic.db[(size_t) r * (size_t) W + (size_t) (cFrom + cx)] = 10.0f * std::log10 (v);
+        }
     return pic;
 }
 } // namespace picture

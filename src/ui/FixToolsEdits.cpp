@@ -1076,7 +1076,7 @@ private:
         const int f0 = juce::jmax (0, py->frameAt (t0 - 1.0)), f1 = juce::jmin (py->levels[0].frames, py->frameAt (t1 + 1.0) + 1);
         pyramidBusy = true;
         juce::Component::SafePointer<NoiseModeDialog> self (this);
-        runJob ([py, parts, f0, f1] (AudioJob& j) -> juce::String
+        runJob ([py, parts, f0, f1] (AudioJob& j) -> juce::String                  // (the quick picture: the frames of the stretch, and a second either side)
                 {
                     ReaderCache cache;
                     for (size_t i = 0; i < parts->parts.size(); ++i)
@@ -1087,11 +1087,12 @@ private:
                     py->settle (f0, f1);
                     return {};
                 },
-                [self] (const juce::String&)
+                [self, t0, t1] (const juce::String&)
                 {
                     if (self == nullptr) return;
                     self->pyramidBusy = false;
-                    self->sliceForView(); self->view.invalidateDetail();
+                    self->sliceForView();
+                    self->view.invalidateDetailRange (t0 - 0.05, t1 + 0.05);             // 3.38.0: the sharp picture only where the sound changed (and its cross-fades)
                     self->refreshControls();
                     self->followPending();                                   // (3.36.0: nudges / a level change pressed while the paste was being made)
                 });
@@ -1108,8 +1109,13 @@ private:
     /** The sharp picture of one request, every track read from the pieces as they are (on a thread of its own); nothing if it was called off. */
     static std::shared_ptr<DetailPicture> renderSharp (const std::shared_ptr<TrackParts>& parts, const PictureRequest& rq, double sr, const std::shared_ptr<std::atomic<bool>>& cancel)
     {
-        const double margin = 0.5;
-        const juce::int64 s0 = juce::jmax<juce::int64> (0, (juce::int64) std::llround ((rq.t0 - margin) * sr)), s1 = (juce::int64) std::llround ((rq.t1 + margin) * sr);
+        // 3.38.0: only the stretch the columns asked for need (all of them, or the part out of date): a whole analysis window and a little more either side
+        const int W = juce::jmax (1, rq.w); const double pxSec = (rq.t1 - rq.t0) / (double) W;
+        const int c0 = juce::jlimit (0, W, rq.c0), c1 = rq.c1 < 0 ? W : juce::jlimit (c0, W, rq.c1);
+        const juce::int64 A0 = picture::firstColumn (rq.t0, rq.t1, W);
+        const double margin = picture::reach (sr, rq.t0, rq.t1, W, rq.opt) + 4.0 * pxSec + 0.05;
+        const juce::int64 s0 = juce::jmax<juce::int64> (0, (juce::int64) std::floor (((double) (A0 + c0) * pxSec - margin) * sr));
+        const juce::int64 s1 = juce::jmax (s0, (juce::int64) std::ceil (((double) (A0 + c1) * pxSec + margin) * sr));
         std::vector<std::vector<float>> tracks (parts->parts.size());
         ReaderCache cache;
         for (size_t i = 0; i < parts->parts.size(); ++i)
@@ -1118,9 +1124,9 @@ private:
             tracks[i].assign ((size_t) juce::jmax<juce::int64> (0, s1 - s0), 0.0f);
             readTrackMix (parts->parts[i], s0, s1 - s0, tracks[i].data(), &cache);
         }
-        const double off = (double) s0 / sr;
-        auto pic = picture::render (tracks, sr, rq.t0 - off, rq.t1 - off, rq.w, rq.h, rq.axis, rq.opt, [cancel] { return cancel->load(); });
-        pic.id = rq.id; pic.t0 = rq.t0; pic.t1 = rq.t1;
+        picture::RenderPart part; part.firstSample = s0; part.c0 = rq.c0; part.c1 = rq.c1;
+        auto pic = picture::render (tracks, sr, rq.t0, rq.t1, rq.w, rq.h, rq.axis, rq.opt, [cancel] { return cancel->load(); }, {}, part);
+        pic.id = rq.id;
         if (cancel->load()) return nullptr;
         return std::make_shared<DetailPicture> (std::move (pic));
     }
@@ -1163,23 +1169,23 @@ private:
         auto cancel = std::make_shared<std::atomic<bool>> (false); aheadCancel = cancel;
         auto busy = std::make_shared<std::atomic<bool>> (true); aheadBusy = busy;
         ahead.reset(); aheadRq = rq; aheadMaking = audioGen;
-        auto parts = cur; const double sr = rate; const int gen = audioGen; juce::Component::SafePointer<NoiseModeDialog> self (this);
-        std::thread ([parts, rq, sr, cancel, busy, gen, self]
+        auto parts = cur; const double sr = rate; juce::Component::SafePointer<NoiseModeDialog> self (this);
+        std::thread ([parts, rq, sr, cancel, busy, self]
         {
             std::shared_ptr<DetailPicture> p;
             try { p = renderSharp (parts, rq, sr, cancel); } catch (...) {}
-            juce::MessageManager::callAsync ([self, p, gen, rq, busy]
+            juce::MessageManager::callAsync ([self, p, rq, busy]
             {
                 busy->store (false);                                             // (here, so the next is not begun before this one is in place)
-                if (self != nullptr) self->aheadDone (p, gen, rq);
+                if (self != nullptr) self->aheadDone (p, rq);
             });
         }).detach();
     }
-    void aheadDone (const std::shared_ptr<DetailPicture>& p, int gen, const PictureRequest& rq)
+    void aheadDone (const std::shared_ptr<DetailPicture>& p, const PictureRequest& rq)
     {
         const bool adopt = adoptAhead; adoptAhead = false;
-        const bool good = p != nullptr && gen == audioGen && sameRequest (aheadRq, rq);       // (not called off, and no fix has changed the audio meanwhile)
-        if (good) { ahead = p; aheadGen = gen; aheadOpt = rq.opt; }
+        const bool good = p != nullptr && aheadMaking == audioGen && sameRequest (aheadRq, rq);   // (not called off, and no fix it hears has changed the audio meanwhile)
+        if (good) { ahead = p; aheadGen = audioGen; aheadOpt = rq.opt; }
         if (adopt)                                                               // (the page in view is waiting for it)
         {
             if (good && view.takeReadyDetail (*p, rq.opt)) ahead.reset();
@@ -1198,10 +1204,19 @@ private:
         else if (aheadBusy != nullptr && aheadBusy->load() && aheadMaking == audioGen && sameRequest (aheadRq, view.requestForPage (view.visT0())))
             adoptAhead = true;                                                   // (not ready yet: it carries on, and is shown when it is)
     }
-    /** The audio changed (a fix went in or came out): a page made ahead shows what it was, so it goes. */
-    void audioChanged()
+    /** The audio changed between t0 and t1 seconds (a fix went in or came out): a page made ahead that the change reaches shows what it was, so it goes.
+        3.38.0: one it does not reach (a fix on the page in view, away from its end) stays, and one being made carries on. */
+    void audioChanged (double t0, double t1)
     {
-        ++audioGen; ahead.reset(); adoptAhead = false;
+        const int was = audioGen++;
+        const double r = aheadRq.w > 0 ? picture::reach (rate, aheadRq.t0, aheadRq.t1, aheadRq.w, aheadRq.opt) + 0.05 : 0.0;
+        if (aheadRq.w > 0 && (t1 + r < aheadRq.t0 || t0 - r > aheadRq.t1))
+        {
+            if (ahead != nullptr && aheadGen == was) aheadGen = audioGen;
+            if (aheadMaking == was) aheadMaking = audioGen;
+            return;
+        }
+        ahead.reset(); adoptAhead = false;
         if (aheadCancel != nullptr) aheadCancel->store (true);
     }
     void openSpectroSettings()
@@ -1283,7 +1298,7 @@ private:
                         self->status.setText ("The fix could not be put into the edit (" + gApplyWhy + ").", juce::dontSendNotification); self->refreshControls(); return;
                     }
                     self->steps.push_back (std::move (st));
-                    self->audioChanged();                                        // 3.36.0
+                    self->audioChanged (t0, t1);                                 // 3.36.0
                     self->app.project.changed();
                     self->cur = std::make_shared<TrackParts> (buildTrackParts (*ed, 0, self->length, self->only));
                     self->restartIfPlaying();
@@ -1424,7 +1439,7 @@ private:
         auto st = std::move (steps.back()); steps.pop_back();
         e->regions = st.before;
         for (auto& rj : st.jobs) for (auto& r : rj.results) r.file.deleteFile();
-        audioChanged();                                                          // 3.36.0
+        audioChanged (st.t0, st.t1);                                             // 3.36.0
         app.project.changed();
         cur = std::make_shared<TrackParts> (buildTrackParts (*e, 0, length, only));
         if (rtParts != nullptr)                                                 // the room-tone box marked on the sound of this fix: its files are gone, so the sound as it is now

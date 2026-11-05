@@ -317,8 +317,16 @@ public:
         k.gains = ed.seeGainsLin(); k.src = ed.spec.get();
         return k;
     }
+    /** 3.38.0: the same view but for its time (moved along, the same span): the picture's shared columns can move with it. */
+    static bool sameButTime (const SharpKey& a, const SharpKey& b)
+    {
+        return std::abs ((a.t1 - a.t0) - (b.t1 - b.t0)) <= 1.0e-9 * (b.t1 - b.t0) && a.m0 == b.m0 && a.m1 == b.m1 && a.a4 == b.a4 && a.w == b.w && a.h == b.h
+            && a.detail == b.detail && a.gains == b.gains && a.src == b.src;
+    }
+    void carrySharp (const SharpKey& key);
     void startSharp();
-    td::DetailPicture sharp; SharpKey sharpKey, wantKey; bool haveSharp = false;
+    td::DetailPicture sharp, sharpRaw; SharpKey sharpKey, wantKey; bool haveSharp = false;     // (sharpRaw: before softenSharp - 3.38.0, so a strip can join it)
+    int staleC0 = 0, staleC1 = 0;                // 3.38.0: the sharp picture's columns still to make (the quick picture shows there meanwhile)
     std::shared_ptr<std::atomic<bool>> sharpCancel;
     struct SharpTimer : juce::Timer { View* v = nullptr; void timerCallback() override { stopTimer(); if (v != nullptr) v->startSharp(); } } sharpTimer;
 
@@ -340,7 +348,10 @@ void ReHarmoniserEditor::View::rebuildImage (juce::Rectangle<int> pl)
     const float add = (float) (gainDb / 70.0 * 255.0);
     // 3.37.0: the sharp picture of exactly this view, when it is ready (on the same scale as the quick one: 0..255 over the 70 dB below its top)
     const auto key = keyNow (pl);
-    if (haveSharp && sharpKey == key && sharp.valid() && sharp.w == W && sharp.h == H)
+    if (haveSharp && ! (sharpKey == key) && sameButTime (sharpKey, key)) carrySharp (key);      // 3.38.0: moved along - the shared columns go with it
+    const bool useSharp = haveSharp && sharpKey == key && sharp.valid() && sharp.w == W && sharp.h == H;
+    const bool complete = useSharp && staleC1 <= staleC0;
+    if (useSharp)
     {
         const float lo = (float) (ed.refDb - 70.0);
         for (int y = 0; y < H; ++y)
@@ -348,13 +359,14 @@ void ReHarmoniserEditor::View::rebuildImage (juce::Rectangle<int> pl)
             const float* row = sharp.db.data() + (size_t) y * (size_t) W;
             for (int x = 0; x < W; ++x)
             {
+                if (x >= staleC0 && x < staleC1) continue;                         // (still to make: the quick picture, below)
                 const float v = (row[x] + kSharpLift - lo) / 70.0f * 255.0f;
                 bd.setPixelColour (x, y, lut[(size_t) juce::jlimit (0, 255, (int) ((juce::jlimit (0.0f, 255.0f, v) - 128.0f) * (float) contrast + 128.0f + add))]);
             }
         }
-        return;
+        if (complete) return;
     }
-    if (! (wantKey == key)) { wantKey = key; sharpTimer.startTimer (180); }        // (asked for once the view has stopped moving)
+    if (! complete && ! (wantKey == key)) { wantKey = key; sharpTimer.startTimer (180); }        // (asked for once the view has stopped moving)
     std::vector<int> b0 ((size_t) H); std::vector<float> fr ((size_t) H);
     for (int y = 0; y < H; ++y)
     {
@@ -365,6 +377,7 @@ void ReHarmoniserEditor::View::rebuildImage (juce::Rectangle<int> pl)
     }
     for (int x = 0; x < W; ++x)
     {
+        if (useSharp && ! (x >= staleC0 && x < staleC1)) continue;                 // (3.38.0: the sharp picture is there)
         const double t = vt0 + ((double) x + 0.5) / (double) W * (vt1 - vt0);
         const size_t f = (size_t) juce::jlimit (0, (int) mx.nf - 1, (int) (t / mx.hopSec));
         const uint8_t* col = mx.v.data() + f * mx.nb;
@@ -422,11 +435,39 @@ static void softenSharp (td::DetailPicture& p, double binHz, double sigmaY, doub
     }
 }
 
+/** 3.38.0: the view moved along (the same span): the picture's columns it shares with the new view move with it (exactly as they would be made again -
+    td::picture::firstColumn), and only the strip it uncovers is made (startSharp). */
+void ReHarmoniserEditor::View::carrySharp (const SharpKey& key)
+{
+    const int W = sharp.w, H = sharp.h;
+    const juce::int64 k = td::picture::firstColumn (key.t0, key.t1, W) - td::picture::firstColumn (sharpKey.t0, sharpKey.t1, W);
+    if (k <= -W || k >= W || ! sharpRaw.valid()) { haveSharp = false; return; }       // (nothing shared: made again)
+    if (k != 0)
+    {
+        const int n = W - (int) std::abs (k);
+        for (auto* p : { &sharp, &sharpRaw })
+            for (int r = 0; r < H; ++r)
+            {
+                float* row = p->db.data() + (size_t) r * (size_t) W;
+                if (k > 0) std::copy (row + k, row + W, row); else std::copy_backward (row, row + n, row + W);
+            }
+        if (staleC1 > staleC0) { staleC0 = juce::jlimit (0, W, staleC0 - (int) k); staleC1 = juce::jlimit (0, W, staleC1 - (int) k); }
+        const int a = k > 0 ? n : 0, b = k > 0 ? W : (int) -k;
+        if (staleC1 <= staleC0) { staleC0 = a; staleC1 = b; } else { staleC0 = juce::jmin (staleC0, a); staleC1 = juce::jmax (staleC1, b); }
+    }
+    sharp.t0 = sharpRaw.t0 = key.t0; sharp.t1 = sharpRaw.t1 = key.t1;
+    sharpKey = key;
+}
+
 void ReHarmoniserEditor::View::startSharp()
 {
     auto sp = ed.spec;
     const auto key = wantKey;
     if (sp == nullptr || sp->low.empty() || sp->sr2 < 8000 || key.w < 2 || key.h < 2 || key.src != sp.get()) return;
+    // 3.38.0: only the strip a move uncovered, when the rest of the picture is this view's: it joins the picture before (made without the softening)
+    const bool part = haveSharp && sharpKey == key && sharpRaw.valid() && staleC1 > staleC0;
+    auto base = part ? std::make_shared<td::DetailPicture> (sharpRaw) : nullptr;
+    td::picture::RenderPart rp; if (part) { rp.c0 = staleC0; rp.c1 = staleC1; }
     if (sharpCancel != nullptr) sharpCancel->store (true);
     auto cancel = std::make_shared<std::atomic<bool>> (false); sharpCancel = cancel;
     td::PictureAxis ax; ax.fLo = midiHz (key.m0, key.a4); ax.fHi = midiHz (key.m1, key.a4); ax.warp = 1.0; ax.mel = false;   // (even semitones, as this picture is)
@@ -434,19 +475,29 @@ void ReHarmoniserEditor::View::startSharp()
     opt.detail = key.detail == 0 ? 0.0 : (key.detail == 2 ? 1.0 : 0.5);              // the Detail box: Pitch = a longer window, Time = a shorter one
     for (double g : key.gains) opt.trackGain.push_back ((float) g);
     juce::Component::SafePointer<View> self (this);
-    std::thread ([sp, key, ax, opt, cancel, self]
+    std::thread ([sp, key, ax, opt, cancel, self, base, rp]
     {
         try                                                                      // (nothing may escape a thread: out of memory leaves the quick picture)
         {
-            auto pic = std::make_shared<td::DetailPicture> (td::picture::render (sp->low, (double) sp->sr2, key.t0, key.t1, key.w, key.h, ax, opt, [cancel] { return cancel->load(); }));
-            if (cancel->load() || ! pic->valid()) return;
+            auto raw = std::make_shared<td::DetailPicture> (td::picture::render (sp->low, (double) sp->sr2, key.t0, key.t1, key.w, key.h, ax, opt, [cancel] { return cancel->load(); }, {}, rp));
+            if (cancel->load() || ! raw->valid()) return;
+            if (base != nullptr)                                                 // (the strip into the picture there was)
+            {
+                const int c0 = raw->c0, c1 = raw->c1 < 0 ? raw->w : raw->c1;
+                for (int r = 0; r < raw->h; ++r)
+                    std::copy (raw->db.begin() + (std::ptrdiff_t) ((size_t) r * (size_t) raw->w + (size_t) c0), raw->db.begin() + (std::ptrdiff_t) ((size_t) r * (size_t) raw->w + (size_t) c1),
+                               base->db.begin() + (std::ptrdiff_t) ((size_t) r * (size_t) raw->w + (size_t) c0));
+                raw = base; raw->c0 = 0; raw->c1 = -1;
+            }
+            auto pic = std::make_shared<td::DetailPicture> (*raw);
             const double binHz = (double) sp->sr2 / (double) td::picture::fftSize (td::picture::windowSigma ((double) sp->sr2, key.t1 - key.t0, key.w, opt));
             softenSharp (*pic, binHz, kSharpSoftenY, kSharpSoftenX);
             if (cancel->load()) return;
-            juce::MessageManager::callAsync ([self, pic, key]
+            juce::MessageManager::callAsync ([self, pic, raw, key]
             {
                 if (self == nullptr || ! (self->wantKey == key)) return;                // (the view has moved on since)
-                self->sharp = std::move (*pic); self->sharpKey = key; self->haveSharp = true; self->dirty = true; self->repaint();
+                self->sharp = std::move (*pic); self->sharpRaw = std::move (*raw); self->sharpKey = key; self->haveSharp = true;
+                self->staleC0 = self->staleC1 = 0; self->dirty = true; self->repaint();
             });
         }
         catch (...) {}

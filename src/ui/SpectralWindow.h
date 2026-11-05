@@ -184,7 +184,8 @@ inline juce::String specTime (double t, int decimals)
     return s;
 }
 
-struct PictureRequest { juce::int64 id = 0; double t0 = 0.0, t1 = 1.0; int w = 0, h = 0; PictureAxis axis; PictureOptions opt; };
+struct PictureRequest { juce::int64 id = 0; double t0 = 0.0, t1 = 1.0; int w = 0, h = 0; PictureAxis axis; PictureOptions opt;
+                        int c0 = 0, c1 = -1; };      // 3.38.0: only these columns are wanted (the rest of the picture is up to date): picture::RenderPart
 
 class SpectrogramView : public juce::Component
 {
@@ -193,13 +194,17 @@ public:
     std::function<void (const PictureRequest&)> onNeedDetail;     // asks for the sharp picture of what is in view (made on another thread, then given back with setDetail)
     std::function<void (const juce::String&)> onNote;         // a line for the status line (colour roll, scale, view)
 
-    void setData (MergedSpectrogram s, double seconds, bool keepSelection = false)
+    void setData (MergedSpectrogram s, double seconds, bool keepSelection = false) { setData (std::move (s), seconds, keepSelection, 0.0, -1.0); }
+    /** 3.38.0: the sound changed only between changedFrom and changedTo (seconds; a fix, or Undo): the sharp picture is kept, and made again only where the
+        change reaches it. (changedTo < changedFrom: anywhere.) */
+    void setData (MergedSpectrogram s, double seconds, bool keepSelection, double changedFrom, double changedTo)
     {
         const bool same = spec.frames > 0 && std::abs (seconds - duration) < 1.0e-9;
         spec = std::move (s); duration = juce::jmax (0.001, seconds); dT0 = 0.0; dT1 = duration;
         if (! keepSelection) { const bool hadH = harmBase >= 0; clearMarks(); rects.clear(); softParts.clear(); hasSel = false; if (hadH && onHarmonics) onHarmonics(); }
         if (! same) resetView();
-        detailStale = true; scheduleDetail();
+        if (same && keepSelection && changedTo >= changedFrom) invalidateDetailRange (changedFrom, changedTo);
+        else { detailStale = true; ++detailGen; scheduleDetail(); }
         dirty = true; repaint();
     }
     /** A quick picture that covers only part of the time (Noise mode: a slice of the whole edit's pyramid for what is in view): its first frame
@@ -213,12 +218,41 @@ public:
     }
     std::function<void()> onView;                                  // the part of the time in view changed (zoom, pan, reset)
     /** The sound changed under the picture: the sharp picture is made again. */
-    void invalidateDetail() { detailStale = true; dirty = true; repaint(); scheduleDetail(); }
-    /** The sharp picture asked for with onNeedDetail (ignored if the view has moved on and asked again since). */
+    void invalidateDetail() { detailStale = true; ++detailGen; dirty = true; repaint(); scheduleDetail(); }
+    /** 3.38.0: the sound changed only between a and b (seconds): the sharp picture is made again only as far as the change reaches into it (its analysis
+        window either side - about a third of a second at most); the rest stays sharp, and the quick picture shows there until it is done. */
+    void invalidateDetailRange (double a, double b)
+    {
+        if (! ss.sharp) return;
+        if (! detailCoversView()) { invalidateDetail(); return; }
+        const double r = picture::reach (spec.sampleRate, detail.t0, detail.t1, detail.w, detailOpt);
+        const double pxPerSec = (double) detail.w / (detail.t1 - detail.t0);
+        const juce::int64 A0 = picture::firstColumn (detail.t0, detail.t1, detail.w);
+        const juce::int64 ca = (juce::int64) std::floor ((a - r) * pxPerSec) - A0 - 1, cb = (juce::int64) std::ceil ((b + r) * pxPerSec) - A0 + 2;
+        const int c0 = (int) juce::jlimit ((juce::int64) 0, (juce::int64) detail.w, ca), c1 = (int) juce::jlimit ((juce::int64) 0, (juce::int64) detail.w, cb);
+        if (c1 <= c0) return;                                                      // (the change is out of sight: nothing in view changes)
+        ++detailGen;                                                               // (a picture being made now hears the sound as it was)
+        markStale (c0, c1);
+        dirty = true; repaint(); scheduleDetail();
+    }
+    /** The sharp picture asked for with onNeedDetail (ignored if the view has moved on, or the sound changed, since it was asked for). 3.38.0: a part
+        (DetailPicture::whole() false) goes into the picture there is, in its columns. */
     void setDetail (DetailPicture p)
     {
-        if (p.id != detailSeq || ! p.valid()) return;
-        detail = std::move (p); detailStale = false; detailOpt = lastOpt; dirty = true; repaint();
+        if (p.id != detailSeq || reqGen != detailGen || ! p.valid()) return;
+        if (! p.whole())
+        {
+            if (! detail.valid() || detailStale || detail.w != p.w || detail.h != p.h || std::abs (detail.t0 - p.t0) > 1.0e-9 || std::abs (detail.t1 - p.t1) > 1.0e-9
+                || ! detail.axis.same (p.axis)) return;
+            const int c0 = juce::jlimit (0, p.w, p.c0), c1 = juce::jlimit (c0, p.w, p.c1);
+            for (int r = 0; r < p.h; ++r)
+                std::copy (p.db.begin() + (std::ptrdiff_t) ((size_t) r * (size_t) p.w + (size_t) c0), p.db.begin() + (std::ptrdiff_t) ((size_t) r * (size_t) p.w + (size_t) c1),
+                           detail.db.begin() + (std::ptrdiff_t) ((size_t) r * (size_t) p.w + (size_t) c0));
+            if (staleC0 >= c0 && staleC1 <= c1) staleC0 = staleC1 = 0;
+            dirty = true; repaint();
+            return;
+        }
+        detail = std::move (p); detailStale = false; staleC0 = staleC1 = 0; detailOpt = lastOpt; dirty = true; repaint();
     }
     /** 3.36.0: the sharp-picture request for the page that would show from t0 - this page's width, and the picture's size, pitch scale and settings as they are
         now (Noise mode makes the next page's ahead of time while it plays, so the page turns straight to its sharp picture). w = 0 when there is none to make. */
@@ -242,17 +276,19 @@ public:
         if (rq.w == 0 || ! p.valid() || p.w != rq.w || p.h != rq.h || std::abs (p.t0 - rq.t0) > 1.0e-9 || std::abs (p.t1 - rq.t1) > 1.0e-9 || ! p.axis.same (rq.axis)) return false;
         if (opt.reassign != rq.opt.reassign || std::abs (opt.detail - rq.opt.detail) > 1.0e-9 || std::abs (opt.reduceAboveSec - rq.opt.reduceAboveSec) > 1.0e-9) return false;
         debounce.stopTimer();
-        p.id = ++detailSeq;                                                        // (a sharp picture still being made for this page is not wanted now)
-        detail = std::move (p); detailStale = false; detailOpt = opt; lastOpt = opt; dirty = true; repaint();
+        p.id = ++detailSeq; reqGen = detailGen;                                    // (a sharp picture still being made for this page is not wanted now)
+        detail = std::move (p); detailStale = false; staleC0 = staleC1 = 0; detailOpt = opt; lastOpt = opt; dirty = true; repaint();
         return true;
     }
     /** 3.36.0: whether the sharp picture of the view as it is now is showing (not still being made, nor the quick picture standing in for it). */
-    bool detailShowing() const
+    bool detailShowing() const { return detailCoversView() && staleC1 <= staleC0; }
+    /** 3.38.0: whether the sharp picture is the view's as it is now (some of its columns may be out of date: staleC0 .. staleC1). */
+    bool detailCoversView() const
     {
         return ss.sharp && detail.valid() && ! detailStale && std::abs (detail.t0 - vt0) < 1.0e-6 && std::abs (detail.t1 - vt1) < 1.0e-6 && detail.axis.same (axisNow());
     }
     const SpectroSettings& settings() const { return ss; }
-    void setSettings (const SpectroSettings& n) { ss = n; buildLut(); detailStale = ss.sharp ? true : detailStale; dirty = true; repaint(); scheduleDetail(); }
+    void setSettings (const SpectroSettings& n) { ss = n; buildLut(); detailStale = ss.sharp ? true : detailStale; ++detailGen; dirty = true; repaint(); scheduleDetail(); }
     void resized() override { scheduleDetail(); }
     bool hasSelection() const { return hasSel; }
     // ---- 3.33.0: the selection tools - Rectangle (S: any box, as before), Time (T: everything, every pitch, over the time dragged) and Brush (B: a circle painted
@@ -1292,8 +1328,12 @@ private:
         PictureRequest rq; rq.t0 = vt0; rq.t1 = vt1; rq.w = pl.getWidth(); rq.h = pl.getHeight(); rq.axis = axisNow();
         rq.opt.reassign = ss.reassign; rq.opt.detail = ss.detail; rq.opt.reduceAboveSec = ss.reduceAbove;
         const bool optSame = detailOpt.reassign == rq.opt.reassign && std::abs (detailOpt.detail - rq.opt.detail) < 1.0e-9 && std::abs (detailOpt.reduceAboveSec - rq.opt.reduceAboveSec) < 1.0e-9;
-        if (detail.valid() && ! detailStale && optSame && detail.w == rq.w && detail.h == rq.h && std::abs (detail.t0 - rq.t0) < 1.0e-9 && std::abs (detail.t1 - rq.t1) < 1.0e-9 && detail.axis.same (rq.axis)) return;
-        rq.id = ++detailSeq; lastOpt = rq.opt;
+        if (detail.valid() && ! detailStale && optSame && detail.w == rq.w && detail.h == rq.h && std::abs (detail.t0 - rq.t0) < 1.0e-9 && std::abs (detail.t1 - rq.t1) < 1.0e-9 && detail.axis.same (rq.axis))
+        {
+            if (staleC1 <= staleC0) return;                                        // (all there)
+            rq.c0 = staleC0; rq.c1 = staleC1;                                      // 3.38.0: only the columns out of date
+        }
+        rq.id = ++detailSeq; reqGen = detailGen; lastOpt = rq.opt;
         onNeedDetail (rq);
     }
     struct Debounce : juce::Timer { SpectrogramView* owner = nullptr; void timerCallback() override { stopTimer(); if (owner != nullptr) owner->requestDetailNow(); } } debounce;
@@ -1306,7 +1346,41 @@ private:
     {
         span = juce::jlimit (juce::jmin (0.05, duration), duration, span);
         t0 = juce::jlimit (0.0, juce::jmax (0.0, duration - span), t0);
-        vt0 = t0; vt1 = t0 + span; dirty = true; repaint(); scheduleDetail(); if (onView) onView();
+        const bool covered = detailCoversView(); const double o0 = vt0, o1 = vt1;
+        vt0 = t0; vt1 = t0 + span;
+        ++detailGen;                                                               // (a picture being made is for the view before)
+        if (covered) carryDetail (o0, o1);
+        dirty = true; repaint(); scheduleDetail(); if (onView) onView();
+    }
+    /** 3.38.0: the view moved along without changing its span (a drag, a scroll, the playhead's page): the sharp picture's columns the two views share move
+        with it - exactly as they would be made again (picture::firstColumn) - and only the strip it uncovers is made. Zoomed: it is made again. */
+    void carryDetail (double o0, double o1)
+    {
+        const double span = vt1 - vt0, oldSpan = o1 - o0;
+        if (std::abs (span - oldSpan) > 1.0e-9 * oldSpan) return;
+        const int W = detail.w, H = detail.h;
+        const juce::int64 k = picture::firstColumn (vt0, vt1, W) - picture::firstColumn (o0, o1, W);
+        if (k <= -W || k >= W) return;                                             // (nothing shared: made again)
+        if (k != 0)
+        {
+            const int n = W - (int) std::abs (k);
+            for (int r = 0; r < H; ++r)
+            {
+                float* row = detail.db.data() + (size_t) r * (size_t) W;
+                if (k > 0) std::copy (row + k, row + W, row);
+                else       std::copy_backward (row, row + n, row + W);
+            }
+            int s0 = staleC0, s1 = staleC1;
+            if (s1 > s0) { s0 = juce::jlimit (0, W, s0 - (int) k); s1 = juce::jlimit (0, W, s1 - (int) k); }
+            staleC0 = s0; staleC1 = s1;
+            if (k > 0) markStale (n, W); else markStale (0, (int) -k);
+        }
+        detail.t0 = vt0; detail.t1 = vt1;
+    }
+    void markStale (int a, int b)
+    {
+        if (b <= a) return;
+        if (staleC1 <= staleC0) { staleC0 = a; staleC1 = b; } else { staleC0 = juce::jmin (staleC0, a); staleC1 = juce::jmax (staleC1, b); }
     }
     void setFreqWindow (double logLo, double logSpan)
     {
@@ -1386,7 +1460,7 @@ private:
             {
                 const double t = vt0 + ((double) x + 0.5) / (double) W * (vt1 - vt0);
                 const int col = (int) std::floor ((t - detail.t0) / dSpan * (double) detail.w);
-                if (col < 0 || col >= detail.w) continue;
+                if (col < 0 || col >= detail.w || (col >= staleC0 && col < staleC1)) continue;        // (3.38.0: out of date there - the quick picture shows)
                 for (int y = 0; y < H; ++y)
                 {
                     const int row = drow[(size_t) y];
@@ -1402,6 +1476,8 @@ private:
     int preset = 0; double rollPos = 0.0, rollStart = 0.0; Mode mode = Mode::none; double panT0 = 0.0, panF = kMinHz, panF1 = 20000.0;
     std::array<juce::Colour, 256> lut, lutD;
     SpectroSettings ss; bool mel = true; DetailPicture detail; bool detailStale = true; juce::int64 detailSeq = 0; PictureOptions detailOpt, lastOpt;
+    int staleC0 = 0, staleC1 = 0;                                       // 3.38.0: the sharp picture's columns out of date (made again soon; the quick picture shows there)
+    juce::int64 detailGen = 0, reqGen = -1;                             // 3.38.0: bumped at every change of the sound or the view; a picture asked for before is not taken
     bool hasSel = false; juce::Point<double> a, b; double playT = -1.0, cueT = -1.0;
     bool showSurround = false; double surroundPct = 100.0; int surroundDir = 0; double surroundAfter = 0.5;
 };
@@ -2502,13 +2578,17 @@ private:
                     if (self == nullptr) return;
                     if (err.isNotEmpty()) { self->nextNote.clear(); self->pendingNudge = 0; self->pendingLevel = false; self->status.setText (err, juce::dontSendNotification); self->refreshControls(); return; }
                     // the fix is kept straight away (it stays temporary until "Write back to file"); Undo takes it off again - the whole group at once
-                    self->history.push_back ({ self->origTracks, self->origSpec, (int) out->ops.size() });
+                    double from = 1.0e30, to = -1.0e30;                                  // 3.38.0: where the sound changed (the boxes, feathering included, and a fix's cross-fades)
+                    for (auto& o : out->ops) { from = juce::jmin (from, (double) o.t0 / self->ctx.rate); to = juce::jmax (to, (double) o.t1 / self->ctx.rate); }
+                    from -= 0.05; to += 0.05;
+                    const bool shownCurrent = self->showingAfter || self->history.empty();      // (the picture showed the sound this fix was made on - not Compare's "before")
+                    self->history.push_back ({ self->origTracks, self->origSpec, (int) out->ops.size(), from, to });
                     self->pvSpec = out->ops.back().spec;                                 // (with the lost samples found on all the tracks)
                     for (auto& o : out->ops) self->committed.push_back (o);
                     const auto& fixRef = out->ops.back().spec;
                     self->origTracks = out->tracks;
                     self->origSpec = std::make_shared<MergedSpectrogram> (out->spec);
-                    self->view.setData (std::move (out->spec), self->seconds(), true);
+                    self->view.setData (std::move (out->spec), self->seconds(), true, shownCurrent ? from : 0.0, shownCurrent ? to : -1.0);   // (else: where the last fix was too)
                     self->showingAfter = true;
                     self->dropPendingPrepared();
                     self->changedWhileRunning = false;
@@ -2596,7 +2676,8 @@ private:
         {
             try                                                                  // (nothing may escape a thread: out of memory leaves the quick picture, nothing worse)
             {
-                auto pic = picture::render (*tr, rate, rq.t0, rq.t1, rq.w, rq.h, rq.axis, rq.opt, [cancel] { return cancel->load(); });
+                picture::RenderPart part; part.c0 = rq.c0; part.c1 = rq.c1;             // (3.38.0: a part, when only some columns are out of date)
+                auto pic = picture::render (*tr, rate, rq.t0, rq.t1, rq.w, rq.h, rq.axis, rq.opt, [cancel] { return cancel->load(); }, {}, part);
                 pic.id = rq.id;
                 if (cancel->load()) return;
                 juce::MessageManager::callAsync ([self, p = std::make_shared<DetailPicture> (std::move (pic))] { if (self != nullptr) self->view.setDetail (std::move (*p)); });
@@ -2609,7 +2690,7 @@ private:
     {
         if (history.empty() || origSpec == nullptr || history.back().spec == nullptr) return;
         showingAfter = ! showingAfter;
-        view.setData (showingAfter ? *origSpec : *history.back().spec, seconds(), true);
+        view.setData (showingAfter ? *origSpec : *history.back().spec, seconds(), true, history.back().from, history.back().to);
         status.setText (showingAfter ? "Showing the fixed sound." : "Showing the sound before the last fix.", juce::dontSendNotification);
         refreshControls();
     }
@@ -2618,12 +2699,14 @@ private:
     {
         if (history.empty() || running) return;
         if (ctx.stop) ctx.stop();
-        origTracks = history.back().tracks; origSpec = history.back().spec; const int n = juce::jmax (1, history.back().ops); history.pop_back();
+        origTracks = history.back().tracks; origSpec = history.back().spec; const int n = juce::jmax (1, history.back().ops);
+        const double from = showingAfter ? history.back().from : 0.0, to = showingAfter ? history.back().to : -1.0;     // (showing the sound before it already: anywhere)
+        history.pop_back();
         for (int k = 0; k < n && ! committed.empty(); ++k) committed.pop_back();
         dropPendingPrepared();
         showingAfter = true;
         if (committed.empty()) hearBox.setSelectedId (1, juce::dontSendNotification);
-        view.setData (*origSpec, seconds(), true);
+        view.setData (*origSpec, seconds(), true, from, to);
         status.setText (committed.empty() ? "Undone: back to the original. Nothing is changed." : "Last fix undone (" + juce::String ((int) history.size()) + " fix(es) left).", juce::dontSendNotification);
         refreshControls();
     }
@@ -2727,7 +2810,8 @@ private:
     juce::TextButton previewBtn { "ReTouch [R]" }, declickBtn { "De-click [D]" }, compareBtn { "Show before" }, revertBtn { "Undo" }, finishBtn { "Write back to file" }, close { "Cancel" };
     juce::TextButton gainBtn { "Gain [G]" };
     bool gainNext = false; double gainNextDb = 0.0;                // the next fix is a gain change of the box (set by the Gain pop-up)
-    struct Step { std::shared_ptr<std::vector<std::vector<float>>> tracks; std::shared_ptr<MergedSpectrogram> spec; int ops = 1; };     // ops: how many changes the step made (3.29.0: one per rectangle of the selection)
+    struct Step { std::shared_ptr<std::vector<std::vector<float>>> tracks; std::shared_ptr<MergedSpectrogram> spec; int ops = 1;      // ops: how many changes the step made (3.29.0: one per rectangle of the selection)
+                  double from = 0.0, to = -1.0; };      // 3.38.0: the seconds its sound changed in (to < from: anywhere), so the sharp picture is made again only there
     std::vector<Step> history;                                     // the state before each fix, for Undo
     bool scanned = false, showingAfter = false;
     std::shared_ptr<std::vector<std::vector<float>>> origTracks;

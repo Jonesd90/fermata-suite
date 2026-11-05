@@ -1977,3 +1977,40 @@ fermata moved to a new repository that also holds its companion, fermata:Live (t
 - Checked on Linux (the Prelude test edit, marks at 30 and 40 s, H: the two stream windows): the sharp picture replaces the quick one; lines crisp, attacks
   continuous after softenSharp; the ReHarmoniSer window code compiles clean under -Wall -Wextra (it is not in syntax-check-ui's list).
 
+## 3.38.0: the sharp picture made in parts - round a fix, and the strip a drag uncovers (built in the fermata:Live conversation, 5 November 2026)
+- Asked for: "if I make a 1/4 second adjustment to some audio, in a window that spans 10 seconds, it seems like the spectral viewer rewrites the entire
+  window ... if I drag forwards 10 seconds ... surely it could just move what was the second 10 seconds to become the new first 10 seconds and just redraw
+  the new second half?" - then "just start looking into and building those resource and loading time ideas".
+- picture::render (SpectralPicture.h) takes a `RenderPart` (firstSample: the timeline sample of the tracks' first sample; c0, c1: the columns to make).
+  The columns are whole pixels of the timeline from time 0 (`firstColumn (t0, t1, W)` = llround (t0 * W / span); a point's column is
+  floor (timeline sample * W / (span * sr)) - firstColumn) and the frames every `hop` samples from time 0 (they were from t0). A part takes the frames
+  whose points can land in its columns (a point moves at most half a window: frame centres within the columns' samples +- N/2 + 2), in the same order
+  as the whole picture, so its columns are bit-identical; a shifted view (same span and size) shares every common column exactly. Checked (fftbench/
+  parts.cpp): a part round a 0.25 s change = the whole picture's columns, 0 differing pixels; views 300 and 300.4 pixels apart: shared columns 0 differing;
+  the uncovered strip alone = the moved whole picture; tracks read from a stretch with its firstSample = from sample 0. Times there (-O2, 3 tracks,
+  1042 x 535, 10 s at 96 kHz): whole 2.95 s, the fix's part (103 columns) 0.40 s, a 301-column strip 0.94 s. `picture::reach` = N / sr + 2 px: how far
+  a change reaches (a frame within N/2 hears it and moves its points up to N/2 further). DetailPicture has c0 / c1 (`whole()`); the rest is -200 dB.
+  Asked for whole, a picture now also takes the frames just outside the view whose points land inside it (they were missing at its edges).
+- SpectrogramView (SpectralWindow.h): `staleC0 / staleC1` (columns of the sharp picture out of date: the quick picture paints there), `detailGen` /
+  `reqGen` (bumped by every change of the sound or the view; setDetail takes a picture only if nothing changed since it was asked for - this also mends an
+  old race: a picture finishing after a fix went in, with the sound before it, was taken and its stale flag cleared). `invalidateDetailRange (a, b)`:
+  the columns a change reaches become stale (outside the view: nothing); `setData (..., changedFrom, changedTo)` does that instead of throwing the picture
+  away when the duration is the same. requestDetailNow asks for only the stale columns (PictureRequest c0 / c1) when the picture is the view's;
+  setDetail copies a part in (and clears the stale range if it covered it). setWindow -> `carryDetail`: the same span, |k| < W columns
+  (firstColumn new - old): the picture moves k columns (std::copy / copy_backward per row), the uncovered strip is stale, detail.t0/t1 are the view's.
+  detailShowing() also needs no stale columns (Noise mode's next page waits for the page in view to be complete); takeReadyDetail clears them.
+- The ReTouch window (RepairDialog): Step keeps from / to (the ops' span +- 0.05 s, seconds); a fix, Undo and Compare pass it to setData. If the picture
+  showed Compare's "before" when a fix went in, it changed where the last fix was too: anywhere. (The first fix of a window used to be treated as that:
+  `showingAfter` starts false - "shown is current" is showingAfter || history.empty().) Its startDetail passes c0 / c1 to render.
+- Noise mode: renderSharp reads only the stretch the columns need (the columns' time +- reach + 4 px + 0.05 s) and passes firstSample; refreshPicture's
+  end calls invalidateDetailRange (t0 - 0.05, t1 + 0.05) (the fix's span: its boxes with their feathering, and the cross-fades). audioChanged (t0, t1):
+  a next page the change does not reach (t1 + reach < its t0, or t0 - reach > its t1) is kept - aheadGen / aheadMaking move to the new audioGen, so one being
+  made carries on; aheadDone now checks aheadMaking == audioGen (the thread's own count went).
+- ReHarmoniSer View: `sharpRaw` (before softenSharp) beside `sharp`; rebuildImage carries both along a move (`sameButTime`: everything but the time;
+  carrySharp shifts by firstColumn's difference, the strip stale) and paints the quick picture in the stale columns; startSharp then makes only the strip
+  (RenderPart c0 / c1) on a copy of sharpRaw, and softens the whole of it again.
+- Checked on Linux (temporary logging, taken out): Noise mode - a ReTouch box re-made [359, 531) of 1042 columns in 1.4 s (the whole page 7.7 s, the
+  unoptimised build), a ruler drag of 270 columns made [772, 1042) in 2.1 s, the join invisible; the ReTouch window - the first fix, Undo, Show before and
+  Show fixed each re-made only [282, 499) of 926; drags both ways [656, 926) and [0, 400); the ReHarmoniSer - Shift+wheel made [518, 574) of 574 in 0.3 s
+  (whole 1.9 s); Noise mode playing (the pretend-play copy) - a fix at 32-34 s kept the next page (49.6-68.8 s), which the turn then used.
+
