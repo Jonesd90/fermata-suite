@@ -1731,3 +1731,51 @@ fermata moved to a new repository that also holds its companion, fermata:Live (t
 ### The first upload to the new repository
 - GitHub's web upload takes fewer than 100 files at a time, so the first upload is in numbered parts of whole files with their folders. Upload them in any order, and each part adds to what is there.
 - The workflow is made by hand last (Add file > Create new file, named `.github/workflows/build-windows.yml`, with the text pasted in). That first build therefore has every file in place.
+
+## 3.31.0: never change the audio device without asking; the polarity key; the S1 (built in the fermata:Live conversation, 5 November 2026)
+- **`src/ui/DeviceGuard.h` (new).** `GuardedDeviceManager` (AppContext::devices) is JUCE's AudioDeviceManager with `createAudioDeviceTypes` overridden:
+  every real driver type is wrapped in a `GuardedType` that forwards everything to it, but takes the real type's "list changed" itself (posted to the
+  message thread) and hands it to `DeviceGuard::listChanged`. JUCE's manager hears of it (`passOn`, i.e. `callDeviceChangeListeners`) only while the
+  device in use is still in its type's list - its private `audioDeviceListChanged` then changes nothing. (Without the wrapper: device gone -> JUCE
+  closes it and runs `initialiseFromXML (..., true)` / `initialiseDefault`. Shown by the test below, step 0.) JUCE makes its own type list only while
+  the manager's list is empty (`createDeviceTypesIfNeeded`), so the types must be made by the override, not added beside JUCE's.
+- **`DeviceGuard`**: `known` lists per type; added devices go into `pending` (asked 1.5 s after the last addition, never while
+  `engine.isRecording()`: the 500 ms timer asks once the take has stopped); the question (AppContext's `ask` hook: an AlertWindow whose first button
+  - Keep - is also Escape and the window's close) offers Keep using X / Change to Y / Choose in Audio settings. Y: an ASIO driver first, then one of
+  the type in use, then Windows Audio; for types with separate inputs and outputs the new input of the same type goes with it. Change: stopPlayback,
+  then `closeAudioDevice` + `initialise (256, 256, xml, false)` with the type, the names and the project's rate (the start-up path); if it fails, the
+  previous setup is opened again the same way and the user told. **The device in use gone**: not passed on, said once, `closeAudioDevice` (not while
+  recording: the dead device is left under the take), and opened again from the saved setup (the settings' "audioDevice", which JUCE's
+  lastExplicitSettings keeps) when its name is back - after the take if one records. **Start-up** (Main.cpp): `initialise (..., saved == nullptr)`, so
+  a saved device that fails opens nothing else; `deviceGuard->start (err)` says so 2.5 s later (once the main window is up) and waits for it.
+  Hooks: recording, playing, stopPlayback, afterChange (`applyAudioSettings` + `matchEngineRate`), openAudioSettings, savedSetup, projectRate, notice.
+- Checked on Linux with fermata:Live's "Test signal" type (it can plug and pull a second device; its masks are now clipped to its own channels, as
+  fermata asks for 256): JUCE alone switched to the other device by itself; with the guard: pulled out -> nothing opened, told, opened again when
+  back; plugged in -> asked after 1.5 s, Keep changes nothing, Change stops playback and opens it (and it is remembered); during a recording the
+  question waits; the device gone during a take is not closed under it and is opened again once the take stops; a start-up with the saved device
+  missing opens nothing and opens it when it appears. (A scratch program, not in the repository: it needs a message loop with timers.) Not checked:
+  real ASIO / WASAPI drivers on Windows.
+- **The review (one reader) and what changed in the guard.** (1) Serious: a list change of ANOTHER type was passed on without looking at the open
+  device - one endpoint is listed by Windows Audio's three modes and DirectSound, so after "Windows Audio" said the device in use had gone (left open
+  under a take), the next type's news reached JUCE, which closed it, opened the default endpoint, ended the take and saved the default as the device.
+  Now every list change first applies JUCE's own test to the open device (`listed`: its name in its own type's lists, exactly as JUCE compares) and
+  passes nothing on while it fails; once the take stops, a device still gone is closed. (2) A stale "gone" could reopen the old device over one chosen
+  meanwhile in Audio settings: the wait ends as soon as another device is open, and a device is opened again only when nothing is open (or it is the
+  dead one left under a take). (3) A driver that is listed but cannot open (an ASIO interface switched off: its driver is listed from the registry)
+  was never opened by itself, and plugging its interface in asked to change to its Windows Audio endpoints instead: with nothing open, any list change
+  of any type first tries the saved device again (only if its type lists it), and the devices that came with it are not asked about (3 s).
+  Also: one message at start-up, not two (Main's own error box only when nothing was saved); the startup message only if nothing is open by then.
+  The test program gained a second driver type (one that lists Test signal's devices too, and one that is always listed but opens only while Test
+  signal's second device is plugged in) for these three cases.
+- **The polarity key.** `StripState::polarity` / `BusState::polarity` (Int Buses) - `Flag`, with `lastPol` (audio thread) so that a change is a gain
+  ramp from +1 to -1 over one block; applied in `AudioEngine` right after `lowCut.process`. Saved by `stripToVar` / `busToVar` as `"polarity": true`
+  only when on (rule 4 of COMPATIBILITY.md: a key added; missing = off), read under `faders` like the low cut, and in `mixKeepHash` only when on (so
+  the mixers kept by older versions still match). `LowCutKey` (LowCutPanel.h) takes an optional `Flag*`: given, a Ø key (the preamps' orange) takes
+  the place of the read-out, whose text moves into LC's tooltip. Tests: compat_test (one strip on, one off, round trip), core_test (a bounce with the
+  key on is the same bounce inverted, sample for sample after the first block).
+- **The S1.** `surface::GainFaders` (new last action, so saved maps keep their numbers): `dialGain` and `flipped` together, and both off again; a
+  banner on the S1's bottom line and a notice. Default on `mcu::Left` (the S1's User 3, which EuControl sends as cursor left), moved from MeterBridge
+  (F7 keeps it); `surfaceMapVersion` 2 moves it in a saved map too when User 3 still had its old standard job. `openPorts`: with nothing chosen, the
+  surface-looking port with the lowest number at the end of its name ("Euphonix EuMidi1", not "...EuMidi11"). SurfacePanel: the intro's height from
+  its text (`TextLayout`), the action rows in two columns when the keys area is at least 964 px wide (the window now opens 1300 wide); the new setup text (MIDI Setup, then
+  Applications +, then EuMidi1). The user found that the S1's top-row keys other than Bank and Nudge never arrive (EuControl keeps them).

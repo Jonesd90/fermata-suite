@@ -192,7 +192,9 @@ private:
 class LowCutKey : public juce::Component, private juce::Timer
 {
 public:
-    LowCutKey (AppContext& a, LowCut& l, std::function<juce::String()> channelName) : app (a), lc (l), nameOf (std::move (channelName))
+    /** 3.31.0: 'polarity' given - a polarity key (Ø) beside LC, in place of the low cut's read-out (which moves into LC's tooltip). */
+    LowCutKey (AppContext& a, LowCut& l, std::function<juce::String()> channelName, Flag* polarity = nullptr)
+        : app (a), lc (l), nameOf (std::move (channelName)), pol (polarity)
     {
         key.setButtonText ("LC");
         key.setClickingTogglesState (false);
@@ -201,10 +203,24 @@ public:
         key.onClick = [this] { if (swallow) { swallow = false; return; } lc.setOn (! lc.on.get()); app.project.markDirty(); app.engine.checkLatency(); refresh(); };
         key.addMouseListener (this, false);
         addAndMakeVisible (key);
-        lcui::caption (text, {}, juce::Justification::centredLeft);
-        text.setFont (juce::FontOptions (8.5f));
-        text.setInterceptsMouseClicks (false, false);
-        addAndMakeVisible (text);
+        if (pol != nullptr)
+        {
+            polKey.setButtonText (juce::String (juce::CharPointer_UTF8 ("\xc3\x98")));
+            polKey.setClickingTogglesState (false);
+            polKey.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffffb02e));        // (the colour of the preamps' polarity key)
+            polKey.setColour (juce::TextButton::textColourOnId, juce::Colours::black);
+            polKey.setTooltip ("Polarity: click to invert every channel of this strip (after the low cut, before the inserts) - lit while it is inverted. "
+                               "The mixer's own; the preamp's polarity (in Preamps) is the hardware's.");
+            polKey.onClick = [this] { pol->set (! pol->get()); app.project.markDirty(); refresh(); };
+            addAndMakeVisible (polKey);
+        }
+        else
+        {
+            lcui::caption (text, {}, juce::Justification::centredLeft);
+            text.setFont (juce::FontOptions (8.5f));
+            text.setInterceptsMouseClicks (false, false);
+            addAndMakeVisible (text);
+        }
         refresh();
     }
     void refresh()
@@ -212,16 +228,26 @@ public:
         const bool on = lc.on.get();
         if (key.getToggleState() != on) key.setToggleState (on, juce::dontSendNotification);
         const float hz = lc.hz.get();
-        text.setText ((hz >= 1000.0f ? juce::String (hz / 1000.0f, 1) + "k" : juce::String (hz, hz < 100.0f ? 1 : 0)) + (lc.linear.get() ? " " : "  ")
-                      + (lc.slope.load() >= lowcut::kBrickwall ? juce::String ("wall") : juce::String (lowcut::slopeDb (lc.slope.load())) + "dB") + (lc.linear.get() ? " lin" : ""), juce::dontSendNotification);   // ("lin": linear phase)
+        const auto setting = (hz >= 1000.0f ? juce::String (hz / 1000.0f, 1) + "k" : juce::String (hz, hz < 100.0f ? 1 : 0)) + (lc.linear.get() ? " " : "  ")
+                             + (lc.slope.load() >= lowcut::kBrickwall ? juce::String ("wall") : juce::String (lowcut::slopeDb (lc.slope.load())) + "dB") + (lc.linear.get() ? " lin" : "");   // ("lin": linear phase)
+        if (pol != nullptr)
+        {   // (no read-out: the setting is in LC's tooltip)
+            const auto tip = "Low cut " + juce::String (on ? "on" : "off") + ": " + setting.replace ("  ", " ") + " (click: on / off; hold the key down, or right-click it, to change it)";
+            if (key.getTooltip() != tip) key.setTooltip (tip);
+            if (polKey.getToggleState() != pol->get()) polKey.setToggleState (pol->get(), juce::dontSendNotification);
+            return;
+        }
+        text.setText (setting, juce::dontSendNotification);
         text.setColour (juce::Label::textColourId, on ? mixTheme().text : mixTheme().dim);
     }
     void resized() override
     {
         auto r = getLocalBounds();
-        key.setBounds (r.removeFromLeft (juce::jmin (34, r.getWidth() / 2)).reduced (0, 1));
+        const int w = juce::jmin (34, (r.getWidth() - 4) / 2);
+        key.setBounds (r.removeFromLeft (w).reduced (0, 1));
         r.removeFromLeft (4);
-        text.setBounds (r);
+        if (pol != nullptr) polKey.setBounds (r.removeFromLeft (w).reduced (0, 1));
+        else text.setBounds (r);
     }
     void mouseDown (const juce::MouseEvent& e) override
     {
@@ -248,8 +274,8 @@ private:
         swallow = true;                                                    // the click that ends this press must not toggle the filter
         openPanel();
     }
-    AppContext& app; LowCut& lc; std::function<juce::String()> nameOf;
-    juce::TextButton key; juce::Label text;
+    AppContext& app; LowCut& lc; std::function<juce::String()> nameOf; Flag* pol = nullptr;
+    juce::TextButton key, polKey; juce::Label text;
     bool swallow = false;
 };
 } // namespace td

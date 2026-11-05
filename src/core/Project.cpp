@@ -294,6 +294,7 @@ var stripToVar (const StripState& s, const juce::Uuid& trackId, bool inserts)
     put (so, "sendList", sendsToVar (s.sends, inserts));
     if (inserts) put (so, "slots", slotsToVar (s.slots));
     lowCutToVar (so, s.lowCut);
+    if (s.polarity.get()) put (so, "polarity", true);               // 3.31.0 (only when on: a project without it reads as off)
     return so;
 }
 
@@ -315,7 +316,7 @@ void stripFromVar (StripState& s, const var& sv, const InsertFactory& factory, d
         for (int k = 0; k < old->size() && k < (int) legacyFx.size(); ++k)
             if ((double) (*old)[k] > kSendOffDb) s.sends.get (legacyFx[(size_t) k])->gainDb.set (dbFromVar ((*old)[k], (float) kSendOffDb));
     if (inserts) slotsFromVar (s.slots, sv["slots"], factory, sr, block);
-    if (faders) lowCutFromVar (s.lowCut, sv, sr, block);
+    if (faders) { lowCutFromVar (s.lowCut, sv, sr, block); s.polarity.set ((bool) sv.getProperty ("polarity", false)); }
 }
 
 var busToVar (const BusState& s, const juce::Uuid& busId, bool inserts, bool withOutput)
@@ -330,6 +331,7 @@ var busToVar (const BusState& s, const juce::Uuid& busId, bool inserts, bool wit
     put (o, "sendList", sendsToVar (s.sends, inserts));
     if (inserts) put (o, "slots", slotsToVar (s.slots));
     lowCutToVar (o, s.lowCut);
+    if (s.polarity.get()) put (o, "polarity", true);                // 3.31.0 (Int Buses)
     return o;
 }
 
@@ -348,7 +350,7 @@ void busFromVar (BusState& s, const var& v, const InsertFactory& factory, double
     }
     if (v.hasProperty ("sendList")) sendsFromVar (s.sends, v["sendList"], factory, sr, block, inserts, sendLevels);
     if (inserts) slotsFromVar (s.slots, v["slots"], factory, sr, block);
-    if (faders) lowCutFromVar (s.lowCut, v, sr, block);
+    if (faders) { lowCutFromVar (s.lowCut, v, sr, block); s.polarity.set ((bool) v.getProperty ("polarity", false)); }
 }
 
 var vcaStatesToVar (const MixerState& m, const std::vector<VcaDef>& defs)
@@ -2990,6 +2992,7 @@ juce::String Project::mixKeepHash (const MixerState& m, const std::set<juce::Str
         put (o, "mute", st->mute.get()); put (o, "solo", st->solo.get()); put (o, "outOn", st->outOn.get()); put (o, "outDest", st->outDest.toString());
         put (o, "vcaMask", (juce::int64) st->vcaMask.load());
         put (o, "sends", sendsOf (t.id, st->sends)); put (o, "slots", slotsOf (t.id, st->slots, kNumSlots, true)); put (o, "lowCut", lowCutOf (st->lowCut));
+        if (st->polarity.get()) put (o, "polarity", true);          // (only when on: the kept mixers of older versions still match)
         strips.add (o);
     }
     for (auto& f : buses)
@@ -3004,6 +3007,7 @@ juce::String Project::mixKeepHash (const MixerState& m, const std::set<juce::Str
         put (o, "mute", b->mute.get()); put (o, "solo", b->solo.get()); put (o, "outOn", b->outOn.get()); put (o, "outDest", b->outDest.toString());
         put (o, "vcaMask", (juce::int64) b->vcaMask.load());
         put (o, "sends", sendsOf (f.id, b->sends)); put (o, "slots", slotsOf (f.id, b->slots, kNumSlots, true)); put (o, "lowCut", lowCutOf (b->lowCut));
+        if (b->polarity.get()) put (o, "polarity", true);
         bs.add (o);
     }
     for (auto& d : vcas)

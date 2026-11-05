@@ -8,6 +8,11 @@ fermata:Live is the live-concert recorder that goes with fermata (see `docs/LIVE
 
 A line that starts with **Shared:** is a change to the code fermata shares (see `COMPATIBILITY.md`), so fermata's next build mentions it too.
 
+## 0.3.2
+- **A polarity key (Ø) on the mixer's strips**, beside M and S: inverts every channel of the track in what you hear live, in playback and in Bounce out (the recording is never changed). It is the same setting as on fermata's mixer strips (the project's processing mixer), so fermata shows it too. The Fixer's own mixer does not have it yet.
+- The pretend "Test signal" device no longer says it has more channels than its 16 inputs and 2 outputs when asked for more.
+- Shared: the strips' polarity (`src/core/Mixer.h`, `src/core/AudioEngine.cpp`, `src/core/Project.cpp`), built for fermata 3.31.0 - fermata needs a rebuild and test (it is in the same zip).
+
 ## 0.3.1
 Closing fermata:Live lets go of everything, and it can no longer stay behind after it has closed. Tried here on the "Test signal" device (Linux); the real test is on Windows with your MAD driver.
 - **Why it hung on to things.** Until now, closing fermata:Live left its recorder (`fermata-Live.exe --recorder`, in Task Manager) running whenever the pre-take was on - and after any take it always is. That recorder kept the audio device (so fermata could not open the MAD driver) and went on writing to the drives until fermata:Live was opened again. A merge still running at close left it for good.

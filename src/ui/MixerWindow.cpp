@@ -15,7 +15,7 @@ int& stripWidthLevel() { static int level = 3; return level; }
 int& stripWidthGen()   { static int gen = 0; return gen; }        // goes up when the width changes, so every open mixer lays itself out again
 int stripWidth() { return kStripWidths[juce::jlimit (0, 5, stripWidthLevel())]; }
 constexpr int kBandH = 16, kPlateH = 26, kInputRowH = 19, kSlotH = 16, kSendCellH = 50, kPanRowH = 30, kMSH = 24, kFaderH = 280, kFaderMin = 110, kOutRowH = 20, kSecH = 11, kLatH = 13;
-constexpr int kLcRowH = 18;      // the LC key's row (audio tracks and Int Buses), between the inputs and the inserts
+constexpr int kLcRowH = 18;      // the LC and polarity keys' row (audio tracks and Int Buses), between the inputs and the inserts
 constexpr int kDividerH = 9;     // 3.26.0: the line above the pans, dragged to make the faders taller (its height; the groove is in its middle)
 constexpr int kSendHdrH = 16;    // 3.26.0: the SENDS title line, with the + (a send to another track) at its right
 constexpr int kMinTopShown = 40; // 3.26.0: the least of the section above the line that stays in sight
@@ -1824,7 +1824,7 @@ private:
     AppContext& app; MixerState& mixer; juce::Uuid trackId; StripState& strip; int numCh;
     bool updating = false;
     int nSlots = kNumSlots;
-    LowCutKey lcKey { app, strip.lowCut, [this] { auto* tr = app.project.findTrack (trackId); return tr != nullptr ? tr->name : juce::String(); } };
+    LowCutKey lcKey { app, strip.lowCut, [this] { auto* tr = app.project.findTrack (trackId); return tr != nullptr ? tr->name : juce::String(); }, &strip.polarity };
     juce::OwnedArray<juce::ComboBox> inBoxes;
     juce::OwnedArray<SendDial> dials;
     juce::TextButton toTrackButton;
@@ -1854,7 +1854,7 @@ public:
         mute->onClick = [this] { st.mute.set (mute->getToggleState()); app.project.markDirty(); };
         if (! external)
         {
-            lcKey = std::make_unique<LowCutKey> (a, st.lowCut, [this] { auto* b = app.project.findBus (busId); return b != nullptr ? b->name : juce::String(); });
+            lcKey = std::make_unique<LowCutKey> (a, st.lowCut, [this] { auto* b = app.project.findBus (busId); return b != nullptr ? b->name : juce::String(); }, &st.polarity);
             topContent.addAndMakeVisible (*lcKey);
             solo = makeToggle (*this, toggles, "S", juce::Colour (0xfff2c200));
             solo->setColour (juce::TextButton::textColourOnId, juce::Colours::black);

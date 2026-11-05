@@ -255,6 +255,8 @@ struct StripState
     SendState outSend;                // how the output is carried (always at unity, after the fader)
     SendList sends;
     LowCut lowCut;                    // the LC key: a high-pass before the inserts (zero latency; linear phase when asked for - see LowCut.h)
+    Flag  polarity { false };         // 3.31.0: the polarity key (Ø): every channel of the strip inverted, just after the low cut (saved as "polarity" when on)
+    float lastPol = 1.0f;             // audio thread only: the polarity of the previous block (+1 / -1: a change is ramped through zero over one block)
     InsertSlot slots[kNumSlots];
     Param meterL, meterR;             // peak since last read (UI resets)
     Param rmsL, rmsR;                 // RMS level (linear, about 300 ms window), updated every block
@@ -287,6 +289,8 @@ struct BusState
     SendState outSend;
     SendList sends;                   // Int Bus only
     LowCut lowCut;                    // Int Bus only: the LC key, before the inserts
+    Flag  polarity { false };         // Int Bus only (3.31.0): the polarity key, just after the low cut
+    float lastPol = 1.0f;             // audio thread only (see StripState)
     InsertSlot slots[kNumSlots];
     Param meterL, meterR;
     Param rmsL, rmsR;

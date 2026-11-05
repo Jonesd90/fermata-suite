@@ -1,4 +1,4 @@
-// The compatibility check between fermata and fermata:Live (fermata 3.30.2 / fermata:Live 0.3.0). Built and run by tools/compat-check.sh, by
+// The compatibility check between fermata and fermata:Live (fermata 3.31.0 / fermata:Live 0.3.2). Built and run by tools/compat-check.sh, by
 // tools/sandbox-check.sh and by the GitHub build on every upload. It checks that:
 //   - COMPATIBILITY.md and the shared code (src/core/Compat.h, Project.h) give the same numbers: the contract, the project file, the sample rates;
 //   - every file COMPATIBILITY.md lists as shared is there;
@@ -172,6 +172,9 @@ int main (int argc, char** argv)
             v.files.push_back (ff); v.what = "De-click (sensitivity 6)"; v.note = "the click at 0:34"; v.flagId = f.id; v.versionNumber = 2; v.replaces = juce::Uuid();
             v.by = "Fixer"; v.madeAt = juce::Time (1762250090000); w.fixVersions.push_back (v);
         }
+        p.syncMixers();
+        if (! p.mixers.empty())                                          // 3.31.0: the strips' polarity key (one strip inverted, the other not)
+            if (auto* st = p.mixers.front()->stripFor (p.tracks[1].id)) st->polarity.set (true);
         juce::String err;
         const bool saved = p.save (err);
         check (saved, "the project is saved" + (err.isEmpty() ? juce::String() : " (" + err + ")"));
@@ -186,6 +189,11 @@ int main (int argc, char** argv)
         check (q.tracks.size() == 2 && q.tracks[0].name == "Main pair" && q.tracks[0].format == TrackFormat::Stereo
                  && q.tracks[1].name == "Soloist" && q.tracks[1].format == TrackFormat::Mono, "its tracks are kept");
         check (! q.takeWindows.empty() && q.takeWindows.front()->name == "First half", "its take window is kept");
+        {
+            auto* inv = q.mixers.empty() ? nullptr : q.mixers.front()->stripFor (q.tracks[1].id);
+            auto* nor = q.mixers.empty() ? nullptr : q.mixers.front()->stripFor (q.tracks[0].id);
+            check (inv != nullptr && inv->polarity.get() && nor != nullptr && ! nor->polarity.get(), "a strip's polarity key is kept (3.31.0: on for one strip, off for the other)");
+        }
         if (! q.takeWindows.empty() && ! p.takeWindows.empty())
         {
             const auto& a = *p.takeWindows.front(); const auto& b = *q.takeWindows.front();

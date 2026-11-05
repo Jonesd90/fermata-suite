@@ -13,6 +13,7 @@ struct MixStrip
 {
     juce::Uuid id; juce::String name; int channels = 1; juce::Colour colour { 0xff3f7fc4 };
     float gainDb = 0.0f, pan = 0.0f, panL = -1.0f, panR = 1.0f; bool mute = false, solo = false;
+    bool polarity = false;                                                       // 0.3.2: the strip's polarity key (the processing mixer's, shared with fermata)
 };
 
 class MixModel
@@ -24,6 +25,9 @@ public:
     virtual void setPan (const juce::Uuid&, int which, float value) = 0;       // which: 0 mono pan, 1 left channel, 2 right channel
     virtual void setMute (const juce::Uuid&, bool) = 0;
     virtual void setSolo (const juce::Uuid&, bool) = 0;
+    /** 0.3.2: the polarity key (Ø) - only where the mixer has one (the Primary's: the project's processing mixer; the Fixer's own mixer has none). */
+    virtual bool hasPolarity() const                    { return false; }
+    virtual void setPolarity (const juce::Uuid&, bool)  {}
     virtual float masterDb() const = 0;
     virtual void setMasterDb (float) = 0;
     virtual int outputPair() const = 0;                                         // its first output (0-based), -1: none

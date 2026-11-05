@@ -800,8 +800,8 @@ void RecorderService::setMix (const juce::var& c)
                 {
                     const int in = (int) (*x)[0], out = (int) (*x)[1];
                     const float g = (float) (double) (*x)[2];
-                    if (in < 0 || in >= 4096 || out < 0 || out >= 4096 || ! std::isfinite (g) || g <= 0.0f) continue;
-                    want[{ group, { in, out } }] = juce::jmin (g, 16.0f);
+                    if (in < 0 || in >= 4096 || out < 0 || out >= 4096 || ! std::isfinite (g) || g == 0.0f) continue;
+                    want[{ group, { in, out } }] = juce::jlimit (-16.0f, 16.0f, g);            // (0.3.2: negative = the strip's polarity key)
                 }
     };
     read (c["routes"], 0);

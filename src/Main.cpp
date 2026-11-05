@@ -458,12 +458,16 @@ public:
         for (auto* type : ctx->devices.getAvailableDeviceTypes())
             juce::Logger::writeToLog ("Audio driver type available: " + type->getTypeName());
         juce::Logger::writeToLog ("Opening the saved / default audio device...");
-        auto err = ctx->devices.initialise (256, 256, saved.get(), true, {}, nullptr);
+        // 3.31.0: the device chosen last, and only that - if it cannot be opened, no other device is opened in its place (JUCE would open the default one):
+        // the device guard says so, and opens it by itself when it appears. With nothing saved yet (the first start), the default device, ASIO preferred.
+        auto err = ctx->devices.initialise (256, 256, saved.get(), saved == nullptr, {}, nullptr);
         if (saved == nullptr)
             for (auto* type : ctx->devices.getAvailableDeviceTypes())
                 if (type->getTypeName() == "ASIO") { ctx->devices.setCurrentAudioDeviceType ("ASIO", true); break; }
 
         juce::Logger::writeToLog ("Audio device init result: " + (err.isEmpty() ? juce::String ("OK") : err));
+        if (ctx->devices.getCurrentAudioDevice() == nullptr && saved != nullptr && err.isEmpty()) err = "it did not start";
+        ctx->deviceGuard->start (saved != nullptr ? err : juce::String());
         {
             juce::File toOpen;                                         // a project double-clicked in Explorer
             for (auto& a : juce::StringArray::fromTokens (commandLine, true))
@@ -492,7 +496,7 @@ public:
         mainWindow->setFullScreen (true);                              // opens maximised every time (the title bar and the taskbar still show); the size above is what "Restore" goes back to
         if (splash != nullptr)
             splash->startCountdown ([this] { juce::MessageManager::callAsync ([this] { splash.reset(); }); });
-        if (err.isNotEmpty()) showError ("Audio device", err + "\n\nOpen \"Audio settings\" to choose your ASIO device.");
+        if (err.isNotEmpty() && saved == nullptr) showError ("Audio device", err + "\n\nOpen \"Audio settings\" to choose your ASIO device.");     // (3.31.0: the device saved but missing is the guard's message)
         announceCrashReports();
         rxWatcher = rxlink::makeWatcher (*ctx);                                  // 3.22.0 / 3.24.0: what is saved in a linked program (RX, Melodyne ...) comes back into the edits
         rxlink::askAtFirstStart (*ctx);                                          // (once: link the editing programs found on this computer?)

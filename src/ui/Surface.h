@@ -26,13 +26,15 @@ enum Action : int
     FlipFaders,        // Flip: the faders and the dials swap jobs
     BankLeft, BankRight, ChannelLeft, ChannelRight,
     PlayPause, StopPlay, RecordTake,
+    GainFaders,        // 3.31.0: the preamp gains on the faders (the levels on the dials), and back to the levels: one key (User 3 on the S1)
     NumActions
 };
 inline juce::String actionName (int a)
 {
     static const char* names[] = { "Zoom out (time)", "Zoom in (time)", "Tracks smaller", "Tracks bigger", "Waveforms smaller  ( , key)", "Waveforms bigger  ( . key)",
                                    "Meter bridge open / close", "Mixer open / close", "Dials = preamp gain (Inserts)", "Dials = pan", "Flip (faders <-> dials)",
-                                   "Bank left (8 strips)", "Bank right", "One strip left", "One strip right", "Play / pause", "Stop", "Record (start / stop a take)" };
+                                   "Bank left (8 strips)", "Bank right", "One strip left", "One strip right", "Play / pause", "Stop", "Record (start / stop a take)",
+                                   "Preamp gains on the faders (on / off)" };
     return juce::isPositiveAndBelow (a, NumActions) ? names[a] : "";
 }
 /** The buttons a surface has on every strip, and what each one does. */

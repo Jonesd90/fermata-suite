@@ -395,7 +395,7 @@ Player::Gains PrimaryApp::playbackGains() const
         if (st == nullptr) continue;
         const bool hidden = std::find (m->hiddenStrips.begin(), m->hiddenStrips.end(), t.id) != m->hiddenStrips.end();
         const bool heard = ! hidden && st->outOn.get() && ! st->mute.get() && (! anySolo || st->solo.get());
-        const float g = heard ? dbToGain (st->gainDb.get() + st->inGainDb.get()) * busGain : 0.0f;
+        const float g = (heard ? dbToGain (st->gainDb.get() + st->inGainDb.get()) * busGain : 0.0f) * (st->polarity.get() ? -1.0f : 1.0f);   // (0.3.2: the polarity key)
         std::vector<std::pair<float, float>> ch;
         const int n = t.channelCount();
         for (int c = 0; c < n; ++c)
@@ -427,10 +427,10 @@ void PrimaryApp::sendMix()
                 {
                     const int in = t->inputOf (c2);
                     if (in < 0) continue;
-                    if (ch[(size_t) c2].first > 0.0f) sum[{ in, pair }] += ch[(size_t) c2].first;
-                    if (ch[(size_t) c2].second > 0.0f) sum[{ in, pair + 1 }] += ch[(size_t) c2].second;
+                    if (ch[(size_t) c2].first != 0.0f) sum[{ in, pair }] += ch[(size_t) c2].first;          // (negative: the polarity key)
+                    if (ch[(size_t) c2].second != 0.0f) sum[{ in, pair + 1 }] += ch[(size_t) c2].second;
                 }
-        for (auto& [k, g] : sum) { juce::Array<juce::var> r; r.add (k.first); r.add (k.second); r.add (g); routes.add (juce::var (r)); }
+        for (auto& [k, g] : sum) if (g != 0.0f) { juce::Array<juce::var> r; r.add (k.first); r.add (k.second); r.add (g); routes.add (juce::var (r)); }
     }
     // the talkback: the inputs marked TALK to the talkback outputs (each the first of a pair; the last output alone is mono)
     const int outs = model.outputNames.size();

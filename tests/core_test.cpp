@@ -1404,6 +1404,26 @@ int main()
             auto r = b.render();
             CHECK (r.files.size() == 1 && std::abs (readPeak (juce::File (r.files[0]), ch, len, bits, rate) - 0.5f * 0.70710678f) < 2e-3f);
         }
+        {   // 3.31.0: the strip's polarity key - the same bounce, inverted sample for sample (after the first block, where the change is ramped)
+            auto readAll = [] (const juce::File& f)
+            {
+                juce::AudioFormatManager fm; fm.registerBasicFormats();
+                std::unique_ptr<juce::AudioFormatReader> r (fm.createReaderFor (f));
+                juce::AudioBuffer<float> b (r != nullptr ? (int) r->numChannels : 1, r != nullptr ? (int) r->lengthInSamples : 0);
+                if (r != nullptr) r->read (&b, 0, b.getNumSamples(), 0, true, true);
+                return b;
+            };
+            juce::AudioBuffer<float> normal, inverted;
+            { Bouncer b (p, bs); auto r = b.render(); CHECK (r.error.isEmpty() && r.files.size() == 1); if (r.files.size() == 1) normal = readAll (juce::File (r.files[0])); }
+            mixA.stripFor (violinId)->polarity.set (true);
+            { Bouncer b (p, bs); auto r = b.render(); CHECK (r.error.isEmpty() && r.files.size() == 1); if (r.files.size() == 1) inverted = readAll (juce::File (r.files[0])); }
+            mixA.stripFor (violinId)->polarity.set (false);
+            float sumErr = 0.0f, pk = 0.0f;
+            const int nS = juce::jmin (normal.getNumSamples(), inverted.getNumSamples());
+            for (int c = 0; c < juce::jmin (normal.getNumChannels(), inverted.getNumChannels()); ++c)
+                for (int i = 2048; i < nS; ++i) { sumErr = juce::jmax (sumErr, std::abs (normal.getSample (c, i) + inverted.getSample (c, i))); pk = juce::jmax (pk, std::abs (normal.getSample (c, i))); }
+            CHECK (nS == 48000 && pk > 0.3f && sumErr < 1e-4f);                // (24-bit files: within a step or two)
+        }
         bs.sources = { outBus, violinId, strings };
         {
             Bouncer b (p, bs);

@@ -17,7 +17,8 @@ class TestSignalDevice final : public juce::AudioIODevice, private juce::Thread
 {
 public:
     static constexpr int kInputs = 16, kOutputs = 2;
-    explicit TestSignalDevice (const juce::String& name = "Test signal (16 tones)") : juce::AudioIODevice (name, "Test signal"), juce::Thread ("fermata:Live test signal") {}
+    explicit TestSignalDevice (const juce::String& name = "Test signal (16 tones)", const juce::String& typeName = "Test signal")
+        : juce::AudioIODevice (name, typeName), juce::Thread ("fermata:Live test signal") {}
     ~TestSignalDevice() override { close(); }
 
     // ---- pretend faults (0.3.0, the message thread) ----
@@ -49,6 +50,8 @@ public:
         close();
         sampleRate = rate > 0 ? rate : 48000.0; blockSize = buffer > 0 ? buffer : 2048;
         inMask = ins; outMask = outs;
+        inMask.setRange (kInputs, juce::jmax (0, inMask.getHighestBit() + 1 - kInputs), false);     // (3.31.0 / 0.3.2: only the channels it has - asked for
+        outMask.setRange (kOutputs, juce::jmax (0, outMask.getHighestBit() + 1 - kOutputs), false); // more, as fermata does (256), it reported them all as active)
         inputs.assign ((size_t) kInputs, std::vector<float> ((size_t) blockSize, 0.0f));
         outputs.assign ((size_t) kOutputs, std::vector<float> ((size_t) blockSize, 0.0f));
         inPtrs.clear(); outPtrs.clear();

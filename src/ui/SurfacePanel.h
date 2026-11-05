@@ -69,12 +69,13 @@ public:
     explicit SurfacePanel (AppContext& a) : app (a), targetBox (a)
     {
         auto* s = app.surface;
-        intro.setText ("An Avid S1, or any Mackie Control surface. EuControl passes the S1 to Fermata as a Mackie Control surface on its virtual MIDI ports "
-                       "(\"Euphonix EuMidi1\"): press Copy Fermata's path, then in EuControl (the icon by the clock) open MIDI Setup, and for ports 1 - 4 choose "
-                       "Select Mackie Application, paste the path (Ctrl + V) into the file name box and Select; Apply and restart EuControl. Close Pyramix and other EUCON "
-                       "programs: EuControl gives the S1 to the EUCON program you clicked last. Then the ports appear below and the S1 lamp goes green. "
-                       "Eight strips of the chosen mixer at a time (Bank / Channel keys); dials = pan, after Inserts = preamp gain; Flip swaps dials and faders. "
-                       "The eight keys along the bottom of the S1 are set up already; any key can be given another job: press Learn, then the key.", juce::dontSendNotification);
+        intro.setText ("An Avid S1, or any Mackie Control surface. Setting up the S1 (once, in EuControl - the icon by the clock): 1. Press Copy Fermata's path. "
+                       "2. EuControl > MIDI Setup: for ports 1 - 4 choose Select Mackie Application, paste the path (Ctrl + V) into the file name box and Select; Apply and restart EuControl. "
+                       "3. EuControl > Applications: with Fermata in front, press + so that Fermata is in the list (without this the S1 lamp can be green while the S1 does nothing). "
+                       "4. Choose \"Euphonix EuMidi1\" below for MIDI in and out. EuControl gives the S1 to the program you clicked last: click on Fermata. "
+                       "Eight strips of the chosen mixer at a time (Bank / Nudge keys); the dials turn the pans. User 3 (the S1's keys along the bottom: Shift, Control, Opt, Alt, User 1 - 4) "
+                       "puts the preamp gains on the faders and the levels on the dials, and back. The S1's other top-row keys (Inserts, Flip ...) never reach Fermata: give any job "
+                       "to a key that does - press Learn, then the key; the MIDI monitor shows what each key sends.", juce::dontSendNotification);
         intro.setFont (juce::FontOptions (12.0f)); intro.setColour (juce::Label::textColourId, theme::dimText); intro.setJustificationType (juce::Justification::topLeft);
         addAndMakeVisible (intro);
 
@@ -132,7 +133,7 @@ public:
             addAndMakeVisible (row);
         }
         resetButton.setButtonText ("Back to the standard keys");
-        resetButton.setTooltip ("The S1's eight bottom keys (Shift, Control, Opt, Alt, User 1 - 4) and a Mackie's F1 - F8 for the eight jobs; Plug-in = Inserts, Pan, Flip, Bank / Channel, the transport");
+        resetButton.setTooltip ("The S1's eight bottom keys (Shift, Control, Opt, Alt, User 1 - 4: User 3 = the preamp gains on the faders) and a Mackie's F1 - F8; Plug-in = Inserts, Pan, Flip, Bank / Channel, the transport");
         resetButton.onClick = [this] { if (app.surface != nullptr) app.surface->resetMap(); };
         addAndMakeVisible (resetButton);
 
@@ -156,7 +157,7 @@ public:
         refresh();
         if (s != nullptr) s->addChangeListener (this);
         startTimer (500);
-        setSize (780, 860);
+        setSize (1300, 860);                                            // (3.31.0: wide enough for the other keys in two columns, so the MIDI monitor has room)
     }
     ~SurfacePanel() override
     {
@@ -177,7 +178,11 @@ public:
         rules.clear();
         auto r = getLocalBounds().reduced (16, 10);
         r.removeFromTop (28);
-        intro.setBounds (r.removeFromTop (96));
+        {   // (3.31.0: as tall as its writing needs at this width - it had a fixed 96, which left no room for the MIDI monitor on a 1080-line screen)
+            juce::AttributedString as; as.append (intro.getText(), juce::FontOptions (12.0f)); as.setJustification (juce::Justification::topLeft);
+            juce::TextLayout tl; tl.createLayout (as, (float) juce::jmax (100, r.getWidth() - 10));     // (the label's own border)
+            intro.setBounds (r.removeFromTop (juce::jlimit (32, 140, (int) std::ceil (tl.getHeight()) + 6)));
+        }
         r.removeFromTop (6);
         {
             auto row = r.removeFromTop (24);
@@ -199,7 +204,10 @@ public:
             status.setBounds (row);
         }
         r.removeFromTop (8); rules.push_back (r.getY()); r.removeFromTop (8);
-        auto body = r.removeFromTop (surface::NumActions * 22 + 22);
+        // the other keys in two columns when there is room (3.31.0: one column of 19 rows left the MIDI monitor no room)
+        const int keysW = r.getWidth() - 280;                          // (the strip keys take 260 + 20 on the left)
+        const int cols = keysW >= 2 * 470 + 24 ? 2 : 1, perCol = (rows.size() + cols - 1) / cols;
+        auto body = r.removeFromTop (juce::jmax (perCol * 22 + 22, surface::NumStripButtons * 26 + 46));
         auto left = body.removeFromLeft (260); body.removeFromLeft (20);
         stripCap.setBounds (left.removeFromTop (18)); left.removeFromTop (4);
         for (int b = 0; b < stripBoxes.size(); ++b)
@@ -211,7 +219,11 @@ public:
         left.removeFromTop (10);
         resetButton.setBounds (left.removeFromTop (24));
         keysCap.setBounds (body.removeFromTop (18)); body.removeFromTop (4);
-        for (auto* row : rows) row->setBounds (body.removeFromTop (22));
+        {
+            const int colW = cols == 2 ? (body.getWidth() - 24) / 2 : body.getWidth();
+            for (int i = 0; i < rows.size(); ++i)
+                rows[i]->setBounds (body.getX() + (i / perCol) * (colW + 24), body.getY() + (i % perCol) * 22, colW, 22);
+        }
         r.removeFromTop (8); rules.push_back (r.getY()); r.removeFromTop (8);
         {
             auto row = r.removeFromTop (22);

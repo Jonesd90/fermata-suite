@@ -10,6 +10,7 @@
 #include "StallWatch.h"
 #include "TakeMatchService.h"
 #include "ClosingLog.h"
+#include "DeviceGuard.h"
 
 namespace td
 {
@@ -62,7 +63,8 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     closing::Mark closedProject { "project freed: mixers and plug-ins unloaded, preamp connections let go" };
     Project project;
     closing::Mark closedDevices { "audio device manager closed" };
-    juce::AudioDeviceManager devices;
+    GuardedDeviceManager devices;                       // 3.31.0: JUCE's manager with its driver types wrapped - it never changes the device by itself (DeviceGuard.h)
+    std::unique_ptr<DeviceGuard> deviceGuard;           // asks before any change of device (made in the constructor, started once the device is open)
     closing::Mark closedEngine { "audio engine stopped" };
     AudioEngine engine { project };
     closing::Mark closedPlugins { "plug-in host closed" };

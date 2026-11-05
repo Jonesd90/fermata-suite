@@ -1,5 +1,6 @@
 #include "Surface.h"
 #include "../core/CrashReport.h"
+#include <climits>
 
 namespace td
 {
@@ -96,7 +97,8 @@ void SurfaceController::defaults()
     bind (mcu::Alt,     surface::TracksBigger);  bind (mcu::F4, surface::TracksBigger);
     bind (mcu::Up,      surface::WaveSmaller);   bind (mcu::F5, surface::WaveSmaller);
     bind (mcu::Down,    surface::WaveBigger);    bind (mcu::F6, surface::WaveBigger);
-    bind (mcu::Left,    surface::MeterBridge);   bind (mcu::F7, surface::MeterBridge);
+    bind (mcu::Left,    surface::GainFaders);    bind (mcu::F7, surface::MeterBridge);     // (3.31.0: User 3 = the preamp gains on the faders - the
+                                                                                                // S1's top-row keys, Inserts and Flip among them, never reach Fermata)
     bind (mcu::Right,   surface::MixerToggle);   bind (mcu::F8, surface::MixerToggle);
     bind (mcu::PlugIn, surface::DialGain);
     bind (mcu::Pan, surface::DialPan);
@@ -135,6 +137,13 @@ void SurfaceController::load()
     }
     meters = st->getBoolValue ("surfaceMeters", true);
     law = st->getIntValue ("surfaceLaw", 0) == 1 ? mcu::FaderLaw::Screen : mcu::FaderLaw::EuControl;
+    if (st->getIntValue ("surfaceMapVersion", 1) < 2)
+    {   // 3.31.0: User 3 (the S1's "cursor left") moves from the meter bridge to the preamp gains on the faders - in a saved map too, if it still had the
+        // old standard job there (a key the user learned for something else is left alone). The meter bridge stays on Ctrl+B (and a Mackie's F7).
+        if (auto it = map.find (mcu::Left); it != map.end() && it->second == surface::MeterBridge) it->second = surface::GainFaders;
+        st->setValue ("surfaceMapVersion", 2);
+        if (st->containsKey ("surfaceMap")) save();
+    }
 }
 
 void SurfaceController::save()
@@ -237,8 +246,19 @@ void SurfaceController::openPorts()
             for (auto& d : list) if (wantName.isNotEmpty() && d.name == wantName) return d.identifier;       // (the same port under a new identifier)
             return {};
         }
-        for (auto& d : list) if (looksLikeSurface (d.name)) return d.identifier;
-        return {};
+        // 3.31.0: the lowest-numbered such port ("Euphonix EuMidi1", ports 1 - 4 for one S1), not the first Windows lists - on the user's PC that was
+        // "Euphonix EuMidi11", which EuControl does not use for the S1
+        juce::String best; int bestNum = INT_MAX;
+        for (auto& d : list)
+            if (looksLikeSurface (d.name))
+            {
+                const auto n = d.name.trim();
+                int start = n.length();
+                while (start > 0 && juce::CharacterFunctions::isDigit (n[start - 1])) --start;
+                const int num = start < n.length() && n.length() - start <= 4 ? n.substring (start).getIntValue() : 9999;     // (no number at the end: after the numbered ones)
+                if (num < bestNum) { bestNum = num; best = d.identifier; }
+            }
+        return best;
     };
     if (in == nullptr)
     {
@@ -380,6 +400,16 @@ void SurfaceController::doAction (int a)
         case surface::MeterBridge:   if (app.showBridge) app.showBridge(); break;
         case surface::MixerToggle:   app.remoteMixer (0); break;
         case surface::DialGain:      dialGain = ! dialGain; force = true; break;
+        case surface::GainFaders:
+        {   // 3.31.0: one key - the faders take the preamp gains (and the dials the levels), and again: back to the levels (and the pans)
+            const bool on = ! (dialGain && flipped);
+            dialGain = on; flipped = on; force = true;
+            banner = on ? juce::String ("PREAMP GAINS ON THE FADERS  (again: levels)") : juce::String ("LEVELS ON THE FADERS");     // (the line holds 56)
+            bannerUntil = juce::Time::getMillisecondCounter() + 1800; bannerShown = false;
+            app.setNotice (on ? "Control surface: the faders now set the preamp gains (the dials the levels). Press the key again for the levels."
+                              : "Control surface: the faders set the levels again.");
+            break;
+        }
         case surface::DialPan:       dialGain = false; force = true; break;
         case surface::FlipFaders:    flipped = ! flipped; force = true; break;
         case surface::BankLeft:      bank = juce::jmax (0, bank - mcu::kStrips); banks[shownMixer] = bank; force = true; break;

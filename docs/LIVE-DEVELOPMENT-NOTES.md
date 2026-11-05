@@ -2,6 +2,15 @@
 
 The brief is in `docs/LIVE-BRIEF.md`, and the rules shared with fermata are in `COMPATIBILITY.md`. Newest entries come first.
 
+## 0.3.2: the polarity key (5 November 2026, built with fermata 3.31.0)
+- `MixStrip::polarity`, `MixModel::hasPolarity / setPolarity` (the Primary's model: the processing mixer's `StripState::polarity`, shared with fermata;
+  the Fixer's own mixer: none yet). The strip shows M | S | Ø.
+- What is heard: `PrimaryApp::playbackGains` makes the track's gains negative; `sendMix` now passes routes with a negative gain (it dropped every gain
+  `<= 0`), and the recorder's `setMix` accepts -16 .. +16 (it refused `<= 0`). MonitorMix just multiplies, so a negative gain inverts. Bounce out goes
+  through the shared AudioEngine, which applies the key itself.
+- `TestSignalDevice::open` clips the channel masks to its 16 inputs and 2 outputs (asked for 256, as fermata asks, it reported them all active and
+  JUCE's manager cleared 256 output pointers - found by the device guard's test, see fermata's notes for 3.31.0).
+
 ## 0.3.1: closing lets go of everything (4 November 2026)
 
 Asked for: "fermata:Live is having the same problem as fermata in that when the program is closed it is hanging on to resources and not closing

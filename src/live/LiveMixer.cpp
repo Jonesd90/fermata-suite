@@ -39,6 +39,16 @@ public:
         solo.onClick = [this] { if (! updating) model.setSolo (id, solo.getToggleState()); };
         addAndMakeVisible (mute); addAndMakeVisible (solo);
         mute.setWantsKeyboardFocus (false); solo.setWantsKeyboardFocus (false);       // (the keys go on to the take window)
+        if (model.hasPolarity())
+        {   // 0.3.2: the polarity key, as on fermata's mixer strips (the project's processing mixer: fermata shows the same)
+            pol.setButtonText (juce::String (juce::CharPointer_UTF8 ("\xc3\x98")));
+            pol.setClickingTogglesState (true);
+            pol.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffffb02e)); pol.setColour (juce::TextButton::textColourOnId, juce::Colours::black);
+            pol.setTooltip ("Polarity: inverts every channel of this track in what you hear and in Bounce out (the recording is never changed). Lit while it is inverted.");
+            pol.onClick = [this] { if (! updating) model.setPolarity (id, pol.getToggleState()); };
+            pol.setWantsKeyboardFocus (false);
+            addAndMakeVisible (pol);
+        }
         addAndMakeVisible (meter);
         set (s);
     }
@@ -50,6 +60,7 @@ public:
         if (pans.size() == 1 && ! pans[0]->isMouseButtonDown()) pans[0]->setValue (s.pan, juce::dontSendNotification);
         if (pans.size() == 2) { if (! pans[0]->isMouseButtonDown()) pans[0]->setValue (s.panL, juce::dontSendNotification); if (! pans[1]->isMouseButtonDown()) pans[1]->setValue (s.panR, juce::dontSendNotification); }
         mute.setToggleState (s.mute, juce::dontSendNotification); solo.setToggleState (s.solo, juce::dontSendNotification);
+        pol.setToggleState (s.polarity, juce::dontSendNotification);
         name.setText (s.name, juce::dontSendNotification);
         updating = false;
     }
@@ -64,7 +75,12 @@ public:
         else if (pans.size() == 2) { auto a = panRow.removeFromLeft (panRow.getWidth() / 2); pans[0]->setBounds (a.withSizeKeepingCentre (34, 34)); pans[1]->setBounds (panRow.withSizeKeepingCentre (34, 34)); }
         r.removeFromTop (4);
         auto ms = r.removeFromTop (22);
-        mute.setBounds (ms.removeFromLeft (ms.getWidth() / 2).reduced (1, 0)); solo.setBounds (ms.reduced (1, 0));
+        if (pol.isVisible())
+        {   // M | S | Ø
+            const int w = ms.getWidth() / 3;
+            mute.setBounds (ms.removeFromLeft (w).reduced (1, 0)); solo.setBounds (ms.removeFromLeft (w).reduced (1, 0)); pol.setBounds (ms.reduced (1, 0));
+        }
+        else { mute.setBounds (ms.removeFromLeft (ms.getWidth() / 2).reduced (1, 0)); solo.setBounds (ms.reduced (1, 0)); }
         r.removeFromTop (4);
         value.setBounds (r.removeFromBottom (18));
         r.removeFromBottom (2);
@@ -89,7 +105,7 @@ private:
     juce::Label name, value;
     juce::Slider fader;
     juce::OwnedArray<juce::Slider> pans;
-    juce::TextButton mute { "M" }, solo { "S" };
+    juce::TextButton mute { "M" }, solo { "S" }, pol;
     LevelMeter meter { true };
 };
 
@@ -233,6 +249,7 @@ public:
             if (s == nullptr || std::find (m->hiddenStrips.begin(), m->hiddenStrips.end(), t.id) != m->hiddenStrips.end()) continue;
             MixStrip x; x.id = t.id; x.name = t.name; x.channels = t.channelCount(); x.colour = chan::of (app.project, t.id);
             x.gainDb = s->gainDb.get(); x.pan = s->pan.get(); x.panL = s->panL.get(); x.panR = s->panR.get(); x.mute = s->mute.get(); x.solo = s->solo.get();
+            x.polarity = s->polarity.get();
             out.push_back (x);
         }
         return out;
@@ -242,6 +259,8 @@ public:
     void setPan (const juce::Uuid& id, int which, float v) override { if (auto* s = strip (id)) { (which == 0 ? s->pan : which == 1 ? s->panL : s->panR).set (v); changed(); } }
     void setMute (const juce::Uuid& id, bool b) override { if (auto* s = strip (id)) { s->mute.set (b); changed(); } }
     void setSolo (const juce::Uuid& id, bool b) override { if (auto* s = strip (id)) { s->solo.set (b); changed(); } }
+    bool hasPolarity() const override { return true; }
+    void setPolarity (const juce::Uuid& id, bool b) override { if (auto* s = strip (id)) { s->polarity.set (b); changed(); } }
     BusState* mainBus() const
     {
         auto* m = app.monitorMixer();

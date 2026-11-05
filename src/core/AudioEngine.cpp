@@ -1303,6 +1303,10 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
                 if (gIn != 1.0f || st->lastIn != 1.0f) { view.applyGainRamp (0, n, st->lastIn, gIn); st->lastIn = gIn; }
             }
             st->lowCut.process (view);                                  // the LC key: before the inserts
+            {   // 3.31.0: the polarity key - every channel inverted; a change is ramped through zero over this block (no click)
+                const float pol = st->polarity.get() ? -1.0f : 1.0f;
+                if (pol != 1.0f || st->lastPol != 1.0f) { view.applyGainRamp (0, n, st->lastPol, pol); st->lastPol = pol; }
+            }
             for (auto& slot : st->slots) slot.process (view);
 
             // fold to stereo (before the fader, so sends can be taken before or after it)
@@ -1347,7 +1351,12 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
                 const float gIn = dbToGain (b->inGainDb.get());
                 if (gIn != 1.0f || b->lastIn != 1.0f) { view.applyGainRamp (0, n, b->lastIn, gIn); b->lastIn = gIn; }
             }
-            if (nd.kind == NodeKind::IntBus) b->lowCut.process (view);  // the LC key (Int Buses only): before the inserts
+            if (nd.kind == NodeKind::IntBus)
+            {
+                b->lowCut.process (view);                               // the LC key (Int Buses only): before the inserts
+                const float pol = b->polarity.get() ? -1.0f : 1.0f;     // 3.31.0: the polarity key, after it (a change ramped over this block)
+                if (pol != 1.0f || b->lastPol != 1.0f) { view.applyGainRamp (0, n, b->lastPol, pol); b->lastPol = pol; }
+            }
             for (auto& slot : b->slots) slot.process (view);
             if (const float pn = juce::jlimit (-1.0f, 1.0f, b->pan.get()); pn != 0.0f)          // balance: the side away from the pan is turned down (cos), the other stays
             {

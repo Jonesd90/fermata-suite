@@ -6,6 +6,20 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.31.0
+Built in the fermata:Live conversation, from your notes of 4 and 5 November.
+- **fermata never changes the audio device by itself.** Until now the audio library did: when the device in use dropped out of its driver's list (an interface pulled out, Windows rearranging its sound devices as something is plugged in), it closed it and opened another one - the saved one or Windows' default - with nobody asked. Now:
+  - **A new interface or driver** found while fermata is open asks: **Keep using** the one in use, **Change to** the new one (playback stops first), or **Choose in Audio settings**. During a recording nothing is asked: the question comes as soon as the take has stopped. (An interface brings several devices at once; they are asked about together, a second and a half after the first.)
+  - **The device in use gone**: fermata says so and opens no other device. When it comes back, fermata opens the same device again by itself (after the take, if one was recording).
+  - **At start-up**, if the device you used last is not there, fermata no longer opens Windows' default in its place: it says so, and opens yours as soon as it is plugged in or switched on.
+- **A polarity key (Ø) on the mixer strips**, beside LC, on every audio track and Int Bus: click it to invert every channel of the strip (after the low cut, before the inserts; the change is ramped over a few milliseconds, so it does not click). Lit orange while on; saved with the mixer; copied, pasted and undone like the rest of a strip. The LC read-out beside the key has made room for it: the low cut's setting is now in the LC key's tooltip (and in its panel, as before: hold the key, or right-click it). It is the mixer's own polarity; the preamp's (Preamps window) is the hardware's.
+- **The Avid S1:**
+  - **User 3 (the "meter" key along the bottom) puts the preamp gains on the faders** - the motor faders then set each track's preamp gain and the dials the levels - and pressed again gives the faders back their levels. The S1's display says which for a moment. The S1's top-row keys (Inserts, Flip and the rest, apart from Bank and Nudge) never reach fermata - EuControl keeps them - so this is on User 3; the meter bridge is still Ctrl+B. Learn can move it to any other key.
+  - **The setup in the Mixer controller window** now has the step that was missing: adding fermata to EuControl's **Applications** list (without it the S1 lamp is green but the S1 does nothing), and to choose "Euphonix EuMidi1".
+  - **With no port chosen, fermata takes "Euphonix EuMidi1"** - the lowest-numbered EuControl port - not the first Windows lists (it took "Euphonix EuMidi11", which EuControl does not use for the S1).
+  - **The MIDI monitor can be seen again** on a 1080-line screen: the setup text takes only the room it needs, and the other keys sit in two columns when the window is wide enough.
+- Shared: the strips' polarity (`src/core/Mixer.h`, `src/core/AudioEngine.cpp`, saved as "polarity" by `src/core/Project.cpp` only when on - older projects read as off). fermata:Live 0.3.2 has the same key in its mixer. Also shared now, unchanged: `src/ui/ClosingLog.h` (fermata's closing log and closing safety net, used by fermata:Live 0.3.1).
+
 ## 3.30.2
 fermata now lives in a new repository together with its new companion, fermata:Live (the live-concert recorder). Both programs are built from one shared core, so they always open each other's projects. **Nothing changes in how fermata works**: its code is the same as 3.30.1, built with the same settings.
 - **One build, two programs.** Every GitHub build now makes `Fermata.exe` (the download "Fermata-windows", as before) and `fermata-Live.exe` (a second download, "fermata-Live-windows").

@@ -45,6 +45,27 @@ AppContext::AppContext()
     timereadout::shared().addChangeListener (this);
     project.structure.addChangeListener (this);
     devices.addChangeListener (this);
+    // 3.31.0: fermata never changes the audio device by itself (DeviceGuard.h)
+    deviceGuard = std::make_unique<DeviceGuard> (devices);
+    {
+        auto& h = deviceGuard->hooks;
+        h.recording = [this] { return engine.isRecording(); };
+        h.playing = [this] { return engine.isPlaying(); };
+        h.stopPlayback = [this] { stopPlayback(); };
+        h.afterChange = [this] { applyAudioSettings(); matchEngineRate(); };
+        h.openAudioSettings = [this] { if (showAudioSettings) showAudioSettings(); };
+        h.savedSetup = [this] { return std::unique_ptr<juce::XmlElement> (props.getUserSettings()->getXmlValue ("audioDevice")); };
+        h.projectRate = [this] { return project.audioRate(); };
+        h.notice = [this] (const juce::String& t) { setNotice (t); };
+        h.ask = [] (const juce::String& title, const juce::String& message, const juce::StringArray& buttons, std::function<void (int)> answer)
+        {
+            // (the first button is also Escape and the window's close: it is always the one that changes nothing)
+            auto* aw = new juce::AlertWindow (title, message, juce::MessageBoxIconType::QuestionIcon);
+            for (int i = 0; i < buttons.size(); ++i)
+                aw->addButton (buttons[i], i + 1, i == 0 ? juce::KeyPress (juce::KeyPress::escapeKey) : juce::KeyPress());
+            aw->enterModalState (true, juce::ModalCallbackFunction::create ([answer] (int r) { if (answer) answer (juce::jmax (0, r - 1)); }), true);
+        };
+    }
     startTimer (4000);
     project.onNewWindow = [this] { juce::MessageManager::callAsync ([this] { if (saveHold == 0 && project.dirty.load() && project.projectFile != juce::File() && ! engine.isRecording()) saveNow (true); }); };      // a new edit / take window / mixer gets its file at once
     watcher.fn = [this]
