@@ -7,5 +7,7 @@ DEFS="-DJUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1 -DJUCE_STANDALONE_APPLICATION=1 -
 for m in $MODS; do DEFS="$DEFS -DJUCE_MODULE_AVAILABLE_$m=1"; done
 FILES=${@:-$(ls "$HERE"/src/ui/*.cpp "$HERE"/src/Main.cpp "$HERE"/src/live/*.cpp 2>/dev/null)}      # fermata's windows and fermata:Live's
 rc=0
-for f in $FILES; do echo "== $f"; g++ -std=c++17 -fsyntax-only -Wall -Wextra -Wno-unused-parameter -I"$JUCE/modules" $DEFS "$f" 2>&1 | grep -v "^In file included\|juce/modules" | head -40; [ ${PIPESTATUS[0]} -ne 0 ] && rc=1; done
+# (fermata 3.37.0: -Wno-missing-field-initializers - a brace list that leaves its last members to start empty, as C++ means it to, is not reported;
+#  Microsoft's compiler, which makes the programs, has no such warning. Asked for on 5 November 2026.)
+for f in $FILES; do echo "== $f"; g++ -std=c++17 -fsyntax-only -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -I"$JUCE/modules" $DEFS "$f" 2>&1 | grep -v "^In file included\|juce/modules" | head -40; [ ${PIPESTATUS[0]} -ne 0 ] && rc=1; done
 exit $rc

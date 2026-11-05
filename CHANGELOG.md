@@ -6,6 +6,28 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.37.0
+Built in the fermata:Live conversation, 5 November.
+- **The spectral pictures and the ReTouch fixes are several times quicker, with the same results.** The sharp picture (Noise mode and the ReTouch windows), the
+  quick picture under it, and ReTouch, Gain and Consonants now use a much faster FFT (the maths at the heart of each: pocketfft, already in fermata for the
+  ReHarmoniSer and the denoiser). Timed on the test machine (one core): the sharp picture of a 19-second page 4.1 s -> 0.9 s, of a 2-second page 0.9 s -> 0.2 s;
+  the quick picture of 22 s 0.32 s -> 0.18 s; ReTouch on a 1-second box 0.17 s -> 0.05 s; Gain 0.05 s -> 0.01 s. The fixed audio is bit for bit what it was;
+  the pictures differ by less than 0.00002 dB (far too little to change a colour).
+- **Every core it may use**: the sharp picture and the ReHarmoniSer stopped at 8 cores. They now use as many as ReTouch does - the cores not kept for the
+  audio, less one for the windows, up to 16.
+- **The ReHarmoniSer window has ReTouch's sharp picture.** It is made for exactly what is in view, at the size it is shown, every time you zoom or scroll:
+  every bit of the sound is moved to the moment and the pitch it really belongs to, so notes are crisp lines and attacks sharp, where the old picture (made
+  once for the whole audio, on a grid of at least 10 ms) was soft and went blocky when zoomed. The lines are softened by a pixel or two so they read at a
+  glance, a little more low down where an attack would otherwise break into dots. The old picture shows for the moment it takes to make. The See mixer,
+  Colour gain, Colour contrast, the colour wheel and Spectrogram (opacity) work on it as before; Detail chooses its window (Pitch longer, Time shorter).
+  What you hear and every correction are unchanged. (The analysis also reduces the channels side by side now, not one after another.)
+- The Linux check of the window code (`tools/syntax-check-ui.sh`) no longer reports the 16 "missing initializer" warnings - a list that leaves its last
+  settings to start empty, as C++ means it to. Microsoft's compiler, which makes fermata, never reported them. No program code changed for this.
+- Shared: `src/core/Dsp.h` and `src/core/DenoiseFft.cpp` (the fast FFT, `dsp::FastFFT`), `src/core/SpectralPicture.h` (its FFT, every core, and adding
+  tracks up with their own levels for the ReHarmoniSer), `src/core/SpectralPyramid.h` and `src/core/SpectralRepair.h` (their FFT). fermata:Live's Fixer
+  uses these - its ReTouch picture and fixes get quicker in the same way, with the same results: it needs a rebuild and test. `tools/syntax-check-ui.sh`
+  (the warning above) checks both programs.
+
 ## 3.36.0
 Built in the fermata:Live conversation, 5 November.
 - **Consonants in Noise mode**, as in the ReTouch window - a fifth tab, **Consonants [C]**, so the consonant tidying can be done on the final pass without leaving Noise mode:

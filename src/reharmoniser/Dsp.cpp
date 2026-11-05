@@ -382,10 +382,15 @@ CVec lowpassFlat (const CVec& z, double sr, double flatHz, double rollHz)
     return out;
 }
 
+static std::atomic<int> gParallelThreads { 0 };
+void setParallelThreads (int n) { gParallelThreads.store (std::max (0, n)); }
+
 void parallelFor (size_t count, const std::function<void (size_t)>& fn)
 {
     unsigned hw = std::thread::hardware_concurrency();
-    const size_t workers = std::min<size_t> (count, std::max<unsigned> (1u, std::min (hw, 8u)));
+    const int set = gParallelThreads.load();
+    const unsigned most = set > 0 ? (unsigned) set : std::min (hw, 8u);
+    const size_t workers = std::min<size_t> (count, std::max<unsigned> (1u, most));
     if (workers <= 1) { for (size_t i = 0; i < count; ++i) fn (i); return; }
     std::atomic<size_t> next { 0 };
     std::exception_ptr error; std::mutex em;

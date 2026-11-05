@@ -47,7 +47,7 @@ struct SpectralPyramid
         auto& L = levels[0];
         f0 = juce::jlimit (0, L.frames, f0); f1 = juce::jlimit (f0, L.frames, f1);
         if (replace) std::fill (L.db.begin() + (size_t) f0 * (size_t) bins, L.db.begin() + (size_t) f1 * (size_t) bins, (std::uint8_t) 0);
-        const dsp::FFT fft (N); const auto win = dsp::hann (N);
+        const dsp::FastFFT fft (N); const auto win = dsp::hann (N);     // (3.37.0: pocketfft)
         std::vector<std::complex<double>> buf ((size_t) N);
         // the frames are read in runs: a run's samples once, each frame's window cut from it
         const int run = 256;

@@ -66,6 +66,7 @@ struct MergedSpectrogram
     }
 };
 
+// (3.37.0: every FFT here is dsp::FastFFT - pocketfft - the same sound, sooner)
 class SpectralRepair
 {
 public:
@@ -82,7 +83,7 @@ public:
         s.hopSamples = hop;
         s.frames = (int) ((double) (L - (size_t) N) / hop) + 1;
         s.db.assign ((size_t) s.frames * (size_t) s.bins, -120.0f);
-        const dsp::FFT fft (N); const auto win = dsp::hann (N);
+        const dsp::FastFFT fft (N); const auto win = dsp::hann (N);
         std::vector<std::complex<double>> buf ((size_t) N);
         // the bass layer: the sound is thinned out (D times fewer samples, with a low-pass first) and a window of the same N points then spans D times longer
         const int D = bassMode == 2 ? 16 : 8;
@@ -211,7 +212,7 @@ public:
         const long S = juce::jmax (0L, t0 - 2L * N), E = juce::jmin (L, t1 + 2L * N);
         if (E - S < (long) N) return;
         const long F = (E - S - N) / H + 1;
-        const dsp::FFT fft (N); const auto win = dsp::hann (N);
+        const dsp::FastFFT fft (N); const auto win = dsp::hann (N);
         double winEnergy = 0.0; for (int i = 0; i < N; ++i) winEnergy += win[(size_t) i] * win[(size_t) i];
         // the gain per bin: full inside the pitch range, a short smooth slope (about a third of an octave, at least 3 bins) at each edge, half-way at the edge itself
         std::vector<double> gb ((size_t) bins, 1.0);
@@ -308,7 +309,7 @@ public:
         if (hi - lo < 1000.0) { lo = f0; hi = juce::jmin (f1, sr * 0.49); }
         const int c0 = juce::jlimit (1, bins - 1, (int) std::ceil (lo / hz)), c1 = juce::jlimit (c0, bins - 1, (int) std::floor (hi / hz));
         const long span = (long) (bgSeconds * sr), nearSpan = (long) (nearSeconds * sr);
-        const dsp::FFT fft (N); const auto win = dsp::hann (N);
+        const dsp::FastFFT fft (N); const auto win = dsp::hann (N);
         std::vector<std::complex<double>> buf ((size_t) N);
         auto frames = [&] (const std::vector<float>& x, long a, long b)              // the top-band power of every frame lying wholly in [a, b), in time order
         {
@@ -402,7 +403,7 @@ private:
         if (E - S < 2L * N) return;
         const long F = (E - S - N) / H + 1;
         if (F < 4) return;
-        const dsp::FFT fft (N); const auto win = dsp::hann (N);
+        const dsp::FastFFT fft (N); const auto win = dsp::hann (N);
         std::vector<std::complex<double>> buf ((size_t) N);
         using Spec = std::vector<std::vector<std::complex<double>>>;
         std::vector<Spec> X ((size_t) nch, Spec ((size_t) F, std::vector<std::complex<double>> ((size_t) bins)));
@@ -1103,7 +1104,7 @@ public:
         const int kLo = juce::jmax (1, (int) (2000.0 * N / sr)), kHi = juce::jmin (N / 2, (int) (juce::jmin (20000.0, 0.45 * sr) * N / sr));
         const int nb = kHi - kLo;
         if (nb < 8) return out;
-        const dsp::FFT fft (N); const auto win = dsp::hann (N);
+        const dsp::FastFFT fft (N); const auto win = dsp::hann (N);
         std::vector<float> E ((size_t) F * (size_t) nb);                        // dB per frame and HF bin
         std::vector<double> hf ((size_t) F, 0.0), full ((size_t) F, 0.0);         // the HF and the whole energy per frame (linear)
         std::vector<std::complex<double>> buf ((size_t) N);
@@ -1299,7 +1300,7 @@ private:
     static std::vector<std::vector<Cd>> analyse (const std::vector<float>& x, long S, long F, int N, int H)
     {
         const long L = (long) x.size();
-        const dsp::FFT fft (N); const auto win = dsp::hann (N);
+        const dsp::FastFFT fft (N); const auto win = dsp::hann (N);
         std::vector<std::vector<Cd>> X ((size_t) F, std::vector<Cd> ((size_t) N / 2 + 1));
         std::vector<Cd> buf ((size_t) N);
         for (long f = 0; f < F; ++f)
@@ -1314,7 +1315,7 @@ private:
     static void synthesise (const std::vector<std::vector<Cd>>& Y, std::vector<float>& x, long S, int N, int H, long t0, long t1)
     {
         const long F = (long) Y.size(); const long L = (long) x.size();
-        const dsp::FFT fft (N); const auto win = dsp::hann (N);
+        const dsp::FastFFT fft (N); const auto win = dsp::hann (N);
         std::vector<double> out ((size_t) (F * H + N), 0.0), norm (out.size(), 0.0);
         std::vector<Cd> buf ((size_t) N);
         for (long f = 0; f < F; ++f)
@@ -1416,7 +1417,7 @@ private:
         const long S = juce::jmax (0L, t0 - juce::jmax (8L * N, ctxSamples > 0 ? ctxSamples + 2L * N : 0L));
         const long E = juce::jmin (L, t1 + 2L * N);
         const long F = (long) std::ceil ((double) (E - S) / H) + 1;
-        const dsp::FFT fft (N); const auto win = dsp::hann (N);
+        const dsp::FastFFT fft (N); const auto win = dsp::hann (N);
         auto sample = [&] (long n) { return (n >= 0 && n < L) ? x[(size_t) n] : 0.0; };
         std::vector<std::vector<std::complex<double>>> X ((size_t) F, std::vector<std::complex<double>> ((size_t) bins));
         std::vector<std::complex<double>> buf ((size_t) N);

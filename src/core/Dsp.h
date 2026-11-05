@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <algorithm>
+#include <memory>
 
 namespace td { namespace dsp
 {
@@ -40,6 +41,22 @@ private:
         }
     }
     int n; std::vector<std::complex<double>> tw; std::vector<int> rev;
+};
+
+/** 3.37.0: the same transform as FFT (the same results, to the last few of their 16 digits), made by pocketfft - the ReHarmoniSer's and the
+    denoiser's FFT, in DenoiseFft.cpp - which is several times quicker at the sizes the spectral pictures and the ReTouch fixes use. Made once, it may
+    be used by several threads at once (each call has its own working space). */
+class FastFFT
+{
+public:
+    explicit FastFFT (int sizePow2);
+    int size() const noexcept { return n; }
+    void forward (std::vector<std::complex<double>>& a) const;
+    /** Inverse, scaled by 1/n. */
+    void inverse (std::vector<std::complex<double>>& a) const;
+    struct Plan;
+private:
+    int n; std::shared_ptr<const Plan> plan;
 };
 
 inline std::vector<double> hann (int n)

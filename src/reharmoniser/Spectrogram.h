@@ -21,6 +21,7 @@ struct Spectrogram
     double ref = 0.0;                  // dB level that is shown as the top of the colour scale
     std::vector<std::vector<uint8_t>> db;   // [channel][frame * nb + bin]
     Vec gain;                          // linear "see" gain per channel
+    std::vector<std::vector<float>> low;    // 3.37.0: the channels at the analysis rate (sr2), kept for the sharp picture fermata draws over this one
 
     /** Analyses the channels (all the same length). Throws Cancelled / std::runtime_error. */
     void build (const std::vector<Span>& chans, int sampleRate, Detail d = Detail::Balanced, const Hooks& hooks = {});

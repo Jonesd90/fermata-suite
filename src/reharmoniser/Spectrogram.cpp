@@ -21,7 +21,9 @@ void Spectrogram::build (const std::vector<Span>& chans, int sampleRate, Detail 
     sr = sampleRate;
     const size_t nch = chans.size();
     std::vector<std::vector<float>> xs (nch);
-    for (size_t c = 0; c < nch; ++c) sr2 = decimateTo (chans[c].p, chans[c].n, sr, xs[c]);
+    std::vector<int> rates (nch, sr);                                    // (3.37.0: the channels side by side, not one after another)
+    parallelFor (nch, [&] (size_t c) { rates[c] = decimateTo (chans[c].p, chans[c].n, sr, xs[c]); });
+    sr2 = rates[0];
     gain.assign (nch, 1.0);
     const double dsec = detail == Detail::Pitch ? 0.34 : (detail == Detail::Balanced ? 0.17 : 0.085);
     const size_t NL = (size_t) std::pow (2.0, std::nearbyint (std::log2 (dsec * sr2)));
@@ -78,6 +80,7 @@ void Spectrogram::build (const std::vector<Span>& chans, int sampleRate, Detail 
         const int d = ++done; hooks.report ("Analysing the channels", (double) d / (double) nch);
     });
     if (stop) throw Cancelled();
+    low = std::move (xs);
     findRef();
 }
 

@@ -79,4 +79,7 @@ CVec lowpassFlat (const CVec& z, double sr, double flatHz, double rollHz);
 
 /** Runs fn (0) .. fn (count - 1), on several threads when there is more than one (the jobs must not touch each other's data). */
 void parallelFor (size_t count, const std::function<void (size_t)>& fn);
+/** 3.37.0: the most threads parallelFor uses (0, the start: up to 8, as before). fermata sets it to the cores it may use - those not kept for its
+    audio - before each job of the ReHarmoniSer window. */
+void setParallelThreads (int n);
 } // namespace rehar

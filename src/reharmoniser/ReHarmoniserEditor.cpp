@@ -1,7 +1,10 @@
 #include "ReHarmoniserEditor.h"
+#include "../core/SpectralPicture.h"        // 3.37.0: fermata's sharp (ReTouch) picture, and the count of the cores it may use
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <numeric>
+#include <thread>
 
 namespace rehar
 {
@@ -216,7 +219,8 @@ class ReHarmoniserEditor::View : public juce::Component
 public:
     static constexpr int kKeys = 58, kRuler = 22;
     static constexpr double kDefaultHue = 0.083;                // the amber of the original (0..1 round the colour wheel)
-    explicit View (ReHarmoniserEditor& o) : ed (o) { setHue (kDefaultHue, false); }
+    explicit View (ReHarmoniserEditor& o) : ed (o) { setHue (kDefaultHue, false); sharpTimer.v = this; }
+    ~View() override { sharpTimer.stopTimer(); if (sharpCancel != nullptr) sharpCancel->store (true); }
     /** The colour scheme of the picture, from one hue (the wheel in the View block): quiet = nearly black with a tint of the hue, loud = the hue at full
         strength and then almost white. Any hue is possible, it moves smoothly. */
     void setHue (double hue, bool redraw = true)
@@ -293,6 +297,31 @@ public:
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 
     ReHarmoniserEditor& ed; juce::Image image; std::array<juce::Colour, 256> lut;
+
+    // ---- 3.37.0: the sharp picture - fermata's ReTouch picture ("reassigned": every bit of the sound moved to the moment and the pitch it belongs to,
+    //      so notes are thin lines and attacks sharp), made for exactly what is in view at the size it is shown, from the channels at the analysis rate,
+    //      added up at the See mixer's levels as the quick one is. The quick picture (made once for the whole audio) shows until it is ready.
+    struct SharpKey
+    {
+        double t0 = 0, t1 = 0, m0 = 0, m1 = 0, a4 = 0; int w = 0, h = 0, detail = 0; Vec gains; const void* src = nullptr;
+        bool operator== (const SharpKey& o) const
+        {
+            return t0 == o.t0 && t1 == o.t1 && m0 == o.m0 && m1 == o.m1 && a4 == o.a4 && w == o.w && h == o.h && detail == o.detail && gains == o.gains && src == o.src;
+        }
+    };
+    static constexpr float kSharpLift = 0.0f;     // (dB, on top of the quick picture's scale)
+    static constexpr double kSharpSoftenY = 1.0, kSharpSoftenX = 0.6;         // (pixels: see softenSharp)
+    SharpKey keyNow (juce::Rectangle<int> pl) const
+    {
+        SharpKey k; k.t0 = vt0; k.t1 = vt1; k.m0 = vm0; k.m1 = vm1; k.a4 = ed.a4; k.w = pl.getWidth(); k.h = pl.getHeight(); k.detail = ed.detailMode;
+        k.gains = ed.seeGainsLin(); k.src = ed.spec.get();
+        return k;
+    }
+    void startSharp();
+    td::DetailPicture sharp; SharpKey sharpKey, wantKey; bool haveSharp = false;
+    std::shared_ptr<std::atomic<bool>> sharpCancel;
+    struct SharpTimer : juce::Timer { View* v = nullptr; void timerCallback() override { stopTimer(); if (v != nullptr) v->startSharp(); } } sharpTimer;
+
     enum class Mode { none, box, edge, keys, ruler, brush } mode = Mode::none;
     juce::Point<int> downPos, lastStroke; double anchorT = 0, anchorM = 0, panM0 = 0, panM1 = 0; bool moved = false;
     /** The box's edge handles: which edge(s) of the note box the mouse is on (bit 1 left, 2 right, 4 top, 8 bottom), or 0. */
@@ -308,6 +337,24 @@ void ReHarmoniserEditor::View::rebuildImage (juce::Rectangle<int> pl)
     const auto& mx = *ed.mix;
     image = juce::Image (juce::Image::RGB, W, H, false);
     juce::Image::BitmapData bd (image, juce::Image::BitmapData::writeOnly);
+    const float add = (float) (gainDb / 70.0 * 255.0);
+    // 3.37.0: the sharp picture of exactly this view, when it is ready (on the same scale as the quick one: 0..255 over the 70 dB below its top)
+    const auto key = keyNow (pl);
+    if (haveSharp && sharpKey == key && sharp.valid() && sharp.w == W && sharp.h == H)
+    {
+        const float lo = (float) (ed.refDb - 70.0);
+        for (int y = 0; y < H; ++y)
+        {
+            const float* row = sharp.db.data() + (size_t) y * (size_t) W;
+            for (int x = 0; x < W; ++x)
+            {
+                const float v = (row[x] + kSharpLift - lo) / 70.0f * 255.0f;
+                bd.setPixelColour (x, y, lut[(size_t) juce::jlimit (0, 255, (int) ((juce::jlimit (0.0f, 255.0f, v) - 128.0f) * (float) contrast + 128.0f + add))]);
+            }
+        }
+        return;
+    }
+    if (! (wantKey == key)) { wantKey = key; sharpTimer.startTimer (180); }        // (asked for once the view has stopped moving)
     std::vector<int> b0 ((size_t) H); std::vector<float> fr ((size_t) H);
     for (int y = 0; y < H; ++y)
     {
@@ -316,7 +363,6 @@ void ReHarmoniserEditor::View::rebuildImage (juce::Rectangle<int> pl)
         if (bp < 0.0 || bp >= (double) mx.nb - 1.0) { b0[(size_t) y] = -1; continue; }
         b0[(size_t) y] = (int) bp; fr[(size_t) y] = (float) (bp - std::floor (bp));
     }
-    const float add = (float) (gainDb / 70.0 * 255.0);
     for (int x = 0; x < W; ++x)
     {
         const double t = vt0 + ((double) x + 0.5) / (double) W * (vt1 - vt0);
@@ -330,6 +376,81 @@ void ReHarmoniserEditor::View::rebuildImage (juce::Rectangle<int> pl)
             bd.setPixelColour (x, y, lut[(size_t) juce::jlimit (0, 255, (int) ((v - 128.0f) * (float) contrast + 128.0f + add))]);
         }
     }
+}
+
+/** 3.37.0: the sharp picture softened a little (its energy spread over a pixel or two, more up and down than across). It is made one pixel per point,
+    and with 15 to 25 rows to a semitone here its lines would be one row thin - too faint to read at a glance (the ReTouch window's pitch scale has a
+    few rows to a semitone). Low down the analysis points are several rows apart, and an attack would show as a row of beads: there it is spread over
+    a part of that gap ('binHz' apart, the picture's pitch scale even semitones from fLo to fHi). The pitch still shows to a few cents. */
+static void softenSharp (td::DetailPicture& p, double binHz, double sigmaY, double sigmaX)
+{
+    const int W = p.w, H = p.h;
+    std::vector<float> a ((size_t) W * (size_t) H), b (a.size());
+    for (size_t i = 0; i < a.size(); ++i) a[i] = p.db[i] <= -199.0f ? 0.0f : std::pow (10.0f, p.db[i] / 10.0f);
+    auto kernel = [] (double sigma)                                              // (a Gaussian, summing to 1)
+    {
+        const int r = juce::jmax (1, (int) std::ceil (3.0 * sigma));
+        std::vector<float> k ((size_t) (2 * r + 1)); float sum = 0.0f;
+        for (int i = -r; i <= r; ++i) { k[(size_t) (i + r)] = (float) std::exp (-0.5 * i * i / (sigma * sigma)); sum += k[(size_t) (i + r)]; }
+        for (auto& v : k) v /= sum;
+        return k;
+    };
+    const double lnSpan = std::log (juce::jmax (1.0001, p.axis.fHi / p.axis.fLo));
+    for (int y = 0; y < H; ++y)                                                  // up and down: each row its own spread
+    {
+        const double hz = p.axis.fLo * std::exp ((1.0 - (double) y / (double) juce::jmax (1, H - 1)) * lnSpan);
+        const double rowsPerBin = binHz * (double) (H - 1) / (hz * lnSpan);
+        const auto ky = kernel (juce::jlimit (sigmaY, 3.5, 0.4 * rowsPerBin));
+        const int ry = (int) ky.size() / 2;
+        for (int x = 0; x < W; ++x)
+        {
+            float v = 0.0f;
+            for (int i = -ry; i <= ry; ++i) { const int yy = juce::jlimit (0, H - 1, y + i); v += ky[(size_t) (i + ry)] * a[(size_t) yy * (size_t) W + (size_t) x]; }
+            b[(size_t) y * (size_t) W + (size_t) x] = v;
+        }
+    }
+    const auto kx = kernel (sigmaX); const int rx = (int) kx.size() / 2;
+    for (int y = 0; y < H; ++y)                                                  // across
+    {
+        const float* row = b.data() + (size_t) y * (size_t) W;
+        for (int x = 0; x < W; ++x)
+        {
+            float v = 0.0f;
+            for (int i = -rx; i <= rx; ++i) v += kx[(size_t) (i + rx)] * row[juce::jlimit (0, W - 1, x + i)];
+            p.db[(size_t) y * (size_t) W + (size_t) x] = v > 1.0e-20f ? 10.0f * std::log10 (v) : -200.0f;
+        }
+    }
+}
+
+void ReHarmoniserEditor::View::startSharp()
+{
+    auto sp = ed.spec;
+    const auto key = wantKey;
+    if (sp == nullptr || sp->low.empty() || sp->sr2 < 8000 || key.w < 2 || key.h < 2 || key.src != sp.get()) return;
+    if (sharpCancel != nullptr) sharpCancel->store (true);
+    auto cancel = std::make_shared<std::atomic<bool>> (false); sharpCancel = cancel;
+    td::PictureAxis ax; ax.fLo = midiHz (key.m0, key.a4); ax.fHi = midiHz (key.m1, key.a4); ax.warp = 1.0; ax.mel = false;   // (even semitones, as this picture is)
+    td::PictureOptions opt; opt.sumTracks = true;
+    opt.detail = key.detail == 0 ? 0.0 : (key.detail == 2 ? 1.0 : 0.5);              // the Detail box: Pitch = a longer window, Time = a shorter one
+    for (double g : key.gains) opt.trackGain.push_back ((float) g);
+    juce::Component::SafePointer<View> self (this);
+    std::thread ([sp, key, ax, opt, cancel, self]
+    {
+        try                                                                      // (nothing may escape a thread: out of memory leaves the quick picture)
+        {
+            auto pic = std::make_shared<td::DetailPicture> (td::picture::render (sp->low, (double) sp->sr2, key.t0, key.t1, key.w, key.h, ax, opt, [cancel] { return cancel->load(); }));
+            if (cancel->load() || ! pic->valid()) return;
+            const double binHz = (double) sp->sr2 / (double) td::picture::fftSize (td::picture::windowSigma ((double) sp->sr2, key.t1 - key.t0, key.w, opt));
+            softenSharp (*pic, binHz, kSharpSoftenY, kSharpSoftenX);
+            if (cancel->load()) return;
+            juce::MessageManager::callAsync ([self, pic, key]
+            {
+                if (self == nullptr || ! (self->wantKey == key)) return;                // (the view has moved on since)
+                self->sharp = std::move (*pic); self->sharpKey = key; self->haveSharp = true; self->dirty = true; self->repaint();
+            });
+        }
+        catch (...) {}
+    }).detach();
 }
 
 void ReHarmoniserEditor::View::paint (juce::Graphics& g)
@@ -973,6 +1094,7 @@ void ReHarmoniserEditor::setStatus (const juce::String& m, bool error)
 
 void ReHarmoniserEditor::startJob (const juce::String& stage, std::function<juce::String (Worker&)> work, std::function<void (const juce::String&)> done)
 {
+    setParallelThreads (td::workers::threadsFor (1 << 20));                    // 3.37.0: every core fermata may use (those not kept for its audio) - it stopped at 8
     busy = true; progressValue = 0.0; bar.setVisible (true); setStatus (stage); updateButtons();
     juce::Component::SafePointer<ReHarmoniserEditor> self (this);
     worker->start (std::move (work), [self, done] (const juce::String& err)

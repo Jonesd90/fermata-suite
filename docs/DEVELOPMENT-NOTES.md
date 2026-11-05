@@ -1944,6 +1944,36 @@ fermata moved to a new repository that also holds its companion, fermata:Live (t
   useNextPage: takeReadyDetail, or, if the one for this page is still being made, adoptAhead - startDetail then waits for it instead of starting the same
   picture again, and aheadDone shows it (or asks the view for its own if it came to nothing).
 - Checked on Linux with a test-only copy of the dialog that pretends to play (there is no audio device on the test display) and logs each step: the turn
-  used the picture made ahead every time (19 s pages, about 8 s per sharp picture on the test machine); a fix while playing threw the one being made away and
+  used the picture made ahead every time (19 s pages, about 8 s per sharp picture in the test machine's unoptimised build); a fix while playing threw the one being made away and
   made it again after the page's own; a zoom while playing called it off; a turn onto a page whose picture was half made showed it 3 s later instead of
   starting again.
+
+## 3.37.0: the fast FFT, every core, and the sharp picture in the ReHarmoniSer (built in the fermata:Live conversation, 5 November 2026)
+- Asked for: "do 1 and 3 - and try to improve the reharmonizer window" (1 = a faster FFT, 3 = lift the 8-core limit), with "I am usually loading about 10
+  seconds (or less) of music into the reharmonizer window ... it would VERY rarely be above 30 seconds". And, for the next zip, option 2 of the warnings:
+  turn the "missing initializer" warning off in the Linux check rather than edit the program lines.
+- `dsp::FastFFT` (Dsp.h; body in DenoiseFft.cpp, the one translation unit that compiles pocketfft in the shared core - so no build list changed): the same
+  interface as `dsp::FFT` (forward, inverse scaled by 1/n), a `pocketfft::detail::pocketfft_c<double>` plan made once in the constructor (the high-level
+  `pocketfft::c2c` with POCKETFFT_CACHE_SIZE 0 makes a new plan at every call), `exec` on the vector's data as `cmplx<double>` (the same layout as
+  std::complex). exec is const and takes its own scratch, so one FastFFT is shared by the picture's threads. Used by SpectralPicture (render), SpectralPyramid
+  (addTrack) and SpectralRepair (its eight FFTs). `dsp::FFT` stays for the rest (PitchShift, TakeMatch, LowCut's design, WaveColor) - unchanged results there.
+- Measured with an optimised bench (-O2, one thread; fftbench in the scratchpad): sharp picture 19.2 s at 1042 x 535, 96 kHz, one track 4.12 -> 0.90 s, four
+  tracks (two threads) 8.36 -> 1.97 s, 2 s page 0.91 -> 0.22 s; quick picture 22 s 0.32 -> 0.18 s; Attenuate 1 s box 1-6 kHz 0.17 -> 0.05 s; boxGain 0.05 ->
+  0.01 s. Compared: Attenuate and boxGain outputs identical sample for sample (float32), the pyramid's bytes identical, the sharp pictures within 1.5e-5 dB.
+- Threads: picture::render uses `workers::threadsFor (tracks)` (was min (8, hardware)); the ReHarmoniSer's `parallelFor` takes its most from
+  `rehar::setParallelThreads`, which the editor sets to `workers::threadsFor (1 << 20)` at every job (startJob) - the engine stays JUCE-free and its own
+  tests keep the old "up to 8". No parallelFor runs inside another (checked by scanning the bodies and the functions they call). tools/reharmoniser-check.sh
+  (golden made with make_golden.py): output identical to the old code's, line for line.
+- PictureOptions: `sumTracks` (the tracks' energy added, as the ReHarmoniSer's own picture adds its channels by power) and `trackGain` (linear per track,
+  squared onto its power; 0 = skipped). `picture::windowSigma` / `picture::fftSize` split out of render (same values) so the ReHarmoniSer knows the bin spacing.
+- ReHarmoniSer: Spectrogram keeps its decimated channels (`low`, at sr2, at most 24 kHz - the view tops at MIDI 108, 4.2 kHz) and decimates them with
+  parallelFor. The View: `keyNow` (view times and MIDI range, A4, size, Detail, the See gains, the Spectrogram) - when the sharp picture's key is the view's,
+  rebuildImage draws it on the quick picture's scale (0..255 over refDb-70 .. refDb, then contrast / gain / LUT as before); otherwise the quick picture, and
+  the request after 180 ms (sharpTimer; startSharp: a thread, picture::render of `spec->low` with an even-semitone axis (warp 1) from midiHz (vm0) to
+  midiHz (vm1), sumTracks and the See gains, detail 0 / 0.5 / 1 for Pitch / Balanced / Time, cancelled by the next). softenSharp then spreads the power
+  over sigma 1 row (0.6 px across), and low down over 0.4 x the rows between two bins (up to 3.5): a reassigned impulse keeps each bin's own pitch, so with
+  8-9 rows between bins near A2 an attack was a column of dots. The level: the quick picture's p99.5 was about 4 dB under the sharp one's before the
+  softening (a test of four voices on four mics), which the softening takes back, so no offset is added (kSharpLift 0).
+- Checked on Linux (the Prelude test edit, marks at 30 and 40 s, H: the two stream windows): the sharp picture replaces the quick one; lines crisp, attacks
+  continuous after softenSharp; the ReHarmoniSer window code compiles clean under -Wall -Wextra (it is not in syntax-check-ui's list).
+

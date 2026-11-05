@@ -3,6 +3,7 @@
     A Gaussian window is used (very low side lobes), and the energy of every analysis point is moved to where the sound really is (the instantaneous time and
     frequency), which makes tones thin sharp lines and clicks thin vertical lines instead of blurs. Plain C++17 + JUCE core types only. */
 #include "Dsp.h"
+#include "Workers.h"
 #include <atomic>
 #include <functional>
 #include <thread>
@@ -41,6 +42,9 @@ struct PictureOptions
     bool   reassign = true;        // move the energy to where the sound really is (sharp lines)
     double detail = 0.5;           // 0 = finer pitch detail (a longer window), 1 = finer time detail (a shorter one); 0.5 = chosen from the zoom
     double reduceAboveSec = 240.0; // a view longer than this is drawn with fewer analysis points
+    // 3.37.0, for the ReHarmoniSer's picture (its own adds its channels up, each at the level of its See mixer):
+    bool   sumTracks = false;      // the tracks' energy added up at every point, instead of the loudest track's
+    std::vector<float> trackGain;  // each track's level (linear; empty = all 1; 0 = left out)
 };
 
 /** A finished picture: the level in dB (0 = a full-scale tone) of every pixel, row 0 at the top. */
@@ -53,17 +57,25 @@ struct DetailPicture
 
 namespace picture
 {
+/** The analysis window: Gaussian, its width (sigma, in samples) chosen from the zoom (about 6 pixels wide) unless the 'detail' control moves it; and the
+    FFT for it. (3.37.0: on their own, so the ReHarmoniSer knows how far apart the analysis points are in pitch - render uses them as before.) */
+inline double windowSigma (double sr, double span, int W, const PictureOptions& opt)
+{
+    const double secPerPx = span / (double) juce::jmax (1, W);
+    const double fwhm = juce::jlimit (0.008, 0.040, secPerPx * 6.0) * std::pow (2.0, -(juce::jlimit (0.0, 1.0, opt.detail) - 0.5) * 2.0);
+    return juce::jmax (8.0, fwhm / 2.3548 * sr);
+}
+inline int fftSize (double sigma) { int N = 512; while ((double) N < 13.6 * sigma && N < 65536) N <<= 1; return N; }
+
 /** The picture of [t0,t1] seconds (from the first sample of the tracks) of every track, the loudest track at every point. Returns an invalid picture if cancelled. */
 inline DetailPicture render (const std::vector<std::vector<float>>& tracks, double sr, double t0, double t1, int W, int H, const PictureAxis& axis, const PictureOptions& opt,
                              const std::function<bool()>& cancelled = {}, const std::function<void (float)>& progress = {})
 {
     DetailPicture pic; pic.w = W; pic.h = H; pic.t0 = t0; pic.t1 = t1; pic.axis = axis;
     if (tracks.empty() || W < 2 || H < 2 || t1 <= t0 || sr < 8000.0) return pic;
-    const double span = t1 - t0, secPerPx = span / (double) W;
-    // the window: Gaussian, its width chosen from the zoom (about 6 pixels wide) unless the 'detail' control moves it
-    const double fwhm = juce::jlimit (0.008, 0.040, secPerPx * 6.0) * std::pow (2.0, -(juce::jlimit (0.0, 1.0, opt.detail) - 0.5) * 2.0);
-    const double sigma = juce::jmax (8.0, fwhm / 2.3548 * sr);                  // samples
-    int N = 512; while ((double) N < 13.6 * sigma && N < 65536) N <<= 1;
+    const double span = t1 - t0;
+    const double sigma = windowSigma (sr, span, W, opt);                         // samples
+    const int N = fftSize (sigma);
     const double Nd = (double) N;
     const bool reduced = span > opt.reduceAboveSec;
     const double framesWanted = juce::jmin (6000.0, (reduced ? 1.0 : 1.5) * (double) W);
@@ -98,10 +110,10 @@ inline DetailPicture render (const std::vector<std::vector<float>>& tracks, doub
     }
     const long startSample = (long) std::llround (t0 * sr);
     const long totalSamples = [&] { long n = 0; for (auto& t : tracks) n = juce::jmax (n, (long) t.size()); return n; }();
-    const dsp::FFT fft (N);
+    const dsp::FastFFT fft (N);                                                 // (3.37.0: pocketfft - the same picture, several times sooner)
     const size_t npx = (size_t) W * (size_t) H;
     std::atomic<int> nextTrack { 0 }, doneTracks { 0 }; std::atomic<bool> stop { false };
-    const int nT = juce::jmax (1, juce::jmin ((int) tracks.size(), (int) juce::jmin (8u, juce::jmax (1u, std::thread::hardware_concurrency()))));
+    const int nT = workers::threadsFor ((int) tracks.size());                  // (3.37.0: every core it may use - it stopped at 8)
     std::vector<std::vector<float>> best ((size_t) nT);
     auto worker = [&] (int who)
     {
@@ -112,6 +124,8 @@ inline DetailPicture render (const std::vector<std::vector<float>>& tracks, doub
         {
             const int ti = nextTrack.fetch_add (1);
             if (ti >= (int) tracks.size() || stop.load()) break;
+            const float g = opt.trackGain.empty() ? 1.0f : ((size_t) ti < opt.trackGain.size() ? opt.trackGain[(size_t) ti] : 1.0f), g2 = g * g;
+            if (g2 <= 0.0f) { if (progress) progress ((float) (doneTracks.fetch_add (1) + 1) / (float) tracks.size()); continue; }
             const auto& x = tracks[(size_t) ti]; const long L = (long) x.size();
             std::fill (acc.begin(), acc.end(), 0.0f);
             for (long m = 0; m < F; ++m)
@@ -157,9 +171,10 @@ inline DetailPicture render (const std::vector<std::vector<float>>& tracks, doub
             if (stop.load()) break;
             for (int r = 0; r < H; ++r)
             {
-                const float sc = rowScale[(size_t) r];
+                const float sc = rowScale[(size_t) r] * g2;
                 float* a = acc.data() + (size_t) r * (size_t) W; float* d = mx.data() + (size_t) r * (size_t) W;
-                for (int cx = 0; cx < W; ++cx) { const float v = a[cx] * sc; if (v > d[cx]) d[cx] = v; }
+                if (opt.sumTracks) for (int cx = 0; cx < W; ++cx) d[cx] += a[cx] * sc;
+                else               for (int cx = 0; cx < W; ++cx) { const float v = a[cx] * sc; if (v > d[cx]) d[cx] = v; }
             }
             if (progress) progress ((float) (doneTracks.fetch_add (1) + 1) / (float) tracks.size());
         }
@@ -172,7 +187,9 @@ inline DetailPicture render (const std::vector<std::vector<float>>& tracks, doub
     pic.db.assign (npx, -200.0f);
     for (size_t i = 0; i < npx; ++i)
     {
-        float v = 0.0f; for (auto& b : best) if (! b.empty() && b[i] > v) v = b[i];
+        float v = 0.0f;
+        if (opt.sumTracks) { for (auto& b : best) if (! b.empty()) v += b[i]; }
+        else for (auto& b : best) if (! b.empty() && b[i] > v) v = b[i];
         if (v > 1.0e-20f) pic.db[i] = 10.0f * std::log10 (v);
     }
     (void) totalSamples;
