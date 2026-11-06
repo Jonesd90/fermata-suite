@@ -2086,3 +2086,19 @@ fermata moved to a new repository that also holds its companion, fermata:Live (t
   wells are cleared before the post row's well is added; a VCA strip keeps the post row's room empty so the faders line up; drag and drop between a
   POST cell and an insert cell goes through each column's own base pointer; the Atmos job's readers are closed before its work folder is deleted;
   the Composer in a post-fader slot counts for keepRunning only while the slot runs.
+
+## 3.41.0: the heard-take layer in the ReHarmoniSer's stream windows, and the guide that stays put (6 November 2026)
+- **The green layer.** `EditorHost::heardGain (sec)` - set by `openReharmoniser` (FixTools.cpp) for a stream window only (`ss.on`) - is the sum of
+  `EditRegion::gainAt` over that stream's own pieces (pieces of one take joined inside the stream add up as their crossfade does; capped at 1). The
+  stream's audio is loaded without fades (its take as it is in the files, the OUT stream carried on past the edit point, the IN stream started
+  before it), so the layer is what tells the two apart. `View::paint` draws it after the picture and before the note lines and frames: one value
+  per pixel column (at the column's centre), quantised to 48 steps and filled in runs, green 0xff2fd36a at 0.24 x the gain. It does not follow the
+  playhead (the user's choice: it shows what will be heard, before you press play too). Checked on the Linux build with the Prelude test edit (the
+  marks 0:45 - 0:54 over one join): the OUT window green up to the join and none after it, the IN window none before and green after, the edge where
+  the crossfade is (30 ms there, so a short soft edge when zoomed in). Not added to the ReTouch stream windows (not asked; they could have it).
+- **The guide.** `EditDef::rippleAfter` moved the guide when its start was at or after the place of the change. `insertRegion` adds at the end with
+  `rippleAfter (end, length)`, so a guide at the end - and, from the first piece added to an empty edit, one at 0:00 (the first piece goes at 0 too) -
+  was pushed along by every piece added after it. The user: it should stay where it is until moved by hand. So `rippleAfter` never moves it (and so
+  `anchorStart`, which ripples everything, does not either); only the drag and the menu do. Test: core_test "3.41.0 the visual guide stays where it
+  was put".
+

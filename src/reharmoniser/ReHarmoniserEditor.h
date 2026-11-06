@@ -53,6 +53,10 @@ struct EditorHost
     std::function<void()> cancel;                                            // the user pressed Cancel
     std::function<bool()> spaceIsTaken;                                      // true while the Space key belongs to the host (a take is recording: Space stops it): Space does nothing here then (3.1.2)
     bool leaveUnchangedOk = false;                                           // one stream window of an Out / In pair: "Write back to clip" with nothing changed means "leave this stream as it is" (the host handles that)
+    /** One stream window of an Out / In pair (3.41.0): how much of this stream is heard at this time (seconds from the start of the audio), 0..1 -
+        its take's own fades at the edit point. Drawn over the picture as a green layer: strongest where the take is heard in full, fading with the
+        take and gone where it has faded out, so it shows which take makes the sound at every moment. Null: no layer. */
+    std::function<float (double sec)> heardGain;
     std::function<void (const juce::String&)> log;                           // errors and notes for the log file
     std::function<juce::String (const juce::String& key)> loadSetting;       // remembered settings of the View block (empty = none saved)
     std::function<void (const juce::String& key, const juce::String& value)> saveSetting;

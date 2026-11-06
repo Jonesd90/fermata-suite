@@ -868,6 +868,14 @@ static void openReharmoniser (AppContext& app, const juce::Uuid& eid, juce::Comp
     h.cancel = [self] { if (self != nullptr && self->mayClose()) self->closeMe(); };         // (asks first when corrected notes would be thrown away)
     d->isWrittenBack = [st] { return st->accepted; };
     h.leaveUnchangedOk = pair != nullptr;
+    if (ss.on)
+        h.heardGain = [regs, from, rate] (double sec)               // (3.41.0: the green layer - this stream's own pieces and their fades; pieces of the same take
+        {                                                            //  joined inside the stream add up, as their crossfade does)
+            const auto t = from + (juce::int64) std::llround (sec * rate);
+            float g = 0.0f;
+            for (auto& r : *regs) if (t >= r.fadeInBegin() && t < r.fadeOutFinish()) g += r.gainAt (t);
+            return juce::jmin (1.0f, g);
+        };
     h.writeBack = [&app, eid, st, self, putIn, pair, slot]
     {
         if (self == nullptr) return;

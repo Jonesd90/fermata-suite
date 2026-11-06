@@ -6,6 +6,20 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.41.0
+Built 6 November 2026 (the conversation for both programs).
+- **The ReHarmoniSer shows which take you hear at an edit point.** When the marked part crosses an edit point and the OUT STREAM and IN STREAM
+  windows open, each one now has a translucent green layer over its picture, as strong as its own take is heard at every moment: full where that
+  take plays alone, fading with its crossfade and gone where it has faded out - the incoming take's layer grows with its fade-in the same way. So
+  across the crossfade you can see both, each as strong as it sounds, and the part of the outgoing take carried on past the edit point (which you
+  do not hear) has no green. It shows the whole time, not only while playing. The picture itself is unchanged under it.
+- **The edit window's visual guide stays where it is put.** Adding pieces to the edit moved it: put in at the start of an edit, every piece added
+  after that pushed it along by that piece's length. Now nothing moves it but you (dragging it, or its menu's "to the start" / "to the
+  playhead") - not adding pieces at the end, in the middle or at a place, and not the edit moving to begin at 0:00 or at "Leave space before
+  the first edit".
+- Shared: `src/core/Edit.h` (the guide is no longer moved with the timeline). fermata:Live needs a rebuild (it has no visual guide: its own
+  behaviour is unchanged).
+
 ## 3.40.1
 Built in the fermata:Live conversation, 6 November, with Claude Fable: a sweep of everything written since the 3.39.0 Part 2 sweep (the post-fader
 slot, the Atmos export) and of what it touches. Three fixes, none of which a project without those features would meet:

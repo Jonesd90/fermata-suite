@@ -517,6 +517,22 @@ void ReHarmoniserEditor::View::paint (juce::Graphics& g)
     {
         if (dirty || image.getWidth() != pl.getWidth() || image.getHeight() != pl.getHeight()) rebuildImage (pl);
         if (image.isValid()) { juce::Graphics::ScopedSaveState ssv (g); g.setOpacity ((float) opacity); g.drawImageAt (image, pl.getX(), pl.getY()); }
+        if (ed.host.heardGain)
+        {   // 3.41.0, an OUT / IN stream: what of this take is heard - a green layer as strong as the take's own fade at each moment (one column per
+            // pixel; neighbouring columns of the same strength are filled together)
+            constexpr float kStrongest = 0.24f;
+            constexpr int kSteps = 48;
+            const auto green = juce::Colour (0xff2fd36a);
+            int runStart = pl.getX(), runLevel = -1;
+            auto fillRun = [&] (int x1) { if (runLevel > 0 && x1 > runStart) { g.setColour (green.withAlpha (kStrongest * (float) runLevel / (float) kSteps)); g.fillRect (runStart, pl.getY(), x1 - runStart, pl.getHeight()); } };
+            for (int x = pl.getX(); x < pl.getRight(); ++x)
+            {
+                const double t = vt0 + ((double) (x - pl.getX()) + 0.5) / juce::jmax (1, pl.getWidth()) * (vt1 - vt0);
+                const int level = (int) std::lround (juce::jlimit (0.0f, 1.0f, ed.host.heardGain (t)) * (float) kSteps);
+                if (level != runLevel) { fillRun (x); runStart = x; runLevel = level; }
+            }
+            fillRun (pl.getRight());
+        }
     }
     {
         juce::Graphics::ScopedSaveState ss (g);

@@ -9,17 +9,18 @@ the rules that keep the programs compatible.
   is in `LIVE-CHANGELOG.md`; its brief is `docs/LIVE-BRIEF.md` and its notes are in `docs/LIVE-DEVELOPMENT-NOTES.md`.
 - **shared**: `src/core/` and the other files listed in `COMPATIBILITY.md`. These are built into both programs.
 
-The user works on each program in a conversation of its own. Work out from the request which program this conversation is for, and keep to that
-program's folders. Change shared code when the work needs it, but follow `COMPATIBILITY.md`, and say so in the delivery (see below).
+The user works on **both programs in one conversation** (said on 6 November 2026), so that they develop together as partner programs and stay
+compatible: what fermata:Live records is opened in fermata after the concert. Work on whichever program the request is about, in its own folders,
+and change shared code when the work needs it, following `COMPATIBILITY.md` and saying so in the delivery (see below). Raise the version and add the
+history entry of each program whose own code changed.
 
-## Staying in step with the other conversation
+## Staying in step with GitHub
 
 The repository on GitHub is the truth. The user uploads every delivery zip there by hand, and the zips contain only the files that changed, so a
 zip made from an out-of-date copy would put old versions of files back.
 - **Before starting, and again just before making a delivery zip,** fetch the latest from GitHub and build on it. If a file you are delivering
   changed on GitHub since you started, merge the two versions. Never deliver a file without that merge.
-- Never edit the other program's own folders. Keep changes to the files both programs touch (`CMakeLists.txt`, `cmake/SharedCore.cmake`,
-  `COMPATIBILITY.md`, the GitHub workflow) small.
+- Keep changes to the files both programs touch (`CMakeLists.txt`, `cmake/SharedCore.cmake`, `COMPATIBILITY.md`, the GitHub workflow) small.
 
 ## Before every delivery
 

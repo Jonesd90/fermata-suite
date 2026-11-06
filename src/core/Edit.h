@@ -277,7 +277,8 @@ struct EditDef
     // ---- where the edit begins (3.16.0) ----
     /** The edit's sound always begins at 0:00 - the opening fade's first sample - or, with 'leadIn' ticked ("Leave space before the first edit"), that many
         seconds later (to a hundredth of a second). anchorStart() moves the whole edit there whenever it has drifted (an opening fade dragged earlier,
-        the first piece slid, deleted or replaced): every piece, the overdubs, markers, flags, automation, the guide, the marks and the playhead together.
+        the first piece slid, deleted or replaced): every piece, the overdubs, markers, flags, automation, the marks and the playhead together (not the
+        visual guide: 3.41.0, it only moves when it is moved).
         Saved with the edit; part of undo. */
     bool   leadIn = false;
     double leadInSeconds = 0.0;
@@ -893,8 +894,10 @@ struct EditDef
     }
 
     /** Everything on the timeline from sample 'from' onwards moves by 'delta' samples (later for a positive delta): the overdubs, the markers, the listeners'
-        flags, the visual guide, the marks 1 / 2 and the playhead, and automation points fixed in time (points pinned to audio follow their audio when the
-        project settles). The main track's pieces are moved by the caller. (3.5.0: before, only the pieces moved, so markers and overdubs drifted.) */
+        flags, the marks 1 / 2 and the playhead, and automation points fixed in time (points pinned to audio follow their audio when the project settles).
+        The main track's pieces are moved by the caller. (3.5.0: before, only the pieces moved, so markers and overdubs drifted.)
+        Not the visual guide (3.41.0): it stays where it was put until it is dragged (or set to the start / the playhead from its menu). It rippled
+        before, and a guide at the end of the edit - where every added piece goes - was pushed along by each piece added. */
     void rippleAfter (juce::int64 from, juce::int64 delta)
     {
         if (delta == 0 || sampleRate <= 0.0) return;
@@ -902,7 +905,6 @@ struct EditDef
         for (auto& o : overdubs) if (o.startSample >= from) o.startSample = juce::jmax ((juce::int64) 0, o.startSample + delta);
         for (auto& m : markers) if (m.seconds >= fsec) m.seconds = juce::jmax (0.0, m.seconds + dsec);
         for (auto& f : feedback) if (f.seconds >= fsec) f.seconds = juce::jmax (0.0, f.seconds + dsec);
-        if (guide.active() && guide.start >= from) guide.start += delta;
         if (fixIn >= fsec) fixIn = juce::jmax (0.0, fixIn + dsec);
         if (fixOut >= fsec) fixOut = juce::jmax (0.0, fixOut + dsec);
         if (playheadSeconds >= fsec) playheadSeconds = juce::jmax (0.0, playheadSeconds + dsec);

@@ -8,7 +8,7 @@ This repository builds **two programs from one shared core**:
 | **fermata:Live**, the live-concert recorder (file name `fermata-Live.exe`) | `src/live/` | `src/live/Live.cmake` (`FERMATA_LIVE_VERSION`), history in `LIVE-CHANGELOG.md` |
 | **shared**, built into both | see [Shared code](#shared-code) below | `src/core/Compat.h` (the contract's numbers) |
 
-The two programs are worked on separately, often in separate conversations. They must always be able to open each other's projects. This file
+The two programs are worked on together (one conversation for both, since 6 November 2026) but built and released separately, each with its own version. They must always be able to open each other's projects. This file
 lists what they share and the rules that keep them compatible. **Read it before changing anything shared.**
 `tests/compat_test.cpp` checks the numbers in the box below against the code, so the two cannot drift apart without the check failing.
 

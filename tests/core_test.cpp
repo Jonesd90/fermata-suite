@@ -8954,6 +8954,26 @@ int main()
         e->guide.numChannels = 6; CHECK (guideTrackIndex (q, e->guide) == -1 && segmentsForGuide (q, *e).empty());
     }
 
+    SECTION ("3.41.0 the visual guide stays where it was put: adding pieces (at the end, in the middle, at a place) and moving the edit's start never move it");
+    {
+        EditDef e; e.id = juce::Uuid(); e.sampleRate = 48000.0;
+        auto piece = [] (juce::int64 len) { EditRegion r; r.id = juce::Uuid(); r.takeId = juce::Uuid(); r.takeName = "001"; r.sampleRate = 48000.0; r.srcIn = 48000; r.srcOut = 48000 + len; r.sourceLength = 48000 * 60;
+                                             RegionFile f; f.trackId = juce::Uuid(); f.trackName = "A"; f.file = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("g.wav"); r.files.push_back (f); return r; };
+        e.guide.file = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("guide.wav"); e.guide.sampleRate = 48000.0; e.guide.srcIn = 0; e.guide.srcOut = 48000 * 30;
+        e.guide.start = 0;                                                               // (put in first, at the start: the user's case)
+        e.insertRegion (piece (48000 * 5));
+        CHECK (e.guide.start == 0);
+        for (int i = 0; i < 4; ++i) { e.insertRegion (piece (48000 * 3)); CHECK (e.guide.start == 0); }   // (each added at the end, where it was pushed from before)
+        e.guide.start = e.lengthSamples();                                               // a guide put at the end of the edit
+        const auto atEnd = e.guide.start;
+        e.insertRegion (piece (48000 * 2)); CHECK (e.guide.start == atEnd);
+        e.insertIndex = 1; e.insertRegion (piece (48000 * 2)); CHECK (e.guide.start == atEnd);   // in the middle
+        e.guide.start = 48000 * 4;
+        e.rippleAfter (0, 48000); CHECK (e.guide.start == 48000 * 4);
+        e.leadIn = true; e.leadInSeconds = 2.0; e.anchorStart(); CHECK (e.guide.start == 48000 * 4);   // the edit moved to start at 2 s: the guide did not
+        CHECK (e.regions.front().fadeInBegin() == 48000 * 2);
+    }
+
     SECTION ("2.102 a window never takes a file another window has, so a save never tidies away a file it has just written");
     {
         const auto dir = tmp.getChildFile ("ownedpaths"); dir.deleteRecursively(); dir.createDirectory();
@@ -10363,7 +10383,7 @@ int main()
         }
     }
 
-    SECTION ("3.5.0 the ripple moves everything (markers, flags, overdubs, guide, marks, playhead, fixed automation) on insert and on replace; every version of a passage found; joins refined");
+    SECTION ("3.5.0 the ripple moves everything (markers, flags, overdubs, marks, playhead, fixed automation - not the guide since 3.41.0) on insert and on replace; every version of a passage found; joins refined");
     {
         const double rate = 48000.0; const juce::int64 S = 48000;
         auto piece = [&] (juce::int64 in, juce::int64 out, const juce::String& take)
@@ -10391,7 +10411,7 @@ int main()
         CHECK (e.regions.size() == 4 && e.regions[1].takeName == "D" && e.regions[2].startSample == 6 * S && e.regions[3].startSample == 10 * S);
         CHECK (e.markers[0].seconds == 1.0 && e.markers[1].seconds == 8.0);
         CHECK (e.feedback[0].seconds == 2.0 && e.feedback[1].seconds == 9.0);
-        CHECK (e.overdubs[0].startSample == 10 * S && e.guide.start == 7 * S);
+        CHECK (e.overdubs[0].startSample == 10 * S && e.guide.start == 5 * S);       // (3.41.0: the guide stays where it was put)
         CHECK (e.fixIn == 3.5 && e.fixOut == 11.0 && e.playheadSeconds == 6.5);
         auto fixedAt = [] (const AutoLane& l, juce::int64 t) { for (auto& p : l.pts) if (p.region.isNull() && p.time == t) return true; return false; };
         auto anchoredAt = [] (const AutoLane& l, juce::int64 t) { for (auto& p : l.pts) if (! p.region.isNull() && p.time == t) return true; return false; };
