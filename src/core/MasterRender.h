@@ -83,7 +83,9 @@ public:
         pass of their own: an up-to-date master render and its backup are never touched). The stem renders are not kept with the master renders: they go
         to 'stemFolder' (stemFileFor), for the caller to use and delete. */
     MasterRenderBatch (const Project& live, const std::vector<juce::Uuid>& editIds, const RenderParams&, bool force = false,
-                       const std::vector<juce::Uuid>& stems = {}, const juce::File& stemFolder = {});
+                       const std::vector<juce::Uuid>& stems = {}, const juce::File& stemFolder = {}, bool keepSurroundStems = false);
+    /** 3.40.0, keepSurroundStems: a surround bus among the stems is kept and rendered at its full width (the Atmos export); otherwise the stems are
+        stereo buses only (a surround one is dropped: the Virtual Master's stems are stereo files). */
     ~MasterRenderBatch();
     const juce::String& getPrepareError() const { return prepareError; }
     int total() const { return (int) items.size(); }

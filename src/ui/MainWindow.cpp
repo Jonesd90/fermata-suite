@@ -987,6 +987,33 @@ void MainComponent::timerCallback()
     if (rec && (s.startsWith ("DISK") || s.startsWith ("RECORDING HAS") || s.startsWith ("AUDIO DEVICE"))) statusLabel.setColour (juce::Label::textColourId, ((now2 / 500) & 1) ? juce::Colour (0xffff5555) : juce::Colours::white);     // (flashes)
 }
 
+/** 3.40.0: Project menu > Post-fader slots - one more insert slot under every fader (Project::postFaderSlots). Switched off while plug-ins sit in
+    such slots, it first says which (they stay in their slots, settings and all, but are left out of the sound while the slots are hidden). */
+static void setPostFaderSlots (AppContext& app, bool on)
+{
+    app.project.postFaderSlots = on;
+    app.engine.rebuildPlan();                       // (the plan runs the slots, and lines up the paths their plug-ins delay, only while they are on)
+    app.project.markDirty();
+    app.project.structureChanged();                 // every mixer lays its strips out again: the row under the faders comes or goes
+    app.setNotice (on ? juce::String ("Post-fader slots on: every audio track and bus has one more insert slot, under its fader (after the fader and mute, before the output).")
+                      : juce::String ("Post-fader slots off: the slots under the faders are hidden, and anything in them is left out of the sound until they are on again."));
+}
+static void togglePostFaderSlots (AppContext& app)
+{
+    if (! app.project.postFaderSlots) { setPostFaderSlots (app, true); return; }
+    const auto used = app.project.postSlotPlugins();
+    if (used.isEmpty()) { setPostFaderSlots (app, false); return; }
+    auto* a = &app;
+    juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::QuestionIcon).withTitle ("Post-fader slots")
+                                      .withMessage ((used.size() == 1 ? juce::String ("This plug-in sits in a post-fader slot:\n\n") : juce::String ("These plug-ins sit in post-fader slots:\n\n"))
+                                                    + used.joinIntoString ("\n") + "\n\nSwitched off, the slots are hidden and " + (used.size() == 1 ? "it is" : "they are")
+                                                    + " left out of the sound. " + (used.size() == 1 ? "It stays" : "They stay") + " in " + (used.size() == 1 ? "its slot" : "their slots")
+                                                    + " with all " + (used.size() == 1 ? "its" : "their") + " settings, and " + (used.size() == 1 ? "comes" : "come")
+                                                    + " back when you switch the slots on again.")
+                                      .withButton ("Switch off").withButton ("Cancel"),                      // (the action on the left, Cancel on the right)
+                                  [a] (int r) { if (r == 1) setPostFaderSlots (*a, false); });
+}
+
 void MainComponent::showProjectMenu()
 {
     juce::PopupMenu m;
@@ -1017,6 +1044,7 @@ void MainComponent::showProjectMenu()
         m.addItem (18, "Project sample rate" + (pr > 0.0 ? ": " + juce::String (pr / 1000.0, std::fmod (pr, 1000.0) == 0.0 ? 0 : 1) + " kHz" : juce::String (" (not chosen yet)"))
                        + (app.project.hasTakes() ? juce::String() : juce::String ("...")), app.hasProject());
     }
+    m.addItem (24, "Post-fader slots (one more insert slot under every fader)", app.hasProject(), app.project.postFaderSlots);     // 3.40.0
     m.addSeparator();
     const auto workKey = app.lastWorkWindowKey ? app.lastWorkWindowKey() : juce::String();
     m.addItem (9, "Import AAF as edit windows...");
@@ -1047,6 +1075,7 @@ void MainComponent::showProjectMenu()
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&projectButton), [this, workKey, picked, saveWindowId, saveWindowName] (int r)
     {
         if (r == 22) { if (app.saveWindow (saveWindowId)) app.setNotice ("Saved the " + saveWindowName + ". The other windows are saved too, but what changed in them is still asked about when you quit."); return; }
+        if (r == 24) { togglePostFaderSlots (app); return; }
         if (r == 11) { if (*picked >= 0) pickColour (*picked); return; }
         if (r == 20 || r == 21) { pickStyle (r - 20); return; }
         if (r == 12) { chooseBackupFolder(); return; }

@@ -91,16 +91,29 @@ struct DdpDisc
     int          endPadSectors = 0;   // silence after the last track before the lead-out (the End of CD flag, dragged on the timeline)
 };
 
+/** 3.40.0: the Atmos tab - fermata's own Dolby Atmos master files (ADM BWF: AdmWriter.h). The pieces are the Virtual Master's list (included,
+    in its order, with its names + " (Atmos)"). */
+struct AtmosExportSettings
+{
+    std::vector<juce::Uuid> busIds;   // the surround buses written into every file, each as its own bed + objects, in this order
+    bool         lfeLowPass = true;   // the LFE channels low-passed on export (the delivery spec: between 100 and 150 Hz)
+    float        lfeHz = 120.0f;
+    bool         dither = true;       // TPDF dither when the 32-bit float render is cut to 24 bits
+    juce::String folder;              // where the files go (empty = the project's Mastered Audio / Atmos folder)
+    static constexpr float kMinLfeHz = 100.0f, kMaxLfeHz = 150.0f;
+};
+
 struct MasteringDef
 {
     std::vector<MasterItem> items;
     MasterExportSettings    vm;
     DdpDisc                 ddp;
+    AtmosExportSettings     atmos;                             // 3.40.0
     juce::Uuid              mixerId = juce::Uuid::null();     // what is rendered: null = the processing mixer ...
     juce::Uuid              sourceId = juce::Uuid::null();    // ... and its first Ext bus
     double                  tailSeconds = 0.0;                // extra time after the last audio (reverb tails)
     std::vector<juce::Uuid> stemIds;                          // 3.26.0: Int / Ext buses also exported by the Virtual Master, each as its own stereo file per piece (stems)
-    int                     view = 0;                         // 0 = Virtual Master, 1 = DDP builder, 2 = Listening copy
+    int                     view = 0;                         // 0 = Virtual Master, 1 = DDP builder, 2 = Listening copy, 3 = Atmos (3.40.0)
     juce::Uuid              selectedItem = juce::Uuid::null(), selectedClip = juce::Uuid::null();
 
     /** Adds edits that are new, drops the ones that are gone (keeps order and settings of the rest). */

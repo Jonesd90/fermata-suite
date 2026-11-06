@@ -40,8 +40,8 @@ Bouncer::Bouncer (const Project& live, const BounceSettings& s) : settings (s)
     for (auto& m : shadow->mixers)
     {
         auto all = [] (InsertSlot* sl, int count) { for (int i = 0; i < count; ++i) if (auto* p = sl[i].getProcessorUnsafe()) p->setNonRealtime (true); };
-        for (auto& st : m->stripPool) { all (st->slots, kNumSlots); for (auto& sd : st->sends.pool) all (sd->slots, kSendSlots); all (st->outSend.slots, kSendSlots); }
-        for (auto& bs : m->busPool)   { all (bs->slots, kNumSlots); for (auto& sd : bs->sends.pool) all (sd->slots, kSendSlots); all (bs->outSend.slots, kSendSlots); }
+        for (auto& st : m->stripPool) { all (st->slots, kChanSlots); for (auto& sd : st->sends.pool) all (sd->slots, kSendSlots); all (st->outSend.slots, kSendSlots); }     // (3.40.0: the post-fader slot too)
+        for (auto& bs : m->busPool)   { all (bs->slots, kChanSlots); for (auto& sd : bs->sends.pool) all (sd->slots, kSendSlots); all (bs->outSend.slots, kSendSlots); }
     }
     engine = std::make_unique<AudioEngine> (*shadow);
     engine->setOfflineTarget (s.mixerId, s.sources, s.sourcesPre);

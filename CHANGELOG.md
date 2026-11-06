@@ -6,6 +6,41 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.40.0
+Built in the fermata:Live conversation, 6 November (the post-fader slot with Claude Opus; fermata's own Dolby Atmos export with Claude Fable, which also
+looked the post-fader slot over: see `docs/ATMOS-EXPORT.md`).
+- **Dolby Atmos master files written by fermata itself: the Mastering window's new Atmos tab.** The same pieces as the Virtual Master (ticked, in its
+  order, its names + " (Atmos)"), each written as one **ADM BWF** file - 24-bit, at the project's 48 (or 96) kHz, covering exactly the stretch the
+  Virtual Master's stereo file covers, so the two line up to the sample as the delivery spec asks. **Tick the surround buses to write** (a reverb
+  bus, a bed ...): every ticked bus goes into the file as its own **bed plus objects**, named after the bus, as the Dolby Atmos Composer builds a
+  Composite - a 9.1.6 bus is a 7.1.2 bed plus the wides and the front and rear tops as fixed objects, a 7.1.4 bus a 7.1 bed plus four, a 5.1.4 bus
+  a 5.1 bed plus four - so the Mastering Console can give a reverb bus and the dry sound different binaural settings. Each bus is taken as it leaves
+  its own fader (what it is sent on to - the bus your speakers hear - is not in the file: the tab says so when that bus's fader is not at 0 dB or has
+  plug-ins, and when a ticked bus feeds another ticked bus, which would put its sound in the file twice). The **LFE is low-passed** on export, at a
+  frequency you set anywhere between 100 and 150 Hz (the delivery spec's range; 120 Hz to start with), with TPDF dither as the render is cut to 24
+  bits. Files over 4 GB are written as RF64, as the profile requires. The files hold the audio and the ADM description (checked against a master that
+  Dolby's tools wrote and Apple Music released); Dolby's own metadata block - the binaural render modes, the downmix and trims - and the loudness
+  are the Fiedler Mastering Console's job: open the files there and let it write the delivery files. No Composer, Beam or real-time pass is needed;
+  bounces leave the Atmos plug-ins out as before.
+- **Post-fader slots** (**Project menu > Post-fader slots**): every audio track and bus gets one more insert slot, **under its fader** (just above
+  its OUT / Main out row). It sits after the fader and the mute and before the output: the meters, the output, the post-fader sends and a bounce of
+  the channel all take what comes out of it; pre-fader sends do not. **This is the place for a Dolby Atmos Beam** on a bus: the Composer then
+  follows the bus's fader and its automation (a Beam in the inserts above the fader does not). The plug-in's delay is compensated like any other,
+  its parameters can be automated ("Post-fader: ..." in a lane's menu), and linked strips (Shift + Alt) get it too. Switched off, the slots are
+  hidden and anything in them is left out of the sound - it stays in its slot with all its settings, and fermata names it and asks first.
+  - A track's post-fader slot works on its stereo signal (after its pan). A track's send or output into a surround bus is placed by the surround
+    panner and leaves before it; so does a send that carries on when the channel is muted.
+- Shared (the Atmos export): `src/core/AdmWriter.h / .cpp` (new: the bed / object layouts, the ADM description - axml and chna - and the ADM BWF file
+  writer with its RF64 path; the LFE low-pass), `src/core/MasterExport.h / .cpp` (`makeAtmosSpec`, `atmosExportNotes`, `AtmosExportJob`),
+  `src/core/MasterRender.h / .cpp` (the render batch can keep surround buses among its stems, at their full width), `src/core/MasterDef.h / .cpp`
+  (the Atmos tab's settings, saved under "atmos" in the mastering settings - only once they differ from the defaults; the view can be 3),
+  `cmake/SharedCore.cmake` (the new file). fermata:Live does not use the Mastering window; it needs a rebuild and a test.
+- Shared (the post-fader slot): `src/core/Common.h` (`kPostSlot`, `kChanSlots`), `src/core/Mixer.h` (a strip's and a bus's slots, one more),
+  `src/core/Project.h / .cpp` ("postFaderSlots" - only when on - and "postSlot" - only when it holds something - so older projects and an older
+  fermata read and write as before), `src/core/AudioEngine.h / .cpp` (the slot after the fader; delay compensation for what is taken after it; a
+  project without the switch is processed exactly as before), `src/core/Bounce.cpp`, `src/core/Playback.cpp` (its automation),
+  `src/core/MasterRender.cpp` (a render made with the switch on is told apart). fermata:Live never switches it on; it needs a rebuild and a test.
+
 ## 3.39.0
 Built in the fermata:Live conversation, 5-6 November (in two parts: see `docs/SURROUND.md`). fermata only: fermata:Live gets no surround.
 - **Surround Int Buses and Ext Buses.** A bus can now be stereo (as every bus was) or **5.1, 7.1, 7.1.2, 5.1.4, 7.1.4, 9.1.4 or 9.1.6** - the

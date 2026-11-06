@@ -21,6 +21,7 @@ set(FERMATA_SHARED_SOURCES
     ${FERMATA_ROOT}/src/core/MasterExport.cpp
     ${FERMATA_ROOT}/src/core/ReviewPage.cpp
     ${FERMATA_ROOT}/src/core/MasterRender.cpp
+    ${FERMATA_ROOT}/src/core/AdmWriter.cpp
     ${FERMATA_ROOT}/src/core/Ravenna.cpp
     ${FERMATA_ROOT}/src/core/CoreReservation.cpp
     ${FERMATA_ROOT}/src/core/CrashReport.cpp

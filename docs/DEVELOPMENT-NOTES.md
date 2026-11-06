@@ -2049,3 +2049,31 @@ fermata moved to a new repository that also holds its companion, fermata:Live (t
   the decisions. The engine's stereo path is untouched line for line where it could be (the whole test suite pins it); the surround path branches off
   it at the node's width. The channel order the Dolby Atmos Composer gets on its 18-channel bus (by position) is the one thing only the user's
   machine can confirm: `docs/SURROUND.md`, "Decisions worth knowing", says what to change if it is wrong.
+
+## 3.40.0: the post-fader slot, and fermata's own Dolby Atmos export (built in the fermata:Live conversation, 6 November 2026)
+- The user asked for a post-fader slot "that literally goes under the fader but before the fader on button", switched on and off in the Project
+  menu: one more insert slot on every audio track and bus, in a row between the fader and the OUT / Main out row, shown while
+  `Project::postFaderSlots` is on. Built with Claude Opus.
+- The slot is the last element of the strip's and the bus's `slots[]` (`kPostSlot`; the arrays are `kChanSlots` long), so preparing, re-preparing,
+  closing windows, the bounce's offline flag, the render copies, the slot layouts and the Atmos-link checks all reach it with the others. Code that
+  means the slots before the fader counts to `kNumSlots`: the processing loops, the visible slot rows, the "slots" list in the project file. Every
+  `kNumSlots` left in the code was looked at.
+- In the engine the slot runs on `post` right after the fader and the mute (a Dolby Atmos Beam there goes quiet with its channel, and follows the
+  fader's automation). `Node::takesPost` is the one rule for what takes its output: a post-fader send that follows mute, and of a track only a stereo
+  one (Direct) - a track's send into a surround bus leaves from its own channels before the stereo fold the post slot works on. A bus's Pan / Fold /
+  Across post-fader sends read `post` (with the switch off they are exactly as before). The delay compensation follows the same rule (`sendLat`,
+  `postOutLat` for an Ext Bus's outputs and the post-fader taps); the slot's posLat is the lateness after the inserts.
+- The project file: "postFaderSlots" (only when on) and "postSlot" (a list of one, only when the slot holds something). An older fermata reads the
+  "slots" list it always read; a project that does not use the slot is written byte for byte as before (core_test checks).
+- fermata's own Dolby Atmos (ADM BWF) export (built with Claude Fable the same morning): the user's decisions, the rules from Dolby's two documents
+  and the design are in `docs/ATMOS-EXPORT.md`. The writer (`src/core/AdmWriter`) was checked line for line against a master that Dolby's tools
+  wrote and Apple Music released (the user's own, trimmed): the bed part of fermata's axml is identical to it apart from the names; the chunk order
+  (JUNK, fmt, data, axml, chna, dbmd), the 40-byte chna entries and the ID numbering follow it. Two things the brief had guessed wrong, found by
+  the reference and the profile: a 9.1.6 bus is a **7.1.2** bed + 6 objects (the largest bed set it holds whole, as the Composer builds a
+  Composite), and a stream's / track's ID carries its channel's number per type (AS_00011003 for AC_00011003), not one counter across both.
+  The export reuses the Mastering window's render batch (`MasterRenderBatch`, with `keepSurroundStems`): each piece's ticked buses are rendered at
+  full width into 32-bit float files over the Virtual Master's stretch, then interleaved into the ADM file with the LFE low-pass and dither.
+- Fable's look at the post-fader slot: the one change made is that which sends take the channel's signal after the post slot (`Node::takesPost`) is
+  now decided when the plan is built and kept in `SendPlan::viaPost`, so the audio thread and the delay lines always agree (it was read from the
+  live PRE / follow-mute flags on every block, which could disagree with the delay line for up to a third of a second after a flip). Everything else
+  - the model, the saving, the engine path, the window - reads right; the tests pin it.

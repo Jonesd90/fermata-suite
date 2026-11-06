@@ -97,6 +97,14 @@ private:
     void chooseStems();
     void refreshStemsButton();
     void layoutForms (juce::Rectangle<int> area);
+    // 3.40.0: the Atmos tab (fermata's own Dolby Atmos master files)
+    void buildAtmosTab();
+    void refreshAtmosControls();
+    void chooseAtmosBuses();
+    void chooseAtmosFolder();
+    void startAtmosExport();
+    void atmosFinished (const AtmosExportResult&);
+    void layoutAtmos (juce::Rectangle<int> area);
     void setBusy (bool);
     void chooseFolder (bool disc, bool forms = false);
     void applyGapToSelected (const juce::String& text);
@@ -113,7 +121,7 @@ private:
 
     AppContext& app;
     int view = 0;
-    juce::TextButton vmTab { "Virtual Master" }, ddpTab { "DDP builder" }, formTab { "Listening copy" };
+    juce::TextButton vmTab { "Virtual Master" }, ddpTab { "DDP builder" }, formTab { "Listening copy" }, atmosTab { "Atmos" };
     juce::Label renderCaption, tailCaption, renderNote;
     juce::ComboBox mixerBox, sourceBox, tailBox;
     std::vector<juce::Uuid> mixerIds, sourceIds;
@@ -150,6 +158,16 @@ private:
     juce::TextEditor formFolderEditor;
     juce::TextButton formChoose { "Choose folder..." }, formExport { "Make listening copies" }, formShow { "Show in folder" };
     juce::ProgressBar formProgress;
+    // ---- 3.40.0: the Atmos page
+    juce::Label atmosCaption, atmosIntro, atmosBusesCaption, atmosLfeUnit, atmosNotes, atmosFolderCaption, atmosStatus;
+    juce::TextButton atmosBusesButton, atmosChoose { "Choose folder..." }, atmosExport { "Export Atmos files" }, atmosShow { "Show in folder" };
+    juce::ToggleButton atmosLfeToggle, atmosDitherToggle;
+    juce::Slider atmosLfeSlider;
+    juce::TextEditor atmosFolderEditor;
+    double atmosProgressValue = 0.0;
+    juce::ProgressBar atmosProgress { atmosProgressValue };
+    std::unique_ptr<AtmosExportJob> atmosJob;
+    juce::File lastAtmosOutput;
 
     // ---- the DDP page
     std::unique_ptr<MasterListPanel> ddpList;

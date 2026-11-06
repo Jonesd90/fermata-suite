@@ -248,6 +248,12 @@ public:
         engine is at another rate. 0 = not chosen: a project from before 3.9.0, whose rate audioRate() then takes from its takes (and saves); one with no
         takes is asked for it. Changed only while the project has no takes. Saved in the project file; not an undo step. */
     double sampleRate = 0.0;
+    /** 3.40.0: the post-fader insert slot (Project menu > Post-fader slots): every audio track and bus gets one more insert slot, AFTER its fader
+        (StripState / BusState slots[kPostSlot]), shown under the fader. While this is off the slots are hidden and the engine leaves them out of the
+        sound (a plug-in kept in one stays there, settings and all, for when it is switched on again). Saved as "postFaderSlots" (only when on). */
+    bool postFaderSlots = false;
+    /** The plug-ins sitting in post-fader slots, "name on channel" (for the question before the slots are switched off). Message thread. */
+    juce::StringArray postSlotPlugins() const;
     /** Missing audio files the user chose to ignore for good (3.15.0: "Ignore missing files permanently" when the project opens), by full path: the
         missing-file checks (at the open, Find missing audio files) leave them out. A file that is there again is used as before. Saved with the
         project as "ignoredMissingAudio"; Project menu > "Look for the ignored missing files again" empties it. Not an undo step. */

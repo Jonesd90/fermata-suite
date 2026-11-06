@@ -160,7 +160,8 @@ juce::String masterRenderFingerprint (const Project& cp, const EditDef& e, const
                         }
                         else if (int slot = 0, idx = 0; autoparam::parsePlugin (l.param, slot, idx))
                         {
-                            if (auto* sl = sv["slots"].getArray()) if (slot < sl->size()) removeKeys (sl->getReference (slot), { "state" });
+                            if (slot == kPostSlot) { if (auto* ps = sv["postSlot"].getArray()) if (ps->size() > 0) removeKeys (ps->getReference (0), { "state" }); }     // (3.40.0: the post-fader slot is kept under its own key)
+                            else if (auto* sl = sv["slots"].getArray()) if (slot < sl->size()) removeKeys (sl->getReference (slot), { "state" });
                         }
                     }
                 if (auto* strips = mv["strips"].getArray())
@@ -177,7 +178,8 @@ juce::String masterRenderFingerprint (const Project& cp, const EditDef& e, const
                         }
                         else if (int slot = 0, idx = 0; autoparam::parsePlugin (l.param, slot, idx))
                         {
-                            if (auto* sl = sv["slots"].getArray()) if (slot < sl->size()) removeKeys (sl->getReference (slot), { "state" });
+                            if (slot == kPostSlot) { if (auto* ps = sv["postSlot"].getArray()) if (ps->size() > 0) removeKeys (ps->getReference (0), { "state" }); }     // (3.40.0: the post-fader slot is kept under its own key)
+                            else if (auto* sl = sv["slots"].getArray()) if (slot < sl->size()) removeKeys (sl->getReference (slot), { "state" });
                         }
                     }
             }
@@ -190,6 +192,7 @@ juce::String masterRenderFingerprint (const Project& cp, const EditDef& e, const
     for (auto& b : p.buses)  design << "|B:" << b.id.toString() << ":" << (b.external ? 1 : 0);
     design << "|S:" << rp.sourceId.toString() << ":" << juce::String (rp.tailSeconds, 4) << ":" << (rp.ownMixers ? "own" : rp.mixerId.toString());
     design << "|A:" << p.alignSignature (p.alignOwnerFor (true, e.id));              // the spot-mic delays it plays with
+    if (p.postFaderSlots) design << "|P:1";                                         // 3.40.0: the post-fader slots are in the sound (only then: the fingerprints of the renders made before stay as they were)
     text << design;
     if (g_capture != nullptr) (*g_capture)["~design"] = design;
     // two 64-bit FNV-1a hashes with different starting values (128 bits in all)
@@ -362,10 +365,11 @@ void MasterRenders::clearAll()
 
 // ----------------------------------------------------------------------------- the batch
 MasterRenderBatch::MasterRenderBatch (const Project& live, const std::vector<juce::Uuid>& editIds, const RenderParams& rp, bool force,
-                                      const std::vector<juce::Uuid>& stemIds, const juce::File& stemFolder)
+                                      const std::vector<juce::Uuid>& stemIds, const juce::File& stemFolder, bool keepSurroundStems)
     : folder (MasterRenders::folderFor (live)), stems (stemIds), stemDir (stemFolder)
 {
-    stems.erase (std::remove_if (stems.begin(), stems.end(), [&live] (const juce::Uuid& id) { return surround::isSurround (live.busFormat (id)); }), stems.end());    // (3.39.0: stems are stereo files)
+    if (! keepSurroundStems)      // (3.39.0: the Virtual Master's stems are stereo files; 3.40.0: the Atmos export keeps its surround buses, at their full width)
+        stems.erase (std::remove_if (stems.begin(), stems.end(), [&live] (const juce::Uuid& id) { return surround::isSurround (live.busFormat (id)); }), stems.end());
     MasterRenders store (folder);
     auto& p = const_cast<Project&> (live);
     {

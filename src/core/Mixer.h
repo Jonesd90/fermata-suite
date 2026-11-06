@@ -233,6 +233,9 @@ private:
     std::atomic<int> latency { 0 };
 };
 
+/** A slot that holds something: a plug-in, or one kept with its settings that could not be started. Message thread. */
+inline bool slotInUse (const InsertSlot& s) { return s.isLoaded() || s.savedDescription.isNotEmpty(); }
+
 /** One send: a copy of a channel's signal going to another channel of the same mixer (an audio track, an internal bus or an external bus).
     Turned by a dial on the strip; can be taken before or after the fader and can have up to two VST3 inserts in its own path
     (they never touch the signal that goes through the channel itself). */
@@ -309,7 +312,7 @@ struct StripState
     LowCut lowCut;                    // the LC key: a high-pass before the inserts (zero latency; linear phase when asked for - see LowCut.h)
     Flag  polarity { false };         // 3.31.0: the polarity key (Ø): every channel of the strip inverted, just after the low cut (saved as "polarity" when on)
     float lastPol = 1.0f;             // audio thread only: the polarity of the previous block (+1 / -1: a change is ramped through zero over one block)
-    InsertSlot slots[kNumSlots];
+    InsertSlot slots[kChanSlots];     // [0 .. kNumSlots - 1] before the fader; [kPostSlot] after it (3.40.0: run only while the project's post-fader switch is on)
     Param meterL, meterR;             // peak since last read (UI resets)
     Param rmsL, rmsR;                 // RMS level (linear, about 300 ms window), updated every block
     std::atomic<juce::uint32> vcaMask { 0 };   // bit n set: this strip is controlled by VCA number n+1 (of this mixer)
@@ -344,7 +347,7 @@ struct BusState
     LowCut lowCut;                    // Int Bus only: the LC key, before the inserts
     Flag  polarity { false };         // Int Bus only (3.31.0): the polarity key, just after the low cut
     float lastPol = 1.0f;             // audio thread only (see StripState)
-    InsertSlot slots[kNumSlots];
+    InsertSlot slots[kChanSlots];     // as StripState's: kPostSlot is the post-fader one (3.40.0)
     Param meterL, meterR;
     Param rmsL, rmsR;
     Param remotePkL, remotePkR;       // Ext Bus: peak since the control port (Stream Deck dials) last looked - its own meter, independent of the mixer window's

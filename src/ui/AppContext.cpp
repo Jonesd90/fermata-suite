@@ -313,8 +313,8 @@ void AppContext::freeRetiredMixersSoon()
 void AppContext::closeEditorsOfMixer (MixerState& m)
 {
     auto slots = [this] (InsertSlot* sl, int n) { for (int k = 0; k < n; ++k) plugins.closeEditorsFor (sl[k].getProcessorUnsafe()); };
-    for (auto& st : m.stripPool) { slots (st->slots, kNumSlots); for (auto& sd : st->sends.pool) slots (sd->slots, kSendSlots); slots (st->outSend.slots, kSendSlots); }
-    for (auto& b : m.busPool)    { slots (b->slots, kNumSlots);  for (auto& sd : b->sends.pool) slots (sd->slots, kSendSlots); slots (b->outSend.slots, kSendSlots); }
+    for (auto& st : m.stripPool) { slots (st->slots, kChanSlots); for (auto& sd : st->sends.pool) slots (sd->slots, kSendSlots); slots (st->outSend.slots, kSendSlots); }     // (3.40.0: the post-fader slot too)
+    for (auto& b : m.busPool)    { slots (b->slots, kChanSlots); for (auto& sd : b->sends.pool) slots (sd->slots, kSendSlots); slots (b->outSend.slots, kSendSlots); }
 }
 
 MixerState* AppContext::findMixer (const juce::Uuid& id) const

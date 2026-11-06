@@ -529,10 +529,14 @@ MasteringComponent::MasteringComponent (AppContext& a)
       formLevelBox ([this]() -> MasterExportSettings& { return def().vm; }, true, [this] { touched(); refreshFormatControls(); }), vmProgress (progressValue), formProgress (progressValue), ddpProgress (progressValue), renderProgress (renderProgressValue)
 {
     auto cap = [this] (juce::Label& l, const juce::String& t, bool bold = false) { styleCaption (l, t, bold); addChildComponent (l); };
-    for (auto* b : { &vmTab, &ddpTab, &formTab }) { b->setClickingTogglesState (false); b->setColour (juce::TextButton::buttonOnColourId, theme::accent); addAndMakeVisible (b); }
+    for (auto* b : { &vmTab, &ddpTab, &formTab, &atmosTab }) { b->setClickingTogglesState (false); b->setColour (juce::TextButton::buttonOnColourId, theme::accent); addAndMakeVisible (b); }
     vmTab.onClick = [this] { setView (0); };
     ddpTab.onClick = [this] { setView (1); };
     formTab.onClick = [this] { setView (2); };
+    atmosTab.onClick = [this] { setView (3); };
+    atmosTab.setTooltip ("Dolby Atmos master files (ADM BWF) of the same pieces, written by Fermata itself: every ticked surround bus goes in as its own bed and objects. "
+                         "Open them in the Fiedler Mastering Console for the binaural settings, the loudness and the delivery files.");
+    buildAtmosTab();
     formTab.setTooltip ("Listening copies for reviewers: one .html page per piece with the recording inside, a waveform, play controls and a comment form. Made on their own: no audio files are exported.");
     vmTab.setTooltip ("Export the edits as audio files: WAV, AIFF, FLAC, Ogg Vorbis or MP3, with levels, names and tags");
     ddpTab.setTooltip ("Lay the edits out as a CD: pauses, automatic PQ points, CD-Text, and a DDP master for the factory");
@@ -943,6 +947,7 @@ void MasteringComponent::timerCallback()
         }
     }
     if (renderJob != nullptr) renderProgressValue = renderJob->getProgress();
+    if (atmosJob != nullptr) { atmosProgressValue = atmosJob->getProgress(); atmosStatus.setText (atmosJob->getStatus(), juce::dontSendNotification); }
     if (job != nullptr)
     {
         progressValue = job->getProgress();
@@ -1355,10 +1360,13 @@ void MasteringComponent::setBusy (bool busy)
                                                                          &folderEditor, &chooseButton, &stemsButton, &mixerBox, &sourceBox, &tailBox, &vmAll, &vmNone, &vmUp, &vmDown, &autoPq, &allGapsBox, &ddpChoose,
                                                                          &ddpFolderEditor, &zipToggle, &cueToggle, &ddpNorm, &ddpTogether, &ddpPeakEditor, &ddpUp, &ddpDown, &gapEditor, &ddpCheck })
         c->setEnabled (! busy);
+    for (juce::Component* c : std::initializer_list<juce::Component*> { &atmosBusesButton, &atmosLfeToggle, &atmosLfeSlider, &atmosDitherToggle, &atmosFolderEditor, &atmosChoose }) c->setEnabled (! busy);
+    atmosExport.setButtonText (busy && atmosJob != nullptr ? "Cancel" : "Export Atmos files");
+    atmosExport.setEnabled (! busy || atmosJob != nullptr);
     exportButton.setButtonText (busy && lastJobKind == 0 ? "Cancel" : "Export");
     ddpExport.setButtonText (busy && lastJobKind == 1 ? "Cancel" : "Make DDP");
     formExport.setButtonText (busy && lastJobKind == 2 ? "Cancel" : "Make listening copies");
-    exportButton.setEnabled (! busy || lastJobKind == 0); ddpExport.setEnabled (! busy || lastJobKind == 1); formExport.setEnabled (! busy || lastJobKind == 2);
+    exportButton.setEnabled ((! busy || lastJobKind == 0) && atmosJob == nullptr); ddpExport.setEnabled ((! busy || lastJobKind == 1) && atmosJob == nullptr); formExport.setEnabled ((! busy || lastJobKind == 2) && atmosJob == nullptr);
     if (! busy) refreshFormatControls();
 }
 
@@ -1535,17 +1543,24 @@ class StemsPanel : public juce::Component
 {
 public:
     struct Entry { juce::Uuid id; juce::String name; bool on = false; };
-    StemsPanel (std::vector<Entry> entries, std::function<void (const juce::Uuid&, bool)> setOne) : list (std::move (entries)), set (std::move (setOne))
+    struct Texts { juce::String title, note, empty; };
+    static Texts stemsTexts()
     {
-        title.setText ("Export these buses as stems too:", juce::dontSendNotification);
+        return { "Export these buses as stems too:",
+                 "Each ticked bus becomes its own stereo file for every piece, at the master's level (so the stems keep its balance), in the master's format, "
+                 "in a Stems folder next to the masters. A bus that goes to no outputs works too.",
+                 "There is no other Int or Ext bus in this project. Add one in a mixer (+ Strip...), send what you want to it, and it is listed here." };
+    }
+    StemsPanel (std::vector<Entry> entries, std::function<void (const juce::Uuid&, bool)> setOne, Texts texts = stemsTexts()) : list (std::move (entries)), set (std::move (setOne))
+    {
+        title.setText (texts.title, juce::dontSendNotification);
         title.setFont (juce::FontOptions (13.0f, juce::Font::bold)); title.setColour (juce::Label::textColourId, theme::text);
         addAndMakeVisible (title);
-        note.setText ("Each ticked bus becomes its own stereo file for every piece, at the master's level (so the stems keep its balance), in the master's format, "
-                      "in a Stems folder next to the masters. A bus that goes to no outputs works too.", juce::dontSendNotification);
+        note.setText (texts.note, juce::dontSendNotification);
         note.setFont (juce::FontOptions (11.5f)); note.setColour (juce::Label::textColourId, theme::dimText);
         note.setJustificationType (juce::Justification::topLeft);
         addAndMakeVisible (note);
-        empty.setText ("There is no other Int or Ext bus in this project. Add one in a mixer (+ Strip...), send what you want to it, and it is listed here.", juce::dontSendNotification);
+        empty.setText (texts.empty, juce::dontSendNotification);
         empty.setFont (juce::FontOptions (12.0f)); empty.setColour (juce::Label::textColourId, theme::text); empty.setJustificationType (juce::Justification::topLeft);
         addChildComponent (empty); empty.setVisible (list.empty());
         for (auto& e : list)
@@ -1637,13 +1652,19 @@ void MasteringComponent::setView (int v)
 {
     if (v != 1) stopPlay();
     view = v; def().view = v;
-    vmTab.setToggleState (v == 0, juce::dontSendNotification); ddpTab.setToggleState (v == 1, juce::dontSendNotification); formTab.setToggleState (v == 2, juce::dontSendNotification);
+    vmTab.setToggleState (v == 0, juce::dontSendNotification); ddpTab.setToggleState (v == 1, juce::dontSendNotification); formTab.setToggleState (v == 2, juce::dontSendNotification); atmosTab.setToggleState (v == 3, juce::dontSendNotification);
     vmTab.setColour (juce::TextButton::buttonColourId, v == 0 ? theme::accent : theme::button);
     ddpTab.setColour (juce::TextButton::buttonColourId, v == 1 ? theme::accent : theme::button);
     formTab.setColour (juce::TextButton::buttonColourId, v == 2 ? theme::accent : theme::button);
-    const bool vm = v == 0, dd = v == 1, fm = v == 2;
-    for (juce::Component* c : std::initializer_list<juce::Component*> { vmList.get(), &vmAll, &vmNone, &vmUp, &vmDown })      // the list of pieces: shared by the Virtual Master and the listening copies
-        c->setVisible (vm || fm);
+    atmosTab.setColour (juce::TextButton::buttonColourId, v == 3 ? theme::accent : theme::button);
+    const bool vm = v == 0, dd = v == 1, fm = v == 2, at = v == 3;
+    for (juce::Component* c : std::initializer_list<juce::Component*> { vmList.get(), &vmAll, &vmNone, &vmUp, &vmDown })      // the list of pieces: shared by the Virtual Master, the listening copies and the Atmos files
+        c->setVisible (vm || fm || at);
+    for (juce::Component* c : std::initializer_list<juce::Component*> { &atmosCaption, &atmosIntro, &atmosBusesCaption, &atmosBusesButton, &atmosLfeToggle, &atmosLfeSlider, &atmosLfeUnit, &atmosDitherToggle,
+                                                                         &atmosNotes, &atmosFolderCaption, &atmosFolderEditor, &atmosChoose, &atmosStatus, &atmosProgress, &atmosExport })
+        c->setVisible (at);
+    atmosShow.setVisible (at && atmosShow.isVisible());
+    if (at) refreshAtmosControls();
     for (juce::Component* c : std::initializer_list<juce::Component*> { &vmSettings, &vmProgress, &vmStatus, &exportButton })
         c->setVisible (vm);
     showButton.setVisible (vm && showButton.isVisible());
@@ -1690,6 +1711,7 @@ void MasteringComponent::resized()
         vmTab.setBounds (bar.removeFromLeft (150).withSizeKeepingCentre (146, grid::btnH + 4));
         ddpTab.setBounds (bar.removeFromLeft (150).withSizeKeepingCentre (146, grid::btnH + 4));
         formTab.setBounds (bar.removeFromLeft (150).withSizeKeepingCentre (146, grid::btnH + 4));
+        atmosTab.setBounds (bar.removeFromLeft (110).withSizeKeepingCentre (106, grid::btnH + 4));
         (void) bar;                                                                // (the top bar holds only the tabs, so the pin and moon buttons have the corner to themselves)
     }
     {
@@ -1707,7 +1729,187 @@ void MasteringComponent::resized()
         renderStatus.setBounds (strip);
     }
     all.reduce (10, 10);
-    if (view == 0) layoutVm (all); else if (view == 2) layoutForms (all); else layoutDdp (all);
+    if (view == 0) layoutVm (all); else if (view == 2) layoutForms (all); else if (view == 3) layoutAtmos (all); else layoutDdp (all);
+}
+
+// ----------------------------------------------------------------------------- 3.40.0: the Atmos tab
+void MasteringComponent::buildAtmosTab()
+{
+    auto cap = [this] (juce::Label& l, const juce::String& t, bool bold = false) { styleCaption (l, t, bold); addChildComponent (l); };
+    cap (atmosCaption, "Dolby Atmos master files (ADM BWF)", true);
+    cap (atmosIntro, "The same pieces as the Virtual Master, each written as one Dolby Atmos master file (ADM BWF, 24-bit, named \"... (Atmos).wav\"), covering exactly the "
+                     "stretch the Virtual Master's stereo file covers, so the two line up to the sample. Every ticked surround bus goes into the file as its own bed and "
+                     "objects (a 9.1.6 bus: a 7.1.2 bed plus the wides and the front and rear tops as fixed objects), as it leaves its own fader - so a reverb bus and the dry "
+                     "sound can be given different binaural settings afterwards. Fermata writes the audio and the ADM description; open the files in the Fiedler Mastering "
+                     "Console to set the binaural render modes, the downmix and trims, measure the loudness (-18 LKFS, -1 dBTP) and write the delivery files.");
+    atmosIntro.setJustificationType (juce::Justification::topLeft); atmosIntro.setMinimumHorizontalScale (1.0f);
+    cap (atmosBusesCaption, "Buses in the file"); cap (atmosFolderCaption, "Folder"); cap (atmosStatus, ""); cap (atmosNotes, ""); cap (atmosLfeUnit, "Hz");
+    atmosStatus.setJustificationType (juce::Justification::topLeft); atmosNotes.setJustificationType (juce::Justification::topLeft); atmosNotes.setMinimumHorizontalScale (1.0f);
+    atmosNotes.setColour (juce::Label::textColourId, theme::warn);
+    atmosBusesButton.setTooltip ("Which surround buses are written into every file, each as its own bed and objects. The file's channels follow the order of the buses in the project.");
+    atmosBusesButton.onClick = [this] { chooseAtmosBuses(); };
+    atmosLfeToggle.setButtonText ("Low-pass the LFE at");
+    atmosLfeToggle.setTooltip ("The delivery spec: audio in the LFE channel should be low-passed between 100 and 150 Hz. A 4th-order filter (24 dB per octave) on every LFE channel of the file; the buses themselves are not changed.");
+    atmosLfeToggle.onClick = [this] { def().atmos.lfeLowPass = atmosLfeToggle.getToggleState(); touched(); refreshAtmosControls(); };
+    atmosLfeSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    atmosLfeSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 48, grid::btnH);
+    atmosLfeSlider.setRange (AtmosExportSettings::kMinLfeHz, AtmosExportSettings::kMaxLfeHz, 1.0);
+    atmosLfeSlider.setTooltip ("Anywhere from 100 to 150 Hz (the delivery spec's range)");
+    atmosLfeSlider.onValueChange = [this] { if (updating) return; def().atmos.lfeHz = (float) atmosLfeSlider.getValue(); touched(); };
+    atmosDitherToggle.setButtonText ("Dither (TPDF) when cutting the render to 24 bits");
+    atmosDitherToggle.onClick = [this] { def().atmos.dither = atmosDitherToggle.getToggleState(); touched(); };
+    atmosFolderEditor.onTextChange = [this] { def().atmos.folder = atmosFolderEditor.getText(); touched(); };
+    atmosFolderEditor.setTooltip ("Empty: the project's Bounced Media / Mastered Audio / Atmos folder");
+    atmosChoose.onClick = [this] { chooseAtmosFolder(); };
+    atmosExport.setColour (juce::TextButton::buttonColourId, theme::accent);
+    atmosExport.onClick = [this] { startAtmosExport(); };
+    atmosShow.onClick = [this] { if (lastAtmosOutput.exists()) lastAtmosOutput.revealToUser(); };
+    for (juce::Component* c : std::initializer_list<juce::Component*> { &atmosCaption, &atmosIntro, &atmosBusesCaption, &atmosBusesButton, &atmosLfeToggle, &atmosLfeSlider, &atmosLfeUnit, &atmosDitherToggle,
+                                                                         &atmosNotes, &atmosFolderCaption, &atmosFolderEditor, &atmosChoose, &atmosStatus, &atmosProgress, &atmosExport, &atmosShow })
+        addChildComponent (c);
+    refreshAtmosControls();
+}
+
+void MasteringComponent::refreshAtmosControls()
+{
+    updating = true;
+    const auto& a = def().atmos;
+    juce::StringArray names; int channels = 0;
+    for (auto& b : app.project.buses)
+        if (surround::isSurround (b.format) && std::find (a.busIds.begin(), a.busIds.end(), b.id) != a.busIds.end()) { names.add (b.name + " (" + surround::name (b.format) + ")"); channels += surround::channels (surround::speakersOf (b.format)); }
+    atmosBusesButton.setButtonText (names.isEmpty() ? juce::String ("None - choose the surround buses to write...")
+                                                    : juce::String (names.size()) + (names.size() == 1 ? " bus: " : " buses: ") + names.joinIntoString (", ") + "   (" + juce::String (channels) + " channels)");
+    atmosLfeToggle.setToggleState (a.lfeLowPass, juce::dontSendNotification);
+    atmosLfeSlider.setValue (a.lfeHz, juce::dontSendNotification); atmosLfeSlider.setEnabled (a.lfeLowPass);
+    atmosDitherToggle.setToggleState (a.dither, juce::dontSendNotification);
+    if (atmosFolderEditor.getText() != a.folder) atmosFolderEditor.setText (a.folder, false);
+    const auto notes = atmosExportNotes (app.project, def());
+    atmosNotes.setText (notes.joinIntoString ("\n"), juce::dontSendNotification);
+    updating = false;
+}
+
+void MasteringComponent::chooseAtmosBuses()
+{
+    std::vector<StemsPanel::Entry> es;
+    for (int pass = 0; pass < 2; ++pass)                                  // the Int buses (the usual ones: a reverb, a bed), then the Ext buses
+        for (auto& b : app.project.buses)
+            if (b.external == (pass == 1) && surround::isSurround (b.format))
+                es.push_back ({ b.id, b.name + "  (" + (b.external ? "Ext bus, " : "Int bus, ") + surround::name (b.format) + ")", std::find (def().atmos.busIds.begin(), def().atmos.busIds.end(), b.id) != def().atmos.busIds.end() });
+    StemsPanel::Texts t;
+    t.title = "Write these surround buses into every Atmos file:";
+    t.note = "Each ticked bus goes in as its own bed and objects, named after the bus, as it leaves its own fader (what it is sent on to - the bus your speakers hear - is not in the file). "
+             "The Mastering Console sums them, and can give each a binaural setting of its own. At most 128 channels in all (eight 9.1.6 buses).";
+    t.empty = "There is no surround bus in this project. Add one in a mixer (+ Strip > Int Bus > 9.1.6 ...), send the tracks to it, and it is listed here.";
+    juce::Component::SafePointer<MasteringComponent> safe (this);
+    auto panel = std::make_unique<StemsPanel> (std::move (es), [safe] (const juce::Uuid& id, bool on)
+    {
+        if (safe == nullptr) return;
+        auto& v = safe->def().atmos.busIds;
+        const auto it = std::find (v.begin(), v.end(), id);
+        if (on && it == v.end()) v.push_back (id);
+        if (! on && it != v.end()) v.erase (it);
+        safe->touched();
+        safe->refreshAtmosControls();
+    }, t);
+    juce::CallOutBox::launchAsynchronously (std::move (panel), atmosBusesButton.getScreenBounds(), nullptr);
+}
+
+void MasteringComponent::chooseAtmosFolder()
+{
+    const auto start = juce::File (def().atmos.folder);
+    chooser = std::make_unique<juce::FileChooser> ("Choose the folder for the Atmos files", start.exists() ? start : app.project.masteredFolder());
+    juce::Component::SafePointer<MasteringComponent> safe (this);
+    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories, [safe] (const juce::FileChooser& fc)
+    {
+        if (safe == nullptr || fc.getResult() == juce::File()) return;
+        safe->def().atmos.folder = fc.getResult().getFullPathName(); safe->atmosFolderEditor.setText (safe->def().atmos.folder, false);
+        safe->touched();
+    });
+}
+
+void MasteringComponent::startAtmosExport()
+{
+    if (atmosJob != nullptr) { atmosJob->cancel(); atmosStatus.setText ("Cancelling...", juce::dontSendNotification); return; }
+    if (job != nullptr || renderJob != nullptr) { atmosStatus.setColour (juce::Label::textColourId, theme::warn); atmosStatus.setText ("Another export or the renders are running: try again when they have finished.", juce::dontSendNotification); return; }
+    if (app.engine.isRecording()) { showError ("Mastering", "Stop recording first."); return; }
+    AtmosJobSpec spec;
+    const auto err = makeAtmosSpec (app.project, def(), spec);
+    if (err.isNotEmpty()) { atmosStatus.setColour (juce::Label::textColourId, theme::warn); atmosStatus.setText (err, juce::dontSendNotification); return; }
+    {   // 3.18.0: asks first while Rec is on
+        juce::Component::SafePointer<MasteringComponent> safe (this);
+        if (app.recModeHolds ("The Atmos export", [safe] { if (safe != nullptr) safe->startAtmosExport(); })) return;
+    }
+    atmosStatus.setColour (juce::Label::textColourId, theme::text);
+    atmosStatus.setText ("Starting...", juce::dontSendNotification);
+    atmosShow.setVisible (false);
+    atmosProgressValue = 0.0;
+    setBusy (true);
+    juce::Component::SafePointer<MasteringComponent> safe (this);
+    atmosJob = std::make_unique<AtmosExportJob> (app.project, spec, [safe] (AtmosExportResult r) { if (safe != nullptr) safe->atmosFinished (r); }, false);
+    atmosJob->start();
+}
+
+void MasteringComponent::atmosFinished (const AtmosExportResult& r)
+{
+    atmosJob.reset();
+    setBusy (false);
+    atmosProgressValue = r.error.isEmpty() && ! r.cancelled ? 1.0 : 0.0;
+    if (r.cancelled) { atmosStatus.setColour (juce::Label::textColourId, theme::text); atmosStatus.setText ("Cancelled.", juce::dontSendNotification); return; }
+    juce::String text;
+    if (r.error.isNotEmpty())
+    {
+        atmosStatus.setColour (juce::Label::textColourId, theme::warn); atmosStatus.setText (r.error, juce::dontSendNotification);
+        text = "The Atmos export did not finish:\n\n" + r.error;
+    }
+    else
+    {
+        atmosStatus.setColour (juce::Label::textColourId, r.clipped ? theme::warn : theme::text);
+        atmosStatus.setText ("Done: " + juce::String (r.files.size()) + " Atmos file" + (r.files.size() == 1 ? "" : "s") + " of " + juce::String (r.channels) + " channels, loudest sample " + juce::String (r.peakDb, 1) + " dBFS"
+                             + (r.clipped ? "   -  THIS CLIPPED: a bus went over 0 dB (lower its fader and export again)." : "") + "\n" + juce::File (r.files[0]).getFileName() + (r.files.size() > 1 ? "  ..." : ""), juce::dontSendNotification);
+        lastAtmosOutput = juce::File (r.files[0]); atmosShow.setVisible (true);
+        text << juce::String (r.files.size()) << (r.files.size() == 1 ? " Atmos master file" : " Atmos master files") << " written (" << r.channels << " channels, "
+             << juce::String (r.sampleRate / 1000.0, r.sampleRate == 48000.0 ? 0 : 1) << " kHz, 24-bit), each exactly as long as its Virtual Master file.\n\nFolder: " << lastAtmosOutput.getParentDirectory().getFullPathName()
+             << "\nLoudest sample: " << juce::String (r.peakDb, 1) << " dBFS" << (r.clipped ? "  -  THIS CLIPPED" : "") << "."
+             << (r.peakDb < -60.0f ? "\n\nThe ticked buses carried next to nothing: are the sends to them turned up, and the pieces' tracks going to them?" : "")
+             << "\n\nNext: open the files in the Fiedler Mastering Console - set the binaural render mode of each bed and object, the downmix (Direct Render; Lo/Ro), "
+                "measure the loudness (-18 LKFS integrated, -1 dBTP) and let it write the delivery files.";
+    }
+    resized();
+    auto* aw = new juce::AlertWindow (r.error.isNotEmpty() ? "Atmos export stopped" : "Atmos export complete", text, r.error.isNotEmpty() || r.clipped ? juce::MessageBoxIconType::WarningIcon : juce::MessageBoxIconType::InfoIcon, this);
+    const auto out = lastAtmosOutput;
+    if (r.error.isEmpty() && out.exists()) aw->addButton ("Show the files", 1);
+    aw->addButton ("OK", 0, juce::KeyPress (juce::KeyPress::returnKey), juce::KeyPress (juce::KeyPress::escapeKey));
+    aw->enterModalState (true, juce::ModalCallbackFunction::create ([aw, out] (int res) { if (res == 1 && out.exists()) out.revealToUser(); delete aw; }));
+}
+
+void MasteringComponent::layoutAtmos (juce::Rectangle<int> area)
+{
+    auto left = area.removeFromLeft (juce::jmax (380, area.getWidth() * 48 / 100));
+    area.removeFromLeft (12);
+    auto btns = left.removeFromBottom (32);
+    left.removeFromBottom (6);
+    vmList->setBounds (left);
+    for (auto* b : { &vmAll, &vmNone, &vmUp, &vmDown }) b->setBounds (btns.removeFromLeft (grid::btnW).withSizeKeepingCentre (grid::btnW - 4, grid::btnH + 2));
+    auto bottom = area.removeFromBottom (74);
+    area.removeFromBottom (6);
+    atmosStatus.setBounds (bottom.removeFromTop (38));
+    {
+        auto buttons = bottom.removeFromBottom (32);
+        atmosExport.setBounds (buttons.removeFromRight (190).reduced (2));
+        atmosShow.setBounds (buttons.removeFromRight (150).reduced (2));
+        buttons.removeFromRight (8);
+        atmosProgress.setBounds (buttons.withSizeKeepingCentre (buttons.getWidth(), 18));
+    }
+    auto r = area.reduced (6, 4);
+    auto row = [&] (int h) { auto x = r.removeFromTop (h); r.removeFromTop (6); return x; };
+    atmosCaption.setBounds (row (20));
+    const int lines = 1 + juce::roundToInt ((float) juce::GlyphArrangement::getStringWidthInt (atmosIntro.getFont(), atmosIntro.getText()) / (float) juce::jmax (100, r.getWidth() - 10));
+    atmosIntro.setBounds (row (juce::jmax (64, juce::roundToInt (atmosIntro.getFont().getHeight() * 1.25f) * lines)));
+    { auto x = row (grid::btnH + 2); atmosBusesCaption.setBounds (x.removeFromLeft (110)); atmosBusesButton.setBounds (x); }
+    { auto x = row (grid::btnH + 2); atmosLfeToggle.setBounds (x.removeFromLeft (170)); atmosLfeUnit.setBounds (x.removeFromRight (30)); atmosLfeSlider.setBounds (x.removeFromLeft (juce::jmin (x.getWidth(), 260))); }
+    atmosDitherToggle.setBounds (row (grid::btnH + 2));
+    { auto x = row (grid::btnH + 2); atmosFolderCaption.setBounds (x.removeFromLeft (60)); atmosChoose.setBounds (x.removeFromRight (136)); x.removeFromRight (4); atmosFolderEditor.setBounds (x); }
+    atmosNotes.setBounds (r.removeFromTop (juce::jmin (r.getHeight(), 70)));
 }
 
 void MasteringComponent::layoutForms (juce::Rectangle<int> area)

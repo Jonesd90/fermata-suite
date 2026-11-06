@@ -136,3 +136,11 @@ copies it like everything else, which is fine.
     defaults), an Ext Bus's `"hpFirst"` (missing = -1). fermata:Live reads and writes them through the shared code and never looks at them: its own
     mixer only uses a project's first mixer's main Ext Bus, which is always stereo (a surround Ext Bus is never a main output). The shared engine
     runs a stereo project exactly as before.
+  - Still contract 3 (fermata 3.40.0): the post-fader slot. The project file gained keys, none changed: the project's `"postFaderSlots"` (true;
+    missing = off) and a strip's or bus's `"postSlot"` (a list of one slot, as `"slots"`; missing = empty). Both are written only when used, so a
+    project that does not use them is saved as before, and the `"slots"` list still holds the four slots before the fader (an older version reads a
+    project with a post-fader plug-in as one without it). The shared engine runs a project without the switch exactly as before; fermata:Live has no
+    switch for it.
+  - Still contract 3 (fermata 3.40.0): the Atmos tab. The mastering settings gained one key, `"atmos"` (the ticked buses, the LFE low-pass and its
+    frequency, dither, the folder), written only once something differs from the defaults, and `"view"` can now be 3 (an older fermata clamps it
+    to its own tabs). New shared file `src/core/AdmWriter.h / .cpp`, in `cmake/SharedCore.cmake`, used by fermata's Mastering window only.

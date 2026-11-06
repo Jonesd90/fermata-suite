@@ -39,6 +39,7 @@
 #include "../src/core/Loudness.h"
 #include "../src/core/ScreenLayout.h"
 #include "../src/core/Workers.h"
+#include "../src/core/AdmWriter.h"
 #include <stdexcept>
 #include "../src/core/Tuning.h"
 #include "../src/core/PitchPipe.h"
@@ -13215,6 +13216,430 @@ int main()
             for (int v : seen) CHECK (v == 1);
         }
         CHECK (vst3Rank (juce::AudioChannelSet::wideRight) == 51 && vst3Rank (juce::AudioChannelSet::discreteChannel0) == -1);
+    }
+
+    SECTION ("3.40.0 the post-fader slot: after the fader and the mute, only while the project's switch is on; the meters, the output and post-fader sends take it, pre-fader sends do not; its delay is compensated; saved under its own key");
+    {
+        // a plug-in that remembers the loudest sample it was given (and halves the sound, so it shows where it sits), with a description so it is saved
+        struct Probe : InsertProcessor
+        {
+            void prepare (double, int, int l) override { layout = l; }
+            void process (juce::AudioBuffer<float>& b) override
+            {
+                for (int c = 0; c < b.getNumChannels(); ++c) peak = juce::jmax (peak, b.getMagnitude (c, 0, b.getNumSamples()));
+                chans = b.getNumChannels(); b.applyGain (0.5f);
+            }
+            juce::String getName() const override { return "Probe"; }
+            juce::String getDescription() const override { return "<PLUGIN name=\"Probe\" manufacturer=\"Test\"/>"; }
+            float peak = 0.0f; int chans = 0, layout = 0;
+        };
+        Project q;
+        q.projectFile = tmp.getChildFile ("PostFader.fermata");
+        q.setInputCount (4); q.setOutputCount (24);
+        q.tracks.clear(); q.retireAllMixers();
+        q.insertFactory = [] (const juce::String& desc, const juce::String&) -> std::unique_ptr<InsertProcessor> { if (desc.contains ("Probe")) return std::make_unique<Probe>(); return nullptr; };
+        const auto pair = q.addTrack ("Pair", TrackFormat::Stereo, 1).id;
+        const auto fx   = q.addBus ("Fx", false).id;
+        const auto verb = q.addBus ("Verb", false, BusFormat::S916).id;
+        const auto out  = q.addBus ("Out", true).id;
+        auto& m = q.addMixer ("M");
+        AudioEngine e (q);
+        e.prepare (48000.0, 64);
+        auto* sPair = m.stripFor (pair); auto* bFx = m.busFor (fx); auto* bVerb = m.busFor (verb); auto* bOut = m.busFor (out);
+        bOut->outFirst.store (0);
+        sPair->outOn.set (true); sPair->gainDb.set (-6.0206f);                   // the pair to Main (the Out bus) at half level
+        e.rebuildPlan();
+        auto run = [&] (int blocks, std::vector<std::vector<float>>& outs)
+        {
+            outs.assign (24, std::vector<float> (64, 0.0f));
+            std::vector<std::vector<float>> ins (4, std::vector<float> (64, 0.5f));
+            const float* in[4]; float* o[24];
+            for (int c = 0; c < 4; ++c) in[c] = ins[(size_t) c].data();
+            for (int b = 0; b < blocks; ++b)
+            {
+                for (int c = 0; c < 24; ++c) { std::fill (outs[(size_t) c].begin(), outs[(size_t) c].end(), 0.0f); o[c] = outs[(size_t) c].data(); }
+                e.process (in, 4, o, 24, 64);
+            }
+        };
+        auto level = [] (const std::vector<float>& v) { return v[63]; };
+        std::vector<std::vector<float>> o;
+        run (6, o);
+        CHECK (std::abs (level (o[0]) - 0.25f) < 1.0e-3f);                          // 0.5 in, the fader at -6 dB
+        // a plug-in in the post-fader slot does nothing while the project's switch is off
+        CHECK (sPair->slots[kPostSlot].set (std::make_unique<Probe>(), 48000.0, 64));
+        auto* probe = static_cast<Probe*> (sPair->slots[kPostSlot].getProcessorUnsafe());
+        e.checkLatency(); run (6, o);
+        CHECK (probe->peak == 0.0f && std::abs (level (o[0]) - 0.25f) < 1.0e-3f);
+        CHECK (q.postSlotPlugins().size() == 1 && q.postSlotPlugins()[0] == "Probe on Pair");
+        // switched on: it runs after the fader (it is given 0.25, not 0.5), the output and the meter take what comes out of it
+        q.postFaderSlots = true; e.rebuildPlan();
+        sPair->meterL.set (0.0f);
+        run (6, o);
+        CHECK (std::abs (probe->peak - 0.25f) < 1.0e-3f && probe->chans == 2 && probe->layout == 2);     // (a track's: its stereo signal)
+        CHECK (std::abs (level (o[0]) - 0.125f) < 1.0e-3f && std::abs (level (o[1]) - 0.125f) < 1.0e-3f);
+        CHECK (sPair->meterL.get() < 0.13f && sPair->meterL.get() > 0.12f);
+        // after the mute too: a muted channel gives it silence (a Dolby Atmos Beam there goes quiet with the channel)
+        sPair->mute.set (true); run (4, o); probe->peak = 0.0f; run (2, o);
+        CHECK (probe->peak < 1.0e-6f && std::abs (level (o[0])) < 1.0e-6f);
+        sPair->mute.set (false);
+        // a post-fader send takes it; a pre-fader send does not: the pair to the Fx bus (stereo, Direct) and on to Main
+        CHECK (q.setSendLevel (m, pair, fx, 0.0f) == SendResult::RoutingChanged);
+        bFx->outOn.set (true); sPair->outOn.set (false);
+        e.rebuildPlan(); run (6, o);
+        CHECK (std::abs (level (o[0]) - 0.125f) < 1.0e-3f);                         // post-fader: through the fader and the post slot
+        sPair->sends.find (fx)->pre.set (true); run (6, o);
+        CHECK (std::abs (level (o[0]) - 0.5f) < 1.0e-3f);                           // pre-fader: neither
+        sPair->sends.find (fx)->gainDb.set (-100.0f); sPair->outOn.set (true); bFx->outOn.set (false);
+        // a bus's post-fader slot: on all its channels, in its format; its fold into a stereo bus (and its output) take what it gives
+        CHECK (bVerb->slots[kPostSlot].set (std::make_unique<Probe>(), 48000.0, 64));
+        auto* vprobe = static_cast<Probe*> (bVerb->slots[kPostSlot].getProcessorUnsafe());
+        CHECK (q.setSendLevel (m, pair, verb, 0.0f) == SendResult::RoutingChanged);
+        bVerb->outOn.set (true); bVerb->outDest = out; sPair->outOn.set (false);
+        e.rebuildPlan(); run (6, o);
+        CHECK (bVerb->slots[kPostSlot].layout() == (int) BusFormat::S916 && vprobe->layout == (int) BusFormat::S916 && vprobe->chans == 16);
+        // the pair lands on L and R of the 9.1.6 bus at 0.25 (a track's send into a surround bus leaves from its own channels, after its fader but before its
+        // stereo fold - and so before its post slot); the bus's post slot halves it, and the bus's output (a Lo/Ro fold) carries that L to the left
+        CHECK (std::abs (vprobe->peak - 0.25f) < 1.0e-3f && std::abs (level (o[0]) - 0.125f) < 1.0e-3f);
+        bVerb->slots[kPostSlot].clear (48000.0, 64); sPair->sends.find (verb)->gainDb.set (-100.0f); bVerb->outOn.set (false); sPair->outOn.set (true);
+        sPair->slots[kPostSlot].clear (48000.0, 64);
+        // its delay is compensated: 100 samples in the Fx bus's post slot hold the pair's own path to Main back as much (an impulse arrives once, together)
+        CHECK (q.setSendLevel (m, pair, fx, 0.0f) == SendResult::RoutingChanged);
+        sPair->sends.find (fx)->pre.set (false);
+        bFx->outOn.set (true); sPair->gainDb.set (0.0f);
+        bFx->slots[0].set (std::make_unique<LatencyInsert> (30), 48000.0, 64);
+        bFx->slots[kPostSlot].set (std::make_unique<LatencyInsert> (100), 48000.0, 64);
+        e.checkLatency();
+        CHECK (e.mixerLatency (&m) == 130 && bFx->slots[kPostSlot].posLat.load() == 30);     // (the post slot hears the bus after its 30-sample insert)
+        {
+            std::vector<float> outL;
+            for (int blk = 0; blk < 6; ++blk)
+            {
+                std::vector<float> i0 (64, 0.0f), i1 (64, 0.0f), i2 (64, 0.0f), i3 (64, 0.0f);
+                if (blk == 1) { i1[0] = 1.0f; i2[0] = 1.0f; }
+                std::vector<std::vector<float>> outs (24, std::vector<float> (64, 0.0f));
+                const float* in[4] = { i0.data(), i1.data(), i2.data(), i3.data() }; float* op[24];
+                for (int c = 0; c < 24; ++c) op[c] = outs[(size_t) c].data();
+                e.process (in, 4, op, 24, 64);
+                outL.insert (outL.end(), outs[0].begin(), outs[0].end());
+            }
+            int hits = 0, at = -1;
+            for (int i = 0; i < (int) outL.size(); ++i) if (std::abs (outL[(size_t) i]) > 0.1f) { ++hits; at = i; }
+            CHECK (hits == 1 && at == 64 + 130 && std::abs (outL[(size_t) juce::jmax (0, at)] - 2.0f) < 1.0e-3f);     // both paths, at once
+        }
+        // switched off, the post slot's delay is no longer counted (and the slot no longer runs)
+        q.postFaderSlots = false; e.checkLatency();
+        CHECK (e.mixerLatency (&m) == 30);
+        q.postFaderSlots = true; e.checkLatency();
+        CHECK (e.mixerLatency (&m) == 130);
+        // the pair's send to the delayed bus made pre-fader: still through the bus (whose own post slot delays its output), so nothing changes; the pair's
+        // own post slot is empty. Emptied, the bus delays nothing.
+        bFx->slots[kPostSlot].clear (48000.0, 64); bFx->slots[0].clear (48000.0, 64); e.checkLatency();
+        CHECK (e.mixerLatency (&m) == 0);
+        // saved under its own key, only when it holds something; the switch only when on; read back into a new project (and into a render copy)
+        CHECK (sPair->slots[kPostSlot].set (std::make_unique<Probe>(), 48000.0, 64));
+        sPair->slots[kPostSlot].bypass.set (true);
+        const auto v = q.toVar();
+        CHECK ((bool) v["postFaderSlots"]);
+        {
+            const auto json = juce::JSON::toString (v);
+            CHECK (json.contains ("\"postSlot\"") && json.indexOf ("\"postSlot\"") == json.lastIndexOf ("\"postSlot\""));     // (the pair's only)
+            Project r;
+            r.insertFactory = q.insertFactory;
+            CHECK (r.fromVar (v));
+            CHECK (r.postFaderSlots);
+            if (auto* rm = r.mixerById (m.id))
+            {
+                auto* rs = rm->stripFor (pair);
+                CHECK (rs->slots[kPostSlot].isLoaded() && rs->slots[kPostSlot].bypass.get() && ! rs->slots[0].isLoaded());
+                CHECK (! rm->busFor (fx)->slots[kPostSlot].isLoaded());
+            }
+            else CHECK (false);
+            auto copy = q.cloneForRender (48000.0, 64);
+            CHECK (copy->postFaderSlots && copy->mixerById (m.id) != nullptr && copy->mixerById (m.id)->stripFor (pair)->slots[kPostSlot].isLoaded());
+        }
+        sPair->slots[kPostSlot].clear (48000.0, 64); q.postFaderSlots = false;
+        {
+            const auto json = juce::JSON::toString (q.toVar());
+            CHECK (! json.contains ("postSlot") && ! json.contains ("postFaderSlots"));     // a project that does not use it is written as before
+        }
+        // a mix snapshot carries it: applied with clearEmptySlots (a revert / undo) one with the slot empty empties it, as it does the others; one with it full
+        // puts it back
+        {
+            const auto empty = q.mixSnapshot (m, true);
+            CHECK (sPair->slots[kPostSlot].set (std::make_unique<Probe>(), 48000.0, 64));
+            Project::MixParts parts; parts.clearEmptySlots = true;
+            q.applyMix (m, empty, 48000.0, 64, parts);
+            CHECK (! sPair->slots[kPostSlot].isLoaded());
+            CHECK (sPair->slots[kPostSlot].set (std::make_unique<Probe>(), 48000.0, 64));
+            const auto full = q.mixSnapshot (m, true);
+            sPair->slots[kPostSlot].clear (48000.0, 64);
+            q.applyMix (m, full, 48000.0, 64, parts);
+            CHECK (sPair->slots[kPostSlot].isLoaded());
+            sPair->slots[kPostSlot].clear (48000.0, 64);
+        }
+    }
+
+    SECTION ("3.40.0 fermata's own Dolby Atmos master (ADM BWF): the layouts, the axml against the profile's rules, the chna, the file's chunks, the PCM in the right tracks, RF64, the LFE low-pass, the names");
+    {
+        using namespace td::adm; using surround::Spk;
+        auto childrenNamed = [] (const juce::XmlElement* e, const char* tag) { int n = 0; for (auto* c : e->getChildWithTagNameIterator (tag)) { juce::ignoreUnused (c); ++n; } return n; };
+        // the layouts: a 9.1.6 bus is the largest bed the profile allows that it holds whole - 7.1.2 (its top middles are the bed's Lts / Rts) - plus 6 objects
+        // (bed first, in the profile's order; then the wides and the other tops in the bus's order), as the Composer builds its Composites; 7.1.2 is a bed alone
+        {
+            const auto L = layoutFor (BusFormat::S916);
+            CHECK (L.bed == BusFormat::S712 && L.bedChannels() == 10 && L.objects() == 6 && L.tracks.size() == 16);
+            const Spk bedOrder[10] = { Spk::L, Spk::R, Spk::C, Spk::LFE, Spk::Lss, Spk::Rss, Spk::Lrs, Spk::Rrs, Spk::Ltm, Spk::Rtm };
+            const int bedChan[10] = { 0, 1, 2, 3, 4, 5, 6, 7, 12, 13 };
+            for (int i = 0; i < 10; ++i) CHECK (L.tracks[(size_t) i].spk == bedOrder[i] && L.tracks[(size_t) i].inBed && L.tracks[(size_t) i].busChannel == bedChan[i]);
+            const Spk objOrder[6] = { Spk::Lw, Spk::Rw, Spk::Ltf, Spk::Rtf, Spk::Ltr, Spk::Rtr };
+            const int objChan[6] = { 8, 9, 10, 11, 14, 15 };
+            for (int i = 0; i < 6; ++i) CHECK (L.tracks[(size_t) (10 + i)].spk == objOrder[i] && ! L.tracks[(size_t) (10 + i)].inBed && L.tracks[(size_t) (10 + i)].busChannel == objChan[i]);
+            CHECK (layoutFor (BusFormat::S712).bed == BusFormat::S712 && layoutFor (BusFormat::S712).objects() == 0);
+            CHECK (layoutFor (BusFormat::S514).bed == BusFormat::S51 && layoutFor (BusFormat::S514).objects() == 4);
+            CHECK (layoutFor (BusFormat::S714).bed == BusFormat::S71 && layoutFor (BusFormat::S714).objects() == 4);
+            CHECK (layoutFor (BusFormat::S914).bed == BusFormat::S71 && layoutFor (BusFormat::S914).objects() == 6);
+            CHECK (layoutFor (BusFormat::S916Hp).tracks.size() == 16);                                    // (never the headphone pair)
+            float x, y, z; objectPosition (Spk::LFE, x, y, z); CHECK (x == -1.0f && y == 1.0f && z == -1.0f);   // (Table 2-14)
+            objectPosition (Spk::Ltm, x, y, z); CHECK (x == -1.0f && y == 0.0f && z == 1.0f);
+            objectPosition (Spk::Lw, x, y, z); CHECK (x == -1.0f && y == 0.5f && z == 0.0f);
+            CHECK (timeText (0, 48000.0) == "00:00:00.00000" && timeText (3158400, 48000.0) == "00:01:05.80000" && timeText (48000 * 3661 + 24000, 48000.0) == "01:01:01.50000");
+        }
+        // the limits
+        {
+            Description d; d.frames = 10; d.sampleRate = 48000.0;
+            CHECK (check (d).isNotEmpty());                                                            // no bed
+            for (int i = 0; i < 8; ++i) d.beds.push_back ({ "B" + juce::String (i), BusFormat::S916 });
+            CHECK (check (d).isEmpty() && d.totalTracks() == 128);
+            d.beds.push_back ({ "one more", BusFormat::S51 }); CHECK (check (d).contains ("128"));
+            d.beds.clear(); d.beds.push_back ({ "x", BusFormat::S916 }); d.sampleRate = 44100.0; CHECK (check (d).contains ("48 or 96"));
+            d.sampleRate = 96000.0; d.bitDepth = 16; CHECK (check (d).contains ("24"));
+        }
+        // the axml of a 9.1.6 + a 5.1.4 bus, parsed and checked against the profile's rules (section 2 and 3)
+        Description d;
+        d.beds.push_back ({ "Verb 9.1.6", BusFormat::S916 }); d.beds.push_back ({ "Bed 5.1.4", BusFormat::S514 });
+        d.frames = 48000 + 1200; d.sampleRate = 48000.0; d.programmeName = "01 - Kyrie";
+        const auto axml = buildAxml (d);
+        auto xml = juce::XmlDocument::parse (axml);
+        CHECK (xml != nullptr && xml->getTagName() == "ebuCoreMain" && xml->getStringAttribute ("xmlns") == "urn:ebu:metadata-schema:ebuCore_2016");
+        if (xml != nullptr)
+        {
+            auto* fe = xml->getChildByName ("coreMetadata")->getChildByName ("format")->getChildByName ("audioFormatExtended");
+            CHECK (fe != nullptr);
+            int programmes = 0, contents = 0, objects = 0, beds = 0, packs = 0, chans = 0, streams = 0, tracks = 0, uids = 0;
+            std::set<juce::String> ids;
+            std::map<juce::String, juce::XmlElement*> byId;
+            for (auto* e : fe->getChildIterator())
+            {
+                const auto tag = e->getTagName();
+                juce::String id;
+                if (tag == "audioProgramme") { ++programmes; id = e->getStringAttribute ("audioProgrammeID"); CHECK (id == "APR_1001"); CHECK (e->getStringAttribute ("start") == "00:00:00.00000" && e->getStringAttribute ("end") == "00:00:01.02500"); CHECK (e->getStringAttribute ("audioProgrammeName") == "01 - Kyrie"); }
+                else if (tag == "audioContent") { ++contents; id = e->getStringAttribute ("audioContentID"); CHECK (id == "ACO_1001"); auto* dl = e->getChildByName ("dialogue"); CHECK (dl != nullptr && dl->getAllSubText() == "2" && dl->getStringAttribute ("mixedContentKind") == "0"); }
+                else if (tag == "audioObject")
+                {
+                    ++objects; id = e->getStringAttribute ("audioObjectID");
+                    CHECK (e->getStringAttribute ("start") == "00:00:00.00000" && e->getStringAttribute ("duration") == "00:00:01.02500" && ! e->hasAttribute ("startTime"));
+                    const auto pack = e->getChildByName ("audioPackFormatIDRef")->getAllSubText();
+                    const int uidRefs = childrenNamed (e, "audioTrackUIDRef");
+                    if (pack.startsWith ("AP_0001")) { ++beds; CHECK (uidRefs == 10 || uidRefs == 6); } else { CHECK (pack.startsWith ("AP_0003") && uidRefs == 1); }
+                    CHECK (e->getStringAttribute ("audioObjectName").length() >= 1 && e->getStringAttribute ("audioObjectName").length() <= 64);
+                }
+                else if (tag == "audioPackFormat")
+                {
+                    ++packs; id = e->getStringAttribute ("audioPackFormatID");
+                    const bool bed = e->getStringAttribute ("typeDefinition") == "DirectSpeakers";
+                    CHECK (e->getStringAttribute ("typeLabel") == (bed ? "0001" : "0003") && (bed || e->getStringAttribute ("typeDefinition") == "Objects"));
+                    CHECK (childrenNamed (e, "audioChannelFormatIDRef") == (bed ? (id == "AP_00011001" ? 10 : 6) : 1));
+                    CHECK (id.startsWith (bed ? "AP_0001" : "AP_0003"));
+                }
+                else if (tag == "audioChannelFormat")
+                {
+                    ++chans; id = e->getStringAttribute ("audioChannelFormatID");
+                    const bool bed = e->getStringAttribute ("typeDefinition") == "DirectSpeakers";
+                    CHECK (childrenNamed (e, "audioBlockFormat") == 1);
+                    auto* b = e->getChildByName ("audioBlockFormat");
+                    CHECK (b->getStringAttribute ("audioBlockFormatID") == "AB_" + id.substring (3) + "_00000001");
+                    CHECK (b->getChildByName ("cartesian") != nullptr && b->getChildByName ("cartesian")->getAllSubText() == "1");
+                    const int positions = childrenNamed (b, "position");
+                    if (bed)
+                    {
+                        CHECK (! b->hasAttribute ("rtime") && ! b->hasAttribute ("duration") && positions == 3 && b->getChildByName ("speakerLabel") != nullptr && b->getChildByName ("jumpPosition") == nullptr);
+                        CHECK (e->getStringAttribute ("audioChannelFormatName").startsWith ("RoomCentric") && b->getChildByName ("speakerLabel")->getAllSubText().startsWith ("RC_"));
+                    }
+                    else
+                    {
+                        CHECK (b->getStringAttribute ("rtime") == "00:00:00.00000" && b->getStringAttribute ("duration") == "00:00:01.02500" && (positions == 2 || positions == 3) && b->getChildByName ("speakerLabel") == nullptr);
+                        auto* jp = b->getChildByName ("jumpPosition");
+                        CHECK (jp != nullptr && jp->getAllSubText() == "1" && jp->getStringAttribute ("interpolationLength") == "0.000000");
+                        for (auto* pc : b->getChildWithTagNameIterator ("position")) { const double v = pc->getAllSubText().getDoubleValue(); CHECK (v >= -1.0 && v <= 1.0); }
+                    }
+                    for (auto* c : b->getChildIterator()) { const auto t = c->getTagName(); CHECK (t == "cartesian" || t == "position" || t == "speakerLabel" || t == "jumpPosition"); }
+                }
+                else if (tag == "audioStreamFormat")
+                {
+                    ++streams; id = e->getStringAttribute ("audioStreamFormatID");
+                    CHECK (e->getStringAttribute ("formatLabel") == "0001" && e->getStringAttribute ("formatDefinition") == "PCM" && e->getStringAttribute ("audioStreamFormatName").startsWith ("PCM_"));
+                    CHECK (e->getChildByName ("audioChannelFormatIDRef") != nullptr && e->getChildByName ("audioPackFormatIDRef") != nullptr && e->getChildByName ("audioTrackFormatIDRef") != nullptr);
+                    CHECK (e->getChildByName ("audioTrackFormatIDRef")->getAllSubText() == "AT_" + id.substring (3) + "_01");
+                    CHECK (e->getChildByName ("audioChannelFormatIDRef")->getAllSubText() == "AC_" + id.substring (3));          // (yyyyxxxx of the channel = the stream's)
+                }
+                else if (tag == "audioTrackFormat")
+                {
+                    ++tracks; id = e->getStringAttribute ("audioTrackFormatID");
+                    CHECK (id.endsWith ("_01") && e->getStringAttribute ("formatLabel") == "0001" && e->getStringAttribute ("formatDefinition") == "PCM");
+                    CHECK (e->getChildByName ("audioStreamFormatIDRef")->getAllSubText() == "AS_" + id.substring (3, 11));
+                }
+                else if (tag == "audioTrackUID")
+                {
+                    ++uids; id = e->getStringAttribute ("UID");
+                    CHECK (e->getStringAttribute ("sampleRate") == "48000" && e->getStringAttribute ("bitDepth") == "24");
+                    CHECK (e->getChildByName ("audioTrackFormatIDRef") != nullptr && e->getChildByName ("audioPackFormatIDRef") != nullptr);
+                }
+                else CHECK (false);
+                CHECK (ids.insert (id).second);                                                         // every ID once
+                byId[id] = e;
+            }
+            CHECK (programmes == 1 && contents == 1 && beds == 2 && objects == 2 + 6 + 4 && packs == 2 + 10 && chans == 26 && streams == 26 && tracks == 26 && uids == 26);
+            // every reference finds its element; the ID counters are continuous from 0x1001 (streams / tracks share one; beds and objects share the AO counter)
+            std::function<void (juce::XmlElement*)> refs = [&] (juce::XmlElement* e)
+            {
+                for (auto* c : e->getChildIterator())
+                {
+                    if (c->getTagName().endsWith ("IDRef")) CHECK (byId.count (c->getAllSubText()) == 1);
+                    refs (c);
+                }
+            };
+            refs (fe);
+            // (bed 1: AO_1001 with 10 tracks blocks 1002 - 100a, exactly as the reference master; its 6 objects 100b - 1010; bed 2: AO_1011 (6 tracks: 1012 - 1016 blocked);
+            //  its 4 objects 1017 - 101a)
+            CHECK (byId.count ("AO_1001") && byId.count ("AO_100b") && byId.count ("AO_1010") && byId.count ("AO_1011") && byId.count ("AO_1017") && byId.count ("AO_101a"));
+            CHECK (! byId.count ("AO_1002") && ! byId.count ("AO_100a") && ! byId.count ("AO_1012") && ! byId.count ("AO_1016") && ! byId.count ("AO_101b"));
+            for (int k = 0; k < 26; ++k) CHECK (byId.count ("ATU_" + juce::String::toHexString (k + 1).paddedLeft ('0', 8)));
+            for (int k = 0; k < 16; ++k) CHECK (byId.count ("AS_0001" + juce::String::toHexString (0x1001 + k).paddedLeft ('0', 4)));      // (the bed channels' streams: 10 + 6)
+            for (int k = 0; k < 10; ++k) CHECK (byId.count ("AS_0003" + juce::String::toHexString (0x1001 + k).paddedLeft ('0', 4)));      // (the objects')
+            auto name = [&byId] (const char* id, const char* attr) { auto it = byId.find (id); return it == byId.end() || it->second == nullptr ? juce::String ("(missing)") : it->second->getStringAttribute (attr); };
+            CHECK (name ("AC_00011001", "audioChannelFormatName") == "RoomCentricLeft" && name ("AC_00011004", "audioChannelFormatName") == "RoomCentricLFE");
+            CHECK (name ("AC_00011009", "audioChannelFormatName") == "RoomCentricLeftTopSurround" && name ("AC_0001100a", "audioChannelFormatName") == "RoomCentricRightTopSurround");
+            CHECK (name ("AO_1001", "audioObjectName") == "Verb 9.1.6" && name ("AO_100b", "audioObjectName") == "Verb 9.1.6 Lw" && name ("AO_1010", "audioObjectName") == "Verb 9.1.6 Rtr" && name ("AO_1011", "audioObjectName") == "Bed 5.1.4");
+            CHECK (name ("AP_00011001", "audioPackFormatName") == "AtmosCustomPackFormat1" && name ("AP_00011002", "audioPackFormatName") == "AtmosCustomPackFormat2");
+            CHECK (name ("AC_0001100b", "audioChannelFormatName") == "RoomCentricLeft");       // (the second bed starts its own channels: 5.1's L)
+            CHECK (name ("AC_0001100f", "audioChannelFormatName") == "RoomCentricLeftSurround");
+            auto block = [&byId] (const char* id) -> juce::XmlElement* { auto it = byId.find (id); return it == byId.end() || it->second == nullptr ? nullptr : it->second->getChildByName ("audioBlockFormat"); };
+            CHECK (block ("AC_00031001") != nullptr && childrenNamed (block ("AC_00031001"), "position") == 2);     // (Lw: z 0 - no Z, as Dolby's tools write)
+            CHECK (block ("AC_00031003") != nullptr && childrenNamed (block ("AC_00031003"), "position") == 3);     // (Ltf: up)
+        }
+        // the chna: 26 entries of 40 bytes, agreeing with the axml
+        {
+            const auto chna = buildChna (d);
+            CHECK (chna.getSize() == 4 + 26 * 40);
+            const auto* b = static_cast<const juce::uint8*> (chna.getData());
+            CHECK (b[0] == 26 && b[1] == 0 && b[2] == 26 && b[3] == 0);
+            auto entry = [&b] (int i, int at, int len) { return juce::String::fromUTF8 ((const char*) b + 4 + i * 40 + at, len).trimCharactersAtEnd (juce::String::charToString (0)); };
+            CHECK (b[4] == 1 && entry (0, 2, 12) == "ATU_00000001" && entry (0, 14, 14) == "AT_00011001_01" && entry (0, 28, 11) == "AP_00011001");
+            CHECK (b[4 + 10 * 40] == 11 && entry (10, 14, 14) == "AT_00031001_01" && entry (10, 28, 11) == "AP_00031001");          // (the first object, as the reference's track 11)
+            CHECK (b[4 + 16 * 40] == 17 && entry (16, 2, 12) == "ATU_00000011" && entry (16, 14, 14) == "AT_0001100b_01" && entry (16, 28, 11) == "AP_00011002");
+        }
+        // the whole export through a small project: two surround buses, one piece; the file's chunks, the PCM in the right tracks, the LFE low-passed, the names
+        {
+            Project mp; mp.projectFile = tmp.getChildFile ("AtmosTest.fermata");
+            mp.setInputCount (2); mp.setOutputCount (24); mp.tracks.clear();
+            const auto tid = mp.addTrack ("Spot", TrackFormat::Mono, 0).id;
+            mp.retireAllMixers();
+            const auto verb = mp.addBus ("Verb 9.1.6", false, BusFormat::S916).id;
+            const auto bed  = mp.addBus ("Bed 5.1.4", false, BusFormat::S514).id;
+            const auto room = mp.addBus ("Atmos room", true, BusFormat::S916).id;
+            const auto out  = mp.addBus ("Out", true).id;
+            auto& mx = mp.addMixer ("Processing");
+            mp.setSendLevel (mx, tid, out, 0.0f);
+            mp.setSendLevel (mx, tid, verb, 0.0f); mp.setSendLevel (mx, tid, bed, 0.0f);
+            auto* bVerb = mx.busFor (verb); bVerb->outOn.set (true); bVerb->outDest = room;
+            mx.busFor (room)->gainDb.set (-3.0f);                                                       // (the bus the ticked ones feed: not in the file - a note says so)
+            auto* sendV = mx.stripFor (tid)->sends.find (verb); sendV->panFollow.set (false); sendV->panX.set (-1.0f); sendV->panY.set (0.5f); sendV->panZ.set (0.0f);   // the left wide
+            auto* sendB = mx.stripFor (tid)->sends.find (bed);  sendB->panFollow.set (false); sendB->panX.set (0.0f); sendB->panY.set (1.0f); sendB->panZ.set (0.0f);   // C of the 5.1.4
+            for (auto& t : mp.tracks) { t.setArmed (false); t.setMonitor (Monitor::Session); }
+            // a source with a 0.5 DC step: easy to find, and the LFE channel gets a 1 kHz tone through its own send? no - the LFE is reached by no panner: fine, it is silent, the filter is tested on its own below
+            const auto src = makeConstWav (tmp.getChildFile ("atmossrc.wav"), 0.5, 4);
+            auto& ed = mp.addEdit ("Kyrie", juce::Uuid::null());
+            EditRegion r; r.windowId = juce::Uuid::null(); r.takeId = juce::Uuid(); r.srcIn = 100; r.srcOut = 24100; r.sampleRate = 48000.0; r.takeName = "001 - Kyrie"; r.sourceLength = 192000;
+            RegionFile rf; rf.trackId = tid; rf.trackName = "Spot"; rf.file = src; r.files.push_back (rf);
+            ed.insertRegion (r);
+            mp.mastering.sync (mp.edits);
+            mp.mastering.vm.folder = tmp.getChildFile ("master2").getFullPathName();
+            mp.mastering.atmos.busIds = { bed, verb };                                                  // (the file's order follows the project's buses: Verb first)
+            mp.mastering.atmos.folder = tmp.getChildFile ("atmos").getFullPathName();
+            mp.mastering.atmos.lfeHz = 120.0f;
+            AtmosJobSpec spec;
+            const auto err = makeAtmosSpec (mp, mp.mastering, spec);
+            CHECK (err.isEmpty());
+            CHECK (spec.busIds.size() == 2 && spec.busIds[0] == verb && spec.busNames[1] == "Bed 5.1.4" && spec.items.size() == 1 && spec.items[0].baseName == "01 - Kyrie");
+            const auto notes = atmosExportNotes (mp, mp.mastering);
+            CHECK (notes.size() == 1 && notes[0].contains ("Atmos room") && notes[0].contains ("fader"));
+            mp.mastering.atmos.busIds = { verb, room }; CHECK (atmosExportNotes (mp, mp.mastering).size() == 1 && atmosExportNotes (mp, mp.mastering)[0].contains ("twice"));
+            mp.mastering.atmos.busIds = { bed, verb };
+            AtmosExportJob job (mp, spec, nullptr, false);
+            auto res = job.execute();
+            CHECK (res.error.isEmpty() && res.files.size() == 1 && res.channels == 26 && res.frames.size() == 1);
+            if (res.files.size() == 1)
+            {
+                const juce::File f (res.files[0]);
+                CHECK (f.getFileName() == "01 - Kyrie (Atmos).wav");
+                const auto expectFrames = masterLengthSamples (ed, 0.0);
+                CHECK (res.frames[0] == expectFrames);                                                  // exactly the Virtual Master's stretch
+                // the chunks: RIFF, JUNK (64), fmt (PCM, 26 ch, 48 kHz, 24 bit), data, axml, chna
+                juce::MemoryBlock mb; CHECK (f.loadFileAsData (mb));
+                const auto* b = static_cast<const juce::uint8*> (mb.getData());
+                auto u32 = [&b] (size_t at) { return (juce::uint32) b[at] | ((juce::uint32) b[at + 1] << 8) | ((juce::uint32) b[at + 2] << 16) | ((juce::uint32) b[at + 3] << 24); };
+                CHECK (std::memcmp (b, "RIFF", 4) == 0 && u32 (4) == mb.getSize() - 8 && std::memcmp (b + 8, "WAVE", 4) == 0);
+                juce::StringArray order; size_t pos = 12, dataAt = 0, dataLen = 0, axmlAt = 0, axmlLen = 0, chnaAt = 0, chnaLen = 0, fmtAt = 0, junkLen = 0;
+                while (pos + 8 <= mb.getSize())
+                {
+                    const auto id = juce::String::fromUTF8 ((const char*) b + pos, 4); const auto len = u32 (pos + 4);
+                    order.add (id);
+                    if (id == "data") { dataAt = pos + 8; dataLen = len; } if (id == "axml") { axmlAt = pos + 8; axmlLen = len; } if (id == "chna") { chnaAt = pos + 8; chnaLen = len; } if (id == "fmt ") fmtAt = pos + 8; if (id == "JUNK") junkLen = len;
+                    pos += 8 + len + (len & 1);
+                }
+                CHECK (pos == mb.getSize());
+                CHECK (order.joinIntoString (",") == "JUNK,fmt ,data,axml,chna" && junkLen == 64);
+                CHECK (b[fmtAt] == 1 && b[fmtAt + 2] == 26 && u32 (fmtAt + 4) == 48000 && b[fmtAt + 12] == 26 * 3 && b[fmtAt + 14] == 24);
+                CHECK (dataLen == (size_t) expectFrames * 26 * 3 && chnaLen == 4 + 26 * 40);
+                auto x2 = juce::XmlDocument::parse (juce::String::fromUTF8 ((const char*) b + axmlAt, (int) axmlLen));
+                CHECK (x2 != nullptr && x2->getChildByName ("coreMetadata") != nullptr);
+                // the PCM: the spot (0.5 after the fades) is in track 10 (Lw of the Verb bus: its first object, after the 7.1.2 bed) and in track 18 (C of the 5.1.4 bed: 16 + 2); the rest silent
+                auto sample = [&] (int track, juce::int64 frame)
+                {
+                    const size_t at = dataAt + ((size_t) frame * 26 + (size_t) track) * 3;
+                    const int v = (int) b[at] | ((int) b[at + 1] << 8) | ((int) ((juce::int8) b[at + 2]) << 16);
+                    return (float) v / 8388608.0f;
+                };
+                const juce::int64 mid = expectFrames / 2;
+                CHECK (std::abs (sample (10, mid) - 0.5f) < 0.002f);
+                CHECK (std::abs (sample (18, mid) - 0.5f) < 0.002f);
+                for (int t : { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 15, 16, 17, 19, 20, 21, 22, 23, 24, 25 }) CHECK (std::abs (sample (t, mid)) < 0.001f);
+            }
+            // RF64: the same export with the threshold lowered - the header says RF64 with a ds64 chunk in the JUNK's place, and the real sizes in it
+            {
+                AtmosExportJob job2 (mp, spec, nullptr, false);
+                job2.rf64At = 1000;
+                auto res2 = job2.execute();
+                CHECK (res2.error.isEmpty() && res2.files.size() == 1);
+                if (res2.files.size() == 1)
+                {
+                    juce::MemoryBlock mb; CHECK (juce::File (res2.files[0]).loadFileAsData (mb));
+                    const auto* b = static_cast<const juce::uint8*> (mb.getData());
+                    auto u32 = [&b] (size_t at) { return (juce::uint32) b[at] | ((juce::uint32) b[at + 1] << 8) | ((juce::uint32) b[at + 2] << 16) | ((juce::uint32) b[at + 3] << 24); };
+                    auto u64 = [&] (size_t at) { return (juce::uint64) u32 (at) | ((juce::uint64) u32 (at + 4) << 32); };
+                    CHECK (std::memcmp (b, "RF64", 4) == 0 && u32 (4) == 0xFFFFFFFFu && std::memcmp (b + 12, "ds64", 4) == 0 && u32 (16) == 28);
+                    CHECK (u64 (20) == mb.getSize() - 8 && u64 (28) == (juce::uint64) res2.frames[0] * 26 * 3 && u64 (36) == (juce::uint64) res2.frames[0] && u32 (44) == 0);
+                    // the data chunk's own size says 0xFFFFFFFF (the ds64 has the real one)
+                    size_t pos = 12; while (pos + 8 <= mb.getSize()) { const auto id = juce::String::fromUTF8 ((const char*) b + pos, 4); const auto len = u32 (pos + 4); if (id == "data") { CHECK (len == 0xFFFFFFFFu); pos += 8 + (size_t) res2.frames[0] * 26 * 3; } else pos += 8 + len + (len & 1); }
+                    CHECK (pos == mb.getSize());
+                }
+            }
+        }
+        // the LFE low-pass: a 4th-order Butterworth at 120 Hz lets 30 Hz through, is 3 dB down at 120 Hz and holds 1 kHz down by more than 70 dB
+        {
+            auto level = [] (double hz) { LfeLowPass f; f.design (120.0, 48000.0); double pk = 0.0; for (int i = 0; i < 96000; ++i) { const double y = f.run (std::sin (2.0 * 3.14159265358979323846 * hz * i / 48000.0)); if (i > 48000) pk = juce::jmax (pk, std::abs (y)); } return 20.0 * std::log10 (pk); };
+            CHECK (level (30.0) > -0.2 && level (120.0) > -3.5 && level (120.0) < -2.5 && level (1000.0) < -70.0);
+        }
     }
 
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);

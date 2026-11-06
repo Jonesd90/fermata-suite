@@ -410,8 +410,8 @@ static juce::String atmosLeftOutNote (const Project& p)
     };
     for (auto& m : p.mixers)
     {
-        for (auto& st : m->stripPool) { look (st->slots, kNumSlots); for (auto& sd : st->sends.pool) look (sd->slots, kSendSlots); }
-        for (auto& bs : m->busPool)   { look (bs->slots, kNumSlots); for (auto& sd : bs->sends.pool) look (sd->slots, kSendSlots); }
+        for (auto& st : m->stripPool) { look (st->slots, kChanSlots); for (auto& sd : st->sends.pool) look (sd->slots, kSendSlots); }     // (3.40.0: a post-fader slot's too)
+        for (auto& bs : m->busPool)   { look (bs->slots, kChanSlots); for (auto& sd : bs->sends.pool) look (sd->slots, kSendSlots); }
     }
     if (names.isEmpty()) return {};
     return "\nLeft out of the bounce on purpose (they would have joined your live Atmos mix): " + names.joinIntoString (", ")

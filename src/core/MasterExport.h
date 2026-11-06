@@ -138,4 +138,65 @@ private:
     juce::String status, earlyError;
     juce::WaitableEvent decided; std::atomic<int> decision_ { 0 }; std::atomic<bool> waiting { false };
 };
+
+// ----------------------------------------------------------------------------- 3.40.0: the Atmos tab - fermata's own Dolby Atmos master files
+/** What the Atmos tab exports: the Virtual Master's pieces (included, in its order, its names + " (Atmos)"), each as one ADM BWF file holding
+    the ticked surround buses, every bus as its own bed + objects (AdmWriter.h). Each piece covers exactly the stretch its Virtual Master file
+    covers (first audio to last audio plus the tail: the delivery spec wants the Atmos master synced to the stereo one). */
+struct AtmosJobSpec
+{
+    std::vector<MasterJobItem> items;
+    std::vector<juce::Uuid> busIds;         // the ticked surround buses, in the mastering settings' order
+    std::vector<juce::String> busNames;     // their names (the beds' names in the file)
+    std::vector<BusFormat> busFormats;
+    juce::Uuid mixerId, sourceId;           // as the Virtual Master renders (the source only decides the master render's staleness; it is not written)
+    bool ownMixers = true;
+    double tailSeconds = 0.0;
+    bool lfeLowPass = true; float lfeHz = 120.0f;
+    bool dither = true;
+    juce::File destFolder, workFolder;
+};
+/** Builds the Atmos export from the mastering settings (or says why it cannot). */
+juce::String makeAtmosSpec (const Project&, const MasteringDef&, AtmosJobSpec& spec);
+/** Things worth telling the user before an Atmos export, none of which stops it: a ticked bus that feeds another ticked bus (its sound is in the
+    file twice), the bus the ticked buses go to (its fader, its plug-ins) not being in the file, Spacelab left out of the render while a Composer is
+    in the project. One line each; empty when there is nothing to say. */
+juce::StringArray atmosExportNotes (const Project&, const MasteringDef&);
+struct AtmosExportResult
+{
+    juce::String error;                     // empty = fine
+    juce::StringArray files;                // the files written
+    std::vector<juce::int64> frames;        // the length of each, in samples
+    double sampleRate = 0.0;
+    float peakDb = -100.0f;                 // the loudest sample written (before the 24-bit rounding)
+    bool clipped = false, cancelled = false;
+    int channels = 0;                       // per file
+};
+/** Renders the ticked buses (through each piece's own mixer, as the Virtual Master does; a bus at its full width) and writes the ADM BWF files
+    on a background thread. Create and destroy on the message thread; 'done' is called on the message thread. */
+class AtmosExportJob : private juce::Thread
+{
+public:
+    AtmosExportJob (const Project& live, const AtmosJobSpec&, std::function<void (AtmosExportResult)> done, bool startNow = true);
+    ~AtmosExportJob() override;
+    float getProgress() const;
+    juce::String getStatus() const;
+    void start() { if (! isThreadRunning()) startThread (juce::Thread::Priority::normal); }
+    void cancel() noexcept { cancelFlag = true; }
+    bool isRunning() const { return isThreadRunning(); }
+    /** Does the whole job on the calling thread (the tests). */
+    AtmosExportResult execute();
+    /** The tests: the RIFF size from which a file is written as RF64 (the profile's 4 GB otherwise). */
+    juce::int64 rf64At = (juce::int64) 0xFFFFFFFFll - 1024;
+private:
+    void run() override;
+    AtmosJobSpec spec;
+    std::unique_ptr<MasterRenderBatch> batch;
+    std::function<void (AtmosExportResult)> onDone;
+    std::atomic<float> sub { 0.0f };
+    std::atomic<int> stage { 0 };
+    std::atomic<bool> cancelFlag { false };
+    mutable juce::CriticalSection lock;
+    juce::String status, earlyError;
+};
 } // namespace td

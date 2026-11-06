@@ -8,6 +8,7 @@
 #include "Loudness.h"
 #include "AudioFormats.h"
 #include "FileSync.h"
+#include <set>
 
 namespace td
 {
@@ -756,6 +757,221 @@ MasterExportResult MasterExportJob::executeInner()
         }
         sub = 1.0f;
     }
+    return R;
+}
+} // namespace td
+
+// ----------------------------------------------------------------------------- 3.40.0: the Atmos export
+#include "AdmWriter.h"
+
+namespace td
+{
+namespace
+{
+    juce::String atmosBaseName (const MasterJobItem& j) { return j.baseName + " (Atmos)"; }
+}
+
+juce::String makeAtmosSpec (const Project& p, const MasteringDef& def, AtmosJobSpec& spec)
+{
+    spec = AtmosJobSpec();
+    MasterJobSpec files;
+    const auto err = makeFilesSpec (p, def, files);                       // the pieces, their numbers and names, the render source, exactly as the Virtual Master's
+    if (err.isNotEmpty() && ! err.startsWith ("Choose the folder")) return err;      // (the Atmos tab has a folder of its own)
+    if (err.isNotEmpty())
+    {   // the Virtual Master has no folder yet: the pieces are still needed - make the spec with a folder of the Atmos tab's own
+        auto d = def; d.vm.folder = def.atmos.folder.trim().isNotEmpty() ? def.atmos.folder.trim() : p.masteredFolder().getChildFile ("Atmos").getFullPathName();
+        const auto e2 = makeFilesSpec (p, d, files);
+        if (e2.isNotEmpty()) return e2;
+    }
+    spec.items = files.items; spec.mixerId = files.mixerId; spec.sourceId = files.sourceId; spec.ownMixers = files.ownMixers; spec.tailSeconds = files.tailSeconds;
+    for (auto& b : p.buses)                                               // the ticked buses in the settings' order, gone ones and stereo ones left out
+        if (surround::isSurround (b.format) && std::find (def.atmos.busIds.begin(), def.atmos.busIds.end(), b.id) != def.atmos.busIds.end())
+        {
+            spec.busIds.push_back (b.id); spec.busNames.push_back (b.name.trim().isNotEmpty() ? b.name.trim() : surround::name (b.format)); spec.busFormats.push_back (b.format);
+        }
+    if (spec.busIds.empty()) return "Tick at least one surround bus to write into the Atmos files.";
+    {
+        adm::Description d; d.sampleRate = 48000.0; d.frames = 1;
+        for (size_t i = 0; i < spec.busIds.size(); ++i) d.beds.push_back ({ spec.busNames[i], spec.busFormats[i] });
+        if (const auto e = adm::check (d); e.isNotEmpty()) return e;
+    }
+    {
+        auto* e0 = const_cast<Project&> (p).findEdit (spec.items.front().editId);
+        const double r = e0 != nullptr ? e0->sampleRate : 0.0;
+        if (std::abs (r - 48000.0) > 0.5 && std::abs (r - 96000.0) > 0.5)
+            return "A Dolby Atmos master is 48 or 96 kHz only; these pieces are at " + juce::String (r / 1000.0, 1) + " kHz. (Apple and the delivery spec want 48 kHz.)";
+    }
+    spec.lfeLowPass = def.atmos.lfeLowPass; spec.lfeHz = juce::jlimit (AtmosExportSettings::kMinLfeHz, AtmosExportSettings::kMaxLfeHz, def.atmos.lfeHz);
+    spec.dither = def.atmos.dither;
+    spec.destFolder = def.atmos.folder.trim().isNotEmpty() ? juce::File (def.atmos.folder.trim()) : p.masteredFolder().getChildFile ("Atmos");
+    spec.workFolder = spec.destFolder.getChildFile ("_fermata_work");
+    return {};
+}
+
+juce::StringArray atmosExportNotes (const Project& p, const MasteringDef& def)
+{
+    juce::StringArray notes;
+    std::vector<const BusDef*> ticked;
+    for (auto& b : p.buses) if (surround::isSurround (b.format) && std::find (def.atmos.busIds.begin(), def.atmos.busIds.end(), b.id) != def.atmos.busIds.end()) ticked.push_back (&b);
+    if (ticked.empty()) return notes;
+    auto nameOf = [&p] (const juce::Uuid& id) { for (auto& b : p.buses) if (b.id == id) return b.name; return juce::String ("a bus"); };
+    // the mixers the pieces go through: each included edit's own, or the one chosen
+    std::vector<MixerState*> mixers;                                      // (busFor is not const; nothing here changes a mixer)
+    if (! def.mixerId.isNull()) { if (auto* m = p.mixerById (def.mixerId)) mixers.push_back (m); }
+    else for (auto& it : def.items) if (it.include) if (auto* m = p.mixerOfEdit (it.editId)) if (std::find (mixers.begin(), mixers.end(), m) == mixers.end()) mixers.push_back (m);
+    if (mixers.empty() && ! p.mixers.empty()) mixers.push_back (p.mixers.front().get());
+    std::set<juce::String> said;
+    for (auto* m : mixers)
+        for (auto* b : ticked)
+        {
+            auto* bs = m->busFor (b->id);
+            if (bs == nullptr) continue;
+            // this ticked bus into another ticked bus: twice in the file
+            auto isTicked = [&ticked] (const juce::Uuid& id) { for (auto* t : ticked) if (t->id == id) return true; return false; };
+            if (bs->outOn.get() && ! bs->outDest.isNull() && isTicked (bs->outDest))
+                if (said.insert ("twice" + b->id.toString()).second)
+                    notes.add (b->name + " goes into " + nameOf (bs->outDest) + ", which is ticked too: its sound would be in the file twice.");
+            for (auto& sd : bs->sends.pool)
+                if (sd->active() && isTicked (sd->dest) && said.insert ("twice" + b->id.toString()).second)
+                    notes.add (b->name + " is sent to " + nameOf (sd->dest) + ", which is ticked too: its sound would be in the file twice.");
+            // where it goes (not in the file): that bus's fader and plug-ins
+            if (bs->outOn.get() && ! bs->outDest.isNull() && ! isTicked (bs->outDest))
+                if (auto* dest = m->busFor (bs->outDest))
+                {
+                    bool plugs = false;
+                    for (int i = 0; i < kNumSlots; ++i) plugs = plugs || dest->slots[i].mightBeLoaded();
+                    if (p.postFaderSlots) plugs = plugs || dest->slots[kPostSlot].mightBeLoaded();
+                    if ((std::abs (dest->gainDb.get()) > 0.05f || plugs) && said.insert ("dest" + bs->outDest.toString()).second)
+                        notes.add ("The ticked buses go into " + nameOf (bs->outDest) + ", whose " + juce::String (plugs ? (std::abs (dest->gainDb.get()) > 0.05f ? "fader and plug-ins are" : "plug-ins are") : "fader is")
+                                   + " not in the file (the file holds the ticked buses as they leave their own faders).");
+                }
+        }
+    if (p.hasAtmosComposer())
+    {
+        bool spacelab = false;
+        for (auto& m : p.mixers)
+            for (auto& bs : m->busPool)
+                for (int i = 0; i < kChanSlots; ++i)
+                    if (const auto* pr = bs->slots[i].getProcessorUnsafe(); pr != nullptr && Project::atmosLinkOf (pr->getDescription()) == Project::AtmosLink::Spacelab) spacelab = true;
+        if (spacelab) notes.add ("Spacelab is left out of the render while a Dolby Atmos Composer is in the project (a copy would join the live Atmos mix): bounce without the Composer, or use another reverb for the file.");
+    }
+    return notes;
+}
+
+AtmosExportJob::AtmosExportJob (const Project& live, const AtmosJobSpec& s, std::function<void (AtmosExportResult)> done, bool startNow)
+    : juce::Thread ("Atmos export"), spec (s), onDone (std::move (done))
+{
+    std::vector<juce::Uuid> ids;
+    for (auto& it : spec.items)
+    {
+        auto* e = const_cast<Project&> (live).findEdit (it.editId);
+        if (e == nullptr || e->isEmpty()) { earlyError = "An edit no longer exists or is empty."; break; }
+        ids.push_back (e->id);
+    }
+    if (earlyError.isEmpty())
+    {
+        RenderParams rp; rp.sourceId = spec.sourceId; rp.mixerId = spec.mixerId; rp.ownMixers = spec.ownMixers; rp.tailSeconds = spec.tailSeconds;
+        batch = std::make_unique<MasterRenderBatch> (live, ids, rp, false, spec.busIds, spec.workFolder.getChildFile ("atmos"), true);
+        if (batch->getPrepareError().isNotEmpty()) earlyError = batch->getPrepareError();
+    }
+    if (startNow) startThread (juce::Thread::Priority::normal);
+}
+
+AtmosExportJob::~AtmosExportJob() { cancelFlag = true; stopThread (15000); }
+float AtmosExportJob::getProgress() const { const float p = sub.load(); return stage.load() == 0 ? 0.7f * p : 0.7f + 0.3f * p; }
+juce::String AtmosExportJob::getStatus() const { const juce::ScopedLock sl (lock); return status; }
+
+void AtmosExportJob::run()
+{
+    td::crashreport::nameThisThread (getThreadName());
+    auto result = execute();
+    auto fn = onDone;
+    juce::MessageManager::callAsync ([fn, result] { if (fn) fn (result); });
+}
+
+AtmosExportResult AtmosExportJob::execute()
+{
+    juce::ScopedNoDenormals noDenormals;
+    AtmosExportResult R;
+    auto setStatus = [this] (const juce::String& t) { const juce::ScopedLock sl (lock); status = t; };
+    if (earlyError.isNotEmpty()) { R.error = earlyError; return R; }
+    if (! spec.destFolder.createDirectory()) { R.error = "Cannot create the folder " + spec.destFolder.getFullPathName(); return R; }
+    spec.workFolder.createDirectory();
+    struct Tidy { juce::File f; ~Tidy() { f.deleteRecursively(); } } tidy { spec.workFolder };
+    stage = 0; setStatus ("Rendering the buses...");
+    {
+        const auto err = batch->run (&sub, &cancelFlag);
+        if (err == "Cancelled.") { R.cancelled = true; return R; }
+        if (err.isNotEmpty()) { R.error = err; return R; }
+    }
+    stage = 1;
+    juce::AudioFormatManager fm; td::registerAudioFormats (fm);
+    // the file's layout: the ticked buses, each a bed + objects; the LFE tracks get the low-pass
+    adm::Description d;
+    for (size_t b = 0; b < spec.busIds.size(); ++b) d.beds.push_back ({ spec.busNames[b], spec.busFormats[b] });
+    std::vector<adm::Layout> layouts;
+    for (auto& bed : d.beds) layouts.push_back (adm::layoutFor (bed.format));
+    const int channels = d.totalTracks();
+    R.channels = channels;
+    const int total = batch->total();
+    for (int i = 0; i < total; ++i)
+    {
+        if (cancelFlag) { R.cancelled = true; break; }
+        const auto& item = spec.items[(size_t) i];
+        setStatus ("Writing " + atmosBaseName (item) + "...");
+        std::vector<std::unique_ptr<juce::AudioFormatReader>> readers;
+        juce::int64 frames = -1; double rate = batch->rateFor (i);
+        for (int s = 0; s < batch->numStems(); ++s)
+        {
+            std::unique_ptr<juce::AudioFormatReader> r (fm.createReaderFor (batch->stemFileFor (i, s)));
+            if (r == nullptr) { R.error = "Cannot read the render of " + spec.busNames[(size_t) s] + " for " + item.baseName; return R; }
+            if ((int) r->numChannels != surround::channels (spec.busFormats[(size_t) s])) { R.error = "The render of " + spec.busNames[(size_t) s] + " has " + juce::String ((int) r->numChannels) + " channels, not " + juce::String (surround::channels (spec.busFormats[(size_t) s])) + "."; return R; }
+            if (frames < 0) frames = r->lengthInSamples; else frames = juce::jmin (frames, r->lengthInSamples);
+            if (r->sampleRate > 0.0) rate = r->sampleRate;
+            readers.push_back (std::move (r));
+        }
+        if ((int) readers.size() != (int) spec.busIds.size() || frames <= 0) { R.error = "A render is missing for " + item.baseName + "."; return R; }
+        d.frames = frames; d.sampleRate = rate; d.bitDepth = 24;
+        d.programmeName = item.baseName;
+        if (const auto e = adm::check (d); e.isNotEmpty()) { R.error = e; return R; }
+        const auto dest = spec.destFolder.getChildFile (juce::File::createLegalFileName (atmosBaseName (item)) + ".wav");
+        adm::FileWriter w (dest, d, spec.dither, rf64At);
+        if (! w.ok()) { R.error = w.getError(); return R; }
+        // the track map: file track -> (bus, bus channel); the LFE tracks' filters
+        std::vector<std::pair<int, int>> map;
+        std::vector<int> lfeTracks;
+        for (size_t b = 0; b < layouts.size(); ++b)
+            for (auto& t : layouts[b].tracks)
+            {
+                if (t.spk == surround::Spk::LFE && spec.lfeLowPass) lfeTracks.push_back ((int) map.size());
+                map.push_back ({ (int) b, t.busChannel });
+            }
+        std::vector<adm::LfeLowPass> lfe (lfeTracks.size());
+        for (auto& f : lfe) f.design (spec.lfeHz, rate);
+        const int block = 8192;
+        std::vector<juce::AudioBuffer<float>> src;
+        for (auto& r : readers) src.emplace_back ((int) r->numChannels, block);
+        juce::AudioBuffer<float> out (channels, block);
+        std::vector<const float*> ptrs ((size_t) channels);
+        float peak = 0.0f;
+        for (juce::int64 pos = 0; pos < frames; pos += block)
+        {
+            if (cancelFlag) { R.cancelled = true; return R; }
+            const int n = (int) juce::jmin ((juce::int64) block, frames - pos);
+            for (size_t s = 0; s < readers.size(); ++s)
+                if (! readers[s]->read (&src[s], 0, n, pos, true, true)) { R.error = "Cannot read the render of " + spec.busNames[s] + "."; return R; }
+            for (int c = 0; c < channels; ++c) out.copyFrom (c, 0, src[(size_t) map[(size_t) c].first], map[(size_t) c].second, 0, n);
+            for (size_t k = 0; k < lfeTracks.size(); ++k) lfe[k].process (out.getWritePointer (lfeTracks[k]), n);
+            for (int c = 0; c < channels; ++c) { ptrs[(size_t) c] = out.getReadPointer (c); peak = juce::jmax (peak, out.getMagnitude (c, 0, n)); }
+            if (! w.write (ptrs.data(), n)) { R.error = w.getError(); return R; }
+            sub = ((float) i + (float) (pos + n) / (float) frames) / (float) juce::jmax (1, total);
+        }
+        if (! w.finish()) { R.error = w.getError(); return R; }
+        R.files.add (dest.getFullPathName()); R.frames.push_back (frames); R.sampleRate = rate;
+        R.peakDb = juce::jmax (R.peakDb, peak > 0.0f ? juce::Decibels::gainToDecibels (peak) : -100.0f);
+        if (peak >= 1.0f) R.clipped = true;
+    }
+    sub = 1.0f;
     return R;
 }
 } // namespace td

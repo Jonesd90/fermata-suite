@@ -316,6 +316,8 @@ std::unique_ptr<AudioEngine::Plan> AudioEngine::buildPlan() const
         {
             auto nd = std::make_unique<Node>();
             nd->kind = k; nd->strip = st; nd->bus = bs; nd->trackIndex = ti;
+            if (project.postFaderSlots)                              // 3.40.0: the post-fader slot runs only while the project's switch is on
+                nd->post = st != nullptr ? &st->slots[kPostSlot] : bs != nullptr ? &bs->slots[kPostSlot] : nullptr;
             if (bs != nullptr)                                       // 3.39.0: a bus has its format's channels (a track: its stereo fold)
             {
                 nd->format = project.busFormat (bs->busId);
@@ -430,7 +432,7 @@ std::unique_ptr<AudioEngine::Plan> AudioEngine::buildPlan() const
         for (auto& nd : mp->order)                             // 3.39.0: the mixer that holds the Dolby Atmos Composer always runs (see mixerHasOutput)
         {
             const InsertSlot* sl = nd->kind == NodeKind::Track ? nd->strip->slots : nd->bus->slots;
-            for (int i = 0; i < kNumSlots && ! mp->keepRunning; ++i)
+            for (int i = 0; i < kNumSlots + (nd->post != nullptr ? 1 : 0) && ! mp->keepRunning; ++i)       // (3.40.0: the post-fader slot too, while it runs)
                 if (const auto* pr = sl[i].getProcessorUnsafe(); pr != nullptr && Project::atmosLinkOf (pr->getDescription()) == Project::AtmosLink::Composer) mp->keepRunning = true;
         }
         if (! offlineMixerId.isNull())                     // (every mixer gets its taps: a bounce can use a different mixer for each piece)
@@ -465,9 +467,13 @@ std::unique_ptr<AudioEngine::Plan> AudioEngine::buildPlan() const
             {
                 const int lc = nd->kind == NodeKind::Track ? nd->strip->lowCut.latencySamples() : nd->kind == NodeKind::IntBus ? nd->bus->lowCut.latencySamples() : 0;
                 const int own = lc + (nd->kind == NodeKind::Track ? chainLat (nd->strip->slots, kNumSlots) : chainLat (nd->bus->slots, kNumSlots));
-                nd->outLat = nd->inLat + own;
+                nd->outLat = nd->inLat + own;                                // (after the inserts before the fader: where the fader and the pan act)
+                nd->postLat = nd->post != nullptr ? nd->post->latencySamples() : 0;     // 3.40.0: the post-fader slot's own delay (see Node::takesPost)
                 for (auto& sp : nd->sends)
-                    sp.dest->inLat = juce::jmax (sp.dest->inLat, nd->outLat + chainLat (sp.st->slots, kSendSlots));
+                {
+                    sp.viaPost = nd->takesPost (sp);                         // (decided here, once: the audio thread reads the flag)
+                    sp.dest->inLat = juce::jmax (sp.dest->inLat, nd->sendLat (sp) + chainLat (sp.st->slots, kSendSlots));
+                }
             }
             int longest = 0;
             int vcaLat[kMaxVcas] = {};
@@ -482,41 +488,53 @@ std::unique_ptr<AudioEngine::Plan> AudioEngine::buildPlan() const
                     InsertSlot* sl = nd->kind == NodeKind::Track ? nd->strip->slots : nd->bus->slots;
                     int at = align + nd->inLat + (nd->kind == NodeKind::Track ? nd->strip->lowCut.latencySamples() : nd->kind == NodeKind::IntBus ? nd->bus->lowCut.latencySamples() : 0);   // (the low cut sits before the inserts)
                     for (int i = 0; i < kNumSlots; ++i) { sl[i].autoLat.store (at, std::memory_order_relaxed); sl[i].posLat.store (at - align, std::memory_order_relaxed); at += sl[i].latencySamples(); }
+                    sl[kPostSlot].autoLat.store (at, std::memory_order_relaxed); sl[kPostSlot].posLat.store (at - align, std::memory_order_relaxed);     // 3.40.0: after the fader = after the inserts (at == align + outLat)
+                    // what a send (or the output) takes from this channel: after the post-fader slot or before it (Node::sendLat); a send that is not in
+                    // the plan (off, not automated) as if it were a stereo one - turning it on rebuilds the plan
+                    auto latOf = [&nd] (const SendState* s)
+                    {
+                        for (auto& sp : nd->sends) if (sp.st == s) return nd->sendLat (sp);
+                        return nd->outLat + (nd->post != nullptr && ! s->pre.get() && s->followMute.get() ? nd->postLat : 0);
+                    };
                     auto& latIn  = nd->kind == NodeKind::Track ? nd->strip->autoLatIn  : nd->bus->autoLatIn;
                     auto& latOut = nd->kind == NodeKind::Track ? nd->strip->autoLatOut : nd->bus->autoLatOut;
                     latIn.store (align + nd->inLat, std::memory_order_relaxed); latOut.store (align + nd->outLat, std::memory_order_relaxed);
                     if (SendList* list = nd->kind == NodeKind::Track ? &nd->strip->sends : nd->kind == NodeKind::IntBus ? &nd->bus->sends : nullptr)
                         for (auto& s : list->pool)                   // (a send not in the plan - off, and not automated - as if nothing held it back; turning it on rebuilds the plan)
                         {
-                            int a = align + nd->outLat;
+                            int a = align + latOf (s.get());
                             for (auto& ss : s->slots) { ss.autoLat.store (a, std::memory_order_relaxed); ss.posLat.store (a - align, std::memory_order_relaxed); a += ss.latencySamples(); }
                             s->autoLat.store (a, std::memory_order_relaxed);
                         }
                     for (auto& sp : nd->sends) sp.st->autoLat.store (align + sp.dest->inLat, std::memory_order_relaxed);     // its level is applied after its inserts AND its delay line
                     {   // 3.39.0: the output's own inserts (never automated, but their plug-ins are told their play position too)
                         auto& os = nd->kind == NodeKind::Track ? nd->strip->outSend : nd->bus->outSend;
-                        int a = align + nd->outLat;
+                        int a = align + latOf (&os);
                         for (auto& ss : os.slots) { ss.autoLat.store (a, std::memory_order_relaxed); ss.posLat.store (a - align, std::memory_order_relaxed); a += ss.latencySamples(); }
                     }
                     const juce::uint32 vm = nd->kind == NodeKind::Track ? nd->strip->vcaMask.load (std::memory_order_relaxed) : nd->kind == NodeKind::IntBus ? nd->bus->vcaMask.load (std::memory_order_relaxed) : 0u;
                     for (int v = 0; v < kMaxVcas; ++v) if (vm & (1u << v)) vcaLat[v] = juce::jmax (vcaLat[v], align + nd->outLat);
                 }
                 for (auto& sp : nd->sends)
-                    sp.delay.init (sp.dest->inLat - (nd->outLat + chainLat (sp.st->slots, kSendSlots)), sp.dstCh);     // (3.39.0: after the panning / fold: the destination's channels)
+                    sp.delay.init (sp.dest->inLat - (nd->sendLat (sp) + chainLat (sp.st->slots, kSendSlots)), sp.dstCh);     // (3.39.0: after the panning / fold: the destination's channels)
                 if (nd->kind == NodeKind::Track && nd->inLat > 0)
                     nd->srcDelay.init (nd->inLat, juce::jlimit (1, (int) kMaxTrackChannels, p->tracks[(size_t) nd->trackIndex].numCh));
                 if (nd->kind == NodeKind::Track && p->tracks[(size_t) nd->trackIndex].alignSamples > 0)     // spot-mic alignment: on purpose, so NOT compensated
                     nd->alignDelay.init (p->tracks[(size_t) nd->trackIndex].alignSamples, juce::jlimit (1, (int) kMaxTrackChannels, p->tracks[(size_t) nd->trackIndex].numCh));
-                if (nd->kind == NodeKind::ExtBus) longest = juce::jmax (longest, nd->outLat);
+                if (nd->kind == NodeKind::ExtBus) longest = juce::jmax (longest, nd->postOutLat());       // (3.40.0: an Ext Bus's outputs come after its post-fader slot)
             }
-            for (auto& nd : mp->order) if (nd->kind == NodeKind::ExtBus) nd->outDelay.init (longest - nd->outLat, nd->width);
+            for (auto& nd : mp->order) if (nd->kind == NodeKind::ExtBus) nd->outDelay.init (longest - nd->postOutLat(), nd->width);
             if (mp->mixer != nullptr) for (int v = 0; v < kMaxVcas; ++v) mp->mixer->vcas[v].autoLat.store (vcaLat[v], std::memory_order_relaxed);
             mp->latency = longest;
             int tapLongest = 0;
-            for (auto& nd : mp->order) if (nd->tapIdx >= 0 || nd->tapPreIdx >= 0) tapLongest = juce::jmax (tapLongest, nd->outLat);
+            for (auto& nd : mp->order)                                       // (3.40.0: the post-fader tap is after the post-fader slot, the pre-fader one before it)
+            {
+                if (nd->tapIdx >= 0)    tapLongest = juce::jmax (tapLongest, nd->postOutLat());
+                if (nd->tapPreIdx >= 0) tapLongest = juce::jmax (tapLongest, nd->outLat);
+            }
             for (auto& nd : mp->order)
             {
-                if (nd->tapIdx >= 0)    nd->tapDelay.init (tapLongest - nd->outLat, nd->width);
+                if (nd->tapIdx >= 0)    nd->tapDelay.init (tapLongest - nd->postOutLat(), nd->width);
                 if (nd->tapPreIdx >= 0) nd->tapDelayPre.init (tapLongest - nd->outLat, nd->width);
             }
             mp->tapLatency = tapLongest;
@@ -565,14 +583,24 @@ juce::uint64 AudioEngine::latencySignature (bool refresh) const
             sig = sig * 1000003u + (juce::uint64) (sl[i].latencySamples() + (sl[i].mightBeLoaded() ? 5 : 3) + (sl[i].bypass.get() ? 11 : 0));
         }
     };
+    // 3.40.0: while a post-fader slot delays its channel, which of its sends take their sound after it (Node::takesPost) changes their lateness: the
+    // switches that decide it (PRE, follow mute) count then, so flipping one lines the paths up again (they are left out otherwise: nothing changes)
+    auto postSends = [&] (const InsertSlot& post, const SendList& l)
+    {
+        if (! project.postFaderSlots || post.latencySamples() <= 0) return;
+        for (auto& sd : l.pool) sig = sig * 1000003u + (juce::uint64) ((sd->pre.get() ? 2 : 1) + (sd->followMute.get() ? 4 : 0));
+    };
+    sig = sig * 1000003u + (project.postFaderSlots ? 19u : 13u);
     for (auto& m : project.mixers)
     {
-        for (auto& st : m->stripPool) { one (st->slots, kNumSlots); for (auto& sd : st->sends.pool) one (sd->slots, kSendSlots); one (st->outSend.slots, kSendSlots);
+        for (auto& st : m->stripPool) { one (st->slots, kChanSlots); for (auto& sd : st->sends.pool) one (sd->slots, kSendSlots); one (st->outSend.slots, kSendSlots);     // (3.40.0: the post-fader slot too)
                                         sig = sig * 1000003u + st->vcaMask.load (std::memory_order_relaxed);        // (which VCAs control it: a VCA lane's lateness follows its channels)
-                                        sig = sig * 1000003u + (juce::uint64) (st->lowCut.latencySamples() + 7); }
-        for (auto& f : m->busPool)    { one (f->slots, kNumSlots);  for (auto& sd : f->sends.pool) one (sd->slots, kSendSlots); one (f->outSend.slots, kSendSlots);
+                                        sig = sig * 1000003u + (juce::uint64) (st->lowCut.latencySamples() + 7);
+                                        postSends (st->slots[kPostSlot], st->sends); }
+        for (auto& f : m->busPool)    { one (f->slots, kChanSlots); for (auto& sd : f->sends.pool) one (sd->slots, kSendSlots); one (f->outSend.slots, kSendSlots);
                                         sig = sig * 1000003u + f->vcaMask.load (std::memory_order_relaxed);
-                                        sig = sig * 1000003u + (juce::uint64) (f->lowCut.latencySamples() + 7); }
+                                        sig = sig * 1000003u + (juce::uint64) (f->lowCut.latencySamples() + 7);
+                                        postSends (f->slots[kPostSlot], f->sends); }
     }
     return sig;
 }
@@ -1354,7 +1382,7 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
                 const float pol = st->polarity.get() ? -1.0f : 1.0f;
                 if (pol != 1.0f || st->lastPol != 1.0f) { view.applyGainRamp (0, n, st->lastPol, pol); st->lastPol = pol; }
             }
-            for (auto& slot : st->slots) slot.process (view);
+            for (int i = 0; i < kNumSlots; ++i) st->slots[i].process (view);      // the inserts before the fader (3.40.0: slots[kPostSlot] runs after it - see below)
 
             // fold to stereo (before the fader, so sends can be taken before or after it). The track's own channels stay in chanBuf: a send into
             // a surround bus places them with its panner (3.39.0)
@@ -1406,7 +1434,7 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
                 const float pol = b->polarity.get() ? -1.0f : 1.0f;     // 3.31.0: the polarity key, after it (a change ramped over this block)
                 if (pol != 1.0f || b->lastPol != 1.0f) { view.applyGainRamp (0, n, b->lastPol, pol); b->lastPol = pol; }
             }
-            for (auto& slot : b->slots) slot.process (view);
+            for (int i = 0; i < kNumSlots; ++i) b->slots[i].process (view);       // (3.40.0: the post-fader slot runs after the fader)
             if (W == 2)                                                 // (a surround bus has no balance: its sends' panners place the sound)
                 if (const float pn = juce::jlimit (-1.0f, 1.0f, b->pan.get()); pn != 0.0f)          // balance: the side away from the pan is turned down (cos), the other stays
                 {
@@ -1439,6 +1467,15 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
         const float g0 = *lastGain;
         *lastGain = target;
         for (int c = 0; c < W; ++c) mp.post.copyFromWithRamp (c, 0, mp.pre.getReadPointer (c), n, g0, target);
+
+        // 3.40.0: the post-fader slot (the project's switch on): after the fader and the mute, on all the channel's W channels - a track's stereo fold,
+        // a bus's every channel. The meters, the post-fader tap, the output, the post-fader sends that follow mute and an Ext Bus's driver outputs all
+        // take what comes out of it (Node::takesPost).
+        if (nd.post != nullptr)
+        {
+            juce::AudioBuffer<float> pv (mp.post.getArrayOfWritePointers(), W, n);
+            nd.post->process (pv);
+        }
 
         // meter (post-fader)
         if (W == 2)
@@ -1579,9 +1616,13 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
                 float a0, a1;
                 if (! sd->followMute.get()) { const float feed = soloOk ? (sd->pre.get() ? 1.0f : faderGain) : 0.0f; a0 = sd->lastFeed; a1 = feed; sd->lastFeed = feed; }
                 else { if (sd->pre.get()) { a0 = pre0; a1 = preTarget; } else { a0 = g0; a1 = target; } sd->lastFeed = audible ? (sd->pre.get() ? 1.0f : faderGain) : 0.0f; }
+                // 3.40.0: a bus's post-fader send that follows mute, while the post-fader slot runs, takes 'post' - the fader (and mute) are in it already,
+                // and so is what the post-fader slot did (Node::takesPost); every other one takes the source's own channels with the gain ramp above
+                const bool viaPost = sp.viaPost;
+                if (viaPost) { a0 = 1.0f; a1 = 1.0f; }
                 const int sc = juce::jmin (sp.srcCh, srcCh);
                 const float* sp_[kMaxBusChannels];
-                for (int c = 0; c < sc; ++c) sp_[c] = nd.kind == NodeKind::Track ? mp.chanBuf.getReadPointer (c) : mp.pre.getReadPointer (c);
+                for (int c = 0; c < sc; ++c) sp_[c] = viaPost ? mp.post.getReadPointer (c) : nd.kind == NodeKind::Track ? mp.chanBuf.getReadPointer (c) : mp.pre.getReadPointer (c);
                 for (int j = 0; j < dc; ++j) juce::FloatVectorOperations::clear (mp.sendTmp.getWritePointer (j), n);
                 const float invN = 1.0f / (float) juce::jmax (1, n);
                 if (sp.kind == SendPlan::Kind::Pan)

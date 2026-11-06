@@ -540,7 +540,7 @@ std::shared_ptr<AutomationPlan> automationPlanFor (Project& p, const EditDef& e,
             else if (! bd->external && lane.param == autoparam::gain) { bi.target = &bs->inGainDb; bi.lat = &bs->autoLatIn; }       // (an Ext Bus has no gain, pan or sends: its fader and its plug-ins only)
             else if (! bd->external && lane.param == autoparam::pan) { bi.target = &bs->pan; bi.lat = &bs->autoLatOut; }
             else if (! bd->external && autoparam::isSend (lane.param)) { if (auto* sd = bs->sends.find (autoparam::sendDest (lane.param))) { bi.target = &sd->gainDb; bi.lat = &sd->autoLat; bi.send = sd; } }
-            else if (int slot = 0, idx = 0; autoparam::parsePlugin (lane.param, slot, idx) && slot < kNumSlots)
+            else if (int slot = 0, idx = 0; autoparam::parsePlugin (lane.param, slot, idx) && slot >= 0 && slot < kChanSlots)
             {
                 auto& sl = bs->slots[slot];
                 if (auto* proc = sl.getProcessorUnsafe(); proc != nullptr && idx < proc->numParams() && proc->paramAutomatable (idx)) { bi.slot = &sl; bi.paramIndex = idx; bi.steps = proc->paramSteps (idx); bi.lat = &sl.autoLat; }
@@ -559,7 +559,7 @@ std::shared_ptr<AutomationPlan> automationPlanFor (Project& p, const EditDef& e,
         {
             if (auto* sd = strip->sends.find (autoparam::sendDest (lane.param))) { it.target = &sd->gainDb; it.lat = &sd->autoLat; it.send = sd; }    // only sends that exist
         }
-        else if (int slot = 0, idx = 0; autoparam::parsePlugin (lane.param, slot, idx) && slot < kNumSlots)
+        else if (int slot = 0, idx = 0; autoparam::parsePlugin (lane.param, slot, idx) && slot >= 0 && slot < kChanSlots)
         {
             auto& sl = strip->slots[slot];
             if (auto* proc = sl.getProcessorUnsafe(); proc != nullptr && idx < proc->numParams() && proc->paramAutomatable (idx))

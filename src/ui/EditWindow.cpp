@@ -1594,7 +1594,7 @@ private:
     InsertProcessor* processorOfLane (const AutoLane& lane, int& idx) const
     {
         int slot = 0; idx = 0;
-        if (! autoparam::parsePlugin (lane.param, slot, idx) || slot >= kNumSlots) return nullptr;
+        if (! autoparam::parsePlugin (lane.param, slot, idx) || slot >= kChanSlots) return nullptr;      // (3.40.0: the post-fader slot is kPostSlot)
         auto* m = mixerFor (lane.mixerId); if (m == nullptr) return nullptr;
         auto* sls = slotsOf (m, lane.trackId);
         return sls != nullptr ? sls[slot].getProcessorUnsafe() : nullptr;
@@ -1638,11 +1638,11 @@ private:
             if (auto* m = mixerFor (mixerId))
             {
                 InsertSlot* sls = slotsOf (m, trackId);
-                if (sls != nullptr && slot < kNumSlots)
+                if (sls != nullptr && slot < kChanSlots)
                     if (auto* pr = sls[slot].getProcessorUnsafe())
                         return pr->getName() + ": " + pr->paramName (idx);
             }
-            return "Plug-in " + juce::String (slot + 1) + " (empty)";
+            return slot == kPostSlot ? juce::String ("Post-fader plug-in (empty)") : "Plug-in " + juce::String (slot + 1) + " (empty)";
         }
         return "Fader";
     }
@@ -1916,7 +1916,7 @@ private:
                     keys.push_back (autoparam::send (sd->dest));
                     sends.addItem (1000 + (int) keys.size() - 1, marked (nodeName (sd->dest), keys.back()), true, s.param == keys.back());
                 }
-            for (int sl = 0; slotArr != nullptr && sl < kNumSlots; ++sl)
+            for (int sl = 0; slotArr != nullptr && sl < kChanSlots; ++sl)          // (3.40.0: and the post-fader slot)
             {
                 auto* pr = slotArr[sl].getProcessorUnsafe();
                 if (pr == nullptr) continue;
@@ -1936,7 +1936,7 @@ private:
                     if (++inPage == 25) flush();
                 }
                 flush();
-                if (total > 0) plugins.addSubMenu ("Insert " + juce::String (sl + 1) + ": " + pr->getName(), one);
+                if (total > 0) plugins.addSubMenu ((sl == kPostSlot ? juce::String ("Post-fader: ") : "Insert " + juce::String (sl + 1) + ": ") + pr->getName(), one);
             }
         }
         if (! isExt) m.addSubMenu ("Bus sends", sends, sends.getNumItems() > 0);

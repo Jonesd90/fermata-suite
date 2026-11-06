@@ -17,7 +17,12 @@ namespace td
 constexpr int kSendSlots        = 2;    // VST3 inserts that can sit between a channel and one of its sends
 constexpr float kSendOffDb      = -60.0f;   // a send at or below this level is off
 constexpr int kMaxVcas          = 16;   // VCA faders per project (numbered 1 .. 16)
-constexpr int kNumSlots         = 4;    // VST3 insert slots per strip / fx channel
+constexpr int kNumSlots         = 4;    // VST3 insert slots per strip / fx channel (before the fader)
+/** 3.40.0: one more slot on every audio track and bus, AFTER the fader (shown under it when the project's "Post-fader slots" switch is on). It is
+    the last element of the strip's and the bus's slots[] (index kPostSlot), so everything that keeps, copies, prepares or closes a slot handles it
+    with the others; only the engine runs it in another place. Code that means the slots before the fader counts to kNumSlots. */
+constexpr int kPostSlot         = kNumSlots;
+constexpr int kChanSlots        = kNumSlots + 1;    // the slots of a strip / bus: kNumSlots before the fader + the post-fader one
 /** Every piece of audio starts and ends with a short fade (seconds) so nothing clicks; the files are never touched. Editable per piece. */
 constexpr double kDefaultEdgeFade = 0.025;           // the fade at the start / end of an edit, and of a take, until the user changes it (25 ms)
 constexpr int kMaxTrackChannels = 16;   // widest track (surround)

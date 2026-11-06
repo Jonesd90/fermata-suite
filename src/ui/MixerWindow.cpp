@@ -20,6 +20,7 @@ constexpr int kBandH = 16, kPlateH = 26, kInputRowH = 19, kSlotH = 16, kSendCell
 constexpr int kLcRowH = 18;      // the LC and polarity keys' row (audio tracks and Int Buses), between the inputs and the inserts
 constexpr int kDividerH = 9;     // 3.26.0: the line above the pans, dragged to make the faders taller (its height; the groove is in its middle)
 constexpr int kSendHdrH = 16;    // 3.26.0: the SENDS title line, with the + (a send to another track) at its right
+constexpr int kPostRowH = 18;    // 3.40.0: the post-fader slot's row, between the fader and the output row (one insert slot and its well)
 constexpr int kMinTopShown = 40; // 3.26.0: the least of the section above the line that stays in sight
 constexpr int kTopBarW = 12;     // 3.26.0: the scroll bar of the section above the line
 constexpr int kTopMargin = 1 + kBandH + 3, kBottomMargin = 1 + kPlateH + 3 + kLatH;      // above and below the body of a strip (the coloured bar; the delay line and the name plate)
@@ -36,13 +37,14 @@ int& faderPrefGen()   { static int gen = 0; return gen; }
 struct StripLayout
 {
     int inputRows = 2, panRows = 2, sendRows = 1, slots = 1;
+    bool postRow = false;           // 3.40.0: the post-fader slot's row under the fader (the project's switch: Project::postFaderSlots)
     int faderH = kFaderH;
     int topShown = 0;
     int topScroll = 0;
     /** The height of the whole section above the line (the same on every strip). */
     int topContentH() const noexcept { return inputRows * kInputRowH + 3 + kLcRowH + 2 + kSecH + slots * kSlotH + 2 + 4 + kSendHdrH + sendRows * kSendCellH + 2; }
     /** Everything of a strip but the fader and the part of the top section in sight. */
-    int fixedH() const noexcept { return kTopMargin + kDividerH + panRows * kPanRowH + 4 + kMSH + 3 + 3 + kOutRowH + kBottomMargin; }
+    int fixedH() const noexcept { return kTopMargin + kDividerH + panRows * kPanRowH + 4 + kMSH + 3 + 3 + kOutRowH + kBottomMargin + (postRow ? kPostRowH + 3 : 0); }
     int maxScroll() const noexcept { return juce::jmax (0, topContentH() - topShown); }
 };
 
@@ -427,6 +429,7 @@ class SlotCell : public juce::Component, public juce::SettableTooltipClient
 public:
     SlotCell (SlotButtons& o, int i) : owner (o), index (i) { setRepaintsOnMouseActivity (true); }
     juce::String layoutNote;                                   // 3.39.0: what the tooltip says about the plug-in's layout on a surround bus (see SlotButtons::refresh)
+    juce::String emptyText;                                    // 3.40.0: written faintly in the slot while it is empty ("POST" in the post-fader slot)
     void setLook (const juce::String& n, juce::Colour c, bool loadedNow)
     {
         if (name == n && fill == c && loaded == loadedNow) return;                   // (3.27.1: no repaint when nothing changed)
@@ -446,20 +449,29 @@ private:
     juce::Component::SafePointer<SlotCell> hovered;                                  // (the cell under a drag may be in another mixer window, rebuilt meanwhile - 3.27.1)
 };
 
-/** A column of VST3 insert slots (four on a channel, two on a send). */
+/** A column of VST3 insert slots (four on a channel, two on a send; 3.40.0: one, the post-fader slot under a channel's fader). */
 class SlotButtons : public juce::Component
 {
 public:
-    SlotButtons (AppContext& a, InsertSlot* s, int n = kNumSlots) : app (a), slots (s), count (n)
+    SlotButtons (AppContext& a, InsertSlot* s, int n = kNumSlots, bool postFader = false) : app (a), slots (s), count (n), post (postFader)
     {
         for (int i = 0; i < count; ++i)
         {
             auto* b = cells.add (new SlotCell (*this, i));
-            b->setTooltip ("Insert slot. Click the name to open the plug-in (an empty slot opens the list), click the dot for the menu (load, bypass, remove). "
-                           "Drag the name onto another slot, in any mixer, to move the plug-in with its settings; hold Alt (or Shift) to drop an exact copy instead (all its settings).");
+            b->setTooltip (baseTip());
+            if (post) b->emptyText = "POST";
             addAndMakeVisible (b);
         }
         refresh();
+    }
+    /** What every slot's tooltip says (a plug-in's layout note is added after it). */
+    juce::String baseTip() const
+    {
+        return juce::String (post ? "Post-fader insert slot: after this channel's fader and mute, before its output. The meters, the output and the post-fader sends "
+                                    "take what comes out of it (a Dolby Atmos Beam here follows the fader). Project menu > Post-fader slots shows or hides these slots. "
+                                  : "Insert slot. ")
+             + "Click the name to open the plug-in (an empty slot opens the list), click the dot for the menu (load, bypass, remove). "
+               "Drag the name onto another slot, in any mixer, to move the plug-in with its settings; hold Alt (or Shift) to drop an exact copy instead (all its settings).";
     }
     void refresh()
     {
@@ -476,9 +488,7 @@ public:
             if (note != cells[i]->layoutNote)
             {
                 cells[i]->layoutNote = note;
-                cells[i]->setTooltip (juce::String ("Insert slot. Click the name to open the plug-in (an empty slot opens the list), click the dot for the menu (load, bypass, remove). "
-                                      "Drag the name onto another slot, in any mixer, to move the plug-in with its settings; hold Alt (or Shift) to drop an exact copy instead (all its settings).")
-                                      + (note.isNotEmpty() ? "\n\n" + name + ": " + note + "." : juce::String()));
+                cells[i]->setTooltip (baseTip() + (note.isNotEmpty() ? "\n\n" + name + ": " + note + "." : juce::String()));
             }
         }
     }
@@ -492,11 +502,12 @@ public:
         here is on them too; and a function that shows the result on their strips. Empty: on its own. */
     std::function<std::vector<InsertSlot*>()> gangSlots;
     std::function<void()> gangRefresh;
-    /** The slot of another strip a linked plug-in goes into: the same one if it is empty, else the first empty one (nothing is replaced); -1: full. */
-    static int slotFor (InsertSlot* arr, int want)
+    /** The slot of another strip a linked plug-in goes into: the same one if it is empty, else the first empty one of the column (nothing is replaced);
+        -1: full. 'arr' is the other strip's column as gangSlots gives it (its insert slots, or its post-fader slot), n its length. */
+    static int slotFor (InsertSlot* arr, int want, int n)
     {
         if (! arr[want].isLoaded()) return want;
-        for (int k = 0; k < kNumSlots; ++k) if (! arr[k].isLoaded()) return k;
+        for (int k = 0; k < n; ++k) if (! arr[k].isLoaded()) return k;
         return -1;
     }
     /** Puts a fresh instance (made by 'make') into each linked strip; says so if some had no free slot. */
@@ -510,7 +521,7 @@ public:
         const double sr = a.engine.getSampleRate(); const int blk = a.engine.getMaxBlock();
         for (auto* arr : others)
         {
-            const int k = slotFor (arr, want);
+            const int k = slotFor (arr, want, post ? 1 : kNumSlots);
             if (k < 0) { ++full; continue; }
             auto p = make();
             if (p == nullptr) { showError ("Plug-in", "Could not load the plug-in on every selected strip (the log says why)."); break; }
@@ -702,6 +713,7 @@ private:
     }
     InsertSlot* slots;
     int count;
+    bool post = false;                          // 3.40.0: the post-fader slot (one cell; its gang column is the other strips' post-fader slot)
     juce::OwnedArray<SlotCell> cells;
 };
 
@@ -714,6 +726,11 @@ void SlotCell::paint (juce::Graphics& g)
     auto text = getLocalBounds().withTrimmedRight (16).reduced (4, 0);
     g.setColour (t.text); g.setFont (juce::FontOptions (11.0f));
     g.drawText (name, text, juce::Justification::centredLeft, true);
+    if (name.isEmpty() && emptyText.isNotEmpty())              // 3.40.0: the post-fader slot says what it is while it is empty
+    {
+        g.setColour (t.dim); g.setFont (juce::FontOptions (8.5f, juce::Font::bold));
+        g.drawText (emptyText, text, juce::Justification::centredLeft, true);
+    }
     const auto dot = dotArea().toFloat();
     const bool overDot = isMouseOver() && dotArea().contains (getMouseXYRelative());
     g.setColour (t.text.withAlpha (overDot ? 1.0f : loaded ? 0.6f : 0.35f));
@@ -766,6 +783,15 @@ int sourceChannels (AppContext& app, const juce::Uuid& src)
 {
     if (auto* t = app.project.findTrack (src)) return t->channelCount();
     return surround::channels (app.project.busFormat (src));
+}
+
+/** The plug-in delay of a strip's or bus's slots: the ones before the fader, and (3.40.0) the post-fader one while the project's switch has it in the sound. */
+int slotsLatency (AppContext& app, const InsertSlot* slots)
+{
+    int t = 0;
+    for (int i = 0; i < kNumSlots; ++i) t += slots[i].latencySamples();
+    if (app.project.postFaderSlots) t += slots[kPostSlot].latencySamples();
+    return t;
 }
 
 /** 3.39.0: the pans a surround panner follows (mono, left, right) for a send from 'src' in mixer 'mid' - looked up afresh each time (the panner may
@@ -1345,7 +1371,7 @@ protected:
     /** 3.26.0: lays out the frame of a fader strip from 'layout': the part of the top section in sight (topPane; its controls are children of topContent
         and go in 'content' - x as in the strip, y from 0 at the top of the section), the fader line, and below it the pans, M / S, the fader and the row
         under it. alignLat: a strip without the plug-in delay line keeps its room, so its fader lines up with the others. */
-    struct Parts { juce::Rectangle<int> content, pans, ms, fader, out; };
+    struct Parts { juce::Rectangle<int> content, pans, ms, fader, out, post; };     // post: 3.40.0, the post-fader slot's row (empty while the project's switch is off)
     Parts layoutFrame (bool alignLat = false)
     {
         wells.clear(); sections.clear(); topWells.clear(); topSections.clear();
@@ -1353,6 +1379,7 @@ protected:
         if (alignLat && shownLatency() < 0) r = r.withTrimmedBottom (kLatH);
         Parts p;
         p.out = r.removeFromBottom (kOutRowH); r.removeFromBottom (3);
+        if (layout.postRow) { p.post = r.removeFromBottom (kPostRowH); r.removeFromBottom (3); }    // 3.40.0: under the fader, above the output (what it feeds)
         p.fader = r.removeFromBottom (juce::jmin (layout.faderH, juce::jmax (0, r.getHeight()))); r.removeFromBottom (3);
         p.ms = r.removeFromBottom (kMSH); r.removeFromBottom (4);
         p.pans = r.removeFromBottom (layout.panRows * kPanRowH);
@@ -1363,6 +1390,14 @@ protected:
         topContent.setBounds (-1, -layout.topScroll, getWidth(), contentH);           // (x - 1: inside the pane, x is the same as in the strip)
         p.content = juce::Rectangle<int> (r.getX(), 0, r.getWidth(), contentH);
         return p;
+    }
+    /** 3.40.0: the post-fader slot in its row (Parts::post) with a well around it, or hidden while the project's switch is off (layout.postRow). */
+    void placePostSlot (juce::Component& c, juce::Rectangle<int> r)
+    {
+        c.setVisible (layout.postRow);
+        if (! layout.postRow) return;
+        wells.push_back (r.expanded (2, 0));
+        c.setBounds (r.reduced (0, 1));
     }
 
     AppContext* appPtr; juce::Uuid nodeId;
@@ -1546,7 +1581,8 @@ public:
         : StripBase (&a, t.id), app (a), mixer (m), trackId (t.id), strip (*m.stripFor (t.id)), numCh (t.channelCount()),
           slots (a, strip.slots, slotCount),
           fader ([this] (float db) { const float old = strip.gainDb.get(); strip.gainDb.set (db); app.project.markDirty(); linkFader (old, db); }, strip.gainDb.get()),
-          outRow (a, m, t.id, true, false, &strip.outOn, &strip.outDest, &strip.outSend), gang (g)
+          outRow (a, m, t.id, true, false, &strip.outOn, &strip.outDest, &strip.outSend),
+          postSlot (a, strip.slots + kPostSlot, 1, true), gang (g)
     {
         nSlots = slotCount;
         if (gang != nullptr)
@@ -1560,9 +1596,17 @@ public:
                 return v;
             };
             slots.gangRefresh = [safe] { if (safe != nullptr && safe->gang != nullptr) for (auto* o : safe->gang->members) if (safe->gang->isSelected (o->gangId())) o->gangRefresh(); };
+            postSlot.gangSlots = [safe]                                         // 3.40.0: linked strips' post-fader slots (a plug-in put here goes into theirs)
+            {
+                std::vector<InsertSlot*> v;
+                if (safe != nullptr && safe->gang != nullptr) safe->gang->forOthers (safe->trackId, [&] (GangMember& o) { v.push_back (o.gangState().slots + kPostSlot); });
+                return v;
+            };
+            postSlot.gangRefresh = slots.gangRefresh;
         }
 
         addAndMakeVisible (outRow);
+        addChildComponent (postSlot);                                           // (shown while the project's post-fader switch is on: see resized)
         // the ASIO input(s) of this track: the same setting as in the main window and the Project Designer
         const int nBoxes = numCh == 2 ? 2 : 1;
         for (int c = 0; c < nBoxes; ++c)
@@ -1671,7 +1715,7 @@ public:
             panValues[c]->setText (panText (p.get()), juce::dontSendNotification);
         }
         for (auto* d : dials) d->refreshFromModel();
-        slots.refresh();
+        slots.refresh(); postSlot.refresh();
     }
 
     void fillInputs()
@@ -1700,7 +1744,7 @@ public:
         updating = false;
     }
 
-    int shownLatency() const override { int t = strip.lowCut.latencySamples(); for (auto& sl : strip.slots) t += sl.latencySamples(); return t; }
+    int shownLatency() const override { return strip.lowCut.latencySamples() + slotsLatency (app, strip.slots); }
     juce::String alignText() const override
     {
         const auto* tr = app.project.findTrack (strip.trackId);
@@ -1718,7 +1762,7 @@ public:
                         "M, S, a send's MUTE / PRE; inserting, removing or bypassing a plug-in (hold the keys as you choose it in the menu, or drop a copy with them held). "
                         "Right-click the name plate to hide strips from this mixer (+ Strip shows them again).");
         repaintIfLookChanged();
-        slots.refresh();
+        slots.refresh(); postSlot.refresh();
         lcKey.refresh();
         refreshInputs();
         outRow.fill();
@@ -1822,6 +1866,7 @@ public:
         outRow.setBounds (p.out);
         wells.push_back (p.fader.expanded (2, 0));
         fader.setBounds (p.fader);
+        placePostSlot (postSlot, p.post);
         auto ms = p.ms;
         mute->setBounds (ms.removeFromLeft (ms.getWidth() / 2).reduced (1, 0));
         solo->setBounds (ms.reduced (1, 0));
@@ -1962,6 +2007,7 @@ private:
     juce::OwnedArray<juce::TextButton> toggles;
     juce::TextButton *mute = nullptr, *solo = nullptr;
     SlotButtons slots; FaderBlock fader; StripOutputRow outRow;
+    SlotButtons postSlot;                                                       // 3.40.0: the post-fader slot, under the fader
     StripGang* gang = nullptr;
 };
 
@@ -1973,12 +2019,14 @@ public:
     BusStrip (AppContext& a, MixerState& m, const BusDef& def, int slotCount)
         : StripBase (&a, def.id), app (a), mixer (m), busId (def.id), st (*m.busFor (def.id)), external (def.external), slots (a, st.slots, slotCount),
           fader ([this] (float db) { st.gainDb.set (db); app.project.markDirty(); }, st.gainDb.get()),
-          outRow (a, m, def.id, false, def.external, &st.outOn, &st.outDest, &st.outSend)
+          outRow (a, m, def.id, false, def.external, &st.outOn, &st.outDest, &st.outSend),
+          postSlot (a, st.slots + kPostSlot, 1, true)
     {
         nSlots = slotCount;
         format = def.format;
         fader.setMeterFormat (format);                                              // 3.39.0: a meter per channel for a surround bus
         topContent.addAndMakeVisible (slots); addAndMakeVisible (fader); addAndMakeVisible (outRow);
+        addChildComponent (postSlot);                                               // 3.40.0: under the fader while the project's post-fader switch is on
         mute = makeToggle (*this, toggles, "M", juce::Colour (0xffe0312b));
         mute->setToggleState (st.mute.get(), juce::dontSendNotification);
         mute->setTooltip ("Mute (this mixer only)");
@@ -2065,13 +2113,13 @@ public:
         refreshFromModel();
     }
     int dialCount() const { return dials.size(); }
-    int shownLatency() const override { int t = st.lowCut.latencySamples(); for (auto& sl : st.slots) t += sl.latencySamples(); return t; }
+    int shownLatency() const override { return st.lowCut.latencySamples() + slotsLatency (app, st.slots); }
     juce::uint32 vcaMask() const override { return st.vcaMask.load(); }
     void refreshFromModel() override
     {
         setLatencyTip (shownLatency(), mixer);
         repaintIfLookChanged();
-        slots.refresh();
+        slots.refresh(); postSlot.refresh();
         if (lcKey != nullptr) lcKey->refresh();
         outRow.fill();
         fader.setAccent (colour());
@@ -2121,6 +2169,7 @@ public:
         outRow.setBounds (p.out);
         wells.push_back (p.fader.expanded (2, 0));
         fader.setBounds (p.fader);
+        placePostSlot (postSlot, p.post);
         auto ms = p.ms;
         mute->setBounds (ms.removeFromLeft (ms.getWidth() / 2).reduced (1, 0));
         if (solo != nullptr) solo->setBounds (ms.reduced (1, 0));
@@ -2219,6 +2268,7 @@ private:
         });
     }
     AppContext& app; MixerState& mixer; juce::Uuid busId; BusState& st; bool external; SlotButtons slots; FaderBlock fader; StripOutputRow outRow;
+    SlotButtons postSlot;                                                // 3.40.0: the post-fader slot, under the fader
     bool updating = false; int nSlots = kNumSlots;
     BusFormat format = BusFormat::Stereo;                                // 3.39.0
     juce::ComboBox hpBox;                                                // 3.39.0: a monitor format's headphone pair
@@ -2883,9 +2933,9 @@ int MixerComponent::slotsNeeded()
 }
 namespace
 {
-StripLayout makeLayout (int inputRows, int panRows, int sendRows, int slots)
+StripLayout makeLayout (int inputRows, int panRows, int sendRows, int slots, bool postRow)
 {
-    StripLayout L; L.inputRows = inputRows; L.panRows = panRows; L.sendRows = sendRows; L.slots = slots;
+    StripLayout L; L.inputRows = inputRows; L.panRows = panRows; L.sendRows = sendRows; L.slots = slots; L.postRow = postRow;
     return L;
 }
 } // namespace
@@ -2895,14 +2945,14 @@ int MixerComponent::naturalContentW() const { return juce::jmax (topBarMinWidth(
     dragging it only shares out the room the window has.) */
 int MixerComponent::naturalContentH() const
 {
-    const auto L = makeLayout (lyInputRows, lyPanRows, lySendRows, slotCount);
+    const auto L = makeLayout (lyInputRows, lyPanRows, lySendRows, slotCount, lyPostRow);
     return 30 + juce::jmax (L.fixedH() + L.topContentH() + kFaderH, kMetersMinH) + 2 * MixerStripsHolder::kEdge;
 }
 /** The least height before the whole view needs a scroll bar: the fader at its smallest, the least of the section above the fader line in sight (3.26.0: below
     the natural height the section above the line scrolls on its own, and the faders keep their size). */
 int MixerComponent::minContentH() const
 {
-    const auto L = makeLayout (lyInputRows, lyPanRows, lySendRows, slotCount);
+    const auto L = makeLayout (lyInputRows, lyPanRows, lySendRows, slotCount, lyPostRow);
     return 30 + juce::jmax (L.fixedH() + kMinTopShown + kFaderMin, kMetersMinH) + 2 * MixerStripsHolder::kEdge;
 }
 
@@ -2914,11 +2964,11 @@ void MixerComponent::applyHeight()
     // strips used to run on under it, hiding their rounded bottom corners and name plates)
     const bool needH = holder->getNaturalWidth() > viewport.getWidth();
     const int availH = viewport.getHeight() - (needH ? viewport.getScrollBarThickness() : 0) - 2 * MixerStripsHolder::kEdge;
-    auto L = makeLayout (lyInputRows, lyPanRows, lySendRows, slotCount);
+    auto L = makeLayout (lyInputRows, lyPanRows, lySendRows, slotCount, lyPostRow);
     int h = juce::jmax (L.fixedH() + L.topContentH() + kFaderH, kMetersMinH);
     if (availH > 0)
     {
-        const auto base = makeLayout (lyInputRows, lyPanRows, lySendRows, slotsBase);
+        const auto base = makeLayout (lyInputRows, lyPanRows, lySendRows, slotsBase, lyPostRow);
         const int surplus = availH - (base.fixedH() + base.topContentH() + juce::jmax (kFaderH, mixerFaderPref()));
         const int want = juce::jlimit (0, kNumSlots - slotsBase, surplus > 0 ? (surplus * 2 / 5) / kSlotH : 0);
         if (want != extraSlots && ! inApply && ! lineDragging)          // (not while the fader line is dragged: the strips would be made again under the mouse)
@@ -3126,6 +3176,7 @@ void MixerComponent::rebuild()
         for (auto* c : chans) anyStereo = anyStereo || c->inputBoxes() > 1;
         lyInputRows = anyStereo ? 2 : 1; lyPanRows = anyStereo ? 2 : 1;
         lySendRows = (maxDials + 1) / 2;
+        lyPostRow = app.project.postFaderSlots;                   // 3.40.0: the post-fader slot's row under every fader (Project menu > Post-fader slots)
         juce::ignoreUnused (busStrips, vcaStrips);
     }
     holder->add (new MeterSettingsStrip (app, mixerId, [this] { holder->resetPeaks(); }), 112);
@@ -3157,8 +3208,8 @@ void MixerComponent::checkAtmos()
     };
     for (auto& m : app.project.mixers)
     {
-        for (auto& st : m->stripPool) look (st->slots, kNumSlots, m.get() == me);
-        for (auto& bs : m->busPool)   look (bs->slots, kNumSlots, m.get() == me);
+        for (auto& st : m->stripPool) look (st->slots, kChanSlots, m.get() == me);     // (3.40.0: a post-fader slot's too)
+        for (auto& bs : m->busPool)   look (bs->slots, kChanSlots, m.get() == me);
     }
     juce::String note;
     const double sr = app.engine.getSampleRate();
@@ -3429,7 +3480,7 @@ void MixerComponent::timerCallback()
     if (++refreshCounter % 10 == 0)                         // 3 Hz: plug-in names, solo / mute changes
     {
         app.engine.checkLatency();                          // a plug-in's delay changed (loaded, bypassed ...): line the paths up again
-        if (slotsNeeded() != slotCount) { rebuild(); resized(); }        // an insert was used (or removed): every strip gets the new number of slots
+        if (slotsNeeded() != slotCount || lyPostRow != app.project.postFaderSlots) { rebuild(); resized(); }   // an insert was used (or removed): every strip gets the new number of slots (3.40.0: or the post-fader slots were switched on / off)
         else if (routeSignature() != routeSig) { rebuild(); resized(); }  // 3.23.0: a strip's output (or a Main out tick) changed: its send dials change with it
         else holder->refreshFromModel();
     }

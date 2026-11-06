@@ -256,6 +256,22 @@ void slotsFromVar (InsertSlot* slots, const var& v, const InsertFactory& factory
     }
 }
 
+/** 3.40.0: the post-fader slot (slots[kPostSlot]) is written under its own key, "postSlot" (a list of one, as "slots"), and only when it holds
+    something: the "slots" list keeps the four before the fader, so an older Fermata reads a project as it always did (it simply has no post-fader
+    plug-in), and a project that does not use the slot is written exactly as before. */
+static void postSlotToVar (var& o, const InsertSlot* slots)
+{
+    if (slotInUse (slots[kPostSlot])) put (o, "postSlot", slotsToVar (slots + kPostSlot, 1));
+}
+/** Read back: a missing key is an empty slot (emptied when a snapshot is applied with clearEmptySlots, as the other slots are). */
+static void postSlotFromVar (InsertSlot* slots, const var& o, const InsertFactory& factory, double sr, int block)
+{
+    const var v = o["postSlot"];
+    if (v.isArray()) { slotsFromVar (slots + kPostSlot, v, factory, sr, block, 1); return; }
+    juce::Array<var> empty; empty.add (obj());
+    slotsFromVar (slots + kPostSlot, var (empty), factory, sr, block, 1);
+}
+
 // ---- mixer pieces as data (used both for saving and for copying a mix)
 var sendsToVar (const SendList& l, bool inserts)
 {
@@ -333,7 +349,7 @@ var stripToVar (const StripState& s, const juce::Uuid& trackId, bool inserts)
     surroundPanToVar (so, "outSurroundPan", s.outSend);
     if (const auto vm = s.vcaMask.load(); vm != 0) put (so, "vcaMask", (juce::int64) vm);
     put (so, "sendList", sendsToVar (s.sends, inserts));
-    if (inserts) put (so, "slots", slotsToVar (s.slots));
+    if (inserts) { put (so, "slots", slotsToVar (s.slots)); postSlotToVar (so, s.slots); }
     lowCutToVar (so, s.lowCut);
     if (s.polarity.get()) put (so, "polarity", true);               // 3.31.0 (only when on: a project without it reads as off)
     return so;
@@ -357,7 +373,7 @@ void stripFromVar (StripState& s, const var& sv, const InsertFactory& factory, d
         if (auto* old = sv["sends"].getArray())                   // projects from before buses: one send level per effects channel
         for (int k = 0; k < old->size() && k < (int) legacyFx.size(); ++k)
             if ((double) (*old)[k] > kSendOffDb) s.sends.get (legacyFx[(size_t) k])->gainDb.set (dbFromVar ((*old)[k], (float) kSendOffDb));
-    if (inserts) slotsFromVar (s.slots, sv["slots"], factory, sr, block);
+    if (inserts) { slotsFromVar (s.slots, sv["slots"], factory, sr, block); postSlotFromVar (s.slots, sv, factory, sr, block); }
     if (faders) { lowCutFromVar (s.lowCut, sv, sr, block); s.polarity.set ((bool) sv.getProperty ("polarity", false)); }
 }
 
@@ -372,7 +388,7 @@ var busToVar (const BusState& s, const juce::Uuid& busId, bool inserts, bool wit
     surroundPanToVar (o, "outSurroundPan", s.outSend);
     if (const auto vm = s.vcaMask.load(); vm != 0) put (o, "vcaMask", (juce::int64) vm);
     put (o, "sendList", sendsToVar (s.sends, inserts));
-    if (inserts) put (o, "slots", slotsToVar (s.slots));
+    if (inserts) { put (o, "slots", slotsToVar (s.slots)); postSlotToVar (o, s.slots); }
     lowCutToVar (o, s.lowCut);
     if (s.polarity.get()) put (o, "polarity", true);                // 3.31.0 (Int Buses)
     return o;
@@ -394,7 +410,7 @@ void busFromVar (BusState& s, const var& v, const InsertFactory& factory, double
     }
     if (pan) surroundPanFromVar (s.outSend, v["outSurroundPan"]);
     if (v.hasProperty ("sendList")) sendsFromVar (s.sends, v["sendList"], factory, sr, block, inserts, sendLevels);
-    if (inserts) slotsFromVar (s.slots, v["slots"], factory, sr, block);
+    if (inserts) { slotsFromVar (s.slots, v["slots"], factory, sr, block); postSlotFromVar (s.slots, v, factory, sr, block); }
     if (faders) { lowCutFromVar (s.lowCut, v, sr, block); s.polarity.set ((bool) v.getProperty ("polarity", false)); }
 }
 
@@ -431,6 +447,7 @@ void Project::createDefaultDesign()
 {
     inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; stageClickDb = 0.0f; stagePipeDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone(); rxSeen.clear(); consonants.clear(); preampDevices.clear(); pitchPipe = PitchPipeDef(); click = ClickDef(); alignEnabled = true; alignSets.clear(); alignActive.clear();
     sampleRate = 0.0;                                                                                 // (3.9.0: chosen for the new project by the one making it)
+    postFaderSlots = false;                                                                           // (3.40.0: a new project starts without the post-fader slots)
     windowFiles.clear(); missingWindowRefs.clear(); loadNotes.clear(); oldWindowFiles.clear();     // (nothing of the project that was open before: its missing files are not this one's)
     layouts.clear();                                                                                  // (nor its saved Display Organiser layouts)
     ignoredMissing.clear(); windowBounds.clear(); filesMoved = false;                                // (3.18.2: nor its ignored missing files, its window places or its "moved" flag - they stayed, and were saved into the new project)
@@ -1276,13 +1293,13 @@ void Project::applySlotLayouts()
     {
         for (auto& st : m->stripPool)
         {
-            all (st->slots, kNumSlots, 2);
+            all (st->slots, kChanSlots, 2);                         // (3.40.0: the post-fader slot too - a track's is on its stereo signal after the fader)
             for (auto& sd : st->sends.pool) all (sd->slots, kSendSlots, codeOf (sd->dest));
             all (st->outSend.slots, kSendSlots, st->outDest.isNull() ? 2 : codeOf (st->outDest));
         }
         for (auto& bs : m->busPool)
         {
-            all (bs->slots, kNumSlots, codeOf (bs->busId));
+            all (bs->slots, kChanSlots, codeOf (bs->busId));
             for (auto& sd : bs->sends.pool) all (sd->slots, kSendSlots, codeOf (sd->dest));
             all (bs->outSend.slots, kSendSlots, bs->outDest.isNull() ? 2 : codeOf (bs->outDest));
         }
@@ -1313,12 +1330,31 @@ bool Project::hasAtmosComposer() const
         }
         return false;
     };
-    for (auto& m : mixers)
+    for (auto& m : mixers)                                          // (3.40.0: a post-fader slot's too - a plug-in kept there is loaded, whether or not it runs)
     {
-        for (auto& st : m->stripPool) if (in (st->slots, kNumSlots)) return true;
-        for (auto& bs : m->busPool)   if (in (bs->slots, kNumSlots)) return true;
+        for (auto& st : m->stripPool) if (in (st->slots, kChanSlots)) return true;
+        for (auto& bs : m->busPool)   if (in (bs->slots, kChanSlots)) return true;
     }
     return false;
+}
+
+juce::StringArray Project::postSlotPlugins() const
+{
+    juce::StringArray out;
+    auto one = [&out] (const InsertSlot& s, const juce::String& where)
+    {
+        if (! slotInUse (s)) return;
+        out.add ((s.isLoaded() ? s.getName() : s.savedName.isNotEmpty() ? s.savedName : juce::String ("a plug-in")) + " on " + where);
+    };
+    auto trackName = [this] (const juce::Uuid& id) { for (auto& t : tracks) if (t.id == id) return t.name; return juce::String ("a track"); };
+    auto busName   = [this] (const juce::Uuid& id) { for (auto& b : buses) if (b.id == id) return b.name; return juce::String ("a bus"); };
+    for (auto& m : mixers)
+    {
+        const juce::String in = mixers.size() > 1 ? " (" + m->name + ")" : juce::String();        // (each mixer has its own slots)
+        for (auto& st : m->stripPool) one (st->slots[kPostSlot], trackName (st->trackId) + in);
+        for (auto& bs : m->busPool)   one (bs->slots[kPostSlot], busName (bs->busId) + in);
+    }
+    return out;
 }
 
 void Project::adoptPreamp (int inputIndex, const PreampSettings& s)
@@ -1906,6 +1942,7 @@ var Project::toVar (bool withWindows) const
         put (root, "ignoredMissingAudio", ig);
     }
     if (const double r = audioRate(); r > 0.0) put (root, "sampleRate", r);      // (3.9.0; a project from before it gets the rate of its takes written once it is saved)
+    if (postFaderSlots) put (root, "postFaderSlots", true);                     // 3.40.0 (only when on: a project without it reads as off)
     return root;
 }
 
@@ -1977,6 +2014,7 @@ bool Project::fromVar (const var& root)
 
     inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; stageClickDb = 0.0f; stagePipeDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone(); rxSeen.clear(); consonants.clear();
     sampleRate = juce::jmax (0.0, (double) root.getProperty ("sampleRate", 0.0));
+    postFaderSlots = (bool) root.getProperty ("postFaderSlots", false);
     ignoredMissing.clear();
     if (auto* ig = root["ignoredMissingAudio"].getArray()) for (auto& x : *ig) if (x.toString().isNotEmpty()) ignoredMissing.insert (x.toString());
     filesMoved = false;
@@ -2819,9 +2857,10 @@ juce::StringArray Project::pluginsMissingFrom (const Project& copy, const juce::
     if (live == nullptr) return out;
     const bool composer = hasAtmosComposer();
     auto leftOut = [composer] (const juce::String& d) { const auto k = atmosLinkOf (d); return k == AtmosLink::Composer || k == AtmosLink::Beam || (k == AtmosLink::Spacelab && composer); };
+    const int count = kNumSlots + (postFaderSlots ? 1 : 0);        // (3.40.0: the post-fader slot counts while it is part of the sound)
     auto compare = [&] (const InsertSlot* a, const InsertSlot* b, const juce::String& where)       // b null: the copy has no such strip at all
     {
-        for (int i = 0; i < kNumSlots; ++i)
+        for (int i = 0; i < count; ++i)
             if (a[i].isLoaded() && ! a[i].bypass.get() && (b == nullptr || ! b[i].isLoaded())
                 && a[i].getProcessorUnsafe()->getDescription().isNotEmpty()                       // (one with no description is not saved and not re-created: nothing was asked for)
                 && ! leftOut (a[i].getProcessorUnsafe()->getDescription()))                       // (3.39.0: an Atmos link, left out on purpose: see cloneForRender)
@@ -3130,7 +3169,7 @@ juce::String Project::mixKeepHash (const MixerState& m, const std::set<juce::Str
         put (o, "pan", value (t.id, autoparam::pan, st->pan.get())); put (o, "panL", st->panL.get()); put (o, "panR", st->panR.get());
         put (o, "mute", st->mute.get()); put (o, "solo", st->solo.get()); put (o, "outOn", st->outOn.get()); put (o, "outDest", st->outDest.toString());
         put (o, "vcaMask", (juce::int64) st->vcaMask.load());
-        put (o, "sends", sendsOf (t.id, st->sends)); put (o, "slots", slotsOf (t.id, st->slots, kNumSlots, true)); put (o, "lowCut", lowCutOf (st->lowCut));
+        put (o, "sends", sendsOf (t.id, st->sends)); put (o, "slots", slotsOf (t.id, st->slots, slotInUse (st->slots[kPostSlot]) ? kChanSlots : kNumSlots, true)); put (o, "lowCut", lowCutOf (st->lowCut));
         if (st->polarity.get()) put (o, "polarity", true);          // (only when on: the kept mixers of older versions still match)
         strips.add (o);
     }
@@ -3145,7 +3184,7 @@ juce::String Project::mixKeepHash (const MixerState& m, const std::set<juce::Str
         put (o, "pan", value (f.id, autoparam::pan, b->pan.get()));
         put (o, "mute", b->mute.get()); put (o, "solo", b->solo.get()); put (o, "outOn", b->outOn.get()); put (o, "outDest", b->outDest.toString());
         put (o, "vcaMask", (juce::int64) b->vcaMask.load());
-        put (o, "sends", sendsOf (f.id, b->sends)); put (o, "slots", slotsOf (f.id, b->slots, kNumSlots, true)); put (o, "lowCut", lowCutOf (b->lowCut));
+        put (o, "sends", sendsOf (f.id, b->sends)); put (o, "slots", slotsOf (f.id, b->slots, slotInUse (b->slots[kPostSlot]) ? kChanSlots : kNumSlots, true)); put (o, "lowCut", lowCutOf (b->lowCut));     // (3.40.0: the post-fader slot only when it holds something: the kept mixers of older versions still match)
         if (b->polarity.get()) put (o, "polarity", true);
         bs.add (o);
     }

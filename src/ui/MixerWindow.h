@@ -123,6 +123,7 @@ private:
     int slotsBase = 1, extraSlots = 0;
     // 3.26.0: the rows every strip lays out (see StripLayout in MixerWindow.cpp), what the last layout gave, and the fader line / the top section's scroll bar
     int lyInputRows = 2, lyPanRows = 2, lySendRows = 1;
+    bool lyPostRow = false;               // 3.40.0: the post-fader slot's row under every fader (Project::postFaderSlots)
     int lastTopShown = 0, lastTopContent = 0, lastFaderH = 0, topScroll = 0, dragFader = 0, shownFaderGen = 0, lastViewY = 0;
     bool lineDragging = false;
     juce::ScrollBar topBar { true };

@@ -341,6 +341,7 @@ private:
         std::vector<float> matrix;                      // Fold: srcCh * dstCh gains (Surround.h foldMatrix)
         float lastM[2 * kMaxBusChannels] {};            // Pan, audio thread: the gains of the previous block
         bool hasLast = false;
+        bool viaPost = false;                           // 3.40.0: takes the channel's signal after its post-fader slot (Node::takesPost, decided when the plan is built)
     };
     /** One channel of a mixer: an Audio Track, an Int Bus or an Ext Bus. The nodes are kept in an order in which every
         channel comes after all the channels that send to it. */
@@ -366,10 +367,30 @@ private:
         juce::AudioBuffer<float> incoming;      // width channels: the sum of what they send
         // delay compensation (samples): when the signals arrive at this channel, and when they leave it, counted from the sources
         int inLat = 0, outLat = 0;
+        /** 3.40.0: the post-fader slot (slots[kPostSlot]) while the project's switch is on, else null: run on 'post' right after the fader, before the
+            meters. What is taken after it - the output, a post-fader send that follows mute (a bus's into any format; a track's that stays stereo), the
+            post-fader tap, an Ext Bus's driver outputs - is postLat later than outLat; what is taken before it (pre-fader sends and taps, a send that
+            carries on when muted, a track's send placed in a surround bus by its panner) is not. See takesPost. */
+        InsertSlot* post = nullptr;
+        int postLat = 0;
         PathDelay srcDelay;                     // Audio Track: holds back its own source (disk / live input) to meet what is sent to it
         PathDelay alignDelay;                   // Audio Track: the spot-mic time alignment (Project::alignSamplesFor): this track is heard this much later, on purpose
         PathDelay outDelay;                     // Ext Bus: holds back the driver outputs so every Ext Bus of the mixer comes out together
         PathDelay tapDelay;                     // offline render: the same, for the captured signals
+        /** 3.40.0: does this send (or output) take its signal after the post-fader slot? Only one taken after the fader that follows mute (the post
+            slot sits after the mute too, so a plug-in there - a Dolby Atmos Beam - goes quiet with the channel), and of a track only one that stays
+            stereo (Direct: the stereo fold, which the post slot works on; one placed in a surround bus by its panner leaves from the track's own
+            channels, before the fold). Read on the audio thread and when the plan is built; the flags it reads can change between plans, so the
+            latency signature counts them while a post slot delays anything. Decided when the plan is built and kept in SendPlan::viaPost, so the
+            audio thread and the delay lines always agree (a flip of PRE between two plans is heard as before the flip until the plan is rebuilt). */
+        bool takesPost (const SendPlan& sp) const noexcept
+        {
+            return post != nullptr && ! sp.st->pre.get() && sp.st->followMute.get() && (kind != NodeKind::Track || sp.kind == SendPlan::Kind::Direct);
+        }
+        /** The lateness (samples, from the sources) of what this send takes from the node: outLat, or outLat + postLat after the post slot. */
+        int sendLat (const SendPlan& sp) const noexcept { return outLat + (sp.viaPost ? postLat : 0); }
+        /** After the post slot: the output of an Ext Bus, its post-fader tap and meters. */
+        int postOutLat() const noexcept { return outLat + postLat; }
     };
     struct MixerPlan
     {

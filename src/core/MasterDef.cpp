@@ -71,6 +71,13 @@ var MasteringDef::toVar() const
         its.add (o);
     }
     put (root, "items", its);
+    if (! atmos.busIds.empty() || ! atmos.lfeLowPass || atmos.lfeHz != 120.0f || ! atmos.dither || atmos.folder.isNotEmpty())      // 3.40.0 (only once it differs from the defaults)
+    {
+        var a = newObj();
+        juce::Array<var> bs; for (auto& id : atmos.busIds) bs.add (id.toString());
+        put (a, "buses", bs); put (a, "lfeLowPass", atmos.lfeLowPass); put (a, "lfeHz", (double) atmos.lfeHz); put (a, "dither", atmos.dither); put (a, "folder", atmos.folder);
+        put (root, "atmos", a);
+    }
     {
         var d = newObj();
         put (d, "upc", ddp.upc); put (d, "title", ddp.title); put (d, "performer", ddp.performer); put (d, "songwriter", ddp.songwriter);
@@ -99,7 +106,7 @@ void MasteringDef::fromVar (const var& root)
 {
     *this = MasteringDef();
     if (! root.isObject()) return;
-    mixerId = idOf (root["mixer"]); sourceId = idOf (root["source"]); tailSeconds = juce::jlimit (0.0, 30.0, (double) root["tail"]); view = juce::jlimit (0, 2, (int) root["view"]);
+    mixerId = idOf (root["mixer"]); sourceId = idOf (root["source"]); tailSeconds = juce::jlimit (0.0, 30.0, (double) root["tail"]); view = juce::jlimit (0, 3, (int) root["view"]);
     if (auto* st = root["stems"].getArray())
         for (auto& v : *st) if (const auto id = idOf (v); ! id.isNull() && std::find (stemIds.begin(), stemIds.end(), id) == stemIds.end()) stemIds.push_back (id);
     const auto s = root["vm"];
@@ -130,6 +137,15 @@ void MasteringDef::fromVar (const var& root)
             i.fileName = v["fileName"].toString(); i.tags = tagsFromVar (v["tags"]);
             if (! i.editId.isNull()) items.push_back (i);
         }
+    if (const auto a = root["atmos"]; a.isObject())                             // 3.40.0
+    {
+        if (auto* bs = a["buses"].getArray())
+            for (auto& v : *bs) if (const auto id = idOf (v); ! id.isNull() && std::find (atmos.busIds.begin(), atmos.busIds.end(), id) == atmos.busIds.end()) atmos.busIds.push_back (id);
+        atmos.lfeLowPass = a["lfeLowPass"].isVoid() ? true : (bool) a["lfeLowPass"];
+        atmos.lfeHz = a["lfeHz"].isVoid() ? 120.0f : juce::jlimit (AtmosExportSettings::kMinLfeHz, AtmosExportSettings::kMaxLfeHz, (float) (double) a["lfeHz"]);
+        atmos.dither = a["dither"].isVoid() ? true : (bool) a["dither"];
+        atmos.folder = a["folder"].toString();
+    }
     const auto d = root["ddp"];
     if (d.isObject())
     {

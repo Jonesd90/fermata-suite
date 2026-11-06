@@ -46,7 +46,7 @@ From the Dolby Atmos Composer (DAC), Spacelab Ignition, Gravitas MDS and Masteri
 - **Latency:** Spacelab (and the Composer, which aligns the incoming connections) need a "latency compensated song position": hosts that tell every
   plug-in the same position (Pro Tools partly, Samplitude, Sequoia) need a manual offset typed into each Beam.
 - **Post-fader inserts** are recommended for Beams, so the Beam gets the fader and pan moves. (fermata has none: its inserts are before the fader.
-  A Beam on a bus follows the bus's input gain and inserts, not its fader. Worth telling the user; post-fader slots could come later.)
+  A Beam on a bus follows the bus's input gain and inserts, not its fader. 3.40.0: the post-fader slot - Project menu > Post-fader slots - is the place for it.)
 - **Seventh Heaven Professional:** VST3 track widths up to 9.1.6 (from v1.4.5: 7.x.4, 7.x.6, 9.x.6; v1.4.6: 5.x.2, 5.x.4, 9.x.4). Its web page
   does not say whether input and output can differ in VST3 (it mentions asymmetric up-mixing in AAX).
 - **Gravitas MDS:** multichannel VST3 up to 128 channels; shows LFE controls when its track's format has an LFE. Also an OBAM plug-in inside the
@@ -150,7 +150,8 @@ fermata:
   one-line change is in `surround::pluginIndex` (use `juceIndex` of the speakers' set for c < 16 and the Lc / Rc indices for the pair). If it refuses
   18 channels altogether, `Vst3Insert::prepare` falls back to the 16-channel 9.1.6 set and the slot's tooltip says "no headphone pair".
 - **A surround bus's inserts come before its fader**, as every insert does. The manuals recommend post-fader Beams; a Beam on a bus follows the
-  bus's input gain and inserts, not its fader. Post-fader slots could come later.
+  bus's input gain and inserts, not its fader. 3.40.0 added the post-fader slot (under the fader; Project menu > Post-fader slots): a Beam there
+  follows the fader, its automation and the mute.
 - **The Atmos pass is a real-time play** (the Composer writes its file while the live mixer plays). A faster-than-real-time pass through the live
   mixer is possible later (stop the device, run the live plan offline), a bigger job.
 - **The scope on a surround bus shows its Lo/Ro fold**; the meter bridge and the control surface see `meterL / meterR` (the loudest of each side).
