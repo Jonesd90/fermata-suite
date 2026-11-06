@@ -167,6 +167,8 @@ int main (int argc, char** argv)
             Marker f; f.id = juce::Uuid(); f.seconds = 34.5; f.flag = true; f.note = "horn crack bar 34"; f.pinnedAt = juce::Time (1762250000000);
             FlagReply r; r.text = "fixed, version 1"; r.by = "Fixer"; r.at = juce::Time (1762250060000); f.replies.push_back (r);
             f.name = flagName (f.note, f.replies); w.markers.push_back (f);
+            Marker n; n.id = juce::Uuid(); n.seconds = 50.25; n.liveNote = true; n.note = "the cello's chair creaks\nfrom bar 60 on"; n.by = "Sam"; n.station = "Fixer";   // (fermata:Live 0.5.0: a note)
+            n.pinnedAt = juce::Time (1762250120000); n.name = noteName (n.note, n.by); w.markers.push_back (n);
             FixVersion v; v.id = juce::Uuid(); v.takeId = juce::Uuid(); v.takeNumber = 4; v.startSample = 1000; v.endSample = 49000; v.sampleRate = 96000.0;
             FixFile ff; ff.trackId = p.tracks[1].id; ff.trackName = "Soloist"; ff.file = tmp.getChildFile ("Recorded Media/First half/Fixes/004 fix 1 - Soloist.wav"); ff.numChannels = 1;
             v.files.push_back (ff); v.what = "De-click (sensitivity 6)"; v.note = "the click at 0:34"; v.flagId = f.id; v.versionNumber = 2; v.replaces = juce::Uuid();
@@ -199,8 +201,11 @@ int main (int argc, char** argv)
         if (! q.takeWindows.empty() && ! p.takeWindows.empty())
         {
             const auto& a = *p.takeWindows.front(); const auto& b = *q.takeWindows.front();
-            check (b.markers.size() == 2 && ! b.markers[0].flag && b.markers[0].name == "3" && b.markers[0].note.isEmpty(), "an ordinary marker stays an ordinary marker");
-            const bool flagOk = b.markers.size() == 2 && b.markers[1].flag && b.markers[1].note == "horn crack bar 34" && b.markers[1].pinnedAt == a.markers[1].pinnedAt
+            check (b.markers.size() == 3 && ! b.markers[0].flag && ! b.markers[0].liveNote && b.markers[0].name == "3" && b.markers[0].note.isEmpty(), "an ordinary marker stays an ordinary marker");
+            const bool noteOk = b.markers.size() == 3 && b.markers[2].liveNote && ! b.markers[2].flag && b.markers[2].note == a.markers[2].note && b.markers[2].by == "Sam"
+                                && b.markers[2].station == "Fixer" && b.markers[2].pinnedAt == a.markers[2].pinnedAt && b.markers[2].name == "Note (Sam): the cello's chair creaks";
+            check (noteOk, "a note keeps its text (two lines), who wrote it, its station and its time (fermata:Live 0.5.0, still contract 3)");
+            const bool flagOk = b.markers.size() == 3 && b.markers[1].flag && ! b.markers[1].liveNote && b.markers[1].by.isEmpty() && b.markers[1].note == "horn crack bar 34" && b.markers[1].pinnedAt == a.markers[1].pinnedAt
                                 && b.markers[1].replies.size() == 1 && b.markers[1].replies[0].text == "fixed, version 1" && b.markers[1].replies[0].by == "Fixer"
                                 && b.markers[1].replies[0].at == a.markers[1].replies[0].at && b.markers[1].name == "Flag: horn crack bar 34 | Fixer: fixed, version 1";
             check (flagOk, "a flag keeps its note, its time and the Fixer's reply (contract 3)");
@@ -221,9 +226,10 @@ int main (int argc, char** argv)
             {
                 const auto parsed = juce::JSON::parse (file);                // (kept: the list below points into it)
                 if (auto* ms = parsed["window"]["markers"].getArray())
-                    for (auto& m : *ms) if (m["name"].toString() == "3") plainKeys = ! m.hasProperty ("flag") && ! m.hasProperty ("note") && ! m.hasProperty ("replies");
+                    for (auto& m : *ms) if (m["name"].toString() == "3") plainKeys = ! m.hasProperty ("flag") && ! m.hasProperty ("note") && ! m.hasProperty ("replies")
+                                                                                    && ! m.hasProperty ("liveNote") && ! m.hasProperty ("by") && ! m.hasProperty ("station");
             }
-            check (plainKeys, "the ordinary marker is written as before (no flag keys in its take window file)");
+            check (plainKeys, "the ordinary marker is written as before (no flag or note keys in its take window file)");
         }
         tmp.deleteRecursively();
     }

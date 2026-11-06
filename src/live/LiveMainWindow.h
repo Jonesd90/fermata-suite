@@ -33,6 +33,7 @@ private:
     void refreshTop();
     void showProjectMenu();
     void showHelpMenu();
+    void askStationName();
     void newProjectDialog();
     void openProjectDialog();
     void showStartPanel (bool show);

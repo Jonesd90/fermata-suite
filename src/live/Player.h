@@ -132,7 +132,8 @@ private:
         for (auto& t : L.takes)
         {
             const juce::int64 ts = (juce::int64) std::llround (t.start * rate);
-            const juce::int64 te = ts + t.lengthSamples + (t.recording ? (juce::int64) (rate * 600) : 0);
+            juce::int64 te = ts + t.lengthSamples + (t.recording ? (juce::int64) (rate * 600) : 0);
+            if (t.cutAt >= 0.0) te = juce::jmin (te, (juce::int64) std::llround (t.cutAt * rate));      // (0.5.0, the time of day: the next take holds the rest)
             const juce::int64 a = juce::jmax (w0, ts), b = juce::jmin (w0 + n, te);
             if (b <= a) continue;
             const int len = (int) (b - a), at = (int) (a - w0);

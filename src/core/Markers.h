@@ -26,7 +26,22 @@ struct Marker
     juce::String note;
     juce::Time   pinnedAt;            // when it was pinned (the time of day)
     std::vector<FlagReply> replies;
+    /** fermata:Live 0.5.0 (still contract 3): a NOTE - a station's own jotting at a place in the take (fermata:Live's N key), its text in 'note'.
+        Each station shows only its own notes; the recording's report lists them all. fermata shows a note as an ordinary marker (see noteName). */
+    bool         liveNote = false;
+    juce::String by;                  // a flag or a note: who wrote it (the name the station was given: "David", or "Primary" / "Fixer")
+    juce::String station;             // a flag or a note: the station it came from ("Primary" or "Fixer"), whatever its name
 };
+
+/** The name a note shows as an ordinary marker: "Note (David): the cello's chair creaks", on one line. */
+inline juce::String noteName (const juce::String& text, const juce::String& by)
+{
+    juce::String n = "Note";
+    if (by.trim().isNotEmpty()) n << " (" << by.trim() << ")";
+    const auto firstLine = text.trim().upToFirstOccurrenceOf ("\n", false, false).trim();
+    if (firstLine.isNotEmpty()) n << ": " << firstLine;
+    return n;
+}
 
 /** The name a flag shows as an ordinary marker: "Flag: horn crack bar 34", with the last reply after it: "... | Fixer: fixed, version 1". */
 inline juce::String flagName (const juce::String& note, const std::vector<FlagReply>& replies)

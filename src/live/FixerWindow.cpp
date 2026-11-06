@@ -1,5 +1,7 @@
 #include "FixerWindow.h"
 #include "LiveTakeView.h"
+#include "NotePanel.h"
+#include "StationNotes.h"
 #include "LiveDesk.h"
 #include "../core/AudioOps.h"
 #include "../ui/SpectralWindow.h"                 // fermata's ReTouch window (shared: COMPATIBILITY.md)
@@ -25,6 +27,7 @@ class FixerTimeBox final : public juce::Component
 public:
     explicit FixerTimeBox (juce::String cap, float size) : caption (std::move (cap)), fontSize (size) {}
     void set (const juce::String& t, juce::Colour c = juce::Colours::white) { if (t != text || c != colour) { text = t; colour = c; repaint(); } }
+    void setCaption (const juce::String& c) { if (c != caption) { caption = c; repaint(); } }
     void paint (juce::Graphics& g) override
     {
         auto r = getLocalBounds().toFloat();
@@ -285,6 +288,7 @@ public:
         std::set<juce::String> have;
         for (auto& f : app.model.flags)
         {
+            if (f.isNote) continue;                                         // (0.5.0: notes are their station's own)
             have.insert (f.id);
             if (! f.removed) now.push_back ({ f, L != nullptr ? L->windowSecondsOf (f.sample) : -1.0, false });
         }
@@ -292,7 +296,8 @@ public:
             for (auto& m : w->markers)
                 if (m.flag && have.count (m.id.toString()) == 0)
                 {
-                    Shown x; x.f.id = m.id.toString(); x.f.note = m.note; x.f.pinnedAt = m.pinnedAt; x.f.by = "Primary"; x.ws = m.seconds; x.fromProject = true;
+                    Shown x; x.f.id = m.id.toString(); x.f.note = m.note; x.f.pinnedAt = m.pinnedAt; x.f.by = m.by.isNotEmpty() ? m.by : juce::String ("Primary");
+                    x.ws = L != nullptr ? L->shownOfWindow (m.seconds) : m.seconds; x.fromProject = true;
                     for (auto& r : m.replies) x.f.replies.push_back ({ r.text, r.by, r.at });
                     now.push_back (x);
                 }
@@ -300,6 +305,8 @@ public:
         bool same = now.size() == shown.size();
         for (size_t i = 0; same && i < now.size(); ++i)
             same = now[i].f.id == shown[i].f.id && now[i].f.note == shown[i].f.note && now[i].f.replies.size() == shown[i].f.replies.size() && std::abs (now[i].ws - shown[i].ws) < 1.0e-6;
+        for (auto& x : now) if (! x.fromProject && x.f.by.isNotEmpty()) primaryName = x.f.by;
+        caption.setText (primaryName.isNotEmpty() ? "FLAGS FROM " + primaryName.toUpperCase() : juce::String ("THE PRIMARY'S FLAGS"), juce::dontSendNotification);
         if (same) return;
         shown = now; list.updateContent(); list.repaint();
         for (int i = 0; i < (int) shown.size(); ++i) if (shown[(size_t) i].f.id == chosen) list.selectRow (i, false, true);
@@ -354,8 +361,11 @@ private:
         const bool onDisk = shown[(size_t) row].fromProject || (ws >= 0.0 && (we < 0.0 || ws < we));
         const double rate = app.model.sessionRate > 0.0 ? app.model.sessionRate : 48000.0;
         g.setColour (theme::dimText); g.setFont (juce::FontOptions (10.5f));
+        const auto L = app.layout();
+        juce::String at = hmsF (ws, false);
+        if (L != nullptr && L->timeOfDay && ws >= 0.0) { if (auto* t = L->takeAt (ws)) at = "take " + juce::String (t->number) + " " + hmsF (ws - t->start, false); else at = L->timeText (ws, false); }
         const juce::String where = ws < 0.0 ? "  - between takes (" + hmsF ((double) f.sample / rate, false) + " of the session)"
-                                 : "  at " + hmsF (ws, false) + (onDisk ? juce::String() : juce::String ("  - its audio is on its way to the disk"));
+                                 : "  at " + at + (onDisk ? juce::String() : juce::String ("  - its audio is on its way to the disk"));
         g.drawText (f.pinnedAt.formatted ("%H:%M:%S") + where, 8, 2, w - 10, 13, juce::Justification::centredLeft, true);
         g.setColour (theme::text); g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
         g.drawText (f.note.isNotEmpty() ? f.note : juce::String ("(no note yet)"), 8, 15, w - 10, 15, juce::Justification::centredLeft, true);
@@ -373,6 +383,7 @@ private:
     juce::TextEditor detail, replyBox;
     juce::TextButton send { "Send" }, goThere { "Go to the flag" };
     std::vector<Shown> shown;
+    juce::String primaryName;
 };
 
 class FixerComponent final : public juce::Component, private juce::Timer, private juce::ChangeListener, private juce::ListBoxModel
@@ -383,8 +394,25 @@ public:
         setWantsKeyboardFocus (true);
         for (auto* c : std::initializer_list<juce::Component*> { &badge, &pieceLabel, &followBtn, &delayLabel, &delayBox, &backBtn, &playBtn, &fwdBtn, &playhead, &behind, &mixerBtn,
                                                                  &status, &flags, &view, &fixTitle, &selLabel, &fixKind, &amount, &amountLabel, &tryBtn, &abBtn, &saveBtn, &fixNote, &tellPrimary, &retouchBtn,
-                                                                 &versions, &progressLabel })
+                                                                 &versions, &progressLabel, &noteBtn, &todBtn, &nameLabel, &nameBox })
             addAndMakeVisible (c);
+        addChildComponent (notePanel);
+        // 0.5.0: notes, the name, the time of day
+        noteBtn.setTooltip ("A note [N]: your own, at the playhead (or at the flag point, if you clicked one in the flag band). A box opens at the side to write in; the Primary does not see it. The report lists every note.");
+        noteBtn.onClick = [this] { pinNote(); };
+        todBtn.setClickingTogglesState (true); todBtn.setToggleState (app.timeOfDay(), juce::dontSendNotification);
+        todBtn.setTooltip ("Time of day: the timeline is the clock - every take at the time it was recorded, on past midnight (the date at each midnight). Off: fermata's timeline.");
+        todBtn.onClick = [this] { switchTimeOfDay (todBtn.getToggleState()); };
+        nameLabel.setText ("Your name:", juce::dontSendNotification); nameLabel.setFont (juce::FontOptions (12.0f)); nameLabel.setColour (juce::Label::textColourId, theme::dimText);
+        nameBox.setText (app.settings->getValue ("stationName"), false);
+        nameBox.setTextToShowWhenEmpty ("Fixer", theme::dimText.withAlpha (0.6f));
+        nameBox.setTooltip ("The name your replies, notes and fix versions carry (\"by ...\"), which the Primary sees. Empty: \"Fixer\".");
+        nameBox.onReturnKey = [this] { app.setStationName (nameBox.getText()); grabKeyboardFocus(); };
+        nameBox.onFocusLost = [this] { app.setStationName (nameBox.getText()); };
+        notePanel.onSave = [this] (const juce::String& id, const juce::String& text) { app.setNoteText (id, text); };
+        notePanel.onDelete = [this] (const juce::String& id) { app.removeNote (id); };
+        notePanel.onClosed = [this] { view.selectedNote.clear(); resized(); grabKeyboardFocus(); view.repaint(); };
+        for (juce::Button* b : std::initializer_list<juce::Button*> { &noteBtn, &todBtn }) b->setWantsKeyboardFocus (false);
         pieceLabel.setFont (juce::FontOptions (16.0f, juce::Font::bold)); pieceLabel.setColour (juce::Label::textColourId, desk::pal().cream);
         followBtn.setToggleState (app.follow, juce::dontSendNotification);
         followBtn.setTooltip ("Follow Primary: the playhead stays a few seconds behind the audio on the disk and cannot be moved. Untick it to move about.");
@@ -399,13 +427,18 @@ public:
         backBtn.onClick = [this] { seek (app.playheadSeconds() - 5.0); };
         fwdBtn.onClick = [this] { seek (app.playheadSeconds() + 5.0); };
         playBtn.onClick = [this] { togglePlay(); };
-        mixerBtn.onClick = [this] { openMixer(); };
+        mixerBtn.onClick = [this] { toggleMixer(); };
         mixerBtn.setTooltip ("The Fixer's own mixer and the outputs it plays to");
         status.setFont (juce::FontOptions (13.0f)); status.setColour (juce::Label::textColourId, desk::pal().cream); status.setMinimumHorizontalScale (0.7f);
         // the timeline
-        view.model = &app.model; view.project = &app.project; view.showArm = false; view.editableMarkers = false;
+        view.model = &app.model; view.project = &app.project; view.showArm = false;
+        view.allTracksByDefault = true;                                    // (0.5.0: a drag chooses every track of the take; Alt + drag only those dragged over)
         view.canSeek = [this] { return ! app.follow; };
         view.onSeek = [this] (double s) { seek (s); };
+        view.onLaneClick = [this] (double) { view.flagPoint = -1.0; };
+        view.onFlagBandClick = [this] (double s) { view.flagPoint = s; app.say ("Flag point set: N pins a note there (zooming centres on it). A click on the tracks takes it away."); view.repaint(); };
+        view.onTakeClick = [this] (int number) { chosenTake = number; if (number != 0) app.say ("Take " + juce::String (number) + " chosen: P makes all of it the part to fix (every track)."); };
+        view.onNoteClick = [this] (const juce::String& id) { openNotePanel (id); };
         view.onSelect = [this] (double a, double b, const std::vector<juce::Uuid>& tr) { selA = a; selB = b; selTracks = tr; lastTry.reset(); app.setAudition (nullptr); refreshFixControls(); };
         view.onFlagClick = [this] (const juce::String& id, bool) { flags.choose (id); };
         view.colourOf = [this] (const juce::Uuid& id) { return app.hasProject() ? chan::of (app.project, id) : juce::Colour (0xff3f7fc4); };
@@ -445,10 +478,19 @@ public:
         refreshFixControls();
         app.addChangeListener (this);
         startTimerHz (30);
+        juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<FixerComponent> (this)]
+        {   // (0.5.0: on the time of day the playhead starts at the first take, not at midnight)
+            if (safe == nullptr) return;
+            if (const auto L = safe->app.layout(); L != nullptr && L->timeOfDay && safe->app.cursorSeconds < L->firstSeconds()) safe->app.cursorSeconds = L->firstSeconds();
+            safe->view.layout = safe->app.layout(); safe->view.playhead = safe->app.cursorSeconds;
+            safe->view.zoomToFit();
+        });
     }
     ~FixerComponent() override
     {
         app.removeChangeListener (this);
+        notePanel.onClosed = nullptr;
+        if (notePanel.isOpen()) notePanel.close();
         if (retouchWindow != nullptr) delete retouchWindow.getComponent();      // (its fixes not kept go with it; it plays through the app, which goes next)
         if (job != nullptr) job->release();
         mixerWindow.reset();
@@ -488,7 +530,14 @@ public:
         top.removeFromLeft (8);
         behind.setBounds (top.removeFromLeft (170).withHeight (58));
         top.removeFromLeft (10);
-        mixerBtn.setBounds (top.removeFromLeft (90).withSizeKeepingCentre (90, 30));
+        { auto col = top.removeFromLeft (100); mixerBtn.setBounds (col.removeFromTop (28)); col.removeFromTop (4); noteBtn.setBounds (col.removeFromTop (28)); }
+        top.removeFromLeft (10);
+        {
+            auto col = top.removeFromLeft (220);
+            todBtn.setBounds (col.removeFromTop (28).removeFromLeft (110));
+            col.removeFromTop (4);
+            auto x = col.removeFromTop (28); nameLabel.setBounds (x.removeFromLeft (72)); nameBox.setBounds (x.reduced (0, 2));
+        }
         r.removeFromTop (4);
         status.setBounds (r.removeFromTop (22));
         r.removeFromTop (4);
@@ -506,7 +555,9 @@ public:
             { auto x = fix.removeFromTop (26); tellPrimary.setBounds (x.removeFromRight (150)); fixNote.setBounds (x.reduced (0, 1)); }
         }
         r.removeFromBottom (6);
-        flags.setBounds (r.removeFromRight (juce::jmin (320, r.getWidth() / 4)).withTrimmedLeft (6));
+        auto right = r.removeFromRight (notePanel.isOpen() ? juce::jmin (420, r.getWidth() / 3) : juce::jmin (320, r.getWidth() / 4)).withTrimmedLeft (6);
+        if (notePanel.isOpen()) { notePanel.setBounds (right.removeFromTop (juce::jmax (160, right.getHeight() / 2))); right.removeFromTop (6); }
+        flags.setBounds (right);
         view.setBounds (r);
     }
     void paint (juce::Graphics& g) override
@@ -519,14 +570,22 @@ public:
     }
     bool keyPressed (const juce::KeyPress& k) override
     {
-        if (delayBox.hasKeyboardFocus (false) || fixNote.hasKeyboardFocus (false)) return false;
-        if (k.getKeyCode() == juce::KeyPress::spaceKey) { togglePlay(); return true; }
-        if (k.getKeyCode() == juce::KeyPress::leftKey) { view.zoomBy (1.0 / 1.4, app.playheadSeconds()); return true; }
-        if (k.getKeyCode() == juce::KeyPress::rightKey) { view.zoomBy (1.4, app.playheadSeconds()); return true; }
-        if (k.getKeyCode() == juce::KeyPress::upKey) { view.laneH = juce::jmin (200, view.laneH + 8); view.repaint(); return true; }
-        if (k.getKeyCode() == juce::KeyPress::downKey) { view.laneH = juce::jmax (22, view.laneH - 8); view.repaint(); return true; }
-        if (k == juce::KeyPress ('f') || k == juce::KeyPress ('F')) { followBtn.setToggleState (! followBtn.getToggleState(), juce::sendNotificationSync); return true; }
-        if (k.getKeyCode() == juce::KeyPress::returnKey) { flags.focusReply(); return true; }
+        if (delayBox.hasKeyboardFocus (false) || fixNote.hasKeyboardFocus (false) || nameBox.hasKeyboardFocus (false) || notePanel.typing()) return false;
+        const auto code = k.getKeyCode();
+        const bool plain = ! k.getModifiers().isCommandDown() && ! k.getModifiers().isAltDown();
+        if (code == juce::KeyPress::spaceKey) { togglePlay(); return true; }
+        if (code == juce::KeyPress::leftKey)  { view.zoomCentred (1.0 / 1.4, zoomAnchor()); return true; }   // (0.5.0: fermata's arrows - left / right zoom round the
+        if (code == juce::KeyPress::rightKey) { view.zoomCentred (1.4, zoomAnchor()); return true; }         //  playhead, put in the middle; up / down every track
+        if (code == juce::KeyPress::upKey)    { view.changeLaneHeight (-1); return true; }                  //  smaller / bigger)
+        if (code == juce::KeyPress::downKey)  { view.changeLaneHeight (+1); return true; }
+        if (k == juce::KeyPress ('.') || k == juce::KeyPress ('+') || k == juce::KeyPress ('=')) { view.vzoom = juce::jmin (16.0f, view.vzoom * 1.4f); view.repaint(); return true; }
+        if (k == juce::KeyPress (',') || k == juce::KeyPress ('-')) { view.vzoom = juce::jmax (0.25f, view.vzoom / 1.4f); view.repaint(); return true; }
+        if (plain && (code == 'F' || code == 'f')) { followBtn.setToggleState (! followBtn.getToggleState(), juce::sendNotificationSync); return true; }
+        if (plain && (code == 'N' || code == 'n')) { pinNote(); return true; }
+        if (plain && (code == 'M' || code == 'm')) { toggleMixer(); return true; }
+        if (plain && (code == 'P' || code == 'p')) { wholeTake(); return true; }
+        if (plain && (code == 'C' || code == 'c')) { view.centreOn (zoomAnchor()); return true; }
+        if (code == juce::KeyPress::returnKey) { flags.focusReply(); return true; }
         return false;
     }
 
@@ -536,6 +595,81 @@ private:
         flags.refresh();
         versions.updateContent(); versions.repaint();
         if (followBtn.getToggleState() != app.follow) followBtn.setToggleState (app.follow, juce::dontSendNotification);
+        refreshNotes();
+    }
+    /** 0.5.0: the Fixer's own notes (the session's; and those of earlier sessions, in the project - read only here). */
+    void refreshNotes()
+    {
+        const auto L = app.layout();
+        auto* w = app.pieceWindow();
+        const auto list = notes::collect (app.model, w, L.get(), "Fixer");
+        view.notes = notes::forView (list, w, L.get());
+        if (notePanel.isOpen())
+            if (auto* x = notes::find (list, notePanel.noteId())) { notePanel.setHeading (notes::heading (*x, L.get())); notePanel.refreshText (x->text); }
+    }
+    void openNotePanel (const juce::String& id, bool fresh = false)
+    {
+        const auto L = app.layout();
+        const auto list = notes::collect (app.model, app.pieceWindow(), L.get(), "Fixer");
+        notes::Info x;
+        if (auto* f = notes::find (list, id)) x = *f;
+        else if (! fresh) return;
+        else { x.id = id; x.by = app.stationName(); x.inSession = true; }
+        view.selectedNote = id;
+        notePanel.open (id, notes::heading (x, L.get()), x.text,
+                        x.inSession || fresh ? juce::String() : juce::String ("From an earlier session: it is in the project, which the Fixer does not change (the Primary's fermata:Live or fermata can)."));
+        resized();
+        view.repaint();
+    }
+    void pinNote()
+    {
+        const double s = view.flagPoint >= 0.0 ? view.flagPoint : app.playheadSeconds();
+        juce::String why;
+        const auto id = app.pinNote (s, why);
+        if (id.isEmpty()) { app.say (why); return; }
+        view.flagPoint = -1.0;
+        openNotePanel (id, true);
+    }
+    double zoomAnchor() const { return view.flagPoint >= 0.0 ? view.flagPoint : app.playheadSeconds(); }
+    void toggleMixer()
+    {
+        if (mixerWindow != nullptr && mixerWindow->isVisible())
+        {
+            juce::Component::SafePointer<FixerComponent> safe (this);         // (later: the key may have come from the mixer window itself)
+            juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->mixerWindow.reset(); });
+            return;
+        }
+        openMixer();
+    }
+    /** P: the take chosen by its header becomes the part to fix, all of it, on every track recorded in it. */
+    void wholeTake()
+    {
+        const auto L = app.layout();
+        const ShownTake* t = L != nullptr && chosenTake != 0 ? L->findTake (chosenTake) : nullptr;
+        if (t == nullptr) { app.say ("P chooses a whole take to fix: click its header (the strip with its number) first."); return; }
+        const double we = app.writtenEndSeconds();
+        selA = t->start; selB = t->recording && we >= 0.0 ? juce::jmax (t->start, we) : t->shownEnd();
+        selTracks = view.tracksIn (*t);
+        view.selA = selA; view.selB = selB; view.selTracks = selTracks;
+        lastTry.reset(); app.setAudition (nullptr);
+        refreshFixControls();
+        view.repaint();
+    }
+    void switchTimeOfDay (bool on)
+    {
+        if (app.isPlaying()) app.stop();
+        const auto old = app.layout();
+        const double ws = old != nullptr ? old->windowOfShown (app.cursorSeconds) : app.cursorSeconds;
+        app.setTimeOfDay (on);
+        const auto L = app.layout();
+        if (L != nullptr) app.cursorSeconds = ws >= 0.0 ? L->shownOfWindow (ws) : L->firstSeconds();
+        view.flagPoint = -1.0; selA = selB = -1.0; selTracks.clear(); view.selA = view.selB = -1.0; view.selTracks.clear();
+        lastTry.reset(); app.setAudition (nullptr); refreshFixControls();
+        view.layout = L;
+        view.playhead = app.cursorSeconds;
+        refreshNotes();
+        timerCallback();                                                 // (the live end, now and the playhead on the new timeline before fitting)
+        view.zoomToFit();
     }
     void timerCallback() override
     {
@@ -546,7 +680,23 @@ private:
         const double we = app.writtenEndSeconds(), live = app.liveEndSeconds();
         view.writtenEnd = we; view.liveEnd = live;
         view.playhead = app.playheadSeconds();
-        playhead.set (hmsF (view.playhead));
+        const bool tod = L != nullptr && L->timeOfDay;
+        {   // (0.5.0: the first layout - the project read -, or a new day on the clock: the view starts on the takes)
+            const juce::int64 key = L == nullptr ? -1 : (tod ? L->originMs : 1);
+            if (key != shownLayoutKey)
+            {
+                shownLayoutKey = key;
+                if (L != nullptr)
+                {
+                    if (tod && app.cursorSeconds < L->firstSeconds()) app.cursorSeconds = L->firstSeconds();
+                    juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<FixerComponent> (this)] { if (safe != nullptr) safe->view.zoomToFit(); });
+                }
+            }
+        }
+        view.nowLine = tod ? (double) (juce::Time::currentTimeMillis() - L->originMs) / 1000.0 : -1.0;
+        playhead.setCaption (tod ? "PLAYHEAD - TIME OF DAY" : "PLAYHEAD  H : M : S . MS");
+        playhead.set (L != nullptr ? L->timeText (view.playhead) : hmsF (view.playhead));
+        if (juce::Time::getMillisecondCounter() - lastNotesMs > 500) { lastNotesMs = juce::Time::getMillisecondCounter(); refreshNotes(); }
         if (live >= 0.0) behind.set (juce::String (live - view.playhead, 1) + " s", (live - view.playhead) > app.delaySeconds + 5.0 ? juce::Colour (0xffffb050) : juce::Colours::white);
         else behind.set ("-");
         playBtn.setIcon (app.isPlaying() ? Icon::Stop : Icon::Play, "Play / Stop");
@@ -617,7 +767,7 @@ private:
         else if (k == 4) { amountLabel.setText ("Amount (dB more / less)", juce::dontSendNotification); amount.setRange (-6.0, 6.0, 0.5); amount.setValue (0.0, juce::dontSendNotification); }
         else { amountLabel.setText ("Gain (dB)", juce::dontSendNotification); amount.setRange (-30.0, 12.0, 0.5); amount.setValue (-6.0, juce::dontSendNotification); }
         const auto* t = selectedTake();
-        if (selB <= selA) selLabel.setText ("Drag over the tracks on the timeline to choose what to fix (Follow can stay on while you choose).", juce::dontSendNotification);
+        if (selB <= selA) selLabel.setText ("Drag on the timeline to choose what to fix: every track of the take (Alt + drag: only the tracks you drag over; P: a whole take, its header clicked first).", juce::dontSendNotification);
         else if (t == nullptr) selLabel.setText ("The part chosen must lie inside one take.", juce::dontSendNotification);
         else selLabel.setText ("Take " + juce::String (t->number) + ", " + hmsF (selA - t->start) + " - " + hmsF (selB - t->start) + " (" + juce::String (selB - selA, 2) + " s) on " + juce::String ((int) selTracks.size()) + " track(s)", juce::dontSendNotification);
         saveBtn.setEnabled (lastTry != nullptr);
@@ -713,7 +863,7 @@ private:
         }
         auto v = obj();
         put (v, "id", juce::Uuid().toString()); put (v, "takeNumber", takeNumber); put (v, "from", from); put (v, "to", to); put (v, "rate", rate);
-        put (v, "files", files); put (v, "what", what); put (v, "note", fixNote.getText().trim()); put (v, "by", "Fixer"); put (v, "madeAt", juce::Time::getCurrentTime().toMilliseconds());
+        put (v, "files", files); put (v, "what", what); put (v, "note", fixNote.getText().trim()); put (v, "by", app.stationName()); put (v, "madeAt", juce::Time::getCurrentTime().toMilliseconds());
         put (v, "version", n + 1); put (v, "window", w->name);
         if (replaces.isNotEmpty()) put (v, "replaces", replaces);
         if (flags.chosen.isNotEmpty()) put (v, "flag", flags.chosen);   // (a flag already in the project too: the review shows what it was for)
@@ -930,7 +1080,14 @@ private:
     juce::TextEditor delayBox, fixNote;
     IconButton backBtn, playBtn, fwdBtn;
     FixerTimeBox playhead { "PLAYHEAD  H : M : S . MS", 30.0f }, behind { "BEHIND LIVE", 26.0f };
-    juce::TextButton mixerBtn { "Mixer" }, tryBtn { "Try it" }, abBtn { "Hearing: FIXED" }, saveBtn { "Keep as a fix version" }, retouchBtn { "ReTouch window..." };
+    juce::TextButton noteBtn { "Note [N]" }, todBtn { "Time of day" };
+    juce::Label nameLabel;
+    juce::TextEditor nameBox;
+    NotePanel notePanel;
+    int chosenTake = 0;
+    juce::int64 shownLayoutKey = -2;
+    juce::uint32 lastNotesMs = 0;
+    juce::TextButton mixerBtn { "Mixer [M]" }, tryBtn { "Try it" }, abBtn { "Hearing: FIXED" }, saveBtn { "Keep as a fix version" }, retouchBtn { "ReTouch window..." };
     juce::Component::SafePointer<ReTouchWindow> retouchWindow;                // (0.4.0: fermata's ReTouch window, while it is open)
     juce::ComboBox fixKind;
     juce::Slider amount;

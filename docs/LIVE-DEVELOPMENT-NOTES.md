@@ -2,6 +2,66 @@
 
 The brief is in `docs/LIVE-BRIEF.md`, and the rules shared with fermata are in `COMPATIBILITY.md`. Newest entries come first.
 
+## 0.5.0: the timeline and notes (6 November 2026, built in the fermata:Live conversation)
+Asked for on 6 November 2026 in one list (the timeline, notes, names, colours, the Fixer's drag; the mixers and the mix exchange are 0.6.0 - their
+answers are in the brief). Built in two halves on the user's wish for bigger builds; this is the first.
+- **The time of day lives in the layout** (`TakeLayout.h`). `ShownTake::start` is the place on the timeline SHOWN; `windowStart` is fermata's (what the
+  project keeps); `clockMs` the time of day of the first sample (the session's origin + its start, else the first file's BWF date + time reference -
+  `clockOfFile`, read once per file - else `recordedAt`). `build (..., timeOfDay)` then `placeOnTheClock()`: seconds count from the local midnight of
+  the first take's day (`originMs`). Everything a station does goes through `start` (the player, flags via `windowSecondsOf`, the ReTouch spans,
+  marks 1 and 2 relative to the take), so it works on either timeline unchanged; only project positions are converted (`shownOfWindow`,
+  `windowOfShown`; markers and notes in the project stay on fermata's timeline). On the clock, `windowSecondsOf` / `sessionSampleAt` cover the whole
+  session (a flag between takes has a place). Overlap: a take whose pre-take reached back over the one before sets that one's `cutAt`; the player
+  (`Player::mixInto`) and the drawing stop it there, `takeAt` prefers the later take - it is the same stretch of the same recording.
+- **Switching** converts the cursor through fermata's timeline (`windowOfShown` on the old layout, `shownOfWindow` on the new), clears the flag point and
+  the selection, and fits the view. Each station keeps its own switch (`timeOfDay` in its settings).
+- **The view** (`LiveTakeView`): the NOTES row (22 px) replaces fermata's marker strip (the Primary's markers were draggable fermata markers; they are not
+  made any more, and the project's ordinary markers - the gaps - show grey, read only). New fields: `nowLine`, `flagPoint`, `notes`, `selectedTake`,
+  `selectedNote`, `colourWaves` / `fileColours` / `sessionColours`, `allTracksByDefault`; callbacks `onLaneClick` (before `onSeek`, always),
+  `onFlagBandClick`, `onTakeClick`, `onNoteClick`, `onUserScrolled`. `zoomCentred` is fermata's `TakeTimeline::zoom` (the anchor to the middle; off the
+  screen, the middle; out as far as the content fits; never left of the start). `changeLaneHeight`: Up smaller, Down bigger (fermata's way; it was
+  reversed). Scroll bars: `contentRange()` (fermata's timeline from 0; the clock from the first take less a little room) and the tracks.
+- **The flag point** (`PrimaryTakeComponent::target`): flag point, else the playhead while playing back, else now in the session, else the playhead. A
+  flag at a point needs a session sample (`sessionSampleAt`): an earlier session's take cannot reach the Fixer, and says so. Pinning sends the recorder
+  `flag` with `sample`; the point goes back to NOW once used. The playhead is hidden and cannot be moved while a take records (`canSeek`, `seek`).
+- **Notes** (`StationNotes.h`): a `FlagRec` with `isNote` and `station` (`SessionIndex.h`: "kind": "note", "station"; written only when set), sent as
+  `flag` with "kind": "note" (`RecorderService::putFlag` takes the kind and station once, when the flag is made; `flag-note` / `flag-remove` as for
+  flags). So notes are kept on every drive and come back with a carried-on session exactly as flags do. The Primary's notes on an earlier session's
+  take go straight into the project (`PrimaryApp::pinNote`); the Fixer's need the session (it never writes the project) and say so. `sentNotes`:
+  a note's text sent before the recorder's answer is back still goes to the recorder. `PrimaryApp::syncNotes` puts both stations' notes into the
+  project as markers (`liveNote`, `noteName`) once their take is there. Everything that lists flags skips notes (`FlagList`, `FixerFlags`,
+  `LiveTakeView::flagsShown`, `FixerApp::onEvent` - a note never lights the Fixer's window). `NotePanel.h`: the side box; saves 0.7 s after typing
+  stops and on closing, only when the text changed.
+- **The report** (`LiveReport.h`): `gather` (session flags, project markers - flags, gaps, plain markers -, everyone's notes, session and project fix
+  versions), grouped by take (`takeAt`; a fix by its take number), sorted by place; `write` uses the shared `pdf::Document` (A4, a line per take with
+  numbered ticks, then the rows; replies in italic). Into `<project>/Reports/`.
+- **Coloured waveforms** (`LiveColours.h`): a low-priority thread in the window's process reads the session's chunks (its own `ChunkTimeline`) up to
+  `writtenTo`, only inside the takes, 16 blocks of 4096 at a time per track, and works out each block with fermata's `WaveColorCache::BlockAnalyser`
+  (moved out of `analyse`, unchanged). Results by session block, under a lock held only to copy (`colours`, one call per waveform drawn). Takes in the
+  project use fermata's `WaveColorCache` on their files (kept in the project's Waveforms folder, as fermata does). The recorder is never involved.
+- **Names**: `stationName()` in each station's settings ("Primary" / "Fixer" when empty), sent as `by` on flags, notes, replies and fix versions; flags
+  and notes also carry `station`, so who sees what never depends on a name. The stations' stream names stay "Primary" / "Fixer".
+- **Keys**: Primary - Enter flag, N note, M mixer (`mixer-toggle`: closes it later, as the key may come from the mixer window itself), P marks round
+  the selection or the chosen take (one take: a selection running past its end is cut there), 5 marks away, C centre, L loop, . , waveform size,
+  Shift + Left / Right 10 ms (not while recording). Fixer - N, M, P (the chosen take, every recorded track, as the part to fix), C, . ,.
+
+### Checked here
+- Tests: `tests/live_recorder_test.cpp` "0.5.0 notes" (kind and station kept on the drives; an older flag written as before) and "0.5.0 the time of
+  day" (clock places, the gap, past midnight, the overlap cut, both conversions); `tests/compat_test.cpp` (a note marker saved and read, an ordinary
+  marker without the new keys).
+- On screen (Linux build, the Test signal device, a project with two takes recorded 75 and 40 minutes earlier): the switch both ways (the takes at
+  12:41 and 13:16 with the gap, NOW, back to fermata's timeline with the takes one after another); Fit from the first take; the arrows zooming
+  round the playhead / now into the middle, Up smaller; a flag point while recording with a note pinned there (the panel, saved as typed) and a flag
+  at now; the coloured waveform of the take recording (and of the files after the merge); M opening and closing the mixer (from the mixer too); P
+  round a clicked take and round a selection; the name ("by David", "FLAGS FROM DAVID", the Fixer's "Sam: on it" on the Primary); the Fixer's drag
+  (both tracks) and Alt + drag (one); the Fixer's note shown only on the Fixer and the Primary's only on the Primary; the report (all of it, with
+  both stations' notes and the reply). After the merge the project's take window had the flag and both notes as markers with their keys.
+- The live colours offline: `LiveColours` over the recorded session's chunks, fed a growing written-to point, coloured every block.
+
+### Not checked here
+- Windows (the build is on GitHub), a real interface, the report opened in a PDF reader on Windows, DST changes during a recording on the time of
+  day (the clock labels are worked out from the local time, so they stay right; a take's place is its clock time).
+
 ## 0.4.0: fermata's ReTouch window in the Fixer (5 November 2026, built with fermata 3.35.0)
 Asked for on 5 November 2026: "Yes, it absolutely should be the same tool as fermata. Definitely! Remember though, it will only be avaliable to the fixer
 and not the primary!"

@@ -444,6 +444,17 @@ void LiveMainComponent::closeAllWindows() { windows.clear(); }
 
 void LiveMainComponent::openWindow (const juce::String& key)
 {
+    if (key == "mixer-toggle")                                          // (0.5.0: M in the take window - the mixer opens, or closes when it is open)
+    {
+        if (auto it = windows.find ("mixer"); it != windows.end() && it->second != nullptr && it->second->isVisible())
+        {
+            juce::Component::SafePointer<LiveMainComponent> safe (this);      // (later: the key may have come from the mixer window itself)
+            juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->windows.erase ("mixer"); });
+            return;
+        }
+        openWindow ("mixer");
+        return;
+    }
     if (auto it = windows.find (key); it != windows.end() && it->second != nullptr)
     {
         it->second->setVisible (true); it->second->toFront (true);
@@ -548,6 +559,7 @@ void LiveMainComponent::showProjectMenu()
     m.addItem (4, "Save", app.hasProject());
     m.addItem (5, "Show the project folder", app.hasProject());
     m.addSeparator();
+    m.addItem (7, "Your name (on your flags and notes): " + app.stationName() + "...");
     m.addItem (6, "Log...");
     if (app.model.sessionOn) { m.addSeparator(); m.addSectionHeader ("A session is running: end it to change the project"); }
     juce::Component::SafePointer<LiveMainComponent> safe (this);
@@ -561,7 +573,23 @@ void LiveMainComponent::showProjectMenu()
         else if (r == 4) { juce::String err; if (! app.saveNow (&err)) showError ("Save", err); }
         else if (r == 5) app.project.projectFolder().revealToUser();
         else if (r == 6) safe->openWindow ("log");
+        else if (r == 7) safe->askStationName();
     });
+}
+
+/** 0.5.0: the Primary's name, as its flags and notes say who wrote them ("by David"); the Fixer gives its own in its window. */
+void LiveMainComponent::askStationName()
+{
+    auto* w = new juce::AlertWindow ("Your name", "The name your flags and notes carry (\"by ...\"), and the Fixer sees. Empty: \"Primary\".", juce::MessageBoxIconType::NoIcon);
+    w->addTextEditor ("name", app.settings->getValue ("stationName"), "Name:");
+    w->addButton ("Use this name", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    juce::Component::SafePointer<LiveMainComponent> safe (this);
+    w->enterModalState (true, juce::ModalCallbackFunction::create ([safe, w] (int r)
+    {
+        if (safe != nullptr && r == 1) safe->app.setStationName (w->getTextEditorContents ("name"));
+    }), true);
+    if (auto* ed = w->getTextEditor ("name")) { ed->grabKeyboardFocus(); ed->selectAll(); }
 }
 
 void LiveMainComponent::showHelpMenu()

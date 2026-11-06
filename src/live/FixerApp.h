@@ -11,6 +11,7 @@
 #include "LiveMixer.h"
 #include "../core/Project.h"
 #include <juce_gui_extra/juce_gui_extra.h>
+#include <set>
 
 namespace td::live
 {
@@ -72,6 +73,17 @@ public:
     void mixChanged();
     Player::Gains gains() const;
 
+    // ---- 0.5.0: the Fixer's name ("by Sam" on its replies, notes and fix versions), the time of day
+    juce::String stationName() const                         { auto n = settings->getValue ("stationName").trim(); return n.isNotEmpty() ? n : juce::String ("Fixer"); }
+    void setStationName (const juce::String& n)              { settings->setValue ("stationName", n.trim().substring (0, 40)); settings->saveIfNeeded(); sendChangeMessage(); }
+    bool timeOfDay() const                                   { return settings->getBoolValue ("timeOfDay", false); }
+    void setTimeOfDay (bool on)                              { settings->setValue ("timeOfDay", on); rebuildLayout(); sendChangeMessage(); }
+
+    // ---- 0.5.0: notes (N) - the Fixer's own, kept by the session (the Primary puts them into the project); see StationNotes.h
+    juce::String pinNote (double seconds, juce::String& whyNot);
+    void setNoteText (const juce::String& id, const juce::String& text);
+    void removeNote (const juce::String& id);
+
     // ---- replies and fix versions
     void reply (const juce::String& flagId, const juce::String& text);
     /** Announces a fix version to the recorder (which keeps it with the session and hands it to the Primary's window for the project). */
@@ -91,6 +103,7 @@ private:
 
     std::unique_ptr<FixerWindow> window;
     std::shared_ptr<const TakeLayout> currentLayout;
+    std::set<juce::String> sentNotes;                        // (0.5.0: notes sent to the recorder, before its answer is back)
     juce::File watchedProject;
     juce::int64 watchedTime = 0;
     juce::uint32 lastProjectCheck = 0, lastFollowFix = 0;

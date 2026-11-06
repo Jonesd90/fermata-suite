@@ -44,15 +44,29 @@ Keep unchanged: Projects menu, Audio settings, Preamps, Project Designer, Plug-i
 - Primary pins a flag with the keyboard. One press of Enter pins the flag and opens the note box. A second press of Enter closes the box and saves
   the note.
 - Flags are sent to Fixer immediately, so Fixer knows to look.
-- Keep: piece name, next take, record light, take length, transport, waveform display and loop, markers, time code, arm all and arm none. Align
-  spot mics is optional.
+- Keep: piece name, next take, record light, take length, transport, waveform display and loop, time code, arm all and arm none. Align
+  spot mics is optional. (Markers were replaced by notes in 0.5.0: see Notes.)
+- A switch between a **time of day** timeline and fermata's timecode (starting at 00:00:00.000, as before). With the time of day, the playhead
+  runs on with the clock and the Primary only switches recording on and off. The timeline runs on past midnight into the next day, and shows the
+  date once at each midnight, as DD/MM/YYYY. (0.5.0; the Fixer has the same switch.)
+- While a take records, the Primary does not move a playhead. A small **flag point** in the flag band is clicked to place a flag (and its text)
+  at a moment that has passed; a click on the tracks puts it back to NOW. When nothing records, the playhead is there to audition the takes.
+- **Zoom** follows fermata's arrow keys (left and right zoom, up and down change the track height) and fermata's way of putting what it zooms
+  round in the middle of the screen (SADiE's). It zooms round the flag point when one is chosen. Scroll bars along the bottom show any part of
+  the recording.
+- **P** puts marks 1 and 2 round a selection, or round a whole take after its header is clicked (for Bounce out). In the Fixer, P with a take's
+  header clicked makes the whole take the part to fix.
+- **Coloured waveforms** (fermata's WaveColour), switched on and off.
+- **M** shows and hides the station's mixer.
+- Each station can be given a **name** (a person's name or nickname), so flags, notes and replies read "by NAME".
 - Remove: bars system, matching, import takes, pitch and curve, ReTouch, export for processing, search for bar, take sheet.
 
 ### Fixer window
 
 - Like the Primary take window, but delayed, with a timeline that fills as audio is finalised.
 - Has its own mixer, so the Fixer's changes affect only the Fixer's monitoring and playback.
-- Has ReTouch.
+- Has ReTouch. A drag on the timeline chooses every recorded track of the take for the ReTouch window; Alt + drag chooses only the tracks dragged
+  over (0.5.0).
 - Has "Follow Primary", on by default. Follow keeps the playhead at the buffer distance behind live. While Follow is ticked, the playhead can't be
   moved, so the user unticks it first.
 - Flags from Primary appear straight away at the point in the timeline where their audio will land. They show even before that audio has been
@@ -71,6 +85,13 @@ Keep unchanged: Projects menu, Audio settings, Preamps, Project Designer, Plug-i
 - Pinned by Primary, with a typed note and a timestamp.
 - Shown on both screens at the timestamp.
 - Replies from Fixer are shown on Primary's screen.
+
+## Notes
+
+- Asked for on 6 November 2026, replacing markers (which were fermata's plain numbered markers, and never reached the Fixer). The N key.
+- The Primary and the Fixer each have their own notes. Clicking one gives part of the screen to a text box, so anything can be written in it.
+- An export report of the recording lists all the notes at the places they were made, with who wrote each (0.5.0: with the flags, replies,
+  gaps and fix versions too).
 
 ## Recording and redundancy
 
@@ -101,6 +122,15 @@ Pre-take goes up to 5 minutes, written to disk, not held in memory.
   Plug-ins never sit in the recording path.
 - Each mixer's output is a stereo pair of ASIO outputs chosen by the user. Any pair can be chosen. Two mixers may share a pair, and their audio
   sums.
+- To build next (0.6.0, asked for on 6 November 2026): mixers that look better - VCAs, internal buses, an insert slot for a reverb on an internal
+  bus, a fader cap that looks like a real one, wider meters, and a master with a phase scope, a peak meter, an RMS meter and a LUFS meter
+  (momentary, short-term, and integrated since REC). Stereo strips keep a pan for each channel, labelled L and R.
+- **The reverb on the Primary's live monitoring runs outside the recording path**, in a small program of its own: the dry sound stays instant
+  (the recorder's routes) and the reverb comes back slightly late (aim: about two audio buffers). The user accepts that: it is an extra, and it
+  must never be in the recording path. (The user's answer, 6 November 2026.)
+- **The stations can send each other their mix** during a recording, without interrupting the audio stream and without clicks in the recording
+  or the monitoring: it copies the mixer settings (not the sound). The receiving station shows "Listening to NAME's mix" with Keep or Revert;
+  both mixes are kept, with a toggle button to flip between them. (The user's answer, 6 November 2026.)
 
 ## Bounce out
 
@@ -123,5 +153,7 @@ The same format as fermata. It opens in fermata as a take window, where edits an
 ## Still to test or decide
 
 - Buffer length, to be tested on real hardware.
+- Asked on 6 November 2026, to think through once the mixers are built: how two people could work the same program independently, perhaps with
+  only one of them on the mouse at a time - or better, a second mouse and keyboard that only work in the program.
 - Drive-failure and gap handling, to be confirmed.
 - Whether the same-PC setup works under load.

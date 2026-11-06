@@ -837,6 +837,8 @@ void RecorderService::putFlag (const juce::var& c, const juce::String& cmd)
             f.sample = c.hasProperty ("sample") ? juce::jmax ((juce::int64) 0, (juce::int64) c["sample"]) : juce::jmax ((juce::int64) 0, rec->position() - lat);
             f.pinnedAt = juce::Time::getCurrentTime();
             f.by = c["by"].toString().isNotEmpty() ? c["by"].toString() : juce::String ("Primary");
+            f.isNote = c["kind"].toString() == "note";                  // (0.5.0: a station's note - kept and handed on exactly as a flag)
+            f.station = c["station"].toString().isNotEmpty() ? c["station"].toString() : juce::String ("Primary");
         }
         if (c.hasProperty ("note")) f.note = c["note"].toString();
     }

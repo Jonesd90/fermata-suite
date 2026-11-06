@@ -1,4 +1,5 @@
 #include "FixerApp.h"
+#include "StationNotes.h"
 #include "FixerWindow.h"
 #include "../ui/ClosingLog.h"
 
@@ -110,7 +111,7 @@ void FixerApp::rebuildLayout()
     if (! hasProject()) { currentLayout.reset(); if (player) player->setLayout (nullptr); return; }
     auto* w = pieceWindow();
     if (w == nullptr) return;
-    auto L = std::make_shared<TakeLayout> (TakeLayout::build (project, *w, model));
+    auto L = std::make_shared<TakeLayout> (TakeLayout::build (project, *w, model, timeOfDay()));
     currentLayout = L;
     if (player) player->setLayout (L);
 }
@@ -239,9 +240,36 @@ void FixerApp::saveMix()
 void FixerApp::reply (const juce::String& flagId, const juce::String& text)
 {
     if (text.trim().isEmpty()) return;
-    auto c = obj(); put (c, "cmd", "reply"); put (c, "flag", flagId); put (c, "text", text.trim()); put (c, "by", "Fixer");
+    auto c = obj(); put (c, "cmd", "reply"); put (c, "flag", flagId); put (c, "text", text.trim()); put (c, "by", stationName());
     link.send (c);
     say ("Reply sent: " + text.trim());
+}
+
+// ---- notes (0.5.0): through the recorder, which keeps them with the session; the Primary's window puts them into the project
+juce::String FixerApp::pinNote (double seconds, juce::String& why)
+{
+    if (! model.sessionOn) { why = "A note from the Fixer is kept by the session: the Primary must start it first (Pre-take is enough)."; return {}; }
+    const auto L = layout();
+    const juce::int64 sample = L != nullptr ? L->sessionSampleAt (seconds) : -1;
+    if (sample < 0) { why = "A note from the Fixer goes on a take of the session that is running (the earlier ones are in the project, which the Fixer does not change)."; return {}; }
+    const auto id = juce::Uuid().toString();
+    auto c = notes::command ("flag", id); put (c, "by", stationName()); put (c, "station", "Fixer"); put (c, "sample", sample);
+    link.send (c);
+    sentNotes.insert (id);
+    say ("Note pinned");
+    return id;
+}
+void FixerApp::setNoteText (const juce::String& id, const juce::String& text)
+{
+    if (! model.sessionOn || (model.findFlag (id) == nullptr && sentNotes.count (id) == 0)) return;
+    auto c = notes::command ("flag-note", id); put (c, "note", text);
+    link.send (c);
+}
+void FixerApp::removeNote (const juce::String& id)
+{
+    if (! model.sessionOn || (model.findFlag (id) == nullptr && sentNotes.count (id) == 0)) return;
+    link.send (notes::command ("flag-remove", id));
+    say ("Note taken away");
 }
 
 void FixerApp::announceFix (const juce::var& fix)
@@ -256,8 +284,11 @@ void FixerApp::onEvent (const juce::var& e)
     if (ev == "flag")
     {
         auto f = FlagRec::fromVar (e["flag"]);
-        if (! f.removed && f.replies.empty()) say ("FLAG from the Primary" + (f.note.isNotEmpty() ? ": " + f.note : juce::String (" (the note is coming)")));
-        if (window != nullptr) window->flagArrived (f);
+        if (! f.isNote)                                                  // (0.5.0: a note is its station's own - the Primary's are not shown here)
+        {
+            if (! f.removed && f.replies.empty()) say ("FLAG from " + (f.by.isNotEmpty() ? f.by : juce::String ("the Primary")) + (f.note.isNotEmpty() ? ": " + f.note : juce::String (" (the note is coming)")));
+            if (window != nullptr) window->flagArrived (f);
+        }
     }
     else if (ev == "session" && (bool) e["ended"]) say ("The Primary ended the session");
     else if (ev == "refused") say ("The recorder refused \"" + e["cmd"].toString() + "\": " + e["error"].toString());

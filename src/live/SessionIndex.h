@@ -83,6 +83,10 @@ struct FlagRec
     juce::Time   pinnedAt;
     std::vector<ReplyRec> replies;
     bool         removed = false;    // taken back by the Primary (kept, so a station that missed it does not bring it back)
+    /** 0.5.0: a NOTE instead of a flag - a station's own jotting (the N key), its text in 'note', never replied to. Each station shows only its own
+        ('station': "Primary" or "Fixer", whatever name 'by' carries); the Primary's window puts both stations' into the project (Marker::liveNote). */
+    bool         isNote = false;
+    juce::String station;
 
     juce::var toVar() const
     {
@@ -90,6 +94,8 @@ struct FlagRec
         x->setProperty ("id", id); x->setProperty ("sample", sample); x->setProperty ("note", note); x->setProperty ("by", by);
         x->setProperty ("pinnedAt", pinnedAt.toMilliseconds());
         if (removed) x->setProperty ("removed", true);
+        if (isNote) x->setProperty ("kind", "note");
+        if (station.isNotEmpty()) x->setProperty ("station", station);
         juce::Array<juce::var> rs;
         for (auto& r : replies) { auto* y = new juce::DynamicObject(); y->setProperty ("text", r.text); y->setProperty ("by", r.by); y->setProperty ("at", r.at.toMilliseconds()); rs.add (juce::var (y)); }
         x->setProperty ("replies", rs);
@@ -100,6 +106,7 @@ struct FlagRec
         FlagRec f;
         f.id = v["id"].toString(); f.sample = juce::jmax ((juce::int64) 0, (juce::int64) v["sample"]); f.note = v["note"].toString(); f.by = v["by"].toString();
         f.pinnedAt = juce::Time ((juce::int64) v["pinnedAt"]); f.removed = (bool) v["removed"];
+        f.isNote = v["kind"].toString() == "note"; f.station = v["station"].toString();
         if (auto* rs = v["replies"].getArray())
             for (auto& r : *rs) f.replies.push_back ({ r["text"].toString(), r["by"].toString(), juce::Time ((juce::int64) r["at"]) });
         return f;

@@ -101,6 +101,10 @@ copies it like everything else, which is fine.
 - **A flag** is a take window marker (`Marker` in `src/core/Markers.h`) with `flag` set, the Primary's `note`, the time it was pinned
   (`pinnedAt`) and the Fixer's `replies` (text, who, when). Its `name` is `flagName (note, replies)` - "Flag: horn crack bar 34 | Fixer: fixed" - so
   fermata shows it as an ordinary marker. An ordinary marker is saved exactly as before (the new keys are only written for a flag).
+- **A note** (fermata:Live 0.5.0, still contract 3) is a take window marker with `liveNote` set: a station's own jotting, its text in `note`, who
+  wrote it (`by`, the name the station was given) and its station (`station`: "Primary" or "Fixer"), and `pinnedAt`. Its `name` is
+  `noteName (text, by)` - "Note (Sam): the cello's chair creaks" - so fermata shows it as an ordinary marker. A flag also keeps `by` and `station`
+  from 0.5.0. The keys are written only when set, so an older flag and an ordinary marker are saved exactly as before.
 - **A fix version** is an entry of the take window's `fixVersions` (`FixVersion` in `src/core/Takes.h`): the take, the span it replaces (the
   take's samples), one file per track holding the fixed span, what was done, the flag it answers, the version it retries, and its `state`
   (0 waiting for review, 1 approved, 2 not used). The recording itself is never changed. **fermata's part, still to be built:** a review that goes
@@ -136,6 +140,10 @@ copies it like everything else, which is fine.
     defaults), an Ext Bus's `"hpFirst"` (missing = -1). fermata:Live reads and writes them through the shared code and never looks at them: its own
     mixer only uses a project's first mixer's main Ext Bus, which is always stereo (a surround Ext Bus is never a main output). The shared engine
     runs a stereo project exactly as before.
+  - Still contract 3 (fermata:Live 0.5.0): notes on take window markers (`liveNote`, `by`, `station`; above). The project file gained keys, none
+    changed, written only when set. fermata keeps them when it saves (through `src/core/Project.cpp`) and shows a note as an ordinary marker.
+    fermata's WaveColour analysis of one block became `WaveColorCache::BlockAnalyser` (`src/ui/WaveColor.h`), unchanged in what it gives, so
+    fermata:Live colours its live waveforms the same way.
   - Still contract 3 (fermata 3.40.0): the post-fader slot. The project file gained keys, none changed: the project's `"postFaderSlots"` (true;
     missing = off) and a strip's or bus's `"postSlot"` (a list of one slot, as `"slots"`; missing = empty). Both are written only when used, so a
     project that does not use them is saved as before, and the `"slots"` list still holds the four slots before the fader (an older version reads a

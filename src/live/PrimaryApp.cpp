@@ -1,5 +1,7 @@
 #include "PrimaryApp.h"
 #include "TakeRegister.h"
+#include "StationNotes.h"
+#include "LiveReport.h"
 #include "../ui/WinOwner.h"
 #include "../ui/ClosingLog.h"
 #include "LiveRecorder.h"
@@ -182,7 +184,7 @@ void PrimaryApp::rebuildLayout()
     if (! hasProject()) { currentLayout.reset(); if (player) player->setLayout (nullptr); return; }
     auto* w = pieceWindow();
     if (w == nullptr) return;
-    auto L = std::make_shared<TakeLayout> (TakeLayout::build (project, *w, model));
+    auto L = std::make_shared<TakeLayout> (TakeLayout::build (project, *w, model, timeOfDay()));
     currentLayout = L;
     if (player) player->setLayout (L);
 }
@@ -331,14 +333,78 @@ void PrimaryApp::saveArming()
 }
 
 // ---- flags --------------------------------------------------------------------------------------------------------------------------------------
-juce::String PrimaryApp::pinFlag()
+juce::String PrimaryApp::pinFlag (juce::int64 sample)
 {
     if (! model.sessionOn) { addLog ("A flag needs the session running (it marks the recording)"); return {}; }
     const auto id = juce::Uuid().toString();
-    auto c = cmd ("flag"); put (c, "id", id); put (c, "by", "Primary");
+    auto c = cmd ("flag"); put (c, "id", id); put (c, "by", stationName()); put (c, "station", "Primary");
+    if (sample >= 0) put (c, "sample", sample);
     send (c);
-    addLog ("Flag pinned");
+    addLog (sample >= 0 ? "Flag pinned at the flag point" : "Flag pinned");
     return id;
+}
+
+// ---- notes (0.5.0) ------------------------------------------------------------------------------------------------------------------------------
+juce::String PrimaryApp::pinNote (double seconds, bool now, juce::String& why)
+{
+    const auto L = layout();
+    const auto id = juce::Uuid().toString();
+    if (model.sessionOn && model.windowName == pieceName())
+    {   // the session's (its takes, and on the time of day anywhere since it started): through the recorder, as a flag goes
+        const juce::int64 sample = now || L == nullptr ? -1 : L->sessionSampleAt (seconds);
+        if (now || sample >= 0)
+        {
+            auto c = notes::command ("flag", id); put (c, "by", stationName()); put (c, "station", "Primary");
+            if (sample >= 0) put (c, "sample", sample);
+            send (c);
+            sentNotes.insert (id);
+            addLog ("Note pinned");
+            return id;
+        }
+    }
+    // a take the project has (an earlier session's): straight into the project
+    auto* w = pieceWindow();
+    if (w == nullptr || L == nullptr || now) { why = "A note marks the recording: start the session, or click a take first."; return {}; }
+    const double ws = L->windowOfShown (seconds);
+    if (ws < 0.0) { why = "There is no take there: a note goes on a take."; return {}; }
+    Marker m; m.id = juce::Uuid (id); m.liveNote = true; m.seconds = ws; m.by = stationName(); m.station = "Primary"; m.pinnedAt = juce::Time::getCurrentTime();
+    m.name = noteName ({}, m.by);
+    w->markers.push_back (m);
+    markDirty();
+    addLog ("Note pinned (in the project)");
+    return id;
+}
+
+void PrimaryApp::setNoteText (const juce::String& id, const juce::String& text)
+{
+    const bool session = model.sessionOn && (model.findFlag (id) != nullptr || sentNotes.count (id) != 0);
+    if (session) { auto c = notes::command ("flag-note", id); put (c, "note", text); send (c); }
+    if (auto* w = pieceWindow())
+        if (auto* m = findMarker (w->markers, juce::Uuid (id)); m != nullptr && m->liveNote && ! session)
+        { m->note = text; m->name = noteName (text, m->by); markDirty(); }
+}
+
+void PrimaryApp::removeNote (const juce::String& id)
+{
+    if (model.sessionOn && (model.findFlag (id) != nullptr || sentNotes.count (id) != 0)) send (notes::command ("flag-remove", id));
+    if (auto* w = pieceWindow())
+        if (auto* m = findMarker (w->markers, juce::Uuid (id)); m != nullptr && m->liveNote) { removeMarker (w->markers, juce::Uuid (id)); markDirty(); }
+    addLog ("Note taken away");
+}
+
+bool PrimaryApp::writeReport (juce::File& written, juce::String& error)
+{
+    auto* w = pieceWindow();
+    const auto L = layout();
+    if (! hasProject() || w == nullptr || L == nullptr) { error = "No project, or no take window."; return false; }
+    report::Input in;
+    in.projectName = project.name; in.piece = w->name; in.version = version; in.layout = L; in.window = w;
+    in.notes = notes::collect (model, w, L.get(), {});
+    if (model.sessionOn && model.windowName == w->name) { in.sessionFlags = model.flags; in.sessionFixes = model.fixes; }
+    const auto folder = project.projectFolder().getChildFile ("Reports");
+    if (! folder.createDirectory()) { error = "Could not make the folder " + folder.getFullPathName(); return false; }
+    written = folder.getChildFile (sanitiseForFile (project.name + " - " + w->name + " - report " + juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H%M")) + ".pdf");
+    return report::write (in, written, error);
 }
 void PrimaryApp::setFlagNote (const juce::String& id, const juce::String& note)
 {
@@ -942,6 +1008,7 @@ void PrimaryApp::syncNotes (const juce::String& windowName, double sessionRate, 
     // each flag of a take that is in the project becomes (or stays) one of the take window's markers, at its place in the take
     for (auto& f : flags)
     {
+        if (f.isNote) continue;                                         // (0.5.0: the notes, below)
         const juce::Uuid id (f.id);
         const StationTake* take = nullptr;
         for (auto& t : takes) if (f.sample >= t.start && (t.end < 0 || f.sample < t.end)) take = &t;
@@ -954,12 +1021,32 @@ void PrimaryApp::syncNotes (const juce::String& windowName, double sessionRate, 
             continue;
         }
         Marker want;
-        want.id = id; want.flag = true; want.note = f.note; want.pinnedAt = f.pinnedAt;
+        want.id = id; want.flag = true; want.note = f.note; want.pinnedAt = f.pinnedAt; want.by = f.by; want.station = f.station;
         want.seconds = g->startSeconds + (double) (f.sample - take->start) / rate;
         for (auto& r : f.replies) want.replies.push_back ({ r.text, r.by, r.at });
         want.name = flagName (want.note, want.replies);
         if (m == nullptr) { w->markers.push_back (want); changed = true; }
-        else if (m->name != want.name || m->note != want.note || m->replies.size() != want.replies.size() || std::abs (m->seconds - want.seconds) > 1.0e-6)
+        else if (m->name != want.name || m->note != want.note || m->replies.size() != want.replies.size() || std::abs (m->seconds - want.seconds) > 1.0e-6 || m->by != want.by)
+        { *m = want; changed = true; }
+    }
+    // 0.5.0: both stations' notes, the same way: a marker of the take window once their take is in the project (fermata shows them as markers)
+    for (auto& f : flags)
+    {
+        if (! f.isNote) continue;
+        const juce::Uuid id (f.id);
+        const StationTake* take = nullptr;
+        for (auto& t : takes) if (f.sample >= t.start && (t.end < 0 || f.sample < t.end)) take = &t;
+        const TakeGroup* g = nullptr;
+        if (take != nullptr) for (auto& x : w->groups) if (x.number == take->number) g = &x;
+        auto* m = findMarker (w->markers, id);
+        if (f.removed) { if (m != nullptr) { removeMarker (w->markers, id); changed = true; } continue; }
+        if (g == nullptr) continue;
+        Marker want;
+        want.id = id; want.liveNote = true; want.note = f.note; want.pinnedAt = f.pinnedAt; want.by = f.by; want.station = f.station;
+        want.seconds = g->startSeconds + (double) (f.sample - take->start) / rate;
+        want.name = noteName (want.note, want.by);
+        if (m == nullptr) { w->markers.push_back (want); changed = true; }
+        else if (m->name != want.name || m->note != want.note || std::abs (m->seconds - want.seconds) > 1.0e-6 || m->by != want.by)
         { *m = want; changed = true; }
     }
     // the Fixer's fix versions: in the take window, by id (the take's id once it is in)

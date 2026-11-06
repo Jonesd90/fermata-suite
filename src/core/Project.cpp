@@ -25,9 +25,12 @@ var markersToVar (const std::vector<Marker>& list)
     {
         var o = new DynamicObject(); auto* d = o.getDynamicObject();
         d->setProperty ("id", m.id.toString()); d->setProperty ("name", m.name); d->setProperty ("t", m.seconds);
-        if (m.flag)                                                   // fermata:Live's flag (contract 3): only written for a flag, so other markers are as before
+        if (m.flag || m.liveNote)                                     // fermata:Live's flag (contract 3) or note (0.5.0): only written for those, so other markers are as before
         {
-            d->setProperty ("flag", true);
+            if (m.flag) d->setProperty ("flag", true);
+            if (m.liveNote) d->setProperty ("liveNote", true);
+            if (m.by.isNotEmpty()) d->setProperty ("by", m.by);
+            if (m.station.isNotEmpty()) d->setProperty ("station", m.station);
             if (m.note.isNotEmpty()) d->setProperty ("note", m.note);
             if (m.pinnedAt.toMilliseconds() != 0) d->setProperty ("pinnedAt", m.pinnedAt.toMilliseconds());
             if (! m.replies.empty())
@@ -54,8 +57,10 @@ void markersFromVar (const var& v, std::vector<Marker>& list)
         {
             Marker m; m.id = juce::Uuid (o["id"].toString()); m.name = o["name"].toString(); m.seconds = juce::jmax (0.0, (double) o["t"]);
             m.flag = (bool) o.getProperty ("flag", false);
-            if (m.flag)
+            m.liveNote = (bool) o.getProperty ("liveNote", false);
+            if (m.flag || m.liveNote)
             {
+                m.by = o["by"].toString(); m.station = o["station"].toString();
                 m.note = o["note"].toString();
                 m.pinnedAt = juce::Time ((juce::int64) o["pinnedAt"]);
                 if (auto* rs = o["replies"].getArray())
@@ -2407,8 +2412,9 @@ struct UndoHasher
 /** fermata:Live's flag fields of a marker (contract 3): nothing for an ordinary marker, so the hashes of other markers stay as they were. */
 void hashFlag (UndoHasher& h, const Marker& m) noexcept
 {
-    if (! m.flag) return;
+    if (! m.flag && ! m.liveNote) return;
     h.add (true); h.add (m.note); h.add (m.pinnedAt);
+    if (m.liveNote || m.by.isNotEmpty() || m.station.isNotEmpty()) { h.add (m.liveNote); h.add (m.by); h.add (m.station); }   // (0.5.0: only when set, so older flags hash as before)
     h.count (m.replies.size()); for (auto& r : m.replies) { h.add (r.text); h.add (r.by); h.add (r.at); }
 }
 }

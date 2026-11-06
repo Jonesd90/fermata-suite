@@ -9,6 +9,7 @@
 #include "../src/live/PeakTap.h"
 #include "../src/live/StreamServer.h"
 #include "../src/live/StreamClient.h"
+#include "../src/live/TakeLayout.h"
 #include <cstdio>
 #include <map>
 #include <random>
@@ -994,6 +995,73 @@ int main()
         again->close();
         SessionIndex idx; CHECK (idx.load (again->primaryFolder().getChildFile (kIndexFileName)) && idx.flags.size() == 1 && idx.fixes.size() == 1);
         CHECK (idx.takeAt (sec (1)) == nullptr);
+    }
+
+    SECTION ("0.5.0 notes: kept in every drive's index as flags are, with their kind and station; a flag stays a flag");
+    {
+        auto proj = tmp.getChildFile ("notes project"); proj.createDirectory();
+        auto setup = baseSetup (proj, "Notes");
+        auto rec = std::make_shared<LiveRecorder> (disk);
+        CHECK (rec->prepare (setup).isEmpty());
+        feed (*rec, 1.0);
+        FlagRec n; n.id = juce::Uuid().toString(); n.sample = sec (0.25); n.note = "chair creak\nfrom bar 60"; n.by = "Sam"; n.station = "Fixer"; n.isNote = true;
+        n.pinnedAt = juce::Time::getCurrentTime();
+        FlagRec f; f.id = juce::Uuid().toString(); f.sample = sec (0.5); f.note = "horn"; f.by = "David"; f.station = "Primary";
+        rec->putFlag (n); rec->putFlag (f);
+        feed (*rec, 3.5);
+        CHECK (waitWritten (*rec, sec (4.0)));
+        juce::Thread::sleep (300);
+        rec->close();
+        SessionIndex idx; CHECK (idx.load (rec->primaryFolder().getChildFile (kIndexFileName)));
+        const FlagRec* a = nullptr; const FlagRec* b = nullptr;
+        for (auto& x : idx.flags) { if (x.id == n.id) a = &x; if (x.id == f.id) b = &x; }
+        CHECK (a != nullptr && a->isNote && a->station == "Fixer" && a->by == "Sam" && a->note == n.note && a->sample == sec (0.25));
+        CHECK (b != nullptr && ! b->isNote && b->station == "Primary" && b->by == "David");
+        FlagRec plain; plain.id = "x"; plain.note = "y";
+        const auto pv = plain.toVar();
+        CHECK (! pv.hasProperty ("kind") && ! pv.hasProperty ("station"));        // (a flag from before 0.5.0 is written as it was)
+        const auto back = FlagRec::fromVar (pv);
+        CHECK (! back.isNote && back.station.isEmpty());
+    }
+
+    SECTION ("0.5.0 the time of day: every take at its clock time, the gaps between them, past midnight; a pre-take that reached back cuts the take before");
+    {
+        Project p;
+        auto& w = p.addTakeWindow ("Concert");
+        auto& tr = p.addTrack ("Pair", TrackFormat::Stereo, 0);
+        const juce::int64 day = juce::Time (2026, 10, 6, 0, 0, 0, 0, true).toMilliseconds();     // 6 November 2026, local midnight
+        auto take = [&] (int number, double windowStart, double seconds, juce::int64 clockMs)
+        {
+            TakeGroup g; g.id = juce::Uuid(); g.number = number; g.startSeconds = windowStart; g.sampleRate = kRate; g.lengthSamples = (juce::int64) (seconds * kRate);
+            g.recordedAt = juce::Time (clockMs);
+            TakeFile f; f.trackId = tr.id; f.trackName = tr.name; f.file = tmp.getChildFile ("no such file " + juce::String (number) + ".wav"); f.numChannels = 2;
+            g.files.push_back (f);
+            w.groups.push_back (g);
+        };
+        take (1, 0.0, 600.0, day + (juce::int64) (19.5 * 3600000.0));                 // 19:30:00, ten minutes
+        take (2, 602.0, 1800.0, day + (juce::int64) (19.6 * 3600000.0));              // 19:36:00 - its pre-take reached back over take 1 (which ends 19:40)
+        take (3, 2404.0, 3600.0, day + (juce::int64) (23.5 * 3600000.0));             // 23:30:00, an hour: on past midnight
+        StationModel m;
+        const auto fermataL = TakeLayout::build (p, w, m, false);
+        CHECK (! fermataL.timeOfDay && fermataL.takes.size() == 3 && std::abs (fermataL.takes[1].start - 602.0) < 1.0e-9);
+        CHECK (fermataL.shownOfWindow (700.0) == 700.0 && fermataL.windowOfShown (700.0) == 700.0);
+        const auto L = TakeLayout::build (p, w, m, true);
+        CHECK (L.timeOfDay && L.originMs == day);
+        CHECK (L.takes.size() == 3 && std::abs (L.takes[0].start - 19.5 * 3600.0) < 1.0e-6 && std::abs (L.takes[1].start - 19.6 * 3600.0) < 1.0e-6
+               && std::abs (L.takes[2].start - 23.5 * 3600.0) < 1.0e-6);
+        CHECK (std::abs (L.takes[0].cutAt - L.takes[1].start) < 1.0e-6 && L.takes[1].cutAt < 0.0);       // take 1 shown and played up to where take 2 starts
+        CHECK (L.takeAt (19.65 * 3600.0) != nullptr && L.takeAt (19.65 * 3600.0)->number == 2);         // (the later take where they overlap)
+        CHECK (L.takeAt (21.0 * 3600.0) == nullptr);                                                       // (between takes: nothing)
+        CHECK (std::abs (L.takes[2].end() - 24.5 * 3600.0) < 1.0e-6);                                     // runs on past midnight
+        CHECK (juce::Time (L.clockMsAt (24.25 * 3600.0)).formatted ("%d/%m %H:%M") == "07/11 00:15");     // the next day, a quarter past midnight
+        CHECK (L.timeText (19.5 * 3600.0 + 61.25) == "19:31:01.250");
+        // what the project keeps (fermata's timeline) and the clock, both ways
+        CHECK (std::abs (L.shownOfWindow (2404.0 + 100.0) - (23.5 * 3600.0 + 100.0)) < 1.0e-6);
+        CHECK (std::abs (L.windowOfShown (23.5 * 3600.0 + 100.0) - 2504.0) < 1.0e-6);
+        CHECK (L.windowOfShown (21.0 * 3600.0) < 0.0);                                                    // (nothing to pin it to between takes)
+        CHECK (std::abs (L.shownOfWindow (601.0) - (L.takes[0].start + 600.0)) < 1.0e-6);                  // (fermata's gap after take 1: just after it)
+        // the player plays take 1 only up to take 2's start, so the shared stretch is not heard twice
+        CHECK (L.takes[0].shownEnd() < L.takes[0].end());
     }
 
     DriveWriter::finishAbandonedForTests();

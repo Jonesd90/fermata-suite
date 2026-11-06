@@ -92,9 +92,28 @@ public:
     bool armingLocked() const                                   { return model.sessionOn; }
 
     // ---- flags (the Primary's: Enter pins one where the music is now, and opens its note)
-    juce::String pinFlag();                                     // returns the new flag's id ("" when there is no session)
+    /** Returns the new flag's id ("" when there is no session). 'sample': where on the session's timeline (0.5.0: the flag point, or the playhead
+        while playing back); < 0 = now (the moment the Primary heard). */
+    juce::String pinFlag (juce::int64 sample = -1);
     void setFlagNote (const juce::String& id, const juce::String& note);
     void removeFlag (const juce::String& id);
+
+    // ---- 0.5.0: notes (N) - the Primary's own; see StationNotes.h
+    /** Pins a note at 'seconds' on the timeline shown ('now': where the music is now, in the session). Returns its id, or "" and why not. */
+    juce::String pinNote (double seconds, bool now, juce::String& whyNot);
+    void setNoteText (const juce::String& id, const juce::String& text);
+    void removeNote (const juce::String& id);
+
+    // ---- 0.5.0: the station's name ("by David" on its flags and notes), the time of day, the coloured waveforms
+    juce::String stationName() const                            { auto n = settings->getValue ("stationName").trim(); return n.isNotEmpty() ? n : juce::String ("Primary"); }
+    void setStationName (const juce::String& n)                 { settings->setValue ("stationName", n.trim().substring (0, 40)); settings->saveIfNeeded(); sendChangeMessage(); }
+    bool timeOfDay() const                                      { return settings->getBoolValue ("timeOfDay", false); }
+    void setTimeOfDay (bool on)                                 { settings->setValue ("timeOfDay", on); rebuildLayout(); sendChangeMessage(); }
+    bool colourWaves() const                                    { return settings->getBoolValue ("colourWaves", false); }
+    void setColourWaves (bool on)                               { settings->setValue ("colourWaves", on); sendChangeMessage(); }
+    /** 0.5.0: the recording's report (a PDF in the project's Reports folder): every take of the piece with all the notes and flags at their places,
+        who wrote them, the replies and the fix versions. False and why when it could not be written. */
+    bool writeReport (juce::File& written, juce::String& error);
 
     // ---- monitoring: the processing mixer is what the Primary hears live, and what Bounce out uses
     MixerState* monitorMixer() const                            { return project.mixers.empty() ? nullptr : project.mixers.front().get(); }
@@ -155,6 +174,7 @@ private:
     void send (const juce::var& c)                              { link.send (c); }
 
     std::shared_ptr<const TakeLayout> currentLayout;
+    std::set<juce::String> sentNotes;                           // (0.5.0: notes sent to the recorder - their text goes there even before its answer is back)
     std::set<juce::String> disarmed;
     std::set<int> registeredTakes;
     juce::var lastOpen, lastSession;

@@ -111,6 +111,39 @@ public:
         return juce::Colour::fromHSV ((float) (hue / 360.0), sat, 0.95f, 1.0f);
     }
 
+    /** The block the colours are worked out in (4096 samples), and the analysis of one block of mono sound: its colour (see colourOf; grey for silence,
+        black for a thump below 100 Hz) and its level (rms). fermata:Live 0.5.0 colours its live waveforms with it, so both programs colour alike. */
+    static constexpr int kBlock = 4096;
+    class BlockAnalyser
+    {
+    public:
+        BlockAnalyser() : fft (kBlock), win (dsp::hann (kBlock)), buf ((size_t) kBlock) {}
+        juce::Colour colour (const double* mono, double sr, float& rms)
+        {
+            const int N = kBlock;
+            const double binHz = sr / (double) N;
+            double sumSq = 0.0;
+            for (int i = 0; i < N; ++i) { const double v = mono[i]; sumSq += v * v; buf[(size_t) i] = v * win[(size_t) i]; }
+            rms = (float) std::sqrt (sumSq / (double) N);
+            fft.forward (buf);
+            double total = 0.0, low = 0.0, wsum = 0.0, fsum = 0.0, logSum = 0.0; int nb = 0;
+            for (int k = 1; k <= N / 2; ++k)
+            {
+                const double p = std::norm (buf[(size_t) k]), hz = (double) k * binHz;
+                total += p; if (hz < 100.0) low += p;
+                if (hz >= 100.0 && hz <= juce::jmin (12000.0, 0.45 * sr)) { wsum += p; fsum += p * hz; logSum += std::log (p + 1.0e-18); ++nb; }
+            }
+            if (rms < 1.0e-4f || total <= 0.0) return juce::Colour (0xff808080);                                // silence: grey
+            if (low > 0.5 * total) return juce::Colours::black;                                                   // a thump below 100 Hz
+            const double centroid = wsum > 0.0 ? fsum / wsum : 1000.0;
+            const double flat = nb > 0 && wsum > 0.0 ? std::exp (logSum / (double) nb) / (wsum / (double) nb) : 0.56;
+            return colourOf (centroid, 1.0 - juce::jlimit (0.0, 1.0, flat / 0.56));                              // noise has a flatness of about 0.56, a pure note about 0
+        }
+    private:
+        const dsp::FFT fft; const std::vector<double> win;
+        std::vector<std::complex<double>> buf;
+    };
+
 private:
     static std::shared_ptr<WaveColorData> loadSaved (const juce::File& dir, const juce::File& audio)
     {
@@ -146,12 +179,10 @@ private:
         auto d = std::make_shared<WaveColorData>();
         std::unique_ptr<juce::AudioFormatReader> r (formats.createReaderFor (f));
         if (r == nullptr || r->lengthInSamples < 1 || r->sampleRate <= 0.0) return d;
-        const int N = 4096; const double sr = r->sampleRate;
+        const int N = kBlock; const double sr = r->sampleRate;
         d->blockSeconds = (double) N / sr;
-        const dsp::FFT fft (N); const auto win = dsp::hann (N);
-        std::vector<std::complex<double>> buf ((size_t) N);
-        std::vector<double> P ((size_t) N / 2 + 1);
-        const double binHz = sr / (double) N;
+        BlockAnalyser an;
+        std::vector<double> mono ((size_t) N);
         const int nCh = (int) juce::jmin ((juce::uint32) 2, r->numChannels);
         juce::AudioBuffer<float> chunk (nCh, N * 32);
         for (juce::int64 pos = 0; pos < r->lengthInSamples; pos += (juce::int64) N * 32)
@@ -162,31 +193,14 @@ private:
             r->read (&chunk, 0, got, pos, true, nCh > 1);
             for (int b = 0; b * N < got; ++b)
             {
-                double sumSq = 0.0;
                 for (int i = 0; i < N; ++i)
                 {
                     const int s = b * N + i; double v = 0.0;
                     if (s < got) { for (int c = 0; c < nCh; ++c) v += chunk.getSample (c, s); v /= (double) nCh; }
-                    sumSq += v * v; buf[(size_t) i] = v * win[(size_t) i];
+                    mono[(size_t) i] = v;
                 }
-                const float rms = (float) std::sqrt (sumSq / (double) N);
-                fft.forward (buf);
-                double total = 0.0, low = 0.0, wsum = 0.0, fsum = 0.0, logSum = 0.0; int nb = 0;
-                for (int k = 1; k <= N / 2; ++k)
-                {
-                    const double p = std::norm (buf[(size_t) k]), hz = (double) k * binHz;
-                    total += p; if (hz < 100.0) low += p;
-                    if (hz >= 100.0 && hz <= juce::jmin (12000.0, 0.45 * sr)) { wsum += p; fsum += p * hz; logSum += std::log (p + 1.0e-18); ++nb; }
-                }
-                juce::Colour c;
-                if (rms < 1.0e-4f || total <= 0.0) c = juce::Colour (0xff808080);                              // silence: grey
-                else if (low > 0.5 * total) c = juce::Colours::black;                                             // a thump below 100 Hz
-                else
-                {
-                    const double centroid = wsum > 0.0 ? fsum / wsum : 1000.0;
-                    const double flat = nb > 0 && wsum > 0.0 ? std::exp (logSum / (double) nb) / (wsum / (double) nb) : 0.56;
-                    c = colourOf (centroid, 1.0 - juce::jlimit (0.0, 1.0, flat / 0.56));                         // noise has a flatness of about 0.56, a pure note about 0
-                }
+                float rms = 0.0f;
+                const auto c = an.colour (mono.data(), sr, rms);
                 d->argb.push_back (c.getARGB()); d->level.push_back (rms);
             }
         }
