@@ -288,7 +288,7 @@ void AudioEngine::prepare (double sr, int block)
                                         st->lowCut.prepare (sampleRate, maxBlock, tr != nullptr ? tr->channelCount() : 2); }
         for (auto& f : m->busPool)    { for (auto& slot : f->slots) slot.reprepare (sampleRate, maxBlock, 2);
                                         for (auto& sd : f->sends.pool) for (auto& slot : sd->slots) slot.reprepare (sampleRate, maxBlock, 2);
-                                        f->lowCut.prepare (sampleRate, maxBlock, 2); }
+                                        f->lowCut.prepare (sampleRate, maxBlock, surround::channels (project.busFormat (f->busId))); }      // (3.39.0: a surround bus: a filter per channel)
     }
     rebuildPlan();
 }
@@ -316,6 +316,13 @@ std::unique_ptr<AudioEngine::Plan> AudioEngine::buildPlan() const
         {
             auto nd = std::make_unique<Node>();
             nd->kind = k; nd->strip = st; nd->bus = bs; nd->trackIndex = ti;
+            if (bs != nullptr)                                       // 3.39.0: a bus has its format's channels (a track: its stereo fold)
+            {
+                nd->format = project.busFormat (bs->busId);
+                nd->width = surround::channels (nd->format);
+                nd->speakerCh = surround::speakerChannels (nd->format);
+                if (surround::isSurround (nd->format)) { nd->foldLoRo.assign ((size_t) nd->width * 2, 0.0f); surround::foldMatrix (nd->format, BusFormat::Stereo, nd->foldLoRo.data()); }
+            }
             nodes.push_back (std::move (nd));
         };
         for (size_t i = 0; i < project.tracks.size(); ++i) addNode (NodeKind::Track, m->stripFor (project.tracks[i].id), nullptr, (int) i);
@@ -346,7 +353,7 @@ std::unique_ptr<AudioEngine::Plan> AudioEngine::buildPlan() const
         // ticked as a main output of this mixer (none ticked: nowhere). A main Ext Bus also plays whatever is sent to it.
         {
             std::vector<int> mains;
-            for (size_t i = 0; i < nodes.size(); ++i) if (nodes[i]->kind == NodeKind::ExtBus && nodes[i]->bus->isMain.get()) mains.push_back ((int) i);
+            for (size_t i = 0; i < nodes.size(); ++i) if (nodes[i]->kind == NodeKind::ExtBus && nodes[i]->bus->isMain.get() && ! surround::isSurround (nodes[i]->format)) mains.push_back ((int) i);     // (3.39.0: a surround Ext Bus is never a main output: Main and the talkback stay stereo)
             if (! mains.empty()) nodes[(size_t) mains.front()]->isMainOut = true;   // the first one is "the" main output (talkback playback, a cue mixer that follows)
             for (size_t i = 0; i < nodes.size(); ++i)
             {
@@ -392,14 +399,39 @@ std::unique_ptr<AudioEngine::Plan> AudioEngine::buildPlan() const
         for (auto& e : edges)
             if (pos[(size_t) e.dst] > pos[(size_t) e.src])
             {
-                nodes[(size_t) e.src]->sends.push_back ({ e.st, nodes[(size_t) e.dst].get() });
+                SendPlan sp; sp.st = e.st; sp.dest = nodes[(size_t) e.dst].get();
+                // 3.39.0: how the source's channels reach the destination's (see SendPlan)
+                auto& src = *nodes[(size_t) e.src]; auto& dst = *sp.dest;
+                const int trackCh = src.kind == NodeKind::Track ? p->tracks[(size_t) src.trackIndex].numCh : 0;
+                sp.dstCh = dst.width; sp.dstFormat = dst.format;
+                if (! surround::isSurround (dst.format))
+                {
+                    if (surround::isSurround (src.format)) { sp.kind = SendPlan::Kind::Fold; sp.srcCh = src.width; }     // a surround bus into a stereo channel: Lo/Ro
+                    else                                   { sp.kind = SendPlan::Kind::Direct; sp.srcCh = 2; }
+                }
+                else if (src.kind == NodeKind::Track)
+                {
+                    if (trackCh <= 2) { sp.kind = SendPlan::Kind::Pan; sp.srcCh = juce::jmax (1, trackCh); sp.stripPans = true; }
+                    else              { sp.kind = SendPlan::Kind::Across; sp.srcCh = trackCh; }
+                }
+                else if (! surround::isSurround (src.format)) { sp.kind = SendPlan::Kind::Pan; sp.srcCh = 2; sp.stripPans = false; }
+                else if (src.format == dst.format)            { sp.kind = SendPlan::Kind::Direct; sp.srcCh = src.width; }
+                else                                          { sp.kind = SendPlan::Kind::Fold; sp.srcCh = src.width; }
+                if (sp.kind == SendPlan::Kind::Fold) { sp.matrix.assign ((size_t) sp.srcCh * (size_t) sp.dstCh, 0.0f); surround::foldMatrix (src.format, dst.format, sp.matrix.data()); }
+                nodes[(size_t) e.src]->sends.push_back (std::move (sp));
                 nodes[(size_t) e.dst]->receives = true;
             }
         for (int idx : ordered)
         {
             auto& nd = nodes[(size_t) idx];
-            if (nd->receives) nd->incoming.setSize (2, maxBlock);
+            if (nd->receives) nd->incoming.setSize (nd->width, maxBlock);
             mp->order.push_back (std::move (nd));
+        }
+        for (auto& nd : mp->order)                             // 3.39.0: the mixer that holds the Dolby Atmos Composer always runs (see mixerHasOutput)
+        {
+            const InsertSlot* sl = nd->kind == NodeKind::Track ? nd->strip->slots : nd->bus->slots;
+            for (int i = 0; i < kNumSlots && ! mp->keepRunning; ++i)
+                if (const auto* pr = sl[i].getProcessorUnsafe(); pr != nullptr && Project::atmosLinkOf (pr->getDescription()) == Project::AtmosLink::Composer) mp->keepRunning = true;
         }
         if (! offlineMixerId.isNull())                     // (every mixer gets its taps: a bounce can use a different mixer for each piece)
         {
@@ -425,9 +457,9 @@ std::unique_ptr<AudioEngine::Plan> AudioEngine::buildPlan() const
                 // for the rate the device runs at before it goes into the plan (an 80 Hz low cut cut at 160 Hz at 96 kHz until the device restarted)
                 auto* lc = nd->kind == NodeKind::Track ? &nd->strip->lowCut : nd->kind == NodeKind::IntBus ? &nd->bus->lowCut : nullptr;
                 if (lc == nullptr) continue;
-                const int numCh = nd->kind == NodeKind::Track ? p->tracks[(size_t) nd->trackIndex].numCh : 2;
+                const int numCh = nd->kind == NodeKind::Track ? p->tracks[(size_t) nd->trackIndex].numCh : nd->width;
                 if (sampleRate > 0.0 && lc->preparedRate() != sampleRate) lc->prepare (sampleRate, maxBlock, numCh);
-                if (nd->kind == NodeKind::Track) lc->ensureChannels (numCh);            // (a surround track: a low cut per channel)
+                lc->ensureChannels (numCh);                                             // (a surround track or bus: a low cut per channel)
             }
             for (auto& nd : mp->order)                                       // nodes come after all the nodes that feed them
             {
@@ -449,7 +481,7 @@ std::unique_ptr<AudioEngine::Plan> AudioEngine::buildPlan() const
                     const int align = nd->kind == NodeKind::Track ? juce::jmax (0, p->tracks[(size_t) nd->trackIndex].alignSamples) : 0;
                     InsertSlot* sl = nd->kind == NodeKind::Track ? nd->strip->slots : nd->bus->slots;
                     int at = align + nd->inLat + (nd->kind == NodeKind::Track ? nd->strip->lowCut.latencySamples() : nd->kind == NodeKind::IntBus ? nd->bus->lowCut.latencySamples() : 0);   // (the low cut sits before the inserts)
-                    for (int i = 0; i < kNumSlots; ++i) { sl[i].autoLat.store (at, std::memory_order_relaxed); at += sl[i].latencySamples(); }
+                    for (int i = 0; i < kNumSlots; ++i) { sl[i].autoLat.store (at, std::memory_order_relaxed); sl[i].posLat.store (at - align, std::memory_order_relaxed); at += sl[i].latencySamples(); }
                     auto& latIn  = nd->kind == NodeKind::Track ? nd->strip->autoLatIn  : nd->bus->autoLatIn;
                     auto& latOut = nd->kind == NodeKind::Track ? nd->strip->autoLatOut : nd->bus->autoLatOut;
                     latIn.store (align + nd->inLat, std::memory_order_relaxed); latOut.store (align + nd->outLat, std::memory_order_relaxed);
@@ -457,43 +489,48 @@ std::unique_ptr<AudioEngine::Plan> AudioEngine::buildPlan() const
                         for (auto& s : list->pool)                   // (a send not in the plan - off, and not automated - as if nothing held it back; turning it on rebuilds the plan)
                         {
                             int a = align + nd->outLat;
-                            for (auto& ss : s->slots) { ss.autoLat.store (a, std::memory_order_relaxed); a += ss.latencySamples(); }
+                            for (auto& ss : s->slots) { ss.autoLat.store (a, std::memory_order_relaxed); ss.posLat.store (a - align, std::memory_order_relaxed); a += ss.latencySamples(); }
                             s->autoLat.store (a, std::memory_order_relaxed);
                         }
                     for (auto& sp : nd->sends) sp.st->autoLat.store (align + sp.dest->inLat, std::memory_order_relaxed);     // its level is applied after its inserts AND its delay line
+                    {   // 3.39.0: the output's own inserts (never automated, but their plug-ins are told their play position too)
+                        auto& os = nd->kind == NodeKind::Track ? nd->strip->outSend : nd->bus->outSend;
+                        int a = align + nd->outLat;
+                        for (auto& ss : os.slots) { ss.autoLat.store (a, std::memory_order_relaxed); ss.posLat.store (a - align, std::memory_order_relaxed); a += ss.latencySamples(); }
+                    }
                     const juce::uint32 vm = nd->kind == NodeKind::Track ? nd->strip->vcaMask.load (std::memory_order_relaxed) : nd->kind == NodeKind::IntBus ? nd->bus->vcaMask.load (std::memory_order_relaxed) : 0u;
                     for (int v = 0; v < kMaxVcas; ++v) if (vm & (1u << v)) vcaLat[v] = juce::jmax (vcaLat[v], align + nd->outLat);
                 }
                 for (auto& sp : nd->sends)
-                    sp.delay.init (sp.dest->inLat - (nd->outLat + chainLat (sp.st->slots, kSendSlots)), 2);
+                    sp.delay.init (sp.dest->inLat - (nd->outLat + chainLat (sp.st->slots, kSendSlots)), sp.dstCh);     // (3.39.0: after the panning / fold: the destination's channels)
                 if (nd->kind == NodeKind::Track && nd->inLat > 0)
                     nd->srcDelay.init (nd->inLat, juce::jlimit (1, (int) kMaxTrackChannels, p->tracks[(size_t) nd->trackIndex].numCh));
                 if (nd->kind == NodeKind::Track && p->tracks[(size_t) nd->trackIndex].alignSamples > 0)     // spot-mic alignment: on purpose, so NOT compensated
                     nd->alignDelay.init (p->tracks[(size_t) nd->trackIndex].alignSamples, juce::jlimit (1, (int) kMaxTrackChannels, p->tracks[(size_t) nd->trackIndex].numCh));
                 if (nd->kind == NodeKind::ExtBus) longest = juce::jmax (longest, nd->outLat);
             }
-            for (auto& nd : mp->order) if (nd->kind == NodeKind::ExtBus) nd->outDelay.init (longest - nd->outLat, 2);
+            for (auto& nd : mp->order) if (nd->kind == NodeKind::ExtBus) nd->outDelay.init (longest - nd->outLat, nd->width);
             if (mp->mixer != nullptr) for (int v = 0; v < kMaxVcas; ++v) mp->mixer->vcas[v].autoLat.store (vcaLat[v], std::memory_order_relaxed);
             mp->latency = longest;
             int tapLongest = 0;
             for (auto& nd : mp->order) if (nd->tapIdx >= 0 || nd->tapPreIdx >= 0) tapLongest = juce::jmax (tapLongest, nd->outLat);
             for (auto& nd : mp->order)
             {
-                if (nd->tapIdx >= 0)    nd->tapDelay.init (tapLongest - nd->outLat, 2);
-                if (nd->tapPreIdx >= 0) nd->tapDelayPre.init (tapLongest - nd->outLat, 2);
+                if (nd->tapIdx >= 0)    nd->tapDelay.init (tapLongest - nd->outLat, nd->width);
+                if (nd->tapPreIdx >= 0) nd->tapDelayPre.init (tapLongest - nd->outLat, nd->width);
             }
             mp->tapLatency = tapLongest;
         }
         mp->chanBuf.setSize (kMaxTrackChannels, maxBlock);
-        mp->pre.setSize (2, maxBlock); mp->post.setSize (2, maxBlock); mp->preSend.setSize (2, maxBlock);
-        mp->sendTmp.setSize (2, maxBlock);
+        mp->pre.setSize (kMaxBusChannels, maxBlock); mp->post.setSize (kMaxBusChannels, maxBlock); mp->preSend.setSize (kMaxBusChannels, maxBlock);     // (3.39.0: as wide as the widest bus)
+        mp->sendTmp.setSize (kMaxBusChannels, maxBlock);
         {   // for running side by side with the other mixers (see process)
             const int outs = juce::jmax (8, deviceOutputs);
             mp->outScratch.setSize (outs, maxBlock);
             mp->outPtrs.assign ((size_t) outs, nullptr);
-            int ext = 0;
-            for (auto& nd : mp->order) if (nd->kind == NodeKind::ExtBus) ++ext;
-            mp->touched.assign ((size_t) (2 * ext + 2), -1);
+            int extCh = 0;
+            for (auto& nd : mp->order) if (nd->kind == NodeKind::ExtBus) extCh += nd->width;
+            mp->touched.assign ((size_t) (extCh + 2), -1);
         }
         p->mixers.push_back (std::move (mp));
     }
@@ -710,8 +747,10 @@ void AudioEngine::renderOffline (const std::vector<juce::AudioBuffer<float>>& tr
 /** An Edit mixer runs only while its own Edit plays; the processing mixer (isFront) rests while an Edit that has a mixer of its own plays. */
 bool AudioEngine::mixerHasOutput (const MixerPlan& mp) noexcept
 {
+    if (mp.keepRunning) return true;                                  // (3.39.0: the Dolby Atmos Composer's mixer: the Composer may be monitoring on its own)
     for (auto& nd : mp.order)
-        if (nd->kind == NodeKind::ExtBus && nd->bus->outFirst.load (std::memory_order_relaxed) >= 0) return true;
+        if (nd->kind == NodeKind::ExtBus && (nd->bus->outFirst.load (std::memory_order_relaxed) >= 0
+                                             || (surround::isMonitorFormat (nd->format) && nd->bus->hpFirst.load (std::memory_order_relaxed) >= 0))) return true;
     return false;
 }
 
@@ -733,7 +772,9 @@ void AudioEngine::runMixerJob (void* engine, int index) noexcept
         if (nd->kind == NodeKind::ExtBus && ! job.silenceOwnOutput)
         {
             const int f = nd->bus->outFirst.load (std::memory_order_relaxed);
-            if (f >= 0) { addCh (f); addCh (f + 1); }
+            if (f >= 0) for (int c = 0; c < nd->speakerCh; ++c) addCh (f + c);                     // (3.39.0: a surround Ext Bus: one output per speaker)
+            if (surround::isMonitorFormat (nd->format))
+                if (const int h = nd->bus->hpFirst.load (std::memory_order_relaxed); h >= 0) { addCh (h); addCh (h + 1); }
         }
     if (job.alsoToFirst >= 0) { addCh (job.alsoToFirst); addCh (job.alsoToFirst + 1); }
     for (int k = 0; k < mp.numTouched; ++k) juce::FloatVectorOperations::clear (mp.outScratch.getWritePointer (mp.touched[(size_t) k]), b.n);
@@ -769,7 +810,13 @@ void AudioEngine::carryOver (Plan& from, Plan& to) noexcept
             takeDelay (tn.outDelay, fn->outDelay);
             for (auto& sp : tn.sends)
                 for (auto& fsp : fn->sends)
-                    if (fsp.st == sp.st) { takeDelay (sp.delay, fsp.delay); break; }
+                    if (fsp.st == sp.st)
+                    {
+                        takeDelay (sp.delay, fsp.delay);
+                        if (sp.kind == SendPlan::Kind::Pan && fsp.kind == sp.kind && fsp.srcCh == sp.srcCh && fsp.dstCh == sp.dstCh && fsp.hasLast)     // (3.39.0: the panner's last gains go on being crossfaded from)
+                        { std::copy (fsp.lastM, fsp.lastM + 2 * kMaxBusChannels, sp.lastM); sp.hasLast = true; }
+                        break;
+                    }
         }
     }
 }
@@ -1044,7 +1091,7 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
             if (! mp->mixer->monoCheck.load (std::memory_order_relaxed) || ! mixerIsLive (*mp->mixer, mp.get() == mc->mixers.front().get(), ps, editMixerPlays)) continue;
             for (auto& nd : mp->order)
             {
-                if (nd->kind != NodeKind::ExtBus) continue;
+                if (nd->kind != NodeKind::ExtBus || nd->width != 2) continue;                       // (3.39.0: a surround bus has no stereo pair to check)
                 const int first = nd->bus->outFirst.load (std::memory_order_relaxed);
                 if (first < 0 || first + 1 >= nch || out[first] == nullptr || out[first + 1] == nullptr) continue;
                 float* L = out[first]; float* R = out[first + 1];
@@ -1070,13 +1117,10 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
             {
                 if (nd->kind != NodeKind::ExtBus) continue;
                 const int first = nd->bus->outFirst.load (std::memory_order_relaxed);
-                for (int k = 0; k < 2; ++k)
-                {
-                    const int ch = first + k;
-                    if (first < 0 || ch >= nch) continue;
-                    outDitherBits[ch] = outDitherBits[ch] == 0 ? bits : juce::jmin (outDitherBits[ch], bits);
-                    any = true;
-                }
+                auto mark = [&] (int ch) { if (ch < 0 || ch >= nch) return; outDitherBits[ch] = outDitherBits[ch] == 0 ? bits : juce::jmin (outDitherBits[ch], bits); any = true; };
+                if (first >= 0) for (int k = 0; k < nd->speakerCh; ++k) mark (first + k);          // (3.39.0: every speaker output, and the headphone pair)
+                if (surround::isMonitorFormat (nd->format))
+                    if (const int h = nd->bus->hpFirst.load (std::memory_order_relaxed); h >= 0) { mark (h); mark (h + 1); }
             }
         }
         if (any)
@@ -1234,18 +1278,21 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
     for (auto& ndp : mp.order)
     {
         Node& nd = *ndp;
+        const int W = nd.width;                       // 3.39.0: the channels from the inserts on (2: a track's stereo fold, a stereo bus; a surround bus: its format's)
         float* L = mp.pre.getWritePointer (0);
         float* R = mp.pre.getWritePointer (1);
         bool audible = true, soloOk = true;           // soloOk: not silenced by someone else's solo (the mute button left out)
         float faderGain = 1.0f;
         float* lastGain = nullptr; float* lastPre = nullptr;
         Param *meterL = nullptr, *meterR = nullptr;
+        int srcCh = 2;                                // the channels a send's panner takes from this node (a track: its own, before the fold; a bus: its width)
 
         if (nd.kind == NodeKind::Track)
         {
             auto* st = nd.strip;
             const auto& route = plan_->tracks[(size_t) nd.trackIndex];
             const int nc = route.numCh;
+            srcCh = nc;
 
             // which sources reach this strip (see Monitor): the recording played from disk, and/or the live input
             const juce::AudioBuffer<float>* diskBuf = mp.tailNow ? nullptr : plan_->disk[(size_t) nd.trackIndex];      // (a tail: silence goes in)
@@ -1309,7 +1356,8 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
             }
             for (auto& slot : st->slots) slot.process (view);
 
-            // fold to stereo (before the fader, so sends can be taken before or after it)
+            // fold to stereo (before the fader, so sends can be taken before or after it). The track's own channels stay in chanBuf: a send into
+            // a surround bus places them with its panner (3.39.0)
             float gL = 1, gR = 1;
             if (nc == 1)
             {
@@ -1331,7 +1379,7 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
             else   // surround: simple monitor fold-down (even channels left, odd right) - placeholder
             {
                 const float k = 1.0f / std::sqrt ((float) ((nc + 1) / 2));
-                mp.pre.clear (0, n);
+                juce::FloatVectorOperations::clear (L, n); juce::FloatVectorOperations::clear (R, n);
                 for (int c = 0; c < nc; ++c)
                     juce::FloatVectorOperations::addWithMultiply ((c & 1) ? R : L, view.getReadPointer (c), k, n);
             }
@@ -1341,12 +1389,13 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
             if (const auto vm = st->vcaMask.load (std::memory_order_relaxed); vm != 0 && mp.mixer != nullptr) faderGain *= mp.mixer->vcaGain (vm, st->vcaAutoDb, st->vcaAutoMask.load (std::memory_order_relaxed));      // the VCAs of this strip add their gain
             lastGain = &st->lastGain; lastPre = &st->lastPre; meterL = &st->meterL; meterR = &st->meterR;
         }
-        else   // Int Bus or Ext Bus: what is sent to it, through its inserts
+        else   // Int Bus or Ext Bus: what is sent to it, through its inserts (3.39.0: on all W of its channels)
         {
             auto* b = nd.bus;
-            if (nd.receives) { mp.pre.copyFrom (0, 0, nd.incoming, 0, 0, n); mp.pre.copyFrom (1, 0, nd.incoming, 1, 0, n); }
-            else mp.pre.clear (0, n);
-            juce::AudioBuffer<float> view (mp.pre.getArrayOfWritePointers(), 2, n);
+            srcCh = W;
+            if (nd.receives) for (int c = 0; c < W; ++c) mp.pre.copyFrom (c, 0, nd.incoming, c, 0, n);
+            else for (int c = 0; c < W; ++c) juce::FloatVectorOperations::clear (mp.pre.getWritePointer (c), n);
+            juce::AudioBuffer<float> view (mp.pre.getArrayOfWritePointers(), W, n);
             {   // the bus's input gain (automatable "gain"): before the inserts and the fader
                 const float gIn = dbToGain (b->inGainDb.get());
                 if (gIn != 1.0f || b->lastIn != 1.0f) { view.applyGainRamp (0, n, b->lastIn, gIn); b->lastIn = gIn; }
@@ -1358,11 +1407,12 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
                 if (pol != 1.0f || b->lastPol != 1.0f) { view.applyGainRamp (0, n, b->lastPol, pol); b->lastPol = pol; }
             }
             for (auto& slot : b->slots) slot.process (view);
-            if (const float pn = juce::jlimit (-1.0f, 1.0f, b->pan.get()); pn != 0.0f)          // balance: the side away from the pan is turned down (cos), the other stays
-            {
-                const float k = std::cos (std::abs (pn) * juce::MathConstants<float>::halfPi);
-                juce::FloatVectorOperations::multiply (pn > 0.0f ? L : R, k, n);
-            }
+            if (W == 2)                                                 // (a surround bus has no balance: its sends' panners place the sound)
+                if (const float pn = juce::jlimit (-1.0f, 1.0f, b->pan.get()); pn != 0.0f)          // balance: the side away from the pan is turned down (cos), the other stays
+                {
+                    const float k = std::cos (std::abs (pn) * juce::MathConstants<float>::halfPi);
+                    juce::FloatVectorOperations::multiply (pn > 0.0f ? L : R, k, n);
+                }
             audible = ! b->mute.get();
             faderGain = dbToGain (b->gainDb.get());
             if (const auto vm = b->vcaMask.load (std::memory_order_relaxed); vm != 0 && mp.mixer != nullptr) faderGain *= mp.mixer->vcaGain (vm, b->vcaAutoDb, b->vcaAutoMask.load (std::memory_order_relaxed));
@@ -1371,40 +1421,81 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
 
         if (nd.tapPreIdx >= 0 && captureBufs != nullptr && nd.tapPreIdx < (int) captureBufs->size())   // offline render: the same channel taken before its fader
         {
+            auto& cap = (*captureBufs)[(size_t) nd.tapPreIdx];
+            const int cc = juce::jmin (W, cap.getNumChannels());
             const juce::AudioBuffer<float>* capSrc = &mp.pre;
             if (nd.tapDelayPre.len > 0)
             {
-                for (int c = 0; c < 2; ++c) mp.sendTmp.copyFrom (c, 0, mp.pre, c, 0, n);
-                float* chp[2] = { mp.sendTmp.getWritePointer (0), mp.sendTmp.getWritePointer (1) };
-                nd.tapDelayPre.run (chp, 2, n);
+                float* chp[kMaxBusChannels];
+                for (int c = 0; c < W; ++c) { mp.sendTmp.copyFrom (c, 0, mp.pre, c, 0, n); chp[c] = mp.sendTmp.getWritePointer (c); }
+                nd.tapDelayPre.run (chp, W, n);
                 capSrc = &mp.sendTmp;
             }
-            for (int c = 0; c < 2; ++c) (*captureBufs)[(size_t) nd.tapPreIdx].addFrom (c, 0, *capSrc, c, 0, n);
+            for (int c = 0; c < cc; ++c) cap.addFrom (c, 0, *capSrc, c, 0, n);
         }
 
         // the fader: post = pre * gain (smoothed)
         const float target = audible ? faderGain : 0.0f;
         const float g0 = *lastGain;
         *lastGain = target;
-        for (int c = 0; c < 2; ++c) mp.post.copyFromWithRamp (c, 0, mp.pre.getReadPointer (c), n, g0, target);
+        for (int c = 0; c < W; ++c) mp.post.copyFromWithRamp (c, 0, mp.pre.getReadPointer (c), n, g0, target);
 
         // meter (post-fader)
-        for (int c = 0; c < 2; ++c)
-        {
-            const auto mm = mp.post.findMinMax (c, 0, n);
-            const float pk = juce::jmax (std::abs (mm.getStart()), std::abs (mm.getEnd()));
-            auto* meter = c == 0 ? meterL : meterR;
-            if (pk > meter->get()) meter->set (pk);
-            if (nd.kind == NodeKind::Track) { auto& lp = c == 0 ? nd.strip->livePkL : nd.strip->livePkR; if (pk > lp.get()) lp.set (pk); }
-            if (nd.kind == NodeKind::ExtBus) { auto& rp = c == 0 ? nd.bus->remotePkL : nd.bus->remotePkR; if (pk > rp.get()) rp.set (pk); }
-            if (nd.kind == NodeKind::ExtBus && pk > mp.outPeak) mp.outPeak = pk;
+        if (W == 2)
+            for (int c = 0; c < 2; ++c)
+            {
+                const auto mm = mp.post.findMinMax (c, 0, n);
+                const float pk = juce::jmax (std::abs (mm.getStart()), std::abs (mm.getEnd()));
+                auto* meter = c == 0 ? meterL : meterR;
+                if (pk > meter->get()) meter->set (pk);
+                if (nd.kind == NodeKind::Track) { auto& lp = c == 0 ? nd.strip->livePkL : nd.strip->livePkR; if (pk > lp.get()) lp.set (pk); }
+                if (nd.kind == NodeKind::ExtBus) { auto& rp = c == 0 ? nd.bus->remotePkL : nd.bus->remotePkR; if (pk > rp.get()) rp.set (pk); }
+                if (nd.kind == NodeKind::ExtBus && pk > mp.outPeak) mp.outPeak = pk;
+            }
+        else
+        {   // 3.39.0: a surround bus - a meter per channel; the two-sided meters (and the Stream Deck's) show the loudest channel of each side (C and LFE on both)
+            float sidePk[2] = { 0.0f, 0.0f };
+            for (int c = 0; c < W; ++c)
+            {
+                const auto mm = mp.post.findMinMax (c, 0, n);
+                const float pk = juce::jmax (std::abs (mm.getStart()), std::abs (mm.getEnd()));
+                if (pk > nd.bus->chPeak[c].get()) nd.bus->chPeak[c].set (pk);
+                const int sd = surround::side (nd.format, c);
+                if (sd <= 0) sidePk[0] = juce::jmax (sidePk[0], pk);
+                if (sd >= 0) sidePk[1] = juce::jmax (sidePk[1], pk);
+            }
+            for (int c = 0; c < 2; ++c)
+            {
+                auto* meter = c == 0 ? meterL : meterR;
+                if (sidePk[c] > meter->get()) meter->set (sidePk[c]);
+                if (nd.kind == NodeKind::ExtBus) { auto& rp = c == 0 ? nd.bus->remotePkL : nd.bus->remotePkR; if (sidePk[c] > rp.get()) rp.set (sidePk[c]); }
+                if (nd.kind == NodeKind::ExtBus && sidePk[c] > mp.outPeak) mp.outPeak = sidePk[c];
+            }
         }
         {   // RMS (about 300 ms), for the meter settings
             float& ms0 = nd.kind == NodeKind::Track ? nd.strip->msL : nd.bus->msL;
             float& ms1 = nd.kind == NodeKind::Track ? nd.strip->msR : nd.bus->msR;
             const float k = 1.0f - std::exp (-(float) n / (0.3f * (float) sampleRate));
-            const float a = mp.post.getRMSLevel (0, 0, n), b = mp.post.getRMSLevel (1, 0, n);
-            ms0 += (a * a - ms0) * k; ms1 += (b * b - ms1) * k;
+            if (W == 2)
+            {
+                const float a = mp.post.getRMSLevel (0, 0, n), b = mp.post.getRMSLevel (1, 0, n);
+                ms0 += (a * a - ms0) * k; ms1 += (b * b - ms1) * k;
+            }
+            else
+            {   // 3.39.0: each channel's own; the two-sided ones carry the loudest channel of each side
+                float side[2] = { 0.0f, 0.0f };
+                for (int c = 0; c < W; ++c)
+                {
+                    const float a = mp.post.getRMSLevel (c, 0, n);
+                    float& ms = nd.bus->chMs[c];
+                    ms += (a * a - ms) * k;
+                    nd.bus->chRms[c].set (std::sqrt (ms));
+                    const int sd = surround::side (nd.format, c);
+                    if (sd <= 0) side[0] = juce::jmax (side[0], ms);
+                    if (sd >= 0) side[1] = juce::jmax (side[1], ms);
+                }
+                ms0 = side[0]; ms1 = side[1];
+            }
             (nd.kind == NodeKind::Track ? nd.strip->rmsL : nd.bus->rmsL).set (std::sqrt (ms0));
             (nd.kind == NodeKind::Track ? nd.strip->rmsR : nd.bus->rmsR).set (std::sqrt (ms1));
         }
@@ -1412,36 +1503,55 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
             if (sc == (nd.kind == NodeKind::Track ? (const void*) nd.strip : (const void*) nd.bus))
             {
                 auto w = scopeWrite.load (std::memory_order_relaxed);
-                const float* pl = mp.post.getReadPointer (0); const float* pr = mp.post.getReadPointer (1);
-                for (int i = 0; i < n; ++i)
+                if (W == 2)
                 {
-                    const auto idx = (size_t) (w % kScopeFrames);
-                    scopeRing[idx * 2] = pl[i]; scopeRing[idx * 2 + 1] = pr[i];
-                    ++w;
+                    const float* pl = mp.post.getReadPointer (0); const float* pr = mp.post.getReadPointer (1);
+                    for (int i = 0; i < n; ++i)
+                    {
+                        const auto idx = (size_t) (w % kScopeFrames);
+                        scopeRing[idx * 2] = pl[i]; scopeRing[idx * 2 + 1] = pr[i];
+                        ++w;
+                    }
                 }
+                else                                                // 3.39.0: a surround bus on the phase scope: its Lo/Ro fold (what a stereo listener would get)
+                    for (int i = 0; i < n; ++i)
+                    {
+                        float l = 0.0f, r = 0.0f;
+                        for (int c = 0; c < W; ++c)
+                        {
+                            const float x = mp.post.getSample (c, i);
+                            l += x * nd.foldLoRo[(size_t) c * 2]; r += x * nd.foldLoRo[(size_t) c * 2 + 1];
+                        }
+                        const auto idx = (size_t) (w % kScopeFrames);
+                        scopeRing[idx * 2] = l; scopeRing[idx * 2 + 1] = r;
+                        ++w;
+                    }
                 scopeWrite.store (w, std::memory_order_release);
             }
 
         if (nd.tapIdx >= 0 && captureBufs != nullptr && nd.tapIdx < (int) captureBufs->size())   // offline render: this channel is one of the outputs being captured
         {
+            auto& cap = (*captureBufs)[(size_t) nd.tapIdx];
+            const int cc = juce::jmin (W, cap.getNumChannels());
             const juce::AudioBuffer<float>* capSrc = &mp.post;
             if (nd.tapDelay.len > 0)
             {
-                for (int c = 0; c < 2; ++c) mp.sendTmp.copyFrom (c, 0, mp.post, c, 0, n);
-                float* chp[2] = { mp.sendTmp.getWritePointer (0), mp.sendTmp.getWritePointer (1) };
-                nd.tapDelay.run (chp, 2, n);
+                float* chp[kMaxBusChannels];
+                for (int c = 0; c < W; ++c) { mp.sendTmp.copyFrom (c, 0, mp.post, c, 0, n); chp[c] = mp.sendTmp.getWritePointer (c); }
+                nd.tapDelay.run (chp, W, n);
                 capSrc = &mp.sendTmp;
             }
-            for (int c = 0; c < 2; ++c) (*captureBufs)[(size_t) nd.tapIdx].addFrom (c, 0, *capSrc, c, 0, n);
+            for (int c = 0; c < cc; ++c) cap.addFrom (c, 0, *capSrc, c, 0, n);
         }
 
         // sends (pre-fader ones still obey mute / solo, but not the fader; a send whose "follow mute" is off ignores the mute button, still obeys solo)
         bool needPre = false;
         for (auto& sp : nd.sends) needPre = needPre || (sp.st->pre.get() && sp.st->followMute.get() && (sp.st->active() || sp.st->lastGain > 0.0f));
         const float preTarget = audible ? 1.0f : 0.0f;
+        const float pre0 = *lastPre;                                 // (the ramp a pre-fader send following mute gets: see below)
         if (needPre)
         {
-            for (int c = 0; c < 2; ++c) mp.preSend.copyFromWithRamp (c, 0, mp.pre.getReadPointer (c), n, *lastPre, preTarget);
+            for (int c = 0; c < W; ++c) mp.preSend.copyFromWithRamp (c, 0, mp.pre.getReadPointer (c), n, *lastPre, preTarget);
         }
         *lastPre = preTarget;
         for (auto& sp : nd.sends)
@@ -1449,32 +1559,83 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
             auto* sd = sp.st;
             const float st1 = sd->active() && ! sd->mute.get() ? dbToGain (sd->gainDb.get()) : 0.0f;     // (its own MUTE: faded out like a level change; the level is kept)
             if (st1 == 0.0f && sd->lastGain == 0.0f) continue;
-            const juce::AudioBuffer<float>* src = sd->pre.get() ? &mp.preSend : &mp.post;
-            if (! sd->followMute.get())                           // carries on when the channel is muted: its own copy, before (1) or after (the fader) the fader
+            const int dc = sp.dstCh;                                 // the destination's channels: the send's inserts, delay line and level work on these
+            const juce::AudioBuffer<float>* src = nullptr;
+            if (sp.kind == SendPlan::Kind::Direct)                   // the same width, channel for channel (as every send was)
             {
-                const float feed = soloOk ? (sd->pre.get() ? 1.0f : faderGain) : 0.0f;
-                for (int c = 0; c < 2; ++c) mp.sendTmp.copyFromWithRamp (c, 0, mp.pre.getReadPointer (c), n, sd->lastFeed, feed);
-                sd->lastFeed = feed;
+                src = sd->pre.get() ? &mp.preSend : &mp.post;
+                if (! sd->followMute.get())                           // carries on when the channel is muted: its own copy, before (1) or after (the fader) the fader
+                {
+                    const float feed = soloOk ? (sd->pre.get() ? 1.0f : faderGain) : 0.0f;
+                    for (int c = 0; c < dc; ++c) mp.sendTmp.copyFromWithRamp (c, 0, mp.pre.getReadPointer (c), n, sd->lastFeed, feed);
+                    sd->lastFeed = feed;
+                    src = &mp.sendTmp;
+                }
+                else sd->lastFeed = audible ? (sd->pre.get() ? 1.0f : faderGain) : 0.0f;     // (so switching "follow mute" off does not jump)
+            }
+            else
+            {   // 3.39.0: into a surround bus (or out of one): the source's own channels - a track's, after its inserts (chanBuf); a bus's (pre) - through the
+                // send's panner, the fold matrix, or straight across, with the same gain ramp the Direct path applies (the fader's, the mute's, or the feed's)
+                float a0, a1;
+                if (! sd->followMute.get()) { const float feed = soloOk ? (sd->pre.get() ? 1.0f : faderGain) : 0.0f; a0 = sd->lastFeed; a1 = feed; sd->lastFeed = feed; }
+                else { if (sd->pre.get()) { a0 = pre0; a1 = preTarget; } else { a0 = g0; a1 = target; } sd->lastFeed = audible ? (sd->pre.get() ? 1.0f : faderGain) : 0.0f; }
+                const int sc = juce::jmin (sp.srcCh, srcCh);
+                const float* sp_[kMaxBusChannels];
+                for (int c = 0; c < sc; ++c) sp_[c] = nd.kind == NodeKind::Track ? mp.chanBuf.getReadPointer (c) : mp.pre.getReadPointer (c);
+                for (int j = 0; j < dc; ++j) juce::FloatVectorOperations::clear (mp.sendTmp.getWritePointer (j), n);
+                const float invN = 1.0f / (float) juce::jmax (1, n);
+                if (sp.kind == SendPlan::Kind::Pan)
+                {
+                    float xs[2] = { 0.0f, 0.0f }, m1[2 * kMaxBusChannels] = {};
+                    const auto pos = sd->panPos();
+                    if (sp.stripPans) surround::sourceXs (pos, sc, nd.strip->pan.get(), nd.strip->panL.get(), nd.strip->panR.get(), xs);
+                    else              surround::sourceXs (pos, sc, 0.0f, -1.0f, 1.0f, xs);
+                    surround::sourceMatrix (sp.dstFormat, sc, xs, pos, m1);
+                    const float* m0 = sp.hasLast ? sp.lastM : m1;
+                    for (int c = 0; c < sc; ++c)
+                        for (int j = 0; j < dc; ++j)
+                        {
+                            const float g0m = m0[c * dc + j], g1m = m1[c * dc + j];
+                            if (g0m == 0.0f && g1m == 0.0f) continue;
+                            const float* x = sp_[c]; float* y = mp.sendTmp.getWritePointer (j);
+                            const float dm = g1m - g0m, da = a1 - a0;
+                            for (int i = 0; i < n; ++i) { const float t = (float) (i + 1) * invN; y[i] += x[i] * (a0 + da * t) * (g0m + dm * t); }
+                        }
+                    std::copy (m1, m1 + sc * dc, sp.lastM); sp.hasLast = true;
+                }
+                else if (sp.kind == SendPlan::Kind::Fold)
+                {
+                    for (int c = 0; c < sc; ++c)
+                        for (int j = 0; j < dc; ++j)
+                        {
+                            const float g = sp.matrix[(size_t) c * (size_t) dc + (size_t) j];
+                            if (g == 0.0f) continue;
+                            const float* x = sp_[c]; float* y = mp.sendTmp.getWritePointer (j);
+                            const float da = a1 - a0;
+                            for (int i = 0; i < n; ++i) y[i] += x[i] * g * (a0 + da * (float) (i + 1) * invN);
+                        }
+                }
+                else                                                 // Across: channel for channel, as far as both go
+                    for (int c = 0; c < juce::jmin (sc, dc); ++c) mp.sendTmp.copyFromWithRamp (c, 0, sp_[c], n, a0, a1);
                 src = &mp.sendTmp;
             }
-            else sd->lastFeed = audible ? (sd->pre.get() ? 1.0f : faderGain) : 0.0f;     // (so switching "follow mute" off does not jump)
             bool hasInserts = false;
             for (auto& slot : sd->slots) hasInserts = hasInserts || slot.mightBeLoaded();
             if (hasInserts)                                       // the send's own inserts: these never touch the channel's own signal
             {
-                if (src != &mp.sendTmp) for (int c = 0; c < 2; ++c) mp.sendTmp.copyFrom (c, 0, *src, c, 0, n);
-                juce::AudioBuffer<float> view (mp.sendTmp.getArrayOfWritePointers(), 2, n);
+                if (src != &mp.sendTmp) for (int c = 0; c < dc; ++c) mp.sendTmp.copyFrom (c, 0, *src, c, 0, n);
+                juce::AudioBuffer<float> view (mp.sendTmp.getArrayOfWritePointers(), dc, n);
                 for (auto& slot : sd->slots) slot.process (view);
                 src = &mp.sendTmp;
             }
             if (sp.delay.len > 0)                                 // this path is shorter than the longest one into the same channel: hold it back
             {
-                if (src != &mp.sendTmp) for (int c = 0; c < 2; ++c) mp.sendTmp.copyFrom (c, 0, *src, c, 0, n);
-                float* chp[2] = { mp.sendTmp.getWritePointer (0), mp.sendTmp.getWritePointer (1) };
-                sp.delay.run (chp, 2, n);
+                float* chp[kMaxBusChannels];
+                for (int c = 0; c < dc; ++c) { if (src != &mp.sendTmp) mp.sendTmp.copyFrom (c, 0, *src, c, 0, n); chp[c] = mp.sendTmp.getWritePointer (c); }
+                sp.delay.run (chp, dc, n);
                 src = &mp.sendTmp;
             }
-            for (int c = 0; c < 2; ++c) sp.dest->incoming.addFromWithRamp (c, 0, src->getReadPointer (c), n, sd->lastGain, st1);
+            for (int c = 0; c < dc; ++c) sp.dest->incoming.addFromWithRamp (c, 0, src->getReadPointer (c), n, sd->lastGain, st1);
             sd->lastGain = st1;
         }
 
@@ -1485,9 +1646,9 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
             const juce::AudioBuffer<float>* outBuf = &mp.post;                     // (all Ext Buses of the mixer come out together: the shorter ones wait)
             if (nd.outDelay.len > 0)
             {
-                for (int c = 0; c < 2; ++c) mp.sendTmp.copyFrom (c, 0, mp.post, c, 0, n);
-                float* chp[2] = { mp.sendTmp.getWritePointer (0), mp.sendTmp.getWritePointer (1) };
-                nd.outDelay.run (chp, 2, n);
+                float* chp[kMaxBusChannels];
+                for (int c = 0; c < W; ++c) { mp.sendTmp.copyFrom (c, 0, mp.post, c, 0, n); chp[c] = mp.sendTmp.getWritePointer (c); }
+                nd.outDelay.run (chp, W, n);
                 outBuf = &mp.sendTmp;
             }
             if (tapL != nullptr && nd.isMainOut)                                  // talkback playback: the processing mixer's main output, for the TB pair
@@ -1500,11 +1661,19 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
                 juce::FloatVectorOperations::copy (mainL + offset, outBuf->getReadPointer (0), n);
                 juce::FloatVectorOperations::copy (mainR + offset, outBuf->getReadPointer (1), n);
             }
-            for (int c = 0; c < 2; ++c)
-            {
+            for (int c = 0; c < nd.speakerCh; ++c)                                // 3.39.0: one driver output per speaker channel, from the first one chosen
                 if (first >= 0 && ! silenceOwnOutput && first + c < numOut && out[first + c] != nullptr)
                     juce::FloatVectorOperations::add (out[first + c] + offset, outBuf->getReadPointer (c), n);
-                const int ac = alsoToFirst + c;                          // the audited cue mixer is also heard on the engineer's output pair
+            if (surround::isMonitorFormat (nd.format))                            // ... and the headphone pair after them (the Dolby Atmos Composer's binaural output)
+            {
+                const int h = nd.bus->hpFirst.load (std::memory_order_relaxed);
+                for (int c = 0; c < 2; ++c)
+                    if (h >= 0 && ! silenceOwnOutput && h + c < numOut && out[h + c] != nullptr)
+                        juce::FloatVectorOperations::add (out[h + c] + offset, outBuf->getReadPointer (nd.speakerCh + c), n);
+            }
+            for (int c = 0; c < 2; ++c)
+            {
+                const int ac = alsoToFirst + c;                          // the audited cue mixer is also heard on the engineer's output pair (a surround bus: its L and R)
                 if (alsoToFirst >= 0 && ac != first + c && ac < numOut && out[ac] != nullptr)
                     juce::FloatVectorOperations::add (out[ac] + offset, outBuf->getReadPointer (c), n);
             }

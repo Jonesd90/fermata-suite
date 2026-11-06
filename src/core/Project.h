@@ -118,7 +118,9 @@ struct ClickDef
 
 /** An Int Bus (fed by audio tracks / other Int Buses, goes to tracks and buses) or an Ext Bus
     (fed by tracks / Int Buses, MUST go to driver outputs or nowhere). */
-struct BusDef { juce::Uuid id; juce::String name; bool external = false; juce::uint32 colour = 0; };
+/** An Int Bus or an Ext Bus. 3.39.0: its channel format (Surround.h); stereo unless it is made or changed to a surround format (saved as "format",
+    only when not stereo, so an older project and an older fermata both read stereo). */
+struct BusDef { juce::Uuid id; juce::String name; bool external = false; juce::uint32 colour = 0; BusFormat format = BusFormat::Stereo; };
 
 /** A VCA fader: one of up to 16, numbered 1 .. 16 (the number is kept when others are removed). It carries no audio: in each mixer it controls the level of the audio tracks and
     Int Buses chosen for it there (see VcaState). Written "4 - Strings" when it has a name. */
@@ -286,7 +288,23 @@ public:
     /** Gives the track its inputs: channel 0 gets 'first', channel 1 gets first+1, ... (clipped to the inputs that exist). */
     void assignInputsFrom (TrackDef&, int first) const;
     void removeTrack (int index);
-    BusDef& addBus (const juce::String& busName, bool external = false);
+    BusDef& addBus (const juce::String& busName, bool external = false, BusFormat format = BusFormat::Stereo);
+    /** 3.39.0: the channel format of a bus (stereo for anything else: an audio track, an unknown id). */
+    BusFormat busFormat (const juce::Uuid&) const;
+    /** 3.39.0: changes a bus's format. A surround Ext Bus is never a main output (the mixers' 'Main' and talkback stay stereo), so its Main tick goes;
+        the monitor formats (+ headphones) only suit an Ext Bus. Every plug-in on the bus, and in the sends going into it, is prepared again for the
+        new layout (applySlotLayouts). False if the format does not suit that bus (or there is no such bus). */
+    bool setBusFormat (const juce::Uuid& bus, BusFormat);
+    /** 3.39.0: the layout a plug-in in each insert slot is prepared with (see InsertSlot::setLayout): a bus's own slots get its format; a send's (and an
+        output's) slots get the format of where it goes, as that is what they process; a strip's own slots stay stereo. Cheap when nothing changed
+        (called by syncMixers, so on every plan the engine builds). Message thread. */
+    void applySlotLayouts();
+    /** 3.39.0: a plug-in that joins the live Dolby Atmos mix by itself (the Dolby Atmos Composer, its Beams, Spacelab and its Beams): a render copy
+        must not start one (cloneForRender), since only one Composer can run on a computer and a copy of a Beam would join the live mix. */
+    enum class AtmosLink { None, Composer, Beam, Spacelab };
+    static AtmosLink atmosLinkOf (const juce::String& pluginDescription);
+    /** Whether any mixer of the project has the Dolby Atmos Composer in an insert. */
+    bool hasAtmosComposer() const;
     void removeBus (int index);
     /** Moves a bus up (-1) or down (+1) among the buses of its own kind (Int or Ext). */
     void moveBus (int index, int delta);

@@ -6,6 +6,49 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.39.0
+Built in the fermata:Live conversation, 5-6 November (in two parts: see `docs/SURROUND.md`). fermata only: fermata:Live gets no surround.
+- **Surround Int Buses and Ext Buses.** A bus can now be stereo (as every bus was) or **5.1, 7.1, 7.1.2, 5.1.4, 7.1.4, 9.1.4 or 9.1.6** - the
+  surround and Dolby Atmos formats in use. Choose it when you add one (**+ Strip > Int Bus / Ext Bus**), in the Project Designer's new **Format**
+  column, or later by right-clicking the bus's name plate (**Format**). The bus's coloured bar says so ("INT 9.1.6").
+- **For the Dolby Atmos Composer's bus,** an Ext Bus can also be **7.1.4 + headphones** or **9.1.6 + headphones**: the Composer plays its speaker
+  channels and then, with headphone monitoring on as well, a binaural pair - so its bus goes to one driver output per speaker ("Out 1-16") and to a
+  headphone pair ("Phones").
+- **The channels are in the Dolby order** - L R C LFE, the surrounds, the wides, then the tops front to back - on the bus, its meters, its driver
+  outputs and its files. A plug-in on a surround bus is told the bus's speaker layout (as a VST3 speaker arrangement), so a 9.1.6 reverb (Seventh
+  Heaven Professional, Spacelab) or a Dolby Atmos Beam recognises the bus as 9.1.6.
+- **A surround bus has a meter for each channel** (its strip is wider for them), grouped front / surrounds / wides / tops.
+- **Sending a mono or stereo track into a surround bus: a surround panner** on the send (click the send dial) - a top view of the room with the bus's
+  speakers lit by how much they get; drag the sound front to back (and left to right), set its height, spread and centre. By default it follows the
+  track's own pan from left to right, at the front, at ear level, so a stereo track lands on L and R and a spot mic where its pan puts it. The same
+  panner for a strip whose output goes into a surround bus (the round button beside its output). A surround bus sent into a stereo one is folded down
+  as Dolby's Lo/Ro does; into another surround format, channel for channel.
+- **A surround Ext Bus is never a main output** ('Main', the talkback and the cue mixers that follow stay stereo).
+- **A bounce of a surround bus is one multichannel file** (24-bit, or 32-bit float as before) with its channels in the Dolby order and its format in
+  the name ("Piece - Verb (9.1.6).wav"). The Mastering window keeps to stereo buses (a Dolby Atmos master is the Composer's file).
+- **Bounces leave out the Dolby Atmos Composer and its Beams** (and Spacelab, when a Composer is in the project): a bounce works on a copy of the
+  project with plug-ins of its own, only one Composer can run on a computer, and a copy of a Beam would join your live Atmos mix while the bounce ran.
+  The bounce window names what it left out. The Atmos file itself is written by the Composer while the piece plays through it: the mixer's new
+  **Atmos pass** button (shown while a Composer is loaded) plays the edit you were last in from 3 s before its first sound to 10 s after its last, so
+  the Composer sees the play position start before its in-point and pass its out-point, with the reverbs' tails. Space stops it.
+- **Every plug-in is now told the position of the sound it is actually processing**: the transport's, less how late that sound is because of plug-ins
+  before it (delay compensation). A Dolby Atmos Beam behind a reverb with latency stays in time with one that is not; the Composer, and Spacelab, rely on
+  this ("latency compensated song position"). Plug-ins in a bounce are told it is an offline render (most do more when they may take their time).
+- **A plug-in that will not take the bus's layout** runs in the nearest it will (its output in the bus's layout with stereo in, or on L and R only, the
+  other channels passing it by): the slot's tooltip says so, and the log says what each plug-in on a surround bus runs in. For the Composer's bus
+  ("9.1.6 + headphones") the plug-in is given an 18-channel layout and its channels by position - the manual says an unknown layout plays in the
+  Composer's own channel order, which is fermata's. If the Composer will not take 18 channels it gets the speakers alone (no headphone pair).
+- **The mixer warns** when two Composers are loaded, when the project is not at 48 or 96 kHz (all the Composer accepts), or when the Composer's mixer
+  goes to no driver outputs (the engine runs that mixer whatever its outputs, so the Composer can monitor on its own).
+- Shared: `src/core/Surround.h` (new: the formats, the panner, the fold-downs, the plug-in channel sets), `src/core/Mixer.h` (the insert slots' layout
+  and play-position lateness, the send's panner, a surround bus's headphone pair and channel meters), `src/core/Project.h / .cpp` (the bus format saved
+  as "format" - only when not stereo, so older projects and an older fermata read stereo; the panner as "surroundPan" / "outSurroundPan"; "hpFirst";
+  render copies leave out the Atmos plug-ins), `src/core/AudioEngine.h / .cpp` (buses run at their width: sends through the panner or the fold-downs,
+  delay compensation, outputs per speaker and the headphone pair, meters per channel; a stereo project is processed exactly as before),
+  `src/core/Bounce.cpp` (multichannel files; offline mode told to the plug-ins), `src/core/HostTransport.h`, `src/core/Common.h`, `src/core/LowCut.h`,
+  `src/core/MasterRender.cpp / MasterExport.cpp` (stereo buses only). fermata:Live keeps a project's bus formats when it saves and its own mixer is
+  untouched (its main output is always stereo); it needs a rebuild and a test.
+
 ## 3.38.1
 Built in the fermata:Live conversation, 5 November.
 - **Noise mode asks before a De-click of the whole piece.** With nothing selected, D (or the De-click button) used to go straight through the whole piece on

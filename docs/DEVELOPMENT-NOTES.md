@@ -2032,3 +2032,20 @@ fermata moved to a new repository that also holds its companion, fermata:Live (t
   2 to 8 mended just the two (found by the picture check, findLines). The user will keep it lower. (If it is ever wanted: undo any mend that leaves more
   sound above about 2 kHz round it than there was, and map 10 to about 5 sigma.)
 
+
+## 3.39.0: surround Int and Ext buses (built in the fermata:Live conversation, 5-6 November 2026; in two parts)
+- The whole plan, what the manuals require, what is built and the work list still to do are in `docs/SURROUND.md`. Part 1 (the formats, the panner,
+  the fold-downs, the project model) and Part 3 (the mixer, the Project Designer, the bounce window) were built first, on the `surround` branch;
+  Part 2 (the engine, the plug-in host's layouts and play positions, multichannel bounce files, the Atmos pass) is to be written with Claude Fable,
+  as the user asked ("PLEASE tell me when there is a bit that would really benefit from using Fable").
+- The 3.39.0 history entry describes the finished feature: Part 2 must make it true (or change it).
+- `InsertProcessor::prepare`'s third argument was always 2 at every call; it now means the layout (1 mono, 2 stereo, else a BusFormat value), and
+  InsertSlot owns it (`setLayout`), so none of the 48 call sites had to change.
+- Checked on Linux (the test build under Xvfb): a 9.1.6 and a 7.1.4 Int Bus and a 9.1.6 + headphones Ext Bus in the processing mixer - the format
+  in the coloured bar, the wider strips with a meter per channel (front / surrounds / wides / tops), Main out greyed on the surround Ext Bus, the send
+  panel's panner (follow pan on: the piano's centre pan lights C; unticked and dragged back with 77 % height: Ltr lit, a little Lrs), the output list
+  showing each bus's format, the round panner button on the piano's output once it goes to the 9.1.6 bus. 
+- Part 2 (the engine, the plug-in host, the bounce, the Atmos pass) was built the same night with Claude Fable: `docs/SURROUND.md` lists what, and
+  the decisions. The engine's stereo path is untouched line for line where it could be (the whole test suite pins it); the surround path branches off
+  it at the node's width. The channel order the Dolby Atmos Composer gets on its 18-channel bus (by position) is the one thing only the user's
+  machine can confirm: `docs/SURROUND.md`, "Decisions worth knowing", says what to change if it is wrong.

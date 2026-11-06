@@ -35,6 +35,14 @@ Bouncer::Bouncer (const Project& live, const BounceSettings& s) : settings (s)
         return;
     }
     if (! s.items.empty()) shadow->alignActive = s.items.front().alignOwner.isNotEmpty() ? s.items.front().alignOwner : s.alignOwner;
+    // 3.39.0: the copy's plug-ins are told this is an offline render (most do more when they may take their time); the engine's prepare below
+    // prepares them again, so the word reaches them before they run
+    for (auto& m : shadow->mixers)
+    {
+        auto all = [] (InsertSlot* sl, int count) { for (int i = 0; i < count; ++i) if (auto* p = sl[i].getProcessorUnsafe()) p->setNonRealtime (true); };
+        for (auto& st : m->stripPool) { all (st->slots, kNumSlots); for (auto& sd : st->sends.pool) all (sd->slots, kSendSlots); all (st->outSend.slots, kSendSlots); }
+        for (auto& bs : m->busPool)   { all (bs->slots, kNumSlots); for (auto& sd : bs->sends.pool) all (sd->slots, kSendSlots); all (bs->outSend.slots, kSendSlots); }
+    }
     engine = std::make_unique<AudioEngine> (*shadow);
     engine->setOfflineTarget (s.mixerId, s.sources, s.sourcesPre);
     engine->prepare (s.sampleRate, kBlock);
@@ -85,14 +93,17 @@ BounceResult Bouncer::render (std::atomic<float>* progress, const std::atomic<bo
     for (auto& t : shadow->tracks) trackBufs.emplace_back (juce::jlimit (1, kMaxTrackChannels, t.channelCount()), kBlock);
     juce::AudioBuffer<float> scratch (kMaxTrackChannels, 16384);
 
-    // the outputs: the chosen channels, in the order given (matches the engine's capture order)
+    // the outputs: the chosen channels, in the order given (matches the engine's capture order). 3.39.0: a surround bus is captured and written with all
+    // its channels, in fermata's (the Dolby) order, and its format goes into the file name ("... - Verb (9.1.6).wav")
     std::vector<juce::String> outNames;
-    for (auto& id : settings.sources) outNames.push_back (shadow->nodeName (id));
-    for (auto& id : settings.sourcesPre) outNames.push_back (shadow->nodeName (id) + " (before fader)");       // (captured after the post-fader ones, as the engine orders them)
+    std::vector<BusFormat> outFormats;
+    auto nameOf = [&] (const juce::Uuid& id) { const auto f = shadow->busFormat (id); return shadow->nodeName (id) + (surround::isSurround (f) ? " (" + surround::name (f) + ")" : juce::String()); };
+    for (auto& id : settings.sources)    { outNames.push_back (nameOf (id)); outFormats.push_back (shadow->busFormat (id)); }
+    for (auto& id : settings.sourcesPre) { outNames.push_back (nameOf (id) + " (before fader)"); outFormats.push_back (shadow->busFormat (id)); }       // (captured after the post-fader ones, as the engine orders them)
     const int numOut = (int) outNames.size();
     const bool several = numOut > 1;
     std::vector<juce::AudioBuffer<float>> captures;
-    for (int i = 0; i < numOut; ++i) captures.emplace_back (2, kBlock);
+    for (int i = 0; i < numOut; ++i) captures.emplace_back (surround::channels (outFormats[(size_t) i]), kBlock);
 
     const auto lead = (juce::int64) std::llround (settings.leadSeconds * settings.sampleRate);
     const auto tail = (juce::int64) std::llround (settings.tailSeconds * settings.sampleRate);
@@ -101,11 +112,16 @@ BounceResult Bouncer::render (std::atomic<float>* progress, const std::atomic<bo
     if (totalAll <= 0.0) { res.error = "The range to bounce is empty."; return res; }
 
     juce::WavAudioFormat wav;
-    auto makeWriter = [&] (const juce::File& f, int bits) -> std::unique_ptr<juce::AudioFormatWriter>
+    auto makeWriter = [&] (const juce::File& f, int bits, BusFormat fmt) -> std::unique_ptr<juce::AudioFormatWriter>
     {
         std::unique_ptr<juce::OutputStream> os (f.createOutputStream().release());
         if (os == nullptr) return nullptr;
-        auto opts = juce::AudioFormatWriterOptions().withSampleRate (settings.sampleRate).withNumChannels (2).withBitsPerSample (bits);
+        // a surround file: its channels in fermata's order, which is the Dolby Atmos Renderer's. 5.1 gets the standard WAV channel mask (the same order).
+        // The others are written as plain ("discrete") channels: the WAV mask has no bits for the wides or the top middles, and JUCE would otherwise
+        // guess 8 channels to be 7.1 SDDS - so the reader is told nothing it could get wrong, and the file's name says the format.
+        const int ch = surround::channels (fmt);
+        auto opts = juce::AudioFormatWriterOptions().withSampleRate (settings.sampleRate).withNumChannels (ch).withBitsPerSample (bits)
+                        .withChannelLayout (fmt == BusFormat::S51 ? juce::AudioChannelSet::create5point1() : ch == 2 ? juce::AudioChannelSet::stereo() : juce::AudioChannelSet::discreteChannels (ch));
         if (bits == 32) opts = opts.withSampleFormat (juce::AudioFormatWriterOptions::SampleFormat::floatingPoint);
         return wav.createWriterFor (os, opts);
     };
@@ -143,7 +159,7 @@ BounceResult Bouncer::render (std::atomic<float>* progress, const std::atomic<bo
             const auto finalFile = uniqueFile (fileName (it, outNames[(size_t) o], several));
             const auto tmpFile = settings.folder.getNonexistentChildFile ("bounce-working", ".wav", false);
             finals.push_back (finalFile); tmps.push_back (tmpFile);
-            auto w = makeWriter (settings.normalise ? tmpFile : finalFile, (settings.normalise || settings.floatFiles) ? 32 : 24);
+            auto w = makeWriter (settings.normalise ? tmpFile : finalFile, (settings.normalise || settings.floatFiles) ? 32 : 24, outFormats[(size_t) o]);
             if (w == nullptr) { writers.clear(); cleanUp(); res.error = "Cannot write " + finalFile.getFullPathName(); return res; }
             toClean.add (settings.normalise ? tmpFile : finalFile);
             writers.push_back (std::move (w));
@@ -174,7 +190,7 @@ BounceResult Bouncer::render (std::atomic<float>* progress, const std::atomic<bo
                 for (int o = 0; o < numOut; ++o)
                 {
                     auto& cap = captures[(size_t) o];
-                    for (int c = 0; c < 2; ++c) { const auto mm = cap.findMinMax (c, from, n - from); peaks[(size_t) o] = juce::jmax (peaks[(size_t) o], std::abs (mm.getStart()), std::abs (mm.getEnd())); }
+                    for (int c = 0; c < cap.getNumChannels(); ++c) { const auto mm = cap.findMinMax (c, from, n - from); peaks[(size_t) o] = juce::jmax (peaks[(size_t) o], std::abs (mm.getStart()), std::abs (mm.getEnd())); }
                     if (! douts[(size_t) o]->write (cap, from, n - from))          // (3.1.3: a refused write - the drive is full, or gone - stops the bounce and says so)
                     { writers.clear(); cleanUp(); res.error = "Could not write " + (settings.normalise ? tmps : finals)[(size_t) o].getFileName() + ": the drive did not take it (is it full?)"; return res; }
                 }
@@ -195,12 +211,12 @@ BounceResult Bouncer::render (std::atomic<float>* progress, const std::atomic<bo
                 const auto& tmpFile = tmps[(size_t) o];
                 const auto finalFile = uniqueFile (fileName (it, outNames[(size_t) o], several));
                 std::unique_ptr<juce::AudioFormatReader> in (formats.createReaderFor (tmpFile));
-                auto out = makeWriter (finalFile, 24);
+                auto out = makeWriter (finalFile, 24, outFormats[(size_t) o]);
                 std::unique_ptr<DitherOut> dout; if (out != nullptr) dout = std::make_unique<DitherOut> (*out, true, 0x6A09E667u + (juce::uint32) o * 7919u);
                 if (in == nullptr || out == nullptr) { in.reset(); out.reset(); cleanUp(); res.error = "Cannot write " + finalFile.getFullPathName(); return res; }
                 const float ref = settings.normaliseTogether ? loudest : peaks[(size_t) o];
                 const float gain = ref > 1.0e-9f ? juce::Decibels::decibelsToGain (settings.peakDb) / ref : 1.0f;
-                juce::AudioBuffer<float> buf (2, 16384);
+                juce::AudioBuffer<float> buf (juce::jmax (2, (int) in->numChannels), 16384);
                 const auto frames = in->lengthInSamples;
                 for (juce::int64 pos = 0; pos < frames; pos += 16384)
                 {

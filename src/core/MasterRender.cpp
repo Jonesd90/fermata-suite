@@ -365,6 +365,7 @@ MasterRenderBatch::MasterRenderBatch (const Project& live, const std::vector<juc
                                       const std::vector<juce::Uuid>& stemIds, const juce::File& stemFolder)
     : folder (MasterRenders::folderFor (live)), stems (stemIds), stemDir (stemFolder)
 {
+    stems.erase (std::remove_if (stems.begin(), stems.end(), [&live] (const juce::Uuid& id) { return surround::isSurround (live.busFormat (id)); }), stems.end());    // (3.39.0: stems are stereo files)
     MasterRenders store (folder);
     auto& p = const_cast<Project&> (live);
     {

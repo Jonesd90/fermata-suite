@@ -17,6 +17,10 @@
 
 namespace td
 {
+/** 3.39.0, the Atmos pass (EditWindowComponent::playAtmosPass): how long before the edit's first sound the pass starts (the Composer must see the play
+    position before its in-point; its Beams settle), and how long after its last it goes on (the reverbs ring out, and the position passes the out-point). */
+static constexpr double kAtmosLeadSeconds = 3.0, kAtmosTailSeconds = 10.0;
+
 /** How many different takes the edit is made from (a take used in several pieces counts once; so does a take that was fixed or retimed in places:
     a retimed piece has a take id of its own, 2.103, but its take's window and name). */
 static int takesInEdit (const EditDef& e)
@@ -2684,6 +2688,21 @@ juce::String EditWindowComponent::play (double from, double to, bool loop, bool 
     auto* e = edit();
     if (timeline->guideSolo && e != nullptr && e->guide.active() && e->showGuide) return app.playEditGuide (editId, from, to, loop, goOn);
     return app.playEdit (editId, from, to, loop, goOn);
+}
+
+juce::String EditWindowComponent::playAtmosPass()
+{
+    auto* e = edit();
+    if (e == nullptr) return "That edit no longer exists";
+    if (e->isEmpty()) return "The edit is empty: there is nothing to play through the Dolby Atmos Composer";
+    const double rate = e->sampleRate > 0.0 ? e->sampleRate : 48000.0;
+    const double from = juce::jmax (0.0, (double) e->audibleStart() / rate - kAtmosLeadSeconds);
+    const double to = (double) e->audibleEnd() / rate + kAtmosTailSeconds;
+    const auto err = app.playEdit (editId, from, to);
+    if (err.isEmpty())
+        app.setNotice ("Atmos pass: playing from " + juce::String (from, 1) + " s to " + juce::String (to, 1) + " s. The Dolby Atmos Composer writes its file while this plays; its in and out points should be "
+                       + juce::String ((double) e->audibleStart() / rate, 2) + " s and " + juce::String ((double) e->audibleEnd() / rate, 2) + " s.");
+    return err;
 }
 
 void EditWindowComponent::replayFromPlayhead()

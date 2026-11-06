@@ -143,6 +143,7 @@ private:
     juce::TextEditor nameEditor;
     MixIconButton themeButton { MixIconButton::Kind::Look }, copyButton { MixIconButton::Kind::CopyMix }, altButton { MixIconButton::Kind::AltDeck };
     juce::TextButton auditionButton, deleteButton { "Delete this mixer" };
+    juce::TextButton atmosButton { "Atmos pass" };          // 3.39.0: shown while the project has a Dolby Atmos Composer (see checkAtmos)
     juce::ToggleButton followBox { "Follow Processing Mixer" };    // a cue mixer: plays the processing mixer's main mix instead of its own (which is kept)
     std::unique_ptr<juce::Component> followCover;               // over the strips while it follows (they rest, untouchable, until it is unticked)
     void updateFollow();
@@ -157,6 +158,10 @@ private:
     int statusFlash = 0;
     int refreshCounter = 0;                                 // (timerCallback: every tenth tick, 3 Hz, the plug-in names and slot rows)
     void updateAuditionButton();
+    /** 3.39.0: what the Dolby Atmos Composer needs that is not so (two of them; a sample rate other than 48 or 96 kHz; this mixer going nowhere), for the
+        status line - looked at when the strips are rebuilt and every few seconds. Empty: nothing. */
+    void checkAtmos();
+    juce::String atmosNote;
     MixerLookAndFeel mixLook;             // declared before the viewport: it must outlive it
     bool shownDark = false;
     int shownGen = 0;

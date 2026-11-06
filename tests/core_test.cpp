@@ -53,6 +53,7 @@
 #include "../src/core/RxWatch.h"
 #include "../src/core/StereoJoin.h"
 #include "../src/core/WaveShape.h"
+#include "../src/core/Surround.h"
 #include "../src/ui/TakeMatchService.h"
 #include "../src/ui/WaveThumb.h"
 #include <cstdio>
@@ -12848,6 +12849,372 @@ int main()
         std::vector<PlacedWindow> w (3);
         w[0] = { 0, 0, 533, 900, 0, 0 }; w[1] = { 533, 0, 534, 900, 0, 0 }; w[2] = { 1067, 0, 533, 900, 1096, 0 };
         CHECK (placeInCells (w, 0, 0, 1600, 900) == 1 && w[2].pright() == 1600 && w[2].pw == 1096 && w[1].pw >= 160 && w[1].px == 533 && w[0].pw == 504);     // (the left one ends where the mixer now starts)
+    }
+
+    SECTION ("3.39.0 surround buses (part 1): the formats, the panner, the fold-downs, the plug-in channel order; the format in the project; slot layouts; the Atmos links left out of a render copy");
+    {
+        using namespace td::surround;
+        auto power = [] (const float* g, int n) { float t = 0; for (int i = 0; i < n; ++i) t += g[i] * g[i]; return t; };
+        int nl = 0; const auto* lays = allLayouts (nl);
+        CHECK (nl == 10);
+        for (int i = 0; i < nl; ++i)
+        {
+            const auto f = lays[i].format;
+            CHECK (parse (key (f)) == f && fromLayoutCode ((int) f) == f && channels (f) == lays[i].count && channels (f) <= kMaxBusChannels);
+            if (! isMonitorFormat (f))
+            {
+                CHECK (channelSet (f).size() == channels (f));
+                std::vector<int> seen ((size_t) channels (f), 0);                 // fermata's order -> the plug-in's: every channel once
+                for (int c = 0; c < channels (f); ++c) { const int j = juceIndex (f, c); CHECK (juce::isPositiveAndBelow (j, channels (f))); if (juce::isPositiveAndBelow (j, channels (f))) ++seen[(size_t) j]; }
+                for (int v : seen) CHECK (v == 1);
+            }
+            float g[kMaxBusChannels];
+            for (int k = 0; k < 300; ++k)                                        // the panner keeps the power everywhere, never feeds LFE or headphones
+            {
+                pointGains (f, (float) (k % 21) / 10.0f - 1.0f, (float) ((k / 21) % 21) / 10.0f - 1.0f, (float) (k % 5) / 4.0f, (float) (k % 3) / 2.0f, (float) (k % 4) / 3.0f, g);
+                CHECK (std::abs (power (g, channels (f)) - 1.0f) < 1.0e-4f);
+                for (int c = 0; c < channels (f); ++c) if (info (lays[i].spk[c]).lfe || info (lays[i].spk[c]).phones) CHECK (g[c] == 0.0f);
+            }
+        }
+        CHECK (parse ("") == BusFormat::Stereo && parse ("7.1.4 ") == BusFormat::S714 && fromLayoutCode (1) == BusFormat::Stereo && fromLayoutCode (2) == BusFormat::Stereo);
+        CHECK (channelSet (BusFormat::Stereo) == juce::AudioChannelSet::stereo() && channelSet (BusFormat::S51) == juce::AudioChannelSet::create5point1()
+               && channelSet (BusFormat::S71) == juce::AudioChannelSet::create7point1() && channelSet (BusFormat::S712) == juce::AudioChannelSet::create7point1point2()
+               && channelSet (BusFormat::S514) == juce::AudioChannelSet::create5point1point4() && channelSet (BusFormat::S714) == juce::AudioChannelSet::create7point1point4()
+               && channelSet (BusFormat::S914) == juce::AudioChannelSet::create9point1point4() && channelSet (BusFormat::S916) == juce::AudioChannelSet::create9point1point6());
+        CHECK (channelSet (BusFormat::S916Hp).size() == 0 && juceIndex (BusFormat::S916Hp, 16) == -1);
+        {   // 9.1.6 in fermata's (Dolby) order L R C LFE Lss Rss Lrs Rrs Lw Rw Ltf Rtf Ltm Rtm Ltr Rtr; JUCE's is L R C LFE Lss Rss Ltf Rtf Ltr Rtr Lrs Rrs Lw Rw Ltm Rtm
+            const int expect[16] = { 0, 1, 2, 3, 4, 5, 10, 11, 12, 13, 6, 7, 14, 15, 8, 9 };
+            for (int c = 0; c < 16; ++c) CHECK (juceIndex (BusFormat::S916, c) == expect[c]);
+            CHECK (channelLabel (BusFormat::S916, 12) == "Ltm" && channelLabel (BusFormat::S714, 3) == "LFE" && channelLabel (BusFormat::S916Hp, 17) == "HpR");
+        }
+        float g[kMaxBusChannels];
+        pointGains (BusFormat::S916, -1, 1, 0, 0, 1, g); CHECK (std::abs (g[0] - 1.0f) < 1.0e-6f);                              // front left: L
+        pointGains (BusFormat::S916, 0, 1, 0, 0, 1, g);  CHECK (std::abs (g[2] - 1.0f) < 1.0e-6f);                              // front centre: C
+        pointGains (BusFormat::S916, 0, 1, 0, 0, 0, g);  CHECK (std::abs (g[0] - 0.7071068f) < 1.0e-5f && std::abs (g[1] - 0.7071068f) < 1.0e-5f && g[2] == 0.0f);  // centre 0: a phantom centre
+        pointGains (BusFormat::S916, -1, 0, 1, 0, 1, g); CHECK (std::abs (g[12] - 1.0f) < 1.0e-6f);                             // overhead left: Ltm
+        pointGains (BusFormat::S714, -1, 0, 1, 0, 1, g); CHECK (std::abs (g[8] - 0.7071068f) < 1.0e-5f && std::abs (g[10] - 0.7071068f) < 1.0e-5f);   // 7.1.4: between Ltf and Ltr
+        pointGains (BusFormat::S71, -1, 0, 1, 0, 1, g);  CHECK (std::abs (g[4] - 1.0f) < 1.0e-6f);                              // no tops: the height is ignored
+        pointGains (BusFormat::S51, 1, -1, 0, 0, 1, g);  CHECK (std::abs (g[5] - 1.0f) < 1.0e-6f);                              // 5.1 rear right: Rs
+        pointGains (BusFormat::S916, -1, 0.5f, 0, 0, 1, g); CHECK (std::abs (g[8] - 1.0f) < 1.0e-6f);                           // between front and side: the wide
+        pointGains (BusFormat::S916, 0, 1, 0, 1, 1, g); for (int c = 0; c < 16; ++c) CHECK (c == 3 ? g[c] == 0.0f : std::abs (g[c] - 0.2581989f) < 1.0e-5f);   // spread 1: every speaker alike
+        {
+            PanPos pp; float xs[2], m[2 * kMaxBusChannels];
+            sourceXs (pp, 2, 0.0f, -1.0f, 1.0f, xs); sourceMatrix (BusFormat::S916, 2, xs, pp, m);                 // a stereo track as it is: L to L, R to R
+            CHECK (std::abs (m[0] - 1.0f) < 1.0e-6f && std::abs (m[16 + 1] - 1.0f) < 1.0e-6f);
+            sourceXs (pp, 1, -0.5f, 0, 0, xs); CHECK (xs[0] == -0.5f);                                               // a mono track follows its pan
+            pp.followPan = false; pp.x = 0.2f; pp.width = 0.5f; sourceXs (pp, 2, 0, -1, 1, xs); CHECK (std::abs (xs[0] + 0.3f) < 1.0e-6f && std::abs (xs[1] - 0.7f) < 1.0e-6f);
+        }
+        float fm[kMaxBusChannels * kMaxBusChannels];
+        foldMatrix (BusFormat::S51, BusFormat::Stereo, fm);                         // Lo/Ro: centre and surround at -3 dB, no LFE
+        CHECK (fm[0] == 1.0f && fm[1] == 0.0f && std::abs (fm[4] - 0.7071068f) < 1.0e-5f && fm[6] == 0.0f && fm[7] == 0.0f && std::abs (fm[8] - 0.7071068f) < 1.0e-5f && fm[9] == 0.0f);
+        foldMatrix (BusFormat::S71, BusFormat::S51, fm);                            // 7.1 -> 5.1: Ls = Lss + Lrs
+        CHECK (fm[4 * 6 + 4] == 1.0f && fm[6 * 6 + 4] == 1.0f && fm[5 * 6 + 5] == 1.0f && fm[7 * 6 + 5] == 1.0f);
+        foldMatrix (BusFormat::S916, BusFormat::S916, fm);
+        bool ident = true; for (int i = 0; i < 16; ++i) for (int j = 0; j < 16; ++j) ident = ident && fm[i * 16 + j] == (i == j ? 1.0f : 0.0f);
+        CHECK (ident);
+        foldMatrix (BusFormat::S714, BusFormat::S712, fm);                          // tops into the top middles
+        CHECK (fm[8 * 10 + 8] == 1.0f && fm[10 * 10 + 8] == 1.0f && fm[9 * 10 + 9] == 1.0f && fm[11 * 10 + 9] == 1.0f);
+        foldMatrix (BusFormat::S916, BusFormat::Stereo, fm);                        // nothing crosses to the wrong side; every left speaker reaches L
+        for (int i = 0; i < 16; ++i) { const int sd = side (BusFormat::S916, i); if (sd < 0) CHECK (fm[i * 2 + 1] == 0.0f && fm[i * 2] > 0.0f); if (sd > 0) CHECK (fm[i * 2] == 0.0f && fm[i * 2 + 1] > 0.0f); }
+        foldMatrix (BusFormat::S916Hp, BusFormat::S916, fm); CHECK (fm[16 * 16 + 0] == 0.0f && fm[17 * 16 + 1] == 0.0f && fm[0] == 1.0f);       // the headphones go nowhere else
+        foldMatrix (BusFormat::S51, BusFormat::S71, fm); CHECK (std::abs (fm[4 * 8 + 4] - 0.7071068f) < 1.0e-5f && std::abs (fm[4 * 8 + 6] - 0.7071068f) < 1.0e-5f);
+        CHECK (offered (false).size() == 8 && offered (true).size() == 10 && ! isSurround (BusFormat::Stereo) && speakerChannels (BusFormat::S916Hp) == 16);
+
+        // ---- the project: the format saved (only when not stereo), slot layouts, the panner and the headphone pair kept
+        struct Recorder : InsertProcessor
+        {
+            explicit Recorder (juce::String d) : desc (std::move (d)) {}
+            void prepare (double, int, int layout) override { lastLayout = layout; ++prepares; }
+            void process (juce::AudioBuffer<float>&) override {}
+            juce::String getName() const override { return "Recorder"; }
+            juce::String getDescription() const override { return desc; }
+            juce::String desc; int lastLayout = 0, prepares = 0;
+        };
+        auto descOf = [] (const juce::String& name, const juce::String& maker) { juce::XmlElement x ("PLUGIN"); x.setAttribute ("name", name); x.setAttribute ("manufacturer", maker); return x.toString(); };
+        Project q;
+        q.insertFactory = [] (const juce::String& d, const juce::String&) -> std::unique_ptr<InsertProcessor> { return std::make_unique<Recorder> (d); };
+        q.tracks.clear(); q.retireAllMixers();
+        const auto ta = q.addTrack ("Spot", TrackFormat::Mono, 0).id;
+        auto& qm = q.addMixer ("Mix");
+        const auto verb = q.addBus ("Verb 9.1.6", false, BusFormat::S916).id;
+        const auto room = q.addBus ("Monitor", true, BusFormat::S916Hp).id;
+        const auto plain = q.addBus ("Stereo Out", true).id;
+        CHECK (q.addBus ("No", false, BusFormat::S916Hp).format == BusFormat::Stereo);       // an Int Bus is never a monitor format
+        q.syncMixers();
+        CHECK (q.busFormat (verb) == BusFormat::S916 && q.busFormat (plain) == BusFormat::Stereo && q.busFormat (ta) == BusFormat::Stereo);
+        CHECK (! qm.busFor (room)->isMain.get() && qm.busFor (plain)->isMain.get());         // the first STEREO Ext Bus is the main output
+        auto* rv = new Recorder (descOf ("Seventh Heaven Professional", "LiquidSonics"));
+        CHECK (qm.busFor (verb)->slots[0].set (std::unique_ptr<InsertProcessor> (rv), 48000.0, 512, 2) && rv->lastLayout == (int) BusFormat::S916);   // prepared as 9.1.6
+        auto* sd = qm.stripFor (ta)->sends.get (verb);
+        auto* ins = new Recorder (descOf ("EQ", "Someone"));
+        sd->slots[0].set (std::unique_ptr<InsertProcessor> (ins), 48000.0, 512);
+        CHECK (ins->lastLayout == 2);                                                          // (the send did not know yet where it goes)
+        q.applySlotLayouts(); CHECK (ins->lastLayout == (int) BusFormat::S916 && ins->prepares == 2);      // a send's inserts process what goes into the 9.1.6 bus
+        q.applySlotLayouts(); CHECK (ins->prepares == 2);                                      // nothing changed: nothing prepared again
+        CHECK (q.setBusFormat (verb, BusFormat::S714) && rv->lastLayout == (int) BusFormat::S714 && ins->lastLayout == (int) BusFormat::S714);
+        CHECK (! q.setBusFormat (verb, BusFormat::S714Hp) && q.busFormat (verb) == BusFormat::S714);
+        qm.busFor (plain)->isMain.set (true);
+        CHECK (q.setBusFormat (plain, BusFormat::S51) && ! qm.busFor (plain)->isMain.get());     // a surround Ext Bus is never a main output
+        CHECK (q.setBusFormat (plain, BusFormat::Stereo));
+        sd->gainDb.set (-6.0f); sd->panZ.set (0.75f); sd->panFollow.set (false); sd->panX.set (-0.25f);
+        qm.busFor (room)->hpFirst.store (17); qm.busFor (room)->outFirst.store (0);
+        const auto saved = q.toVar();
+        const auto text = juce::JSON::toString (saved);
+        CHECK (text.contains ("\"format\": \"7.1.4\"") && text.contains ("\"format\": \"9.1.6+hp\"") && text.contains ("surroundPan") && text.contains ("hpFirst"));
+        int formatKeys = 0; for (auto& b : *saved["buses"].getArray()) if (b.hasProperty ("format")) ++formatKeys;
+        CHECK (formatKeys == 2);                                                               // stereo buses write none: an older fermata reads them as before
+        Project r; r.insertFactory = q.insertFactory;
+        CHECK (r.fromVar (saved));
+        CHECK (r.busFormat (verb) == BusFormat::S714 && r.busFormat (room) == BusFormat::S916Hp && r.busFormat (plain) == BusFormat::Stereo);
+        auto* rm = r.mixers.front().get();
+        auto* rsd = rm->stripFor (ta)->sends.find (verb);
+        CHECK (rsd != nullptr && rsd->panZ.get() == 0.75f && ! rsd->panFollow.get() && rsd->panX.get() == -0.25f && rsd->panY.get() == 1.0f && rsd->panCentre.get() == 1.0f);
+        CHECK (rm->busFor (room)->hpFirst.load() == 17);
+        CHECK (rm->busFor (verb)->slots[0].layout() == (int) BusFormat::S714 && rsd->slots[0].layout() == (int) BusFormat::S714 && rm->stripFor (ta)->slots[0].layout() == 2);
+        if (auto* rp = dynamic_cast<Recorder*> (rm->busFor (verb)->slots[0].getProcessorUnsafe())) CHECK (rp->lastLayout == (int) BusFormat::S714);
+        else CHECK (false);
+        CHECK (r.mixerOutputsText (*rm).contains ("Monitor -> 1-16") && r.mixerOutputsText (*rm).contains ("Monitor headphones -> 18-19"));
+        {   // a damaged file: an Int Bus said to be a monitor format reads as stereo; an unknown format as stereo
+            auto bad = juce::JSON::parse ("{\"id\":\"" + juce::Uuid().toString() + "\",\"name\":\"x\",\"external\":false,\"format\":\"9.1.6+hp\"}");
+            auto copy = juce::JSON::parse (text); copy["buses"].getArray()->add (bad);
+            Project r2; CHECK (r2.fromVar (copy) && r2.buses.back().format == BusFormat::Stereo);
+        }
+
+        // ---- the Atmos links: never started in a render copy, and not counted as missing from it
+        CHECK (Project::atmosLinkOf (descOf ("Dolby Atmos Composer", "Fiedler Audio")) == Project::AtmosLink::Composer);
+        CHECK (Project::atmosLinkOf (descOf ("Dolby Atmos Composer Essential", "Fiedler Audio")) == Project::AtmosLink::Composer);
+        CHECK (Project::atmosLinkOf (descOf ("Dolby Atmos Beam", "Fiedler Audio")) == Project::AtmosLink::Beam);
+        CHECK (Project::atmosLinkOf (descOf ("Spacelab Beam", "Fiedler Audio")) == Project::AtmosLink::Beam);
+        CHECK (Project::atmosLinkOf (descOf ("Spacelab Ignition", "Fiedler Audio")) == Project::AtmosLink::Spacelab);
+        CHECK (Project::atmosLinkOf (descOf ("Seventh Heaven Professional", "LiquidSonics")) == Project::AtmosLink::None && Project::atmosLinkOf ({}) == Project::AtmosLink::None);
+        auto* beam = new Recorder (descOf ("Dolby Atmos Beam", "Fiedler Audio"));
+        qm.busFor (verb)->slots[1].set (std::unique_ptr<InsertProcessor> (beam), 48000.0, 512);
+        auto* lab = new Recorder (descOf ("Spacelab Ignition", "Fiedler Audio"));
+        qm.busFor (verb)->slots[2].set (std::unique_ptr<InsertProcessor> (lab), 48000.0, 512);
+        CHECK (! q.hasAtmosComposer());
+        {
+            auto copy = q.cloneForRender (48000.0, 512);
+            auto* cm = copy->mixers.front().get();
+            CHECK (cm->busFor (verb)->slots[0].isLoaded() && ! cm->busFor (verb)->slots[1].isLoaded() && cm->busFor (verb)->slots[2].isLoaded());   // no Composer: Spacelab is safe to copy
+            CHECK (cm->busFor (verb)->slots[1].savedDescription.isNotEmpty());                // (kept, so nothing is lost)
+            CHECK (q.pluginsMissingFrom (*copy, qm.id).isEmpty());
+        }
+        qm.busFor (room)->slots[0].set (std::make_unique<Recorder> (descOf ("Dolby Atmos Composer", "Fiedler Audio")), 48000.0, 512);
+        CHECK (q.hasAtmosComposer() && qm.busFor (room)->slots[0].layout() == (int) BusFormat::S916Hp);
+        {
+            auto copy = q.cloneForRender (48000.0, 512);
+            auto* cm = copy->mixers.front().get();
+            CHECK (cm->busFor (verb)->slots[0].isLoaded() && ! cm->busFor (verb)->slots[1].isLoaded() && ! cm->busFor (verb)->slots[2].isLoaded() && ! cm->busFor (room)->slots[0].isLoaded());
+            CHECK (q.pluginsMissingFrom (*copy, qm.id).isEmpty());
+        }
+        qm.busFor (verb)->slots[3].set (std::make_unique<Recorder> (juce::String()), 48000.0, 512);     // (one with no description: never re-created, never reported - as before)
+        CHECK (q.pluginsMissingFrom (*q.cloneForRender (48000.0, 512), qm.id).isEmpty());
+    }
+
+    SECTION ("3.39.0 surround buses (part 2): the engine - a 9.1.6 bus fed through the panner, folds, outputs per speaker and the headphone pair, delay compensation, meters, taps, plug-in positions, a wide bounce");
+    {
+        using namespace td::surround;
+        // a mono spot (input 0), a stereo pair (inputs 1-2), a 9.1.6 Int Bus (the reverb), a 7.1.4 Int Bus, a 9.1.6 + headphones Ext Bus, a stereo Ext Bus
+        Project q;
+        q.projectFile = tmp.getChildFile ("Surround.fermata");
+        q.setInputCount (4); q.setOutputCount (24);
+        q.tracks.clear(); q.retireAllMixers();
+        const auto spot = q.addTrack ("Spot", TrackFormat::Mono, 0).id;
+        const auto pair = q.addTrack ("Pair", TrackFormat::Stereo, 1).id;
+        const auto verb = q.addBus ("Verb", false, BusFormat::S916).id;
+        const auto bed  = q.addBus ("Bed", false, BusFormat::S714).id;
+        const auto room = q.addBus ("Room", true, BusFormat::S916Hp).id;
+        const auto st   = q.addBus ("Stereo out", true).id;
+        auto& m = q.addMixer ("M");
+        AudioEngine e (q);
+        e.prepare (48000.0, 64);
+        auto* sSpot = m.stripFor (spot); auto* sPair = m.stripFor (pair); auto* bVerb = m.busFor (verb); auto* bBed = m.busFor (bed); auto* bRoom = m.busFor (room); auto* bSt = m.busFor (st);
+        CHECK (bSt->isMain.get() && ! bRoom->isMain.get());                            // the stereo Ext Bus is the main output, never the surround one
+        bRoom->outFirst.store (0); bRoom->hpFirst.store (16); bSt->outFirst.store (20);
+        // the spot and the pair send to the reverb; the reverb's output goes to the room; the pair's output goes to the stereo out (Main)
+        CHECK (q.setSendLevel (m, spot, verb, 0.0f) == SendResult::RoutingChanged && q.setSendLevel (m, pair, verb, 0.0f) == SendResult::RoutingChanged);
+        bVerb->outOn.set (true); bVerb->outDest = room;
+        sPair->outOn.set (true);
+        for (auto* sp : { sSpot, sPair }) { sp->gainDb.set (0.0f); sp->mute.set (false); }
+        sSpot->pan.set (0.0f); sPair->panL.set (-1.0f); sPair->panR.set (1.0f);
+        e.rebuildPlan();
+        // one block of a steady 0.5 on every input, run until the ramps have settled, then look at the outputs
+        auto run = [&] (int blocks, std::vector<std::vector<float>>& outs, float inLevel = 0.5f)
+        {
+            outs.assign (24, std::vector<float> (64, 0.0f));
+            std::vector<std::vector<float>> ins (4, std::vector<float> (64, inLevel));
+            const float* in[4]; float* out[24];
+            for (int c = 0; c < 4; ++c) in[c] = ins[(size_t) c].data();
+            for (int b = 0; b < blocks; ++b)
+            {
+                for (int c = 0; c < 24; ++c) { std::fill (outs[(size_t) c].begin(), outs[(size_t) c].end(), 0.0f); out[c] = outs[(size_t) c].data(); }
+                e.process (in, 4, out, 24, 64);
+            }
+        };
+        auto level = [] (const std::vector<float>& v) { return v[63]; };            // (the last sample: the ramps are done)
+        std::vector<std::vector<float>> o;
+        run (6, o);
+        // the pair follows its pans: L and R only; the spot, pan 0, lands in C (centre 1): the room's outputs 1 (L) 2 (R) 3 (C), nothing elsewhere, headphones silent
+        CHECK (std::abs (level (o[0]) - 0.5f) < 1.0e-4f && std::abs (level (o[1]) - 0.5f) < 1.0e-4f && std::abs (level (o[2]) - 0.5f) < 1.0e-4f);
+        for (int c = 3; c < 16; ++c) CHECK (std::abs (level (o[(size_t) c])) < 1.0e-6f);
+        CHECK (std::abs (level (o[16])) < 1.0e-6f && std::abs (level (o[17])) < 1.0e-6f);
+        CHECK (std::abs (level (o[20]) - 0.5f) < 1.0e-4f && std::abs (level (o[21]) - 0.5f) < 1.0e-4f);     // the pair on the stereo out (Main) as ever
+        // the 9.1.6 bus's meters: a meter per channel, and the two-sided ones carry the loudest of each side (C counts for both)
+        CHECK (bVerb->chPeak[0].get() > 0.49f && bVerb->chPeak[2].get() > 0.49f && bVerb->chPeak[4].get() == 0.0f && bVerb->chPeak[12].get() == 0.0f);
+        CHECK (bVerb->meterL.get() > 0.49f && bVerb->meterR.get() > 0.49f && bVerb->chRms[2].get() > 0.03f && bVerb->chRms[5].get() == 0.0f);
+        CHECK (bRoom->chPeak[16].get() == 0.0f && bRoom->remotePkL.get() > 0.49f);
+        // the spot moved to the back, overhead, not following its pan: pointGains says where it lands; the room's outputs agree
+        auto* sendSpot = sSpot->sends.find (verb);
+        sendSpot->panFollow.set (false); sendSpot->panX.set (-1.0f); sendSpot->panY.set (-1.0f); sendSpot->panZ.set (1.0f);
+        run (6, o);
+        float g[kMaxBusChannels]; pointGains (BusFormat::S916, -1.0f, -1.0f, 1.0f, 0.0f, 1.0f, g);
+        CHECK (std::abs (g[14] - 1.0f) < 1.0e-5f);                                       // (Ltr)
+        for (int c = 0; c < 16; ++c)
+        {
+            const float expect = 0.5f * g[c] + (c < 2 ? 0.5f : 0.0f);                    // the pair still on L and R
+            CHECK (std::abs (level (o[(size_t) c]) - expect) < 1.0e-3f);
+        }
+        // the move zips nowhere: a jump of the panner is crossfaded over the block (the first sample of the next block is near the old gain)
+        sendSpot->panX.set (1.0f);                                                       // (Ltr -> Rtr)
+        run (1, o);
+        CHECK (o[14][0] > 0.4f && o[14][63] < 0.03f && o[15][0] < 0.1f && o[15][63] > 0.47f);
+        run (4, o);
+        CHECK (std::abs (level (o[15]) - 0.5f) < 1.0e-3f && std::abs (level (o[14])) < 1.0e-3f);
+        // the reverb bus into the 7.1.4 bed: a fold (the tops into Ltf / Ltr, the wides into L and the sides); the bed into the stereo out: Lo/Ro
+        bVerb->outDest = bed; bBed->outOn.set (true); bBed->outDest = st;
+        sendSpot->panX.set (-1.0f); sendSpot->panY.set (0.5f); sendSpot->panZ.set (0.0f);    // the left wide
+        e.rebuildPlan();
+        run (6, o);
+        CHECK (std::abs (level (o[0])) < 1.0e-6f);                                       // (the room gets nothing now)
+        float fm[kMaxBusChannels * kMaxBusChannels];
+        foldMatrix (BusFormat::S916, BusFormat::S714, fm);
+        CHECK (std::abs (fm[8 * 12 + 0] - 0.7071068f) < 1.0e-5f && std::abs (fm[8 * 12 + 4] - 0.7071068f) < 1.0e-5f);     // Lw -> L and Lss at -3 dB
+        // the stereo out: the pair (1.0 each side with the bed's share of the pair's L / R) + the spot's wide, folded Lo/Ro from the bed (L: 0.707; Lss -> Ls at -3 dB: 0.707 * 0.707)
+        const float spotL = 0.5f * (0.7071068f + 0.7071068f * 0.7071068f);
+        CHECK (std::abs (level (o[20]) - (0.5f + 0.5f + spotL)) < 2.0e-3f && std::abs (level (o[21]) - (0.5f + 0.5f)) < 2.0e-3f);
+        // delay compensation across the surround path: a plug-in delaying the reverb bus by 100 samples holds the direct path back as much (one impulse, together)
+        bVerb->outDest = room; bBed->outOn.set (false); sPair->outOn.set (false);
+        CHECK (q.setSendLevel (m, pair, room, 0.0f) == SendResult::RoutingChanged);     // the pair straight to the room too (Pan: L and R)
+        sendSpot->gainDb.set (-100.0f);
+        bVerb->slots[0].set (std::make_unique<LatencyInsert> (100), 48000.0, 64);
+        e.checkLatency();
+        CHECK (e.mixerLatency (&m) == 100 && bVerb->slots[0].layout() == (int) BusFormat::S916 && bVerb->slots[0].posLat.load() == 0 && bRoom->slots[0].posLat.load() == 100);
+        {
+            std::vector<float> outL;
+            for (int blk = 0; blk < 6; ++blk)
+            {
+                std::vector<float> i0 (64, 0.0f), i1 (64, 0.0f), i2 (64, 0.0f), i3 (64, 0.0f);
+                if (blk == 2) { i1[0] = 1.0f; i2[0] = 1.0f; }
+                std::vector<std::vector<float>> outs (24, std::vector<float> (64, 0.0f));
+                const float* in[4] = { i0.data(), i1.data(), i2.data(), i3.data() }; float* out[24];
+                for (int c = 0; c < 24; ++c) out[c] = outs[(size_t) c].data();
+                e.process (in, 4, out, 24, 64);
+                outL.insert (outL.end(), outs[0].begin(), outs[0].end());
+            }
+            int peaks = 0, at = -1;
+            for (int i = 0; i < (int) outL.size(); ++i) if (std::abs (outL[(size_t) i]) > 0.01f) { ++peaks; at = i; }
+            CHECK (peaks == 1 && at == 2 * 64 + 100 && std::abs (outL[(size_t) at] - 2.0f) < 0.02f);     // (LatencyInsert delays only its first two channels: L arrives whole, once, 100 late, from both paths)
+        }
+        bVerb->slots[0].clear (48000.0, 64);
+        e.checkLatency();
+        // the plug-in in a slot is told the position of the sound it processes: the transport's less the slot's lateness (currentSlotLatency)
+        struct PosInsert : InsertProcessor
+        {
+            void prepare (double, int, int) override {}
+            void process (juce::AudioBuffer<float>&) override { seen = currentSlotLatency(); ++calls; }
+            juce::String getName() const override { return "Pos"; }
+            int seen = -1, calls = 0;
+        };
+        auto* pi = new PosInsert();
+        bRoom->slots[1].set (std::unique_ptr<InsertProcessor> (pi), 48000.0, 64);
+        bVerb->slots[0].set (std::make_unique<LatencyInsert> (40), 48000.0, 64);
+        e.checkLatency();
+        run (1, o);
+        CHECK (pi->calls == 1 && pi->seen == 40 && bRoom->slots[1].posLat.load() == 40);
+        bVerb->slots[0].clear (48000.0, 64); bRoom->slots[1].clear (48000.0, 64); e.checkLatency();
+        // the headphone pair of the monitor format comes out on hpFirst: a plug-in on the room bus that puts something on channels 16-17
+        struct HpInsert : InsertProcessor
+        {
+            void prepare (double, int, int) override {}
+            void process (juce::AudioBuffer<float>& b) override { if (b.getNumChannels() >= 18) { juce::FloatVectorOperations::fill (b.getWritePointer (16), 0.25f, b.getNumSamples()); juce::FloatVectorOperations::fill (b.getWritePointer (17), -0.25f, b.getNumSamples()); } chans = b.getNumChannels(); }
+            juce::String getName() const override { return "Hp"; }
+            int chans = 0;
+        };
+        auto* hp = new HpInsert();
+        bRoom->slots[0].set (std::unique_ptr<InsertProcessor> (hp), 48000.0, 64);
+        run (6, o);
+        CHECK (hp->chans == 18 && std::abs (level (o[16]) - 0.25f) < 1.0e-4f && std::abs (level (o[17]) + 0.25f) < 1.0e-4f && std::abs (level (o[18])) < 1.0e-6f);
+        CHECK (bRoom->chPeak[16].get() > 0.24f && bRoom->chPeak[17].get() > 0.24f);
+        bRoom->hpFirst.store (-1); e.rebuildPlan();
+        run (3, o);
+        CHECK (std::abs (level (o[16])) < 1.0e-6f && std::abs (level (o[17])) < 1.0e-6f);          // (nowhere: the pair is dropped)
+        bRoom->hpFirst.store (16); bRoom->slots[0].clear (48000.0, 64); e.checkLatency();
+        // a stereo project renders exactly as before: nothing of this touches a stereo mixer (the other sections pin that); the stereo out here: the pair as it was
+        sPair->outOn.set (true); e.rebuildPlan(); run (6, o);
+        CHECK (std::abs (level (o[20]) - 0.5f) < 1.0e-4f && std::abs (level (o[21]) - 0.5f) < 1.0e-4f);
+        // an offline capture of the 9.1.6 bus is 16 wide, in fermata's order; of the stereo bus 2 wide
+        {
+            sendSpot->gainDb.set (0.0f); sendSpot->panFollow.set (true); sendSpot->panY.set (1.0f);     // (the send is back on before the plan is built: a send that is off is not in it)
+            e.setOfflineTarget (m.id, { verb, st }, {});
+            e.rebuildPlan();
+            std::vector<juce::AudioBuffer<float>> trackAudio;
+            trackAudio.emplace_back (1, 64); trackAudio.emplace_back (2, 64);
+            for (auto& tb : trackAudio) for (int c = 0; c < tb.getNumChannels(); ++c) juce::FloatVectorOperations::fill (tb.getWritePointer (c), 0.5f, 64);
+            std::vector<juce::AudioBuffer<float>> caps;
+            caps.emplace_back (16, 64); caps.emplace_back (2, 64);
+            for (int k = 0; k < 6; ++k) e.renderOffline (trackAudio, 64, caps);
+            CHECK (std::abs (caps[0].getSample (0, 63) - 0.5f) < 1.0e-4f && std::abs (caps[0].getSample (2, 63) - 0.5f) < 1.0e-4f && std::abs (caps[0].getSample (12, 63)) < 1.0e-6f);
+            CHECK (std::abs (caps[1].getSample (0, 63) - 0.5f) < 1.0e-4f && std::abs (caps[1].getSample (1, 63) - 0.5f) < 1.0e-4f);
+            e.setOfflineTarget (juce::Uuid::null(), {}, {});
+            e.rebuildPlan();
+        }
+        // a bounce of the 9.1.6 bus: one 16-channel file, named with its format, the channels in fermata's order (C = channel 3 carries the spot)
+        {
+            const auto wavFile = tmp.getChildFile ("surround-src.wav");
+            {
+                juce::WavAudioFormat wav;
+                std::unique_ptr<juce::OutputStream> os (wavFile.createOutputStream().release());
+                auto w = wav.createWriterFor (os, juce::AudioFormatWriterOptions().withSampleRate (48000.0).withNumChannels (1).withBitsPerSample (24));
+                CHECK (w != nullptr);
+                juce::AudioBuffer<float> b (1, 4800); juce::FloatVectorOperations::fill (b.getWritePointer (0), 0.5f, 4800);
+                w->writeFromAudioSampleBuffer (b, 0, 4800);
+            }
+            PlaySegment seg; seg.trackIndex = 0; seg.file = wavFile; seg.rate = 48000.0; seg.begin = 0; seg.end = 4800;
+            BounceSettings bs;
+            bs.segments = { seg }; bs.sampleRate = 48000.0; bs.mixerId = m.id; bs.sources = { verb, st }; bs.folder = tmp.getChildFile ("surround-bounce");
+            bs.items.push_back ({ "Piece", 0, 4800 });
+            Bouncer b (q, bs);
+            CHECK (b.getPrepareError().isEmpty());
+            auto r = b.render();
+            CHECK (r.error.isEmpty() && r.files.size() == 2);
+            if (r.files.size() == 2)
+            {
+                CHECK (juce::File (r.files[0]).getFileName().contains ("Verb (9.1.6)") && ! juce::File (r.files[1]).getFileName().contains ("("));
+                juce::AudioFormatManager fm; fm.registerBasicFormats();
+                std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (juce::File (r.files[0])));
+                CHECK (rd != nullptr && (int) rd->numChannels == 16 && rd->lengthInSamples == 4800 && rd->bitsPerSample == 24);
+                if (rd != nullptr && rd->numChannels == 16)
+                {
+                    juce::AudioBuffer<float> all (16, 4800); rd->read (&all, 0, 4800, 0, true, true);
+                    CHECK (std::abs (all.getSample (2, 4000) - 0.5f) < 2.0e-3f && std::abs (all.getSample (0, 4000)) < 1.0e-3f && std::abs (all.getSample (14, 4000)) < 1.0e-3f);   // the spot (pan 0) in C
+                }
+                std::unique_ptr<juce::AudioFormatReader> rs (fm.createReaderFor (juce::File (r.files[1])));
+                CHECK (rs != nullptr && (int) rs->numChannels == 2);
+            }
+        }
+        // the plug-in channel order: fermata's 9.1.6 channel c goes to the plug-in's channel pluginIndex; a monitor format's by position (VST3 bit order)
+        CHECK (pluginIndex (BusFormat::S916, 4) == juceIndex (BusFormat::S916, 4) && pluginChannelSet (BusFormat::S916) == channelSet (BusFormat::S916));
+        CHECK (pluginChannelSet (BusFormat::S916Hp).size() == 18 && pluginChannelSet (BusFormat::S714Hp).size() == 14);
+        {   // 9.1.6 + Lc Rc in VST3 bit order: L R C Lfe Lc Rc Sl Sr Tfl Tfr Trl Trr Tsl Tsr Lcs Rcs Lw Rw - position c in that list is where fermata's channel c goes
+            const auto set = pluginChannelSet (BusFormat::S916Hp);
+            using T = juce::AudioChannelSet;
+            const T::ChannelType order[18] = { T::left, T::right, T::centre, T::LFE, T::leftCentre, T::rightCentre, T::leftSurroundSide, T::rightSurroundSide, T::topFrontLeft, T::topFrontRight,
+                                               T::topRearLeft, T::topRearRight, T::topSideLeft, T::topSideRight, T::leftSurroundRear, T::rightSurroundRear, T::wideLeft, T::wideRight };
+            std::vector<int> seen (18, 0);
+            for (int c = 0; c < 18; ++c) { const int k = pluginIndex (BusFormat::S916Hp, c); CHECK (k == set.getChannelIndexForType (order[c])); if (juce::isPositiveAndBelow (k, 18)) ++seen[(size_t) k]; }
+            for (int v : seen) CHECK (v == 1);
+        }
+        CHECK (vst3Rank (juce::AudioChannelSet::wideRight) == 51 && vst3Rank (juce::AudioChannelSet::discreteChannel0) == -1);
     }
 
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);

@@ -21,6 +21,7 @@ constexpr int kNumSlots         = 4;    // VST3 insert slots per strip / fx chan
 /** Every piece of audio starts and ends with a short fade (seconds) so nothing clicks; the files are never touched. Editable per piece. */
 constexpr double kDefaultEdgeFade = 0.025;           // the fade at the start / end of an edit, and of a take, until the user changes it (25 ms)
 constexpr int kMaxTrackChannels = 16;   // widest track (surround)
+constexpr int kMaxBusChannels   = 18;   // widest Int / Ext Bus (3.39.0: 9.1.6 + a headphone pair; Surround.h)
 constexpr int kMaxInputs        = 256;  // physical input channels tracked for metering
 
 /** Stops a thread, waiting up to 'ms' for it to finish on its own. A thread that has not finished by then is killed by JUCE - and a thread killed

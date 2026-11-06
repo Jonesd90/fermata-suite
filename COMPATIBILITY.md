@@ -131,3 +131,8 @@ copies it like everything else, which is fine.
   and a take window without fix versions are saved byte for byte as before.
   - Still contract 3 (fermata 3.35.0, fermata:Live 0.4.0): fermata's ReTouch window (`src/ui/SpectralWindow.h`) joined the shared files, for the
     Fixer. No file format changed, so the number stays.
+  - Still contract 3 (fermata 3.39.0): surround Int and Ext Buses (`docs/SURROUND.md`). The project file gained keys, none changed: a bus's
+    `"format"` ("9.1.6" ...; missing = stereo, as every bus was), a send's `"surroundPan"` and an output's `"outSurroundPan"` (missing = the
+    defaults), an Ext Bus's `"hpFirst"` (missing = -1). fermata:Live reads and writes them through the shared code and never looks at them: its own
+    mixer only uses a project's first mixer's main Ext Bus, which is always stereo (a surround Ext Bus is never a main output). The shared engine
+    runs a stereo project exactly as before.

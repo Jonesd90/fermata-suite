@@ -290,7 +290,7 @@ public:
     /** Message thread: the sample rate / block size (the engine's prepare). The filter is designed again if it was ever used. */
     void prepare (double sr, int maxBlock, int numChannels)
     {
-        sampleRate = sr; block = maxBlock; channels = juce::jlimit (1, (int) kMaxTrackChannels, numChannels);
+        sampleRate = sr; block = maxBlock; channels = juce::jlimit (1, (int) kMaxBusChannels, numChannels);
         if (on.get() || ready.load()) rebuild();
     }
     /** Message thread: a new frequency / slope (the panel), or the key: the filter follows. */
@@ -310,7 +310,7 @@ public:
     /** Message thread (the engine, as it builds its plan): a track wider than the filter was made for gets a filter per channel. */
     void ensureChannels (int numChannels)
     {
-        numChannels = juce::jlimit (1, (int) kMaxTrackChannels, numChannels);
+        numChannels = juce::jlimit (1, (int) kMaxBusChannels, numChannels);        // (3.39.0: a surround Int Bus)
         if (numChannels <= channels) return;
         channels = numChannels;
         if (ready.load()) { ready.store (false); rebuild(); }       // (a fresh set: the old filters had too few channels)

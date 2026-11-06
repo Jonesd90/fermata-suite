@@ -155,6 +155,44 @@ template <typename F> void parallelFor (int n, F&& fn) { for (int i = 0; i < n; 
 /** True while a quick (automatic) save writes the project: the plug-ins may hand over a cached state. */
 thread_local bool quickPluginState = false;
 
+/** A bus as data (3.39.0: with its format, written only when not stereo). */
+var busDefToVar (const BusDef& f)
+{
+    var o = obj(); put (o, "id", f.id.toString()); put (o, "name", f.name); put (o, "external", f.external); put (o, "colour", (juce::int64) f.colour);
+    if (f.format != BusFormat::Stereo) put (o, "format", surround::key (f.format));
+    return o;
+}
+BusDef busDefFromVar (const var& v)
+{
+    BusDef f; f.id = juce::Uuid (v["id"].toString()); f.name = v["name"].toString(); f.external = (bool) v["external"]; f.colour = (juce::uint32) (juce::int64) v["colour"];
+    f.format = surround::parse (v.getProperty ("format", "stereo").toString());
+    if (! f.external && surround::isMonitorFormat (f.format)) f.format = BusFormat::Stereo;     // (an Int Bus cannot be one: a damaged file)
+    return f;
+}
+
+/** 3.39.0: a send's panner into a surround bus (SendState::panX ...), written only once it differs from the defaults. */
+void surroundPanToVar (var& o, const char* k, const SendState& s)
+{
+    if (s.panIsDefault()) return;
+    var p = obj();
+    put (p, "x", s.panX.get()); put (p, "y", s.panY.get()); put (p, "z", s.panZ.get()); put (p, "width", s.panWidth.get());
+    put (p, "spread", s.panSpread.get()); put (p, "centre", s.panCentre.get()); put (p, "follow", s.panFollow.get());
+    put (o, k, p);
+}
+void surroundPanFromVar (SendState& s, const var& v)
+{
+    const surround::PanPos d;
+    auto num = [&] (const char* k, float lo, float hi, float def)
+    {
+        if (! v.isObject() || ! v.hasProperty (k)) return def;
+        const double x = (double) v[k];
+        return std::isfinite (x) ? (float) juce::jlimit ((double) lo, (double) hi, x) : def;
+    };
+    s.panX.set (num ("x", -1.0f, 1.0f, d.x)); s.panY.set (num ("y", -1.0f, 1.0f, d.y)); s.panZ.set (num ("z", 0.0f, 1.0f, d.z));
+    s.panWidth.set (num ("width", 0.0f, 1.0f, d.width)); s.panSpread.set (num ("spread", 0.0f, 1.0f, d.spread)); s.panCentre.set (num ("centre", 0.0f, 1.0f, d.centre));
+    s.panFollow.set (v.isObject() && v.hasProperty ("follow") ? (bool) v["follow"] : d.followPan);
+}
+
 var slotsToVar (const InsertSlot* slots, int count = kNumSlots)
 {
     juce::Array<var> arr;
@@ -233,6 +271,7 @@ var sendsToVar (const SendList& l, bool inserts)
         if (! s->followMute.get()) put (o, "followMute", false);          // (only written when off: on is how every send always was)
         if (s->mute.get()) { put (o, "mute", true); put (o, "mutedGainDb", s->gainDb.get()); }
         if (inserts) put (o, "slots", slotsToVar (s->slots, kSendSlots));
+        surroundPanToVar (o, "surroundPan", *s);
         arr.add (o);
     }
     return arr;
@@ -252,6 +291,7 @@ void sendsFromVar (SendList& l, const var& v, const InsertFactory& factory, doub
                 s->gainDb.set (dbFromVar (muted && sv.hasProperty ("mutedGainDb") ? sv["mutedGainDb"] : sv["gainDb"], (float) kSendOffDb));
                 s->pre.set ((bool) sv["pre"]); s->followMute.set (sv.hasProperty ("followMute") ? (bool) sv["followMute"] : true);
                 s->mute.set (muted);
+                surroundPanFromVar (*s, sv["surroundPan"]);
             }
             if (inserts) slotsFromVar (s->slots, sv["slots"], factory, sr, block, kSendSlots);
             seen.push_back (s);
@@ -290,6 +330,7 @@ var stripToVar (const StripState& s, const juce::Uuid& trackId, bool inserts)
     put (so, "panL", s.panL.get()); put (so, "panR", s.panR.get());
     put (so, "mute", s.mute.get()); put (so, "solo", s.solo.get());
     put (so, "outOn", s.outOn.get()); put (so, "outDest", s.outDest.toString());
+    surroundPanToVar (so, "outSurroundPan", s.outSend);
     if (const auto vm = s.vcaMask.load(); vm != 0) put (so, "vcaMask", (juce::int64) vm);
     put (so, "sendList", sendsToVar (s.sends, inserts));
     if (inserts) put (so, "slots", slotsToVar (s.slots));
@@ -310,6 +351,7 @@ void stripFromVar (StripState& s, const var& sv, const InsertFactory& factory, d
         s.outDest = juce::Uuid (sv["outDest"].toString());
         s.vcaMask.store ((juce::uint32) (juce::int64) sv.getProperty ("vcaMask", (juce::int64) 0));
     }
+    if (pan) surroundPanFromVar (s.outSend, sv["outSurroundPan"]);
     if (sv.hasProperty ("sendList")) sendsFromVar (s.sends, sv["sendList"], factory, sr, block, inserts, sendLevels);
     else if (sendLevels)
         if (auto* old = sv["sends"].getArray())                   // projects from before buses: one send level per effects channel
@@ -325,8 +367,9 @@ var busToVar (const BusState& s, const juce::Uuid& busId, bool inserts, bool wit
     put (o, "bus", busId.toString()); put (o, "gainDb", s.gainDb.get()); put (o, "mute", s.mute.get()); put (o, "solo", s.solo.get());
     if (s.inGainDb.get() != 0.0f) put (o, "inGainDb", s.inGainDb.get());
     if (s.pan.get() != 0.0f) put (o, "pan", s.pan.get());
-    if (withOutput) { put (o, "outFirst", s.outFirst.load()); if (s.isMain.get()) put (o, "main", true); }
+    if (withOutput) { put (o, "outFirst", s.outFirst.load()); if (s.isMain.get()) put (o, "main", true); if (s.hpFirst.load() >= 0) put (o, "hpFirst", s.hpFirst.load()); }
     put (o, "outOn", s.outOn.get()); put (o, "outDest", s.outDest.toString());
+    surroundPanToVar (o, "outSurroundPan", s.outSend);
     if (const auto vm = s.vcaMask.load(); vm != 0) put (o, "vcaMask", (juce::int64) vm);
     put (o, "sendList", sendsToVar (s.sends, inserts));
     if (inserts) put (o, "slots", slotsToVar (s.slots));
@@ -344,10 +387,12 @@ void busFromVar (BusState& s, const var& v, const InsertFactory& factory, double
         s.gainDb.set (dbFromVar (v["gainDb"])); s.mute.set ((bool) v["mute"]); s.solo.set ((bool) v["solo"]);
         if (withOutput && v.hasProperty ("outFirst")) s.outFirst.store ((int) v["outFirst"]);
         if (withOutput) s.isMain.set ((bool) v.getProperty ("main", false));
+        if (withOutput) s.hpFirst.store (juce::jlimit (-1, 4095, (int) v.getProperty ("hpFirst", -1)));
         s.outOn.set (v.hasProperty ("outOn") ? (bool) v["outOn"] : false);
         s.outDest = juce::Uuid (v["outDest"].toString());
         s.vcaMask.store ((juce::uint32) (juce::int64) v.getProperty ("vcaMask", (juce::int64) 0));
     }
+    if (pan) surroundPanFromVar (s.outSend, v["outSurroundPan"]);
     if (v.hasProperty ("sendList")) sendsFromVar (s.sends, v["sendList"], factory, sr, block, inserts, sendLevels);
     if (inserts) slotsFromVar (s.slots, v["slots"], factory, sr, block);
     if (faders) { lowCutFromVar (s.lowCut, v, sr, block); s.polarity.set ((bool) v.getProperty ("polarity", false)); }
@@ -629,9 +674,10 @@ void Project::removeTrack (int index)
     structureChanged();
 }
 
-BusDef& Project::addBus (const String& busName, bool external)
+BusDef& Project::addBus (const String& busName, bool external, BusFormat format)
 {
     BusDef f; f.name = busName; f.external = external;
+    f.format = (! external && surround::isMonitorFormat (format)) ? BusFormat::Stereo : format;
     buses.push_back (f);
     syncMixers();
     structureChanged();
@@ -769,8 +815,9 @@ String Project::outputFedBy (int out) const
                 for (auto& bs : m->busPool)
                     if (bs->busId == b.id)
                     {
-                        const int f = bs->outFirst.load();
-                        if (f >= 0 && (f == out || f + 1 == out)) names.add (m->name + ": " + b.name);
+                        const int f = bs->outFirst.load(), w = surround::speakerChannels (b.format), h = bs->hpFirst.load();
+                        if ((f >= 0 && out >= f && out < f + w) || (surround::isMonitorFormat (b.format) && h >= 0 && (out == h || out == h + 1)))
+                            names.add (m->name + ": " + b.name);
                     }
     return names.joinIntoString (", ");
 }
@@ -783,8 +830,9 @@ String Project::mixerOutputsText (const MixerState& m) const
             for (auto& bs : m.busPool)
                 if (bs->busId == b.id)
                 {
-                    const int f = bs->outFirst.load();
-                    if (f >= 0) parts.add (b.name + " -> " + juce::String (f + 1) + "-" + juce::String (f + 2));
+                    const int f = bs->outFirst.load(), w = surround::speakerChannels (b.format), h = bs->hpFirst.load();
+                    if (f >= 0) parts.add (b.name + " -> " + juce::String (f + 1) + "-" + juce::String (f + w));
+                    if (surround::isMonitorFormat (b.format) && h >= 0) parts.add (b.name + " headphones -> " + juce::String (h + 1) + "-" + juce::String (h + 2));
                 }
     return parts.isEmpty() ? juce::String ("(no outputs)") : parts.joinIntoString (", ");
 }
@@ -1183,16 +1231,94 @@ void Project::syncMixers()
             auto* st = m->stripFor (t.id);
             if (m->stripPool.size() != n && newStripsToMain) st->outOn.set (true);     // a new track is heard straight away
         }
-        bool hasExt = false;                                // does this mixer have an Ext Bus already? (its first one becomes its main output)
-        for (auto& f : buses) if (f.external) for (auto& p : m->busPool) if (p->busId == f.id) hasExt = true;
+        bool hasExt = false;                                // does this mixer have a (stereo) Ext Bus already? (its first one becomes its main output; 3.39.0: a surround one never does)
+        for (auto& f : buses) if (f.external && ! surround::isSurround (f.format)) for (auto& p : m->busPool) if (p->busId == f.id) hasExt = true;
         for (auto& f : buses)
         {
             const auto n = m->busPool.size();
             auto* bs = m->busFor (f.id);
             if (m->busPool.size() != n && newStripsToMain && ! f.external) bs->outOn.set (true);
-            if (m->busPool.size() != n && f.external && ! hasExt) { bs->isMain.set (true); hasExt = true; }       // the mixer's first Ext Bus: ticked as its main output
+            if (m->busPool.size() != n && f.external && ! hasExt && ! surround::isSurround (f.format)) { bs->isMain.set (true); hasExt = true; }   // the mixer's first (stereo) Ext Bus: ticked as its main output
         }
     }
+    applySlotLayouts();
+}
+
+BusFormat Project::busFormat (const juce::Uuid& id) const
+{
+    for (auto& b : buses) if (b.id == id) return b.format;
+    return BusFormat::Stereo;
+}
+
+bool Project::setBusFormat (const juce::Uuid& id, BusFormat f)
+{
+    auto* b = findBus (id);
+    if (b == nullptr || (! b->external && surround::isMonitorFormat (f))) return false;
+    if (b->format == f) return true;
+    b->format = f;
+    if (surround::isSurround (f))
+        for (auto& m : mixers) if (auto* bs = m->busFor (id)) bs->isMain.set (false);    // a surround Ext Bus is never a main output
+    juce::Logger::writeToLog ("Bus '" + b->name + "' is now " + surround::name (f));
+    applySlotLayouts();
+    markDirty();
+    structureChanged();
+    return true;
+}
+
+void Project::applySlotLayouts()
+{
+    const double sr = restoreSampleRate > 0.0 ? restoreSampleRate : 48000.0;
+    const int blk = restoreBlock > 0 ? restoreBlock : 512;
+    // where a send or an output goes: a bus's format, else stereo (an audio track; 'Main', which is always a stereo Ext Bus)
+    auto codeOf = [this] (const juce::Uuid& dest) { return (int) busFormat (dest); };
+    auto all = [&] (InsertSlot* sl, int count, int code) { for (int i = 0; i < count; ++i) sl[i].setLayout (code, sr, blk); };
+    for (auto& m : mixers)
+    {
+        for (auto& st : m->stripPool)
+        {
+            all (st->slots, kNumSlots, 2);
+            for (auto& sd : st->sends.pool) all (sd->slots, kSendSlots, codeOf (sd->dest));
+            all (st->outSend.slots, kSendSlots, st->outDest.isNull() ? 2 : codeOf (st->outDest));
+        }
+        for (auto& bs : m->busPool)
+        {
+            all (bs->slots, kNumSlots, codeOf (bs->busId));
+            for (auto& sd : bs->sends.pool) all (sd->slots, kSendSlots, codeOf (sd->dest));
+            all (bs->outSend.slots, kSendSlots, bs->outDest.isNull() ? 2 : codeOf (bs->outDest));
+        }
+    }
+}
+
+Project::AtmosLink Project::atmosLinkOf (const juce::String& desc)
+{
+    if (desc.isEmpty()) return AtmosLink::None;
+    juce::String nm, maker;
+    if (auto x = juce::XmlDocument::parse (desc)) { nm = x->getStringAttribute ("name"); maker = x->getStringAttribute ("manufacturer"); }
+    else nm = desc;
+    // (the names as Fiedler Audio's manuals give them: "Dolby Atmos Composer" (and its Essential version), "Dolby Atmos Beam", "Spacelab" with its "Spacelab Beam")
+    if (nm.containsIgnoreCase ("Atmos Composer")) return AtmosLink::Composer;
+    if (nm.containsIgnoreCase ("Atmos Beam") || nm.containsIgnoreCase ("Spacelab Beam") || (maker.containsIgnoreCase ("Fiedler") && nm.containsIgnoreCase ("Beam"))) return AtmosLink::Beam;
+    if (nm.startsWithIgnoreCase ("Spacelab")) return AtmosLink::Spacelab;
+    return AtmosLink::None;
+}
+
+bool Project::hasAtmosComposer() const
+{
+    auto in = [] (const InsertSlot* sl, int count)
+    {
+        for (int i = 0; i < count; ++i)
+        {
+            const auto d = sl[i].getProcessorUnsafe() != nullptr ? sl[i].getProcessorUnsafe()->getDescription() : sl[i].savedDescription;
+            if (atmosLinkOf (d) == AtmosLink::Composer) return true;
+        }
+        return false;
+    };
+    for (auto& m : mixers)
+    {
+        for (auto& st : m->stripPool) if (in (st->slots, kNumSlots)) return true;
+        for (auto& bs : m->busPool)   if (in (bs->slots, kNumSlots)) return true;
+    }
+    return false;
 }
 
 void Project::adoptPreamp (int inputIndex, const PreampSettings& s)
@@ -1656,7 +1782,7 @@ var Project::toVar (bool withWindows) const
     put (root, "tracks", tr);
 
     juce::Array<var> fx;
-    for (auto& f : buses) { var o = obj(); put (o, "id", f.id.toString()); put (o, "name", f.name); put (o, "external", f.external); put (o, "colour", (juce::int64) f.colour); fx.add (o); }
+    for (auto& f : buses) fx.add (busDefToVar (f));
     put (root, "buses", fx);
     {
         juce::Array<var> va;
@@ -1888,7 +2014,7 @@ bool Project::fromVar (const var& root)
         }
     std::vector<juce::Uuid> legacyFx;                      // projects from before Int / Ext buses stored 'effects channels'
     if (auto* a = root["buses"].getArray())
-        for (auto& v : *a) { BusDef f; f.id = juce::Uuid (v["id"].toString()); f.name = v["name"].toString(); f.external = (bool) v["external"]; f.colour = (juce::uint32) (juce::int64) v["colour"]; buses.push_back (f); }
+        for (auto& v : *a) buses.push_back (busDefFromVar (v));
     else if (auto* a = root["fx"].getArray())
         for (auto& v : *a) { BusDef f; f.id = juce::Uuid (v["id"].toString()); f.name = v["name"].toString(); buses.push_back (f); legacyFx.push_back (f.id); }
     if (auto* a = root["vcas"].getArray())
@@ -2668,6 +2794,16 @@ std::unique_ptr<Project> Project::cloneForRender (double sampleRate, int maxBloc
 {
     auto c = std::make_unique<Project>();
     c->insertFactory = insertFactory;                      // the copy gets its own plug-in instances, built from the saved state of the live ones
+    // 3.39.0: ... except the plug-ins that join the live Dolby Atmos mix by themselves: only one Dolby Atmos Composer can run on a computer, and a copy of a
+    // Beam (or of Spacelab, while a Composer is in the project) would join the live Atmos mix for as long as the render ran. They are left out of the
+    // copy (their slots pass the sound through); pluginsMissingFrom does not count them.
+    if (insertFactory)
+        c->insertFactory = [f = insertFactory, composer = hasAtmosComposer()] (const juce::String& desc, const juce::String& state) -> std::unique_ptr<InsertProcessor>
+        {
+            const auto k = atmosLinkOf (desc);
+            if (k == AtmosLink::Composer || k == AtmosLink::Beam || (k == AtmosLink::Spacelab && composer)) return nullptr;
+            return f (desc, state);
+        };
     c->restoreSampleRate = sampleRate; c->restoreBlock = maxBlock;
     c->fromVar (toVar());
     c->projectFile = projectFile;
@@ -2681,11 +2817,14 @@ juce::StringArray Project::pluginsMissingFrom (const Project& copy, const juce::
     for (auto& m : mixers) if (m->id == mixerId) live = m.get();
     for (auto& m : copy.mixers) if (m->id == mixerId) other = m.get();
     if (live == nullptr) return out;
+    const bool composer = hasAtmosComposer();
+    auto leftOut = [composer] (const juce::String& d) { const auto k = atmosLinkOf (d); return k == AtmosLink::Composer || k == AtmosLink::Beam || (k == AtmosLink::Spacelab && composer); };
     auto compare = [&] (const InsertSlot* a, const InsertSlot* b, const juce::String& where)       // b null: the copy has no such strip at all
     {
         for (int i = 0; i < kNumSlots; ++i)
             if (a[i].isLoaded() && ! a[i].bypass.get() && (b == nullptr || ! b[i].isLoaded())
-                && a[i].getProcessorUnsafe()->getDescription().isNotEmpty())                      // (one with no description is not saved and not re-created: nothing was asked for)
+                && a[i].getProcessorUnsafe()->getDescription().isNotEmpty()                       // (one with no description is not saved and not re-created: nothing was asked for)
+                && ! leftOut (a[i].getProcessorUnsafe()->getDescription()))                       // (3.39.0: an Atmos link, left out on purpose: see cloneForRender)
                 out.add (a[i].getName() + " on " + where);
     };
     for (auto& s : live->stripPool)
@@ -3669,7 +3808,7 @@ bool Project::importMixerFile (const juce::File& file, String& message)
     // keep only what exists here
     juce::Array<var> tk, bs;
     if (auto* ta = fv["tracks"].getArray()) for (auto& t : *ta) if (findTrack (juce::Uuid (t["id"].toString())) != nullptr) tk.add (t);
-    for (auto& b : buses) { var o = obj(); put (o, "id", b.id.toString()); put (o, "name", b.name); put (o, "external", b.external); put (o, "colour", (juce::int64) b.colour); bs.add (o); }
+    for (auto& b : buses) bs.add (busDefToVar (b));
     Project tmp;
     tmp.restoreSampleRate = restoreSampleRate; tmp.restoreBlock = restoreBlock; tmp.insertFactory = insertFactory;
     var root = obj();

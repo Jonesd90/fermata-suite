@@ -5,9 +5,11 @@
 
 namespace td
 {
-/** Wraps a loaded plug-in as an insert. Always runs the plug-in as a stereo effect. It is also the plug-in's play head: it tells the plug-in
-    whether Fermata is playing / recording and where on the timeline it is (see HostTransport), which plug-ins that listen while the host
-    plays (Auto-Align 2 ...) need. */
+/** Wraps a loaded plug-in as an insert. Runs the plug-in as a stereo effect, or (3.39.0) in the speaker layout of the surround bus it sits on: the
+    plug-in is asked for that layout (as its VST3 speaker arrangement, so a Dolby Atmos Beam or a 9.1.6 reverb recognises the bus), and the bus's
+    channels are handed to it in its own channel order (Surround.h: pluginIndex). It is also the plug-in's play head: it tells the plug-in whether
+    Fermata is playing / recording and where on the timeline the sound it is processing is (see HostTransport and currentSlotLatency), which plug-ins
+    that listen while the host plays (Auto-Align 2, the Dolby Atmos Composer and its Beams ...) need. */
 class Vst3Insert : public InsertProcessor, private juce::AudioPlayHead, private juce::AudioProcessorListener
 {
 public:
@@ -16,18 +18,50 @@ public:
 
     ~Vst3Insert() override { plugin->removeListener (this); if (prepared) plugin->releaseResources(); plugin->setPlayHead (nullptr); }
 
-    void prepare (double sr, int maxBlock, int) override
+    void prepare (double sr, int maxBlock, int layoutCode) override
     {
         if (prepared) plugin->releaseResources();
-        // the main input and output as stereo, the proper VST3 way (other buses, a side-chain say, are left as the plug-in has them)
-        auto layout = plugin->getBusesLayout();
-        bool change = false;
-        if (! layout.inputBuses.isEmpty() && layout.inputBuses.getReference (0) != juce::AudioChannelSet::stereo()) { layout.inputBuses.getReference (0) = juce::AudioChannelSet::stereo(); change = true; }
-        if (! layout.outputBuses.isEmpty() && layout.outputBuses.getReference (0) != juce::AudioChannelSet::stereo()) { layout.outputBuses.getReference (0) = juce::AudioChannelSet::stereo(); change = true; }
-        if (change) plugin->setBusesLayout (layout);                         // (a plug-in that refuses keeps its own)
+        format = surround::fromLayoutCode (layoutCode);                       // (1 and 2, mono and stereo, give Stereo)
+        note.clear();
+        for (auto& m : inMap) m = -1;
+        for (auto& m : outMap) m = -1;
+        busCh = surround::channels (format);
+        if (! surround::isSurround (format))
+        {
+            // the main input and output as stereo, the proper VST3 way (other buses, a side-chain say, are left as the plug-in has them)
+            applyMainLayouts (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo());
+            surroundMode = false;
+        }
+        else
+        {
+            // 3.39.0: the bus's own layout - the plug-in may take it on both sides (a surround reverb, a Beam, the Composer), on its output only (a
+            // reverb that takes stereo in), or not at all (then it runs in stereo on the bus's L and R, and the other channels pass it by)
+            const auto want = surround::pluginChannelSet (format);
+            const auto stereo = juce::AudioChannelSet::stereo();
+            juce::AudioChannelSet gotIn, gotOut;
+            bool ok = applyMainLayouts (want, want, &gotIn, &gotOut);
+            if (! ok && surround::isMonitorFormat (format))                   // the Composer's bus: the speakers alone, if it will not take the headphone pair as well
+            {
+                const auto spk = surround::channelSet (surround::speakersOf (format));
+                ok = applyMainLayouts (spk, spk, &gotIn, &gotOut);
+                if (ok) note = surround::name (surround::speakersOf (format)) + " only: it would not take the headphone pair as well, so the headphone channels pass it by";
+            }
+            if (! ok) { ok = applyMainLayouts (stereo, want, &gotIn, &gotOut); if (ok) note = "stereo in, " + surround::name (format) + " out (it is fed the bus's L and R)"; }
+            if (! ok) { applyMainLayouts (stereo, stereo, &gotIn, &gotOut); note = "stereo only: it works on L and R of this " + surround::name (format) + " bus; the other channels pass it by"; }
+            // where each of the bus's channels goes in, and comes back out: by the plug-in's real layouts (whatever it finally accepted)
+            const auto inSet = plugin->getMainBusNumInputChannels() > 0 ? plugin->getChannelLayoutOfBus (true, 0) : juce::AudioChannelSet();
+            const auto outSet = plugin->getMainBusNumOutputChannels() > 0 ? plugin->getChannelLayoutOfBus (false, 0) : juce::AudioChannelSet();
+            for (int c = 0; c < busCh; ++c)
+            {
+                inMap[c]  = mapChannel (c, inSet, want, true);
+                outMap[c] = mapChannel (c, outSet, want, false);
+            }
+            surroundMode = true;
+            juce::Logger::writeToLog ("Plug-in " + description.name + " on a " + surround::name (format) + " bus: " + (note.isEmpty() ? "runs in " + surround::name (format) : note));
+        }
         plugin->setRateAndBufferSizeDetails (sr, maxBlock);
         plugin->prepareToPlay (sr, maxBlock);
-        // the buffer handed to the plug-in has as many channels as it uses (at least 2); the ones past the first two (a side-chain) are silent
+        // the buffer handed to the plug-in has as many channels as it uses (at least 2); the ones not fed by the bus (a side-chain) are silent
         chans = juce::jmax (2, plugin->getTotalNumInputChannels(), plugin->getTotalNumOutputChannels());
         monoOut = plugin->getMainBusNumOutputChannels() == 1;
         work.setSize (chans, maxBlock);
@@ -40,7 +74,8 @@ public:
         juce::AudioPlayHead::PositionInfo info;
         const auto* t = currentHostTransport();
         const double sr = t != nullptr && t->sampleRate > 0.0 ? t->sampleRate : 48000.0;
-        const juce::int64 pos = t != nullptr ? juce::jmax<juce::int64> (0, t->samplePos) : 0;
+        // 3.39.0: the position of the sound this plug-in is processing - the transport's, less how late that sound is because of plug-ins before it
+        const juce::int64 pos = t != nullptr ? juce::jmax<juce::int64> (0, t->samplePos - (juce::int64) currentSlotLatency()) : 0;
         const double secs = (double) pos / sr;
         info.setIsPlaying (t != nullptr && t->playing);
         info.setIsRecording (t != nullptr && t->recording);
@@ -66,17 +101,33 @@ public:
         for (int off = 0; off < total; off += cap)
         {
             const int n = juce::jmin (cap, total - off);
-            work.copyFrom (0, 0, b, 0, off, n);
-            work.copyFrom (1, 0, b, nc > 1 ? 1 : 0, off, n);
-            for (int c = 2; c < chans; ++c) work.clear (c, 0, n);
-            juce::AudioBuffer<float> view (work.getArrayOfWritePointers(), chans, n);
-            midi.clear();
-            plugin->processBlock (view, midi);
-            if (monoOut) work.copyFrom (1, 0, work, 0, 0, n);                  // a mono-only plug-in: its output on both sides
-            b.copyFrom (0, off, work, 0, 0, n);
-            if (nc > 1) b.copyFrom (1, off, work, 1, 0, n);
+            if (! surroundMode)
+            {
+                work.copyFrom (0, 0, b, 0, off, n);
+                work.copyFrom (1, 0, b, nc > 1 ? 1 : 0, off, n);
+                for (int c = 2; c < chans; ++c) work.clear (c, 0, n);
+                juce::AudioBuffer<float> view (work.getArrayOfWritePointers(), chans, n);
+                midi.clear();
+                plugin->processBlock (view, midi);
+                if (monoOut) work.copyFrom (1, 0, work, 0, 0, n);                  // a mono-only plug-in: its output on both sides
+                b.copyFrom (0, off, work, 0, 0, n);
+                if (nc > 1) b.copyFrom (1, off, work, 1, 0, n);
+            }
+            else
+            {   // 3.39.0: the bus's channels into the plug-in's buffer where its layout has them; its outputs back to the channels they belong to
+                for (int c = 0; c < chans; ++c) work.clear (c, 0, n);
+                const int bc = juce::jmin (nc, busCh);
+                for (int c = 0; c < bc; ++c) if (inMap[c] >= 0 && inMap[c] < chans) work.copyFrom (inMap[c], 0, b, c, off, n);
+                juce::AudioBuffer<float> view (work.getArrayOfWritePointers(), chans, n);
+                midi.clear();
+                plugin->processBlock (view, midi);
+                for (int c = 0; c < bc; ++c) if (outMap[c] >= 0 && outMap[c] < chans) b.copyFrom (c, off, work, outMap[c], 0, n);     // (a channel it has no output for passes it by)
+            }
         }
     }
+
+    juce::String layoutNote() const override { return note; }
+    void setNonRealtime (bool b) override { plugin->setNonRealtime (b); }
 
     juce::String getName() const override { return description.name; }
     juce::String getDescription() const override { if (auto x = description.createXml()) return x->toString(); return {}; }
@@ -137,6 +188,37 @@ public:
     void stateWasSet() noexcept { stateChanged.store (true); }
 
 private:
+    /** Asks the plug-in for these layouts on its main input and output buses (a bus it has not got is left out). True when it took both; the
+        layouts it ended up with are given back. Only called before prepareToPlay (the plug-in is not running). */
+    bool applyMainLayouts (const juce::AudioChannelSet& in, const juce::AudioChannelSet& out, juce::AudioChannelSet* gotIn = nullptr, juce::AudioChannelSet* gotOut = nullptr)
+    {
+        auto layout = plugin->getBusesLayout();
+        const bool hasIn = ! layout.inputBuses.isEmpty(), hasOut = ! layout.outputBuses.isEmpty();
+        bool change = false;
+        if (hasIn  && layout.inputBuses.getReference (0)  != in)  { layout.inputBuses.getReference (0)  = in;  change = true; }
+        if (hasOut && layout.outputBuses.getReference (0) != out) { layout.outputBuses.getReference (0) = out; change = true; }
+        if (change) plugin->setBusesLayout (layout);                         // (a plug-in that refuses keeps its own)
+        const auto nowIn  = hasIn  ? plugin->getChannelLayoutOfBus (true, 0)  : juce::AudioChannelSet();
+        const auto nowOut = hasOut ? plugin->getChannelLayoutOfBus (false, 0) : juce::AudioChannelSet();
+        if (gotIn != nullptr) *gotIn = nowIn;
+        if (gotOut != nullptr) *gotOut = nowOut;
+        return (! hasIn || nowIn == in) && (! hasOut || nowOut == out);
+    }
+    /** Where the bus's channel c sits in the plug-in's process buffer for its main input (isInput) or output bus, given the layout that bus really
+        has: the bus's own layout (by speaker, or by position for a monitor format: Surround.h), stereo (L and R only), or -1 for a channel it has no
+        place for. */
+    int mapChannel (int c, const juce::AudioChannelSet& have, const juce::AudioChannelSet& want, bool isInput) const
+    {
+        if (have.size() == 0) return -1;
+        int k = -1;
+        if (have == want) k = surround::pluginIndex (format, c);
+        else if (have == juce::AudioChannelSet::stereo()) k = c < 2 ? c : -1;
+        else if (have == surround::channelSet (surround::speakersOf (format)) && c < surround::channels (surround::speakersOf (format))) k = surround::juceIndex (surround::speakersOf (format), c);
+        else if (have.isDiscreteLayout() && c < have.size()) k = c;
+        if (k < 0) return -1;
+        return plugin->getChannelIndexInProcessBlockBuffer (isInput, 0, k);
+    }
+
     // AudioProcessorListener (any thread, the audio thread included: only a flag is set)
     void audioProcessorParameterChanged (juce::AudioProcessor*, int, float) override { stateChanged.store (true); }
     void audioProcessorChanged (juce::AudioProcessor*, const ChangeDetails&) override { stateChanged.store (true); }
@@ -150,6 +232,12 @@ private:
     int chans = 2;
     bool monoOut = false;
     bool prepared = false;
+    // 3.39.0: the surround bus the plug-in sits on
+    BusFormat format = BusFormat::Stereo;
+    bool surroundMode = false;
+    int busCh = 2;
+    int inMap[kMaxBusChannels], outMap[kMaxBusChannels];                      // the bus's channel c -> the plug-in's buffer channel (-1: none)
+    juce::String note;                                                        // see layoutNote
 };
 
 /** A plug-in's own window. Space still plays / stops the take or edit window that was last in use, even while the plug-in's window has the keyboard

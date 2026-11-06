@@ -145,9 +145,10 @@ juce::String resolveRenderSource (const Project& p, const MasteringDef& def, juc
     if (p.mixers.empty()) return "The project has no mixer.";
     mixerId = p.mixers.front()->id;
     if (! def.mixerId.isNull()) for (auto& m : p.mixers) if (m->id == def.mixerId) mixerId = m->id;
-    if (! def.sourceId.isNull() && p.kindOf (def.sourceId) != NodeKind::None) sourceId = def.sourceId;
-    else for (auto& b : p.buses) if (b.external) { sourceId = b.id; break; }
-    if (sourceId.isNull()) return "There is nothing to render yet: add an Ext bus (and route the tracks to it) in the Project Designer, or choose an output in the Mastering window.";
+    // (3.39.0: a surround bus is never the source: the Mastering window makes stereo masters; a Dolby Atmos master is the Composer's file)
+    if (! def.sourceId.isNull() && p.kindOf (def.sourceId) != NodeKind::None && ! surround::isSurround (p.busFormat (def.sourceId))) sourceId = def.sourceId;
+    else for (auto& b : p.buses) if (b.external && ! surround::isSurround (b.format)) { sourceId = b.id; break; }
+    if (sourceId.isNull()) return "There is nothing to render yet: add a stereo Ext bus (and route the tracks to it) in the Project Designer, or choose an output in the Mastering window.";
     return {};
 }
 

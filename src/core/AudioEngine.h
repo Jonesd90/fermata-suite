@@ -322,7 +322,26 @@ public:
 
 private:
     struct Node;
-    struct SendPlan { SendState* st; Node* dest; PathDelay delay; };     // delay: holds this path back so it arrives together with the others (delay compensation)
+    /** One send (or a channel's output) into another channel of the mixer. delay: holds this path back so it arrives together with the others (delay
+        compensation). 3.39.0: how the source's channels reach the destination's (decided when the plan is built, message thread):
+          Direct  the same width, channel for channel (every send was this: stereo to stereo);
+          Pan     a mono / stereo source placed in a surround bus by the send's panner (SendState::panX ...; the strip's own pans when it follows them):
+                  the gains are worked out on the audio thread from the live settings each block, and crossfaded from the last block's (lastM), so a
+                  drag of the panner never zips;
+          Fold    one format into another (a surround bus into a stereo one: Lo/Ro; into a surround bus of another format): the fixed matrix;
+          Across  a track wider than stereo into a surround bus: channel for channel, as far as both go.
+        After that the send's own inserts, its delay line and its level all work on the destination's channels. */
+    struct SendPlan
+    {
+        SendState* st; Node* dest; PathDelay delay;
+        enum class Kind : juce::uint8 { Direct, Pan, Fold, Across } kind = Kind::Direct;
+        int srcCh = 2, dstCh = 2;                       // channels taken from the source / given to the destination
+        BusFormat dstFormat = BusFormat::Stereo;        // Pan: the bus's format
+        bool stripPans = false;                         // Pan: the source is an audio track (its own pan / panL / panR are followed); false: a stereo bus (left and right)
+        std::vector<float> matrix;                      // Fold: srcCh * dstCh gains (Surround.h foldMatrix)
+        float lastM[2 * kMaxBusChannels] {};            // Pan, audio thread: the gains of the previous block
+        bool hasLast = false;
+    };
     /** One channel of a mixer: an Audio Track, an Int Bus or an Ext Bus. The nodes are kept in an order in which every
         channel comes after all the channels that send to it. */
     struct Node
@@ -338,7 +357,13 @@ private:
         int tapIdx = -1;                        // offline render: which capture output its post-fader signal goes to (-1 = none)
         int tapPreIdx = -1;                     // offline render: which capture output its pre-fader signal goes to (-1 = none)
         PathDelay tapDelayPre;
-        juce::AudioBuffer<float> incoming;      // stereo: the sum of what they send
+        /** 3.39.0: the channels this node's signal has from its inserts on (pre, post, incoming, the fader, the meters, the taps): 2 for an audio
+            track (its stereo fold) and a stereo bus; a surround bus's format's count. */
+        int width = 2;
+        BusFormat format = BusFormat::Stereo;   // a bus: its format (stereo for a track)
+        int speakerCh = 2;                      // Ext Bus: channels to the speaker outputs (outFirst ...); a monitor format's last two go to the headphone pair (hpFirst)
+        std::vector<float> foldLoRo;            // a surround bus: width * 2 gains, its Lo/Ro fold (for the phase scope); empty for stereo
+        juce::AudioBuffer<float> incoming;      // width channels: the sum of what they send
         // delay compensation (samples): when the signals arrive at this channel, and when they leave it, counted from the sources
         int inLat = 0, outLat = 0;
         PathDelay srcDelay;                     // Audio Track: holds back its own source (disk / live input) to meet what is sent to it
@@ -366,8 +391,9 @@ private:
         // running side by side with the other mixers: this mixer writes its driver outputs here, and the audio thread adds them up afterwards
         juce::AudioBuffer<float> outScratch;
         std::vector<float*> outPtrs;            // per driver output: where this mixer writes it (into outScratch), or nullptr
-        std::vector<int> touched;               // the driver outputs it wrote in this block (room for every Ext Bus pair and the audition pair)
+        std::vector<int> touched;               // the driver outputs it wrote in this block (room for every Ext Bus's channels and the audition pair)
         int numTouched = 0;
+        bool keepRunning = false;               // 3.39.0: it holds the Dolby Atmos Composer, which must be run whether or not its Ext Buses go anywhere (see mixerHasOutput)
     };
     struct TrackPlan { int numCh = 1; int inputs[kMaxTrackChannels] {}; std::shared_ptr<TrackLive> live; int alignSamples = 0; };
     /** One mixer to run in this block, and how. */

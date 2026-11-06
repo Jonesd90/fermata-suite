@@ -916,7 +916,7 @@ juce::String MasteringComponent::signature() const
 {
     juce::String s;
     for (auto& e : app.project.edits) if (e != nullptr) s << e->id.toString() << "|" << e->name << "|" << e->lengthSamples() << "|" << e->firstSample() << "|" << e->sampleRate << ";";
-    for (auto& b : app.project.buses) s << b.id.toString() << b.name << (b.external ? "E" : "I") << ";";
+    for (auto& b : app.project.buses) s << b.id.toString() << b.name << (b.external ? "E" : "I") << (int) b.format << ";";
     for (auto& t : app.project.tracks) s << t.id.toString() << t.name << ";";
     for (auto& m : app.project.mixers) s << m->id.toString() << m->name << ";";
     return s;
@@ -980,8 +980,9 @@ void MasteringComponent::refreshSource()
     mixerBox.setSelectedId (sel, juce::dontSendNotification);
     sourceBox.clear (juce::dontSendNotification); sourceIds.clear();
     int ssel = 0, k = 0, firstExt = 0;
-    for (auto& b : p.buses) if (b.external) { sourceBox.addItem (b.name + "  (Ext bus)", ++k); sourceIds.push_back (b.id); if (firstExt == 0) firstExt = k; if (b.id == def().sourceId) ssel = k; }
-    for (auto& b : p.buses) if (! b.external) { sourceBox.addItem (b.name + "  (Int bus)", ++k); sourceIds.push_back (b.id); if (b.id == def().sourceId) ssel = k; }
+    // (3.39.0: a surround bus is left out - the Mastering window makes stereo masters; a Dolby Atmos master is the Composer's file)
+    for (auto& b : p.buses) if (b.external && ! surround::isSurround (b.format)) { sourceBox.addItem (b.name + "  (Ext bus)", ++k); sourceIds.push_back (b.id); if (firstExt == 0) firstExt = k; if (b.id == def().sourceId) ssel = k; }
+    for (auto& b : p.buses) if (! b.external && ! surround::isSurround (b.format)) { sourceBox.addItem (b.name + "  (Int bus)", ++k); sourceIds.push_back (b.id); if (b.id == def().sourceId) ssel = k; }
     for (auto& t : p.tracks) { sourceBox.addItem (t.name + "  (track)", ++k); sourceIds.push_back (t.id); if (t.id == def().sourceId) ssel = k; }
     sourceBox.setSelectedId (ssel > 0 ? ssel : firstExt, juce::dontSendNotification);
     tailBox.setSelectedId (juce::jlimit (0, 10, (int) std::lround (def().tailSeconds)) + 1, juce::dontSendNotification);
@@ -1604,7 +1605,7 @@ void MasteringComponent::chooseStems()
     std::vector<StemsPanel::Entry> es;
     for (int pass = 0; pass < 2; ++pass)                                  // the Ext buses, then the Int buses (as in the Render from list)
         for (auto& b : app.project.buses)
-            if (b.external == (pass == 0) && b.id != master)
+            if (b.external == (pass == 0) && b.id != master && ! surround::isSurround (b.format))      // (3.39.0: stems are stereo files)
                 es.push_back ({ b.id, b.name + (b.external ? "  (Ext bus)" : "  (Int bus)"), std::find (def().stemIds.begin(), def().stemIds.end(), b.id) != def().stemIds.end() });
     juce::Component::SafePointer<MasteringComponent> safe (this);
     auto panel = std::make_unique<StemsPanel> (std::move (es), [safe] (const juce::Uuid& id, bool on)

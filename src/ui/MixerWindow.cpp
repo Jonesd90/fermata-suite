@@ -3,6 +3,8 @@
 #include "PluginManager.h"
 #include "ValueEntry.h"
 #include "LowCutPanel.h"
+#include "SurroundUi.h"
+#include "EditWindow.h"
 
 namespace td
 {
@@ -129,6 +131,7 @@ public:
         slider.onValueChange = [this] { const float db = (float) slider.getValue(); updateLabel(); changed (db <= -79.5f ? -100.0f : db); };
         meterL.useFaderScale(); meterR.useFaderScale();
         addAndMakeVisible (slider); addAndMakeVisible (meterL); addAndMakeVisible (meterR);
+        addChildComponent (bank);
         addAndMakeVisible (label); addAndMakeVisible (peakLabel);
         addAndMakeVisible (downBtn); addAndMakeVisible (upBtn);
         downBtn.onClick = [this] { nudge (-1.0); };
@@ -163,7 +166,25 @@ public:
         peakLabel.setText (pk <= -99.0f ? juce::String() : juce::String (pk, 1), juce::dontSendNotification);
         peakLabel.setColour (juce::Label::textColourId, latched ? juce::Colour (0xffe03a2c) : mixTheme().text);
     }
-    void resetPeaks() { meterL.resetPeak(); meterR.resetPeak(); peakLabel.setText ({}, juce::dontSendNotification); }
+    void resetPeaks() { meterL.resetPeak(); meterR.resetPeak(); bank.resetPeaks(); peakLabel.setText ({}, juce::dontSendNotification); }
+    /** 3.39.0: a surround bus - a meter for each of its channels instead of the stereo pair (stereo: the pair again). */
+    void setMeterFormat (BusFormat f)
+    {
+        const bool sur = surround::isSurround (f);
+        if (sur) bank.setFormat (f);
+        if (sur == bank.isVisible() && (! sur || bank.getFormat() == f)) return;
+        bank.setVisible (sur); meterL.setVisible (! sur); meterR.setVisible (! sur);
+        resized();
+    }
+    void pushChannelPeaks (const float* peaks, const float* rms)
+    {
+        bank.push (peaks, rms);
+        const float pk = bank.maxHoldDb();
+        peakLabel.setText (pk <= -99.0f ? juce::String() : juce::String (pk, 1), juce::dontSendNotification);
+        peakLabel.setColour (juce::Label::textColourId, bank.anyLatched() ? juce::Colour (0xffe03a2c) : mixTheme().text);
+    }
+    /** The extra width a strip needs for a surround bus's meters (0 for stereo). */
+    static int extraWidthFor (BusFormat f) { return surround::isSurround (f) ? juce::jmax (0, SurroundMeterBank::widthFor (f) - (2 * 8 + 1)) : 0; }
     /** The VCAs that control this strip: what they add (dB, all of them together), whether one of them is muted, and the colour to draw it in.
         active false: no VCA controls it. A line beside the slot then runs from the fader cap to where the level really is, with a faint cap there. */
     void setVcaGhost (bool active, float addDb, bool muted, juce::Colour c)
@@ -227,12 +248,13 @@ public:
         r.removeFromTop (3); r.removeFromBottom (3);
         int scaleW = 20, sliderW = 28, between = 5;
         const int meterW = 8, gap = 1;
+        const int metersW = bank.isVisible() ? SurroundMeterBank::widthFor (bank.getFormat()) : meterW * 2 + gap;      // (3.39.0: a surround bus's meters)
         {   // a narrow strip: the gap, the scale and the slot give a little each, so everything still fits
-            int over = scaleW + sliderW + between + meterW * 2 + gap - r.getWidth();
+            int over = scaleW + sliderW + between + metersW - r.getWidth();
             auto give = [&over] (int& v, int least) { const int d = juce::jlimit (0, juce::jmax (0, v - least), over); v -= d; over -= d; };
             give (between, 2); give (sliderW, 22); give (scaleW, 16);
         }
-        const int total = scaleW + sliderW + between + meterW * 2 + gap;
+        const int total = scaleW + sliderW + between + metersW;
         const int x0 = r.getX() + juce::jmax (0, (r.getWidth() - total) / 2);
         scaleRect  = { x0, r.getY(), scaleW, r.getHeight() };
         sliderRect = { x0 + scaleW, r.getY(), sliderW, r.getHeight() };
@@ -243,6 +265,7 @@ public:
         const int above = 1 + LevelMeter::kClipH + 1;
         meterL.setBounds (mx, travelTop - above, meterW, travelBottom - travelTop + above + 1);
         meterR.setBounds (mx + meterW + gap, travelTop - above, meterW, travelBottom - travelTop + above + 1);
+        bank.setBounds (mx, travelTop - above, metersW, travelBottom - travelTop + above + 1);
         ghostX = juce::jmax (1, between / 2);
         syncDrag();
     }
@@ -280,6 +303,7 @@ private:
         label.setText (v <= -79.5 ? juce::String ("-inf") : juce::String (v, 1), juce::dontSendNotification);
     }
     valueentry::TypedSlider slider; LevelMeter meterL, meterR; juce::Label label, peakLabel;
+    SurroundMeterBank bank;                                // 3.39.0: a surround bus's meters (hidden for stereo)
     NudgeButton downBtn { false }, upBtn { true };
     std::unique_ptr<valueentry::ReadoutClick> labelClick;
     std::function<void (float)> changed;
@@ -402,6 +426,7 @@ class SlotCell : public juce::Component, public juce::SettableTooltipClient
 {
 public:
     SlotCell (SlotButtons& o, int i) : owner (o), index (i) { setRepaintsOnMouseActivity (true); }
+    juce::String layoutNote;                                   // 3.39.0: what the tooltip says about the plug-in's layout on a surround bus (see SlotButtons::refresh)
     void setLook (const juce::String& n, juce::Colour c, bool loadedNow)
     {
         if (name == n && fill == c && loaded == loadedNow) return;                   // (3.27.1: no repaint when nothing changed)
@@ -446,6 +471,15 @@ public:
             if (! loaded && slots[i].savedName.isNotEmpty()) name = slots[i].savedName + " (not loaded)";     // kept in the slot with its settings, but it could not be started (see openProject)
             const bool byp = slots[i].bypass.get();
             cells[i]->setLook (name, loaded ? (byp ? t.insertByp : t.insertOn) : t.field, loaded);
+            // 3.39.0: a plug-in on a surround bus that is not running in the bus's full layout says so (its tooltip)
+            const auto note = loaded ? slots[i].getProcessorUnsafe()->layoutNote() : juce::String();
+            if (note != cells[i]->layoutNote)
+            {
+                cells[i]->layoutNote = note;
+                cells[i]->setTooltip (juce::String ("Insert slot. Click the name to open the plug-in (an empty slot opens the list), click the dot for the menu (load, bypass, remove). "
+                                      "Drag the name onto another slot, in any mixer, to move the plug-in with its settings; hold Alt (or Shift) to drop an exact copy instead (all its settings).")
+                                      + (note.isNotEmpty() ? "\n\n" + name + ": " + note + "." : juce::String()));
+            }
         }
     }
     void resized() override
@@ -726,6 +760,54 @@ bool channelMuteOn (AppContext& app, MixerState& m, const juce::Uuid& src)
     return false;
 }
 
+/** 3.39.0: how many channels a send from 'src' carries before it reaches a surround bus: an audio track's own channels (after its inserts), an Int
+    Bus's format. A mono or stereo one is placed by the send's surround panner; a wider one goes across channel for channel. */
+int sourceChannels (AppContext& app, const juce::Uuid& src)
+{
+    if (auto* t = app.project.findTrack (src)) return t->channelCount();
+    return surround::channels (app.project.busFormat (src));
+}
+
+/** 3.39.0: the pans a surround panner follows (mono, left, right) for a send from 'src' in mixer 'mid' - looked up afresh each time (the panner may
+    outlive the mixer's window): a track's own pans; a stereo Int Bus is simply left and right. */
+std::function<std::array<float, 3>()> pansOf (AppContext& app, const juce::Uuid& mid, const juce::Uuid& src)
+{
+    auto* a = &app;
+    return [a, mid, src]() -> std::array<float, 3>
+    {
+        if (auto* mx = a->findMixer (mid))
+            for (auto& st : mx->stripPool)
+                if (st->trackId == src) return { st->pan.get(), st->panL.get(), st->panR.get() };
+        return { 0.0f, -1.0f, 1.0f };
+    };
+}
+
+/** 3.39.0: what happens to a send / an output going from 'src' into 'dest', for a line under its controls ("" = nothing special to say). */
+juce::String surroundRouteNote (AppContext& app, const juce::Uuid& src, const juce::Uuid& dest)
+{
+    const auto df = app.project.busFormat (dest);
+    const int sc = sourceChannels (app, src);
+    const auto sf = app.project.busFormat (src);
+    if (surround::isSurround (df) && sc > 2)
+        return surround::isSurround (sf) && sf == df ? "Goes across to " + surround::name (df) + " channel for channel."
+                                                    : "Goes into " + surround::name (df) + " channel for channel; the speakers it lacks are folded down (as Dolby's downmixes do).";
+    if (! surround::isSurround (df) && sc > 2)
+        return "Folded down to stereo (Lo/Ro: centre and surrounds at -3 dB, no LFE).";
+    return {};
+}
+
+/** 3.39.0: changes a bus's channel format (stereo or a surround format) from its strip's menu. Its plug-ins, and those on the sends into it, are told the
+    new layout (Project::setBusFormat); the mixers are rebuilt and the engine re-planned from the structure change. Not while recording. */
+void changeBusFormat (AppContext& app, const juce::Uuid& id, BusFormat f)
+{
+    if (app.engine.isRecording()) { showError ("Recording", "A bus's format cannot be changed while recording."); return; }
+    auto* b = app.project.findBus (id);
+    if (b == nullptr || b->format == f) return;
+    const auto name = b->name;
+    if (! app.project.setBusFormat (id, f)) { showError ("Bus format", surround::name (f) + " is for an Ext Bus only (the Dolby Atmos Composer's monitor output)."); return; }
+    app.setNotice ("'" + name + "' is now " + surround::name (f) + ".");
+}
+
 /** A send's own MUTE (in its panel): lit red while the send is muted; a red outline while the channel's MUTE silences it (Follow mute ticked and the
     channel muted), so it is plain why the send is silent although its own button is off. */
 class SendMuteButton : public juce::Button
@@ -829,14 +911,33 @@ public:
         insertsCaption.setFont (juce::FontOptions (11.0f, juce::Font::bold));
         insertsCaption.setColour (juce::Label::textColourId, theme::dimText);
         addAndMakeVisible (insertsCaption); addAndMakeVisible (slots);
+        // 3.39.0: into a surround bus - a mono or stereo channel is placed by this send's panner; a wider one goes across (the note says how)
+        const auto df = app.project.busFormat (dest);
+        if (! destTrack && surround::isSurround (df) && sourceChannels (app, src) <= 2)
+        {
+            panner = std::make_unique<SurroundPanner> (send, df, sourceChannels (app, src), pansOf (app, m.id, src), [this] { app.project.markDirty(); },
+                                                       [a = &app, mid = m.id] { return a->findMixer (mid) != nullptr; });
+            addAndMakeVisible (*panner);
+        }
+        else if (const auto note = surroundRouteNote (app, src, dest); note.isNotEmpty())
+        {
+            routeNote.setText (note, juce::dontSendNotification);
+            routeNote.setFont (juce::FontOptions (10.5f));
+            routeNote.setColour (juce::Label::textColourId, theme::dimText);
+            routeNote.setJustificationType (juce::Justification::topLeft);
+            addAndMakeVisible (routeNote);
+        }
         refreshMute();
         startTimerHz (8);                                           // (the channel's MUTE may change while this is open)
-        setSize (250, 254);
+        setSize (250 + (panner != nullptr ? panner->getWidth() : 0), juce::jmax (254 + (routeNote.isVisible() ? 34 : 0), panner != nullptr ? panner->getHeight() : 0));
     }
     void paint (juce::Graphics& g) override { g.fillAll (theme::row); }
     void resized() override
     {
-        auto r = getLocalBounds().reduced (8);
+        auto r = getLocalBounds();
+        if (panner != nullptr) panner->setBounds (r.removeFromRight (panner->getWidth()));
+        r = r.reduced (8);
+        if (routeNote.isVisible()) routeNote.setBounds (r.removeFromBottom (32));
         title.setBounds (r.removeFromTop (20));
         r.removeFromTop (4);
         fader.setBounds (r.removeFromLeft (70));
@@ -888,6 +989,8 @@ private:
     SendMuteButton muteButton;
     SlotButtons slots;
     ForOthers forOthers; bool toTrack = false;
+    std::unique_ptr<SurroundPanner> panner;                        // 3.39.0: into a surround bus
+    juce::Label routeNote;
 };
 
 /** A rotary dial that sends a channel to another channel: drag up / down to change the level, click once for the details.
@@ -1319,9 +1422,13 @@ private:
 class StripOutputRow : public juce::Component
 {
 public:
-    StripOutputRow (AppContext& a, MixerState& m, const juce::Uuid& channel, bool isTrack, bool isExt, Flag* onFlag, juce::Uuid* destPtr)
-        : app (a), mixer (m), id (channel), ext (isExt), on (onFlag), dest (destPtr)
+    StripOutputRow (AppContext& a, MixerState& m, const juce::Uuid& channel, bool isTrack, bool isExt, Flag* onFlag, juce::Uuid* destPtr, SendState* outSendState = nullptr)
+        : app (a), mixer (m), id (channel), ext (isExt), on (onFlag), dest (destPtr), outSend (outSendState)
     {
+        // 3.39.0: the output goes into a surround bus - the round button opens its panner (where a mono or stereo channel lands there)
+        panBtn.setTooltip ("Where this channel lands in the surround bus its output goes to: front to back, height, spread (click to open)");
+        panBtn.onClick = [this] { openPanner(); };
+        addChildComponent (panBtn);
         if (ext)
         {
             mainBox.setButtonText ("Main out");
@@ -1331,6 +1438,7 @@ public:
             mainBox.onClick = [this]
             {
                 if (updating) return;
+                if (surround::isSurround (app.project.busFormat (id))) { mainBox.setToggleState (false, juce::dontSendNotification); return; }     // (3.39.0: never a surround Ext Bus)
                 mixer.busFor (id)->isMain.set (mainBox.getToggleState());
                 app.engine.rebuildPlan(); app.project.markDirty(); app.project.changed();
             };
@@ -1352,7 +1460,7 @@ public:
     {
         if (ext) { refresh(); return; }                                   // (an Ext Bus: only its Main out tick to show - it used to be left unticked whatever the mixer did)
         juce::String sig;                                                  // rebuild the list only when the buses changed, so an open drop-down is not torn down 3 times a second
-        for (auto& b : app.project.buses) sig << b.id.toString() << b.name << (b.external ? "E" : "I") << "|";
+        for (auto& b : app.project.buses) sig << b.id.toString() << b.name << (b.external ? "E" : "I") << (int) b.format << "|";
         sig << id.toString();
         if (sig == lastSig && box.getNumItems() > 0) { refresh(); return; }
         lastSig = sig;
@@ -1361,8 +1469,9 @@ public:
         ids.clear();
         box.addItem ("Main", 1);
         int next = 2;
-        for (auto& b : app.project.buses) if (! b.external && b.id != id) { ids.push_back (b.id); box.addItem (b.name + "  (Int)", next++); }     // the name first: a narrow box still shows it
-        for (auto& b : app.project.buses) if (b.external)                 { ids.push_back (b.id); box.addItem (b.name + "  (Ext)", next++); }
+        auto kindOf = [] (const BusDef& b) { return juce::String (b.external ? "  (Ext" : "  (Int") + (surround::isSurround (b.format) ? " " + surround::name (b.format) : juce::String()) + ")"; };
+        for (auto& b : app.project.buses) if (! b.external && b.id != id) { ids.push_back (b.id); box.addItem (b.name + kindOf (b), next++); }     // the name first: a narrow box still shows it
+        for (auto& b : app.project.buses) if (b.external)                 { ids.push_back (b.id); box.addItem (b.name + kindOf (b), next++); }
         updating = false;
         refresh();
     }
@@ -1372,6 +1481,9 @@ public:
         if (ext)
         {
             mainBox.setToggleState (mixer.busFor (id)->isMain.get(), juce::dontSendNotification);
+            const bool sur = surround::isSurround (app.project.busFormat (id));          // 3.39.0: the mixer's main outputs (and talkback) stay stereo
+            mainBox.setEnabled (! sur);
+            if (sur) mainBox.setTooltip ("A surround Ext Bus is never a main output: 'Main' and the talkback stay stereo. Send to it with the dials, or choose it as a strip's output.");
         }
         else
         {
@@ -1380,7 +1492,11 @@ public:
             for (size_t i = 0; i < ids.size(); ++i) if (! dest->isNull() && ids[i] == *dest) want = (int) i + 2;
             if (box.getSelectedId() != want) box.setSelectedId (want, juce::dontSendNotification);
             const auto mains = mainNames();
-            box.setTooltip ("Where the output of this strip goes (after the fader). 'Main' = " + (mains.isNotEmpty() ? mains : juce::String ("nowhere: no Ext Bus is ticked as Main out")));
+            const auto note = (! dest->isNull()) ? surroundRouteNote (app, id, *dest) : juce::String();
+            box.setTooltip ("Where the output of this strip goes (after the fader). 'Main' = " + (mains.isNotEmpty() ? mains : juce::String ("nowhere: no Ext Bus is ticked as Main out"))
+                            + (note.isNotEmpty() ? "\n\n" + note : juce::String()));
+            const bool pan = outSend != nullptr && ! dest->isNull() && surround::isSurround (app.project.busFormat (*dest)) && sourceChannels (app, id) <= 2;
+            if (pan != panBtn.isVisible()) { panBtn.setVisible (pan); resized(); }
         }
         updating = false;
     }
@@ -1388,7 +1504,9 @@ public:
     {
         auto r = getLocalBounds();
         if (ext) { mainBox.setBounds (r); return; }
-        button.setBounds (r.removeFromLeft (r.getWidth() < 70 ? 26 : 34).reduced (0, 1)); r.removeFromLeft (r.getWidth() < 40 ? 2 : 3);
+        const bool pan = panBtn.isVisible();                       // (3.39.0: the panner's button takes a little of the OUT key's room, so the box keeps its own)
+        button.setBounds (r.removeFromLeft (pan ? (r.getWidth() < 70 ? 22 : 26) : (r.getWidth() < 70 ? 26 : 34)).reduced (0, 1)); r.removeFromLeft (r.getWidth() < 40 || pan ? 2 : 3);
+        if (pan) { panBtn.setBounds (r.removeFromLeft (16)); r.removeFromLeft (2); }
         box.setBounds (r.reduced (0, 1));
     }
 private:
@@ -1403,11 +1521,22 @@ private:
     {
         const int sel = box.getSelectedId();
         *dest = sel <= 1 || (size_t) sel - 2 >= ids.size() ? juce::Uuid::null() : ids[(size_t) sel - 2];
-        app.engine.rebuildPlan(); app.project.markDirty();
+        app.engine.rebuildPlan(); app.project.markDirty();         // (the plan rebuild also gives the output's own inserts the new bus's layout: Project::applySlotLayouts)
+        refresh();
     }
-    AppContext& app; MixerState& mixer; juce::Uuid id; bool ext; Flag* on; juce::Uuid* dest;
+    void openPanner()
+    {
+        if (outSend == nullptr || dest->isNull()) return;
+        const auto df = app.project.busFormat (*dest);
+        if (! surround::isSurround (df)) return;
+        auto p = std::make_unique<SurroundPanner> (*outSend, df, sourceChannels (app, id), pansOf (app, mixer.id, id), [a = &app] { a->project.markDirty(); },
+                                                   [a = &app, mid = mixer.id] { return a->findMixer (mid) != nullptr; });
+        juce::CallOutBox::launchAsynchronously (std::move (p), panBtn.getScreenBounds(), nullptr);
+    }
+    AppContext& app; MixerState& mixer; juce::Uuid id; bool ext; Flag* on; juce::Uuid* dest; SendState* outSend = nullptr;
     bool updating = false; juce::String lastSig;
     juce::TextButton button; juce::ComboBox box; juce::ToggleButton mainBox; std::vector<juce::Uuid> ids;
+    SurroundPanButton panBtn;
 };
 
 class ChannelStrip : public StripBase, public GangMember
@@ -1417,7 +1546,7 @@ public:
         : StripBase (&a, t.id), app (a), mixer (m), trackId (t.id), strip (*m.stripFor (t.id)), numCh (t.channelCount()),
           slots (a, strip.slots, slotCount),
           fader ([this] (float db) { const float old = strip.gainDb.get(); strip.gainDb.set (db); app.project.markDirty(); linkFader (old, db); }, strip.gainDb.get()),
-          outRow (a, m, t.id, true, false, &strip.outOn, &strip.outDest), gang (g)
+          outRow (a, m, t.id, true, false, &strip.outOn, &strip.outDest, &strip.outSend), gang (g)
     {
         nSlots = slotCount;
         if (gang != nullptr)
@@ -1844,9 +1973,11 @@ public:
     BusStrip (AppContext& a, MixerState& m, const BusDef& def, int slotCount)
         : StripBase (&a, def.id), app (a), mixer (m), busId (def.id), st (*m.busFor (def.id)), external (def.external), slots (a, st.slots, slotCount),
           fader ([this] (float db) { st.gainDb.set (db); app.project.markDirty(); }, st.gainDb.get()),
-          outRow (a, m, def.id, false, def.external, &st.outOn, &st.outDest)
+          outRow (a, m, def.id, false, def.external, &st.outOn, &st.outDest, &st.outSend)
     {
         nSlots = slotCount;
+        format = def.format;
+        fader.setMeterFormat (format);                                              // 3.39.0: a meter per channel for a surround bus
         topContent.addAndMakeVisible (slots); addAndMakeVisible (fader); addAndMakeVisible (outRow);
         mute = makeToggle (*this, toggles, "M", juce::Colour (0xffe0312b));
         mute->setToggleState (st.mute.get(), juce::dontSendNotification);
@@ -1862,7 +1993,7 @@ public:
             solo->setTooltip ("Solo this bus (this mixer only): everything that feeds it stays open, the rest is silenced");
             solo->onClick = [this] { st.solo.set (solo->getToggleState()); app.project.markDirty(); };
         }
-        if (! external)                                                            // an Int Bus has a pan (balance of its stereo pair) like a track
+        if (! external && ! surround::isSurround (format))                          // an Int Bus has a pan (balance of its stereo pair) like a track (3.39.0: a stereo one)
         {
             styleCaption (panLabel, "PAN"); addAndMakeVisible (panLabel);
             styleField (panValue, 9.5f); addAndMakeVisible (panValue);
@@ -1889,11 +2020,33 @@ public:
         {
             outBox.addItem ("(nowhere)", 1);
             const int n = (int) app.project.outputs.size();
-            for (int i = 0; i + 1 < n; i += 2) outBox.addItem ("Out " + juce::String (i + 1) + "-" + juce::String (i + 2), i + 2);     // (3.26.0: "Out": it may be shown without its title)
-            outBox.setTooltip ("The driver outputs this Ext Bus goes to: an Ext Bus must go to a stereo pair of driver outputs, or nowhere");
+            if (! surround::isSurround (format))
+            {
+                for (int i = 0; i + 1 < n; i += 2) outBox.addItem ("Out " + juce::String (i + 1) + "-" + juce::String (i + 2), i + 2);     // (3.26.0: "Out": it may be shown without its title)
+                outBox.setTooltip ("The driver outputs this Ext Bus goes to: an Ext Bus must go to a stereo pair of driver outputs, or nowhere");
+            }
+            else
+            {   // 3.39.0: a surround Ext Bus - one driver output per speaker channel, in order (L R C LFE ... as its meters), from the first one chosen
+                const int w = surround::speakerChannels (format);
+                for (int i = 0; i + w <= n; ++i) outBox.addItem ("Out " + juce::String (i + 1) + "-" + juce::String (i + w), i + 2);
+                juce::StringArray names;
+                for (int c = 0; c < w; ++c) names.add (surround::channelLabel (format, c));
+                outBox.setTooltip ("The driver outputs this " + surround::name (format) + " Ext Bus goes to: " + juce::String (w) + " outputs in a row, one per speaker, in this order: "
+                                   + names.joinIntoString (" ") + (n < w ? ". (The audio driver has only " + juce::String (n) + " outputs.)" : juce::String()));
+                if (surround::isMonitorFormat (format))
+                {   // and its headphone pair (the Dolby Atmos Composer plays it after the speakers)
+                    hpBox.addItem ("(nowhere)", 1);
+                    for (int i = 0; i + 1 < n; ++i) hpBox.addItem ("Phones " + juce::String (i + 1) + "-" + juce::String (i + 2), i + 2);
+                    hpBox.setTooltip ("The pair of driver outputs the headphone channels of this bus go to (the Dolby Atmos Composer's binaural output, when its headphone monitoring is on)");
+                    hpBox.onChange = [this] { if (! updating) { st.hpFirst.store (hpBox.getSelectedId() <= 1 ? -1 : hpBox.getSelectedId() - 2); app.project.markDirty(); app.project.changed(); } };
+                    topContent.addAndMakeVisible (hpBox);
+                }
+            }
             outBox.onChange = [this] { if (! updating) { st.outFirst.store (outBox.getSelectedId() <= 1 ? -1 : outBox.getSelectedId() - 2); app.project.markDirty(); app.project.changed(); } };
             topContent.addAndMakeVisible (outBox);
-            note.setText ("An Ext Bus is how sound leaves the mixer: pick the pair of driver outputs above (or nowhere). Tick Main out below to make this the bus that strips send to by default.", juce::dontSendNotification);
+            note.setText (surround::isSurround (format)
+                              ? "A " + surround::name (format) + " Ext Bus: its channels go to the driver outputs chosen above, one each. It is never a main output (Main and the talkback stay stereo). Right-click the name for its format."
+                              : "An Ext Bus is how sound leaves the mixer: pick the pair of driver outputs above (or nowhere). Tick Main out below to make this the bus that strips send to by default.", juce::dontSendNotification);
             note.setFont (juce::FontOptions (9.5f));
             note.setColour (juce::Label::textColourId, mixTheme().dim);
             note.setJustificationType (juce::Justification::topLeft);
@@ -1929,6 +2082,7 @@ public:
             updating = true;
             const int f = st.outFirst.load();
             outBox.setSelectedId (f < 0 ? 1 : f + 2, juce::dontSendNotification);
+            if (hpBox.getNumItems() > 0) { const int h = st.hpFirst.load(); hpBox.setSelectedId (h < 0 ? 1 : h + 2, juce::dontSendNotification); }
             updating = false;
         }
         for (auto* d : dials) d->refreshFromModel();
@@ -1951,7 +2105,14 @@ public:
             if (vm != 0) vcaGhostFor (app, mixer, vm, add, muted, vc);
             fader.setVcaGhost (vm != 0, add, muted, vc);
         }
-        fader.pushPeaks (st.meterL.take(), st.meterR.take(), st.rmsL.get(), st.rmsR.get());
+        if (surround::isSurround (format))
+        {   // 3.39.0: each channel's own meter (the engine fills them: BusState::chPeak); meterL / meterR are only for what shows two
+            float pk[kMaxBusChannels], rm[kMaxBusChannels];
+            for (int c = 0; c < surround::channels (format); ++c) { pk[c] = st.chPeak[c].take(); rm[c] = st.chRms[c].get(); }
+            st.meterL.take(); st.meterR.take();
+            fader.pushChannelPeaks (pk, rm);
+        }
+        else fader.pushPeaks (st.meterL.take(), st.meterR.take(), st.rmsL.get(), st.rmsR.get());
     }
     void resetPeaks() override { fader.resetPeaks(); }
     void resized() override
@@ -1976,8 +2137,9 @@ public:
         auto top = t.removeFromTop (layout.inputRows * kInputRowH);            // where audio track strips have their input selectors
         if (external)
         {
-            if (layout.inputRows >= 2) topSections.push_back ({ "DRIVER OUTPUTS", top.removeFromTop (kSecH) });       // (one row: the box alone - its items say "Out")
+            if (layout.inputRows >= 2 && hpBox.getNumItems() == 0) topSections.push_back ({ "DRIVER OUTPUTS", top.removeFromTop (kSecH) });       // (one row: the box alone - its items say "Out")
             outBox.setBounds (top.removeFromTop (kInputRowH).reduced (0, 1));
+            if (hpBox.getNumItems() > 0 && layout.inputRows >= 2) hpBox.setBounds (top.removeFromTop (kInputRowH).reduced (0, 1));     // (3.39.0: a monitor format's headphone pair, in the second row)
         }
         t.removeFromTop (3);
         auto lcRow = t.removeFromTop (kLcRowH);
@@ -1988,7 +2150,13 @@ public:
         topWells.push_back (slotArea.expanded (2, 0));
         slots.setBounds (slotArea.reduced (0, 1));
         t.removeFromTop (4);
-        if (external) { note.placeRightOf (t.removeFromTop (22)); topContent.repaint(); return; }
+        if (external)
+        {
+            const auto row = t.removeFromTop (22);
+            note.placeRightOf (row);
+            if (hpBox.getNumItems() > 0 && layout.inputRows < 2) hpBox.setBounds (row.withTrimmedRight (24).reduced (0, 2));      // (one input row: under the inserts, beside the note)
+            topContent.repaint(); return;
+        }
         auto hdr = t.removeFromTop (kSendHdrH);
         toTrackButton.setBounds (hdr.removeFromRight (18).reduced (0, 1));
         topSections.push_back ({ "SENDS", hdr.withTrimmedRight (2) });
@@ -2000,9 +2168,35 @@ public:
         topContent.repaint();
     }
 protected:
-    juce::String bandText() const override { return external ? "EXT BUS" : "INT BUS"; }
+    juce::String bandText() const override
+    {
+        if (! surround::isSurround (format)) return external ? "EXT BUS" : "INT BUS";
+        return (external ? "EXT " : "INT ") + surround::key (format).toUpperCase();                    // 3.39.0: "INT 9.1.6", "EXT 9.1.6+HP"
+    }
     juce::String plateText() const override { auto* b = app.project.findBus (busId); return b != nullptr ? b->name : juce::String(); }
     bool plateRenamable() const override { return true; }                    // 3.28.0: double-click the name plate to rename the bus
+    /** 3.39.0: right-click the name plate - the bus's channel format (stereo or a surround format). */
+    bool plateClicked (const juce::MouseEvent& e) override
+    {
+        if (! e.mods.isPopupMenu()) return false;
+        juce::PopupMenu m, f;
+        const auto list = surround::offered (external);
+        for (size_t i = 0; i < list.size(); ++i)
+        {
+            if (list[i] == BusFormat::S714Hp) f.addSeparator();
+            f.addItem ((int) i + 1, surround::name (list[i]) + "  (" + juce::String (surround::channels (list[i])) + (surround::channels (list[i]) == 1 ? " channel)" : " channels)"),
+                       true, list[i] == format);
+        }
+        m.addSectionHeader (plateText());
+        m.addSubMenu ("Format", f);
+        auto* a = &app; const auto id = busId;                                    // (by id: the strip is rebuilt when the format changes)
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this).withMousePosition(), [a, id, list] (int r)
+        {
+            if (r < 1 || (size_t) r > list.size()) return;
+            changeBusFormat (*a, id, list[(size_t) r - 1]);
+        });
+        return true;
+    }
 private:
     void chooseTrack()
     {
@@ -2026,6 +2220,8 @@ private:
     }
     AppContext& app; MixerState& mixer; juce::Uuid busId; BusState& st; bool external; SlotButtons slots; FaderBlock fader; StripOutputRow outRow;
     bool updating = false; int nSlots = kNumSlots;
+    BusFormat format = BusFormat::Stereo;                                // 3.39.0
+    juce::ComboBox hpBox;                                                // 3.39.0: a monitor format's headphone pair
     std::unique_ptr<LowCutKey> lcKey;                                   // Int Buses only
     InfoNote note; juce::ComboBox outBox;
     juce::OwnedArray<SendDial> dials; juce::TextButton toTrackButton;
@@ -2362,9 +2558,16 @@ private:
     {
         auto* mx = mixerState();
         if (mx == nullptr) return;
-        juce::PopupMenu m, vca;
-        m.addItem (1, "Int Bus");
-        m.addItem (2, "Ext Bus");
+        juce::PopupMenu m, vca, intFormats, extFormats;
+        const auto intList = surround::offered (false), extList = surround::offered (true);       // 3.39.0: stereo, or a surround format
+        for (size_t i = 0; i < intList.size(); ++i) intFormats.addItem (1000 + (int) i, surround::name (intList[i]) + (i == 0 ? "" : "  (" + juce::String (surround::channels (intList[i])) + " channels)"));
+        for (size_t i = 0; i < extList.size(); ++i)
+        {
+            if (extList[i] == BusFormat::S714Hp) extFormats.addSeparator();
+            extFormats.addItem (2000 + (int) i, surround::name (extList[i]) + (i == 0 ? "" : "  (" + juce::String (surround::channels (extList[i])) + " channels)"));
+        }
+        m.addSubMenu ("Int Bus", intFormats);
+        m.addSubMenu ("Ext Bus", extFormats);
         vca.addItem (10, "New VCA");
         std::vector<juce::Uuid> hidden;
         for (auto& v : app.project.vcas)
@@ -2394,11 +2597,15 @@ private:
                 return;
             }
             if (app.engine.isRecording()) { showError ("Recording", "Strips cannot be added while recording."); return; }
-            if (r == 1 || r == 2)
+            if ((r >= 1000 && r < 1000 + 16) || (r >= 2000 && r < 2000 + 16))
             {
-                const bool ext = r == 2;
+                const bool ext = r >= 2000;
+                const auto list = surround::offered (ext);
+                const int k = r - (ext ? 2000 : 1000);
+                if (k >= (int) list.size()) return;
+                const auto f = list[(size_t) k];
                 const juce::String kind = ext ? "Ext bus" : "Int bus";
-                app.project.addBus (kind + " " + juce::String ((int) app.project.busIndices (ext).size() + 1), ext);
+                app.project.addBus (kind + " " + juce::String ((int) app.project.busIndices (ext).size() + 1) + (surround::isSurround (f) ? " (" + surround::name (f) + ")" : juce::String()), ext, f);
             }
             else if (r == 10)
             {
@@ -2517,6 +2724,20 @@ MixerComponent::MixerComponent (AppContext& a, const juce::Uuid& id) : app (a), 
     addAndMakeVisible (statusLabel);
     statusLabel.setFont (juce::FontOptions (12.0f));
     statusLabel.setColour (juce::Label::textColourId, theme::warn);
+    addChildComponent (atmosButton);                         // 3.39.0: shown while the project has a Dolby Atmos Composer
+    atmosButton.setTooltip ("Plays the edit you were last in (its window) from 3 s before its first sound to 10 s after its last, through the mixers, so the "
+                            "Dolby Atmos Composer can write its Atmos file: it writes while the piece plays through it, from its in-point to its out-point - set those "
+                            "to the edit's start and end in the Composer. Space stops it.");
+    atmosButton.onClick = [this]
+    {
+        if (auto* t = ToolWindow::lastTransportWindow())
+            if (auto* ew = dynamic_cast<EditWindowComponent*> (t->getContentComponent()))
+            {
+                if (const auto err = ew->playAtmosPass(); err.isNotEmpty()) showError ("Atmos pass", err);
+                return;
+            }
+        showError ("Atmos pass", "Open the edit's window first (the pass plays the edit window you were last in).");
+    };
     if (auto* st = app.props.getUserSettings())              // the meter settings are shared by all mixers
     {
         auto& m = meterSettings();
@@ -2891,7 +3112,7 @@ void MixerComponent::rebuild()
             {
                 auto* bs = new BusStrip (app, *m, b, slotCount);
                 busStrips.add (bs); maxDials = juce::jmax (maxDials, bs->dialCount());
-                holder->add (bs);
+                holder->add (bs, stripWidth() + FaderBlock::extraWidthFor (b.format));      // (3.39.0: a surround bus is wider: a meter per channel)
             }
     juce::Array<VcaStrip*> vcaStrips;
     for (auto& v : app.project.vcas)                              // VCA strips come after the buses
@@ -2918,6 +3139,41 @@ void MixerComponent::rebuild()
     }
     layoutView();
     updateWindowLimits();
+    checkAtmos();
+}
+
+void MixerComponent::checkAtmos()
+{
+    auto* me = mixer();
+    int composers = 0; bool mine = false;
+    auto look = [&] (const InsertSlot* sl, int count, bool here)
+    {
+        for (int i = 0; i < count; ++i)
+        {
+            const auto* pr = sl[i].getProcessorUnsafe();
+            const auto d = pr != nullptr ? pr->getDescription() : sl[i].savedDescription;
+            if (d.isNotEmpty() && Project::atmosLinkOf (d) == Project::AtmosLink::Composer) { ++composers; mine = mine || here; }
+        }
+    };
+    for (auto& m : app.project.mixers)
+    {
+        for (auto& st : m->stripPool) look (st->slots, kNumSlots, m.get() == me);
+        for (auto& bs : m->busPool)   look (bs->slots, kNumSlots, m.get() == me);
+    }
+    juce::String note;
+    const double sr = app.engine.getSampleRate();
+    if (composers > 1)
+        note = "Two Dolby Atmos Composers are loaded: only one can run on a computer (its manual) - keep one, in one mixer.";
+    else if (composers == 1 && sr > 0.0 && std::abs (sr - 48000.0) > 1.0 && std::abs (sr - 96000.0) > 1.0)
+        note = "The Dolby Atmos Composer works at 48 or 96 kHz only: this project runs at " + juce::String (sr / 1000.0, 1) + " kHz.";
+    else if (mine && me != nullptr)
+    {
+        bool goes = false;                                       // (the engine runs the Composer's mixer whatever its Ext Buses go to: the Composer may monitor on its own)
+        for (auto& b : app.project.buses) if (b.external && (me->busFor (b.id)->outFirst.load() >= 0 || me->busFor (b.id)->hpFirst.load() >= 0)) goes = true;
+        if (! goes) note = "This mixer's Ext Buses go to no driver outputs: nothing of it is heard from fermata (the Dolby Atmos Composer in it still runs).";
+    }
+    atmosNote = note;
+    if (const bool show = composers > 0; show != atmosButton.isVisible()) { atmosButton.setVisible (show); resized(); }
 }
 
 /** Decides which scroll bars are really needed and gives the holder exactly the visible size as its minimum (never more, or a bar would appear
@@ -3125,6 +3381,7 @@ void MixerComponent::resized()
     if (deleteButton.isVisible()) deleteButton.setBounds (top.removeFromRight (150).reduced (3));
     if (followBox.isVisible()) followBox.setBounds (top.removeFromRight (190).reduced (2, 3));
     if (auditionButton.isVisible()) auditionButton.setBounds (top.removeFromRight (260).reduced (3));
+    if (atmosButton.isVisible()) atmosButton.setBounds (top.removeFromRight (100).reduced (3));
     nameCaption.setBounds (top.removeFromLeft (84).reduced (4, 0));
     nameEditor.setBounds (top.removeFromLeft (180).reduced (0, 3));
     statusLabel.setBounds (top.reduced (8, 0));
@@ -3165,7 +3422,8 @@ void MixerComponent::timerCallback()
     holder->tick();
     const auto scan = app.plugins.scanStatus();
     if (statusFlash > 0) --statusFlash;
-    else statusLabel.setText (app.plugins.isScanning() ? scan : juce::String(), juce::dontSendNotification);
+    else statusLabel.setText (app.plugins.isScanning() ? scan : atmosNote, juce::dontSendNotification);
+    if (refreshCounter % 90 == 0) checkAtmos();                // (every 3 s: a plug-in loaded or the sample rate changed)
     updateAuditionButton();
     if (auditionButton.isVisible() && auditionButton.getWidth() == 0) resized();
     if (++refreshCounter % 10 == 0)                         // 3 Hz: plug-in names, solo / mute changes

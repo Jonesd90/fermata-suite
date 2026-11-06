@@ -392,6 +392,32 @@ void BounceComponent::start()
     job = std::make_unique<BounceJob> (app.project, bs, [safe] (BounceResult r) { if (safe != nullptr) safe->finished (r); });
 }
 
+/** 3.39.0: a line saying which plug-ins a bounce leaves out on purpose - the ones that join the live Dolby Atmos mix by themselves (see
+    Project::cloneForRender) - or nothing when the project has none. */
+static juce::String atmosLeftOutNote (const Project& p)
+{
+    const bool composer = p.hasAtmosComposer();
+    juce::StringArray names;
+    auto look = [&] (const InsertSlot* sl, int count)
+    {
+        for (int i = 0; i < count; ++i)
+        {
+            const auto* pr = sl[i].getProcessorUnsafe();
+            if (pr == nullptr || sl[i].bypass.get()) continue;
+            const auto k = Project::atmosLinkOf (pr->getDescription());
+            if (k == Project::AtmosLink::Composer || k == Project::AtmosLink::Beam || (k == Project::AtmosLink::Spacelab && composer)) names.addIfNotAlreadyThere (pr->getName());
+        }
+    };
+    for (auto& m : p.mixers)
+    {
+        for (auto& st : m->stripPool) { look (st->slots, kNumSlots); for (auto& sd : st->sends.pool) look (sd->slots, kSendSlots); }
+        for (auto& bs : m->busPool)   { look (bs->slots, kNumSlots); for (auto& sd : bs->sends.pool) look (sd->slots, kSendSlots); }
+    }
+    if (names.isEmpty()) return {};
+    return "\nLeft out of the bounce on purpose (they would have joined your live Atmos mix): " + names.joinIntoString (", ")
+           + ". The Atmos file itself is written by the Dolby Atmos Composer, while you play the piece through it.";
+}
+
 void BounceComponent::finished (const BounceResult& r)
 {
     job.reset();
@@ -404,7 +430,7 @@ void BounceComponent::finished (const BounceResult& r)
         status.setColour (juce::Label::textColourId, r.clipped ? theme::warn : theme::text);
         status.setText ("Done: " + juce::String (r.files.size()) + " file(s), loudest peak " + juce::String (r.peakDb, 1) + " dBFS"
                         + (r.clipped ? "  -  THIS CLIPPED (over 0 dBFS). Bounce again with Normalise ticked, or lower the faders." : "") + "\n"
-                        + juce::File (r.files[0]).getFileName() + (r.files.size() > 1 ? "  ..." : ""), juce::dontSendNotification);
+                        + juce::File (r.files[0]).getFileName() + (r.files.size() > 1 ? "  ..." : "") + atmosLeftOutNote (app.project), juce::dontSendNotification);
         lastFile = juce::File (r.files[0]);
         showButton.setVisible (true);
     }

@@ -276,6 +276,20 @@ void DesignComponent::buildBusPage (Page& page, bool external)
                    [&p, globalIndex] (int r) { const int i = globalIndex (r); return i >= 0 ? p.buses[(size_t) i].name : juce::String(); },
                    [this, &p, globalIndex] (int r, const juce::String& v) { const int i = globalIndex (r); if (i >= 0 && ! locked()) { p.buses[(size_t) i].name = v; p.structureChanged(); } }, {}, {} });
 
+    {   // 3.39.0: the bus's channel format - stereo, or a surround format (the monitor formats, + headphones, only for an Ext Bus)
+        juce::StringArray names;
+        for (auto f : surround::offered (external)) names.add (surround::name (f));
+        g.addColumn ({ "Format", 150, GridEditor::Type::Combo,
+                       [&p, globalIndex] (int r) { const int i = globalIndex (r); return i >= 0 ? surround::name (p.buses[(size_t) i].format) : juce::String(); },
+                       [this, &p, globalIndex, external] (int r, const juce::String& v)
+                       {
+                           const int i = globalIndex (r);
+                           if (i < 0) return;
+                           if (locked()) { refreshAll(); return; }
+                           for (auto f : surround::offered (external))
+                               if (surround::name (f) == v) { p.setBusFormat (p.buses[(size_t) i].id, f); break; }
+                       }, names, {} });
+    }
     page.addButton ("Add " + kind.toLowerCase(), [this, &p, &page, external, kind]
     {
         if (locked()) return;
@@ -323,9 +337,13 @@ void DesignComponent::buildBusPage (Page& page, bool external)
     };
     page.note.setText (external
         ? "An Ext Bus can be fed by any audio track or Int Bus (dials at the top of their mixer strips) and MUST go to driver outputs - pick the pair "
-          "on the bus's own strip in each mixer - or nowhere at all. Ext buses are the only way out to the audio driver (there is no Main output). Listed in the order you added them; use Up / Down to rearrange."
+          "on the bus's own strip in each mixer - or nowhere at all. Ext buses are the only way out to the audio driver (there is no Main output). Listed in the order you added them; use Up / Down to rearrange.\n"
+          "Format: stereo, or a surround format (5.1 to 9.1.6) - a surround Ext Bus goes to one driver output per speaker. The two '+ headphones' formats are for the Ext Bus that carries the "
+          "Dolby Atmos Composer: its speakers, then a headphone pair. A surround Ext Bus is never a main output."
         : "An Int Bus is fed by dials on audio tracks and other Int Buses. It can go on to audio tracks, other Int Buses or Ext Buses (its own dials), "
-          "Listed in the order you added them; use Up / Down to rearrange, Delete to remove.", juce::dontSendNotification);
+          "Listed in the order you added them; use Up / Down to rearrange, Delete to remove.\n"
+          "Format: stereo, or a surround format (5.1, 7.1, 7.1.2, 5.1.4, 7.1.4, 9.1.4, 9.1.6) - a surround reverb's bus, say. A mono or stereo channel sent to a surround bus is placed "
+          "by the send's panner (click the send dial).", juce::dontSendNotification);
     page.note.setJustificationType (juce::Justification::topLeft);
 }
 

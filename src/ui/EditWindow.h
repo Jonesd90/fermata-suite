@@ -32,6 +32,10 @@ public:
     juce::String play (double from, double to = -1.0, bool loop = false, bool goOn = false);
     /** Playing this edit: starts again from where it is now (the guide's S was switched). */
     void replayFromPlayhead();
+    /** 3.39.0: the Atmos pass - plays the whole edit through the mixers from a few seconds before its first sound to well after its last, so the Dolby
+        Atmos Composer (which writes its file while the piece plays through it) sees the play position start before its in-point and pass its out-point,
+        with the reverbs' tails included. Set the Composer's in and out points to the edit's start and end. */
+    juce::String playAtmosPass();
 
 private:
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
