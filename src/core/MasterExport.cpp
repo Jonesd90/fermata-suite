@@ -775,13 +775,12 @@ juce::String makeAtmosSpec (const Project& p, const MasteringDef& def, AtmosJobS
 {
     spec = AtmosJobSpec();
     MasterJobSpec files;
-    const auto err = makeFilesSpec (p, def, files);                       // the pieces, their numbers and names, the render source, exactly as the Virtual Master's
-    if (err.isNotEmpty() && ! err.startsWith ("Choose the folder")) return err;      // (the Atmos tab has a folder of its own)
-    if (err.isNotEmpty())
-    {   // the Virtual Master has no folder yet: the pieces are still needed - make the spec with a folder of the Atmos tab's own
-        auto d = def; d.vm.folder = def.atmos.folder.trim().isNotEmpty() ? def.atmos.folder.trim() : p.masteredFolder().getChildFile ("Atmos").getFullPathName();
-        const auto e2 = makeFilesSpec (p, d, files);
-        if (e2.isNotEmpty()) return e2;
+    {   // the pieces, their numbers and names, the render source, exactly as the Virtual Master's - with the Atmos tab's own folder, and none of the
+        // Virtual Master's file-format conditions (an MP3 setting without LAME, say, is no reason to refuse an Atmos file)
+        auto d = def;
+        d.vm.folder = def.atmos.folder.trim().isNotEmpty() ? def.atmos.folder.trim() : p.masteredFolder().getChildFile ("Atmos").getFullPathName();
+        d.vm.format = MasterFormat::Wav; d.vm.extraFormats = 0; d.stemIds.clear();
+        if (const auto err = makeFilesSpec (p, d, files); err.isNotEmpty()) return err;
     }
     spec.items = files.items; spec.mixerId = files.mixerId; spec.sourceId = files.sourceId; spec.ownMixers = files.ownMixers; spec.tailSeconds = files.tailSeconds;
     for (auto& b : p.buses)                                               // the ticked buses in the settings' order, gone ones and stereo ones left out

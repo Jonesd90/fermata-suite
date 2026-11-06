@@ -268,8 +268,9 @@ static void postSlotFromVar (InsertSlot* slots, const var& o, const InsertFactor
 {
     const var v = o["postSlot"];
     if (v.isArray()) { slotsFromVar (slots + kPostSlot, v, factory, sr, block, 1); return; }
-    juce::Array<var> empty; empty.add (obj());
-    slotsFromVar (slots + kPostSlot, var (empty), factory, sr, block, 1);
+    // no key: the slot is empty in what is read. A revert / undo (clearEmptySlots) empties it; a paste or an older snapshot leaves it as it is, as the
+    // other slots are left when a snapshot has fewer entries (its bypass included)
+    if (g_clearEmptySlots && slotInUse (slots[kPostSlot])) slots[kPostSlot].clear (sr, block, 2);
 }
 
 // ---- mixer pieces as data (used both for saving and for copying a mix)

@@ -6,6 +6,17 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.40.1
+Built in the fermata:Live conversation, 6 November, with Claude Fable: a sweep of everything written since the 3.39.0 Part 2 sweep (the post-fader
+slot, the Atmos export) and of what it touches. Three fixes, none of which a project without those features would meet:
+- The Atmos export no longer refuses because of the Virtual Master's own file format (with the Virtual Master set to MP3 and no LAME installed it
+  said "MP3 files need the free LAME encoder"; the Atmos files are WAV whatever the Virtual Master makes).
+- A file that passes 4 GB is decided from the whole file's size - the ADM description is bigger than the margin allowed for with many buses - so
+  such a file is RF64 as the profile requires rather than a RIFF file with an overflowing size field.
+- A pasted mix (or an older snapshot) without a post-fader slot leaves the slot as it is, bypass included, as the other slots are left when a
+  snapshot has fewer entries; only a revert or undo empties it.
+- Shared: `src/core/MasterExport.cpp`, `src/core/AdmWriter.cpp`, `src/core/Project.cpp`. fermata:Live needs a rebuild (its own behaviour is unchanged).
+
 ## 3.40.0
 Built in the fermata:Live conversation, 6 November (the post-fader slot with Claude Opus; fermata's own Dolby Atmos export with Claude Fable, which also
 looked the post-fader slot over: see `docs/ATMOS-EXPORT.md`).

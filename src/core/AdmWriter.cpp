@@ -274,7 +274,10 @@ FileWriter::FileWriter (const juce::File& f, const Description& d, bool dith, ju
     if (const auto e = check (d); e.isNotEmpty()) { fail (e); return; }
     channels = d.totalTracks();
     dataBytes = (juce::int64) channels * 3 * d.frames;
-    rf64 = dataBytes + 4096 >= rf64At;                                  // (the audio alone decides: the metadata is small next to 4 GB)
+    {   // RF64 once the whole RIFF body - the audio, the metadata chunks (built now, so their size is exact) and the headers - would not fit a 32-bit size
+        const auto metaBytes = (juce::int64) std::strlen (buildAxml (d).toRawUTF8()) + (juce::int64) buildChna (d).getSize() + 4 * 8 + 2;
+        rf64 = dataBytes + metaBytes + 12 + 8 + 64 + 8 + 16 + 8 + 1 >= rf64At;
+    }
     file.deleteFile();
     out.reset (file.createOutputStream().release());
     if (out == nullptr || out->failedToOpen()) { out.reset(); fail ("Cannot write " + file.getFullPathName()); return; }

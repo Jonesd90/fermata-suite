@@ -13568,8 +13568,10 @@ int main()
             mp.mastering.atmos.folder = tmp.getChildFile ("atmos").getFullPathName();
             mp.mastering.atmos.lfeHz = 120.0f;
             AtmosJobSpec spec;
+            mp.mastering.vm.format = MasterFormat::Mp3;                                               // (the Virtual Master's own file format is no business of the Atmos export: no LAME here)
             const auto err = makeAtmosSpec (mp, mp.mastering, spec);
             CHECK (err.isEmpty());
+            mp.mastering.vm.format = MasterFormat::Wav;
             CHECK (spec.busIds.size() == 2 && spec.busIds[0] == verb && spec.busNames[1] == "Bed 5.1.4" && spec.items.size() == 1 && spec.items[0].baseName == "01 - Kyrie");
             const auto notes = atmosExportNotes (mp, mp.mastering);
             CHECK (notes.size() == 1 && notes[0].contains ("Atmos room") && notes[0].contains ("fader"));

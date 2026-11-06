@@ -965,6 +965,7 @@ void MasteringComponent::refreshAll (bool force)
     refreshSource();
     refreshVm();
     refreshDdp();
+    if (view == 3) refreshAtmosControls();                                // (3.40.0: the buses' names and formats, the notes)
 }
 
 void MasteringComponent::refreshSource()

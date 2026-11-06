@@ -2077,3 +2077,12 @@ fermata moved to a new repository that also holds its companion, fermata:Live (t
   now decided when the plan is built and kept in `SendPlan::viaPost`, so the audio thread and the delay lines always agree (it was read from the
   live PRE / follow-mute flags on every block, which could disagree with the delay line for up to a third of a second after a flip). Everything else
   - the model, the saving, the engine path, the window - reads right; the tests pin it.
+
+## 3.40.1: the Fable sweep of 3.40.0 (built in the fermata:Live conversation, 6 November 2026)
+- Read in full: the engine diff (the post-fader slot's plan building, the audio-thread path, the latency signature, carryOver), the project file
+  and snapshot code, the mixer window's post row and slot columns, the automation's slot range, the render fingerprint, the AdmWriter, the Atmos
+  job and the Mastering window's tab. Three fixes (CHANGELOG 3.40.1). Confirmed sound, with reasons noted in the code where it was not obvious: a bus's
+  Pan / Fold / Across post-fader send reading `post` with unity ramps equals reading `pre` with the fader ramp (`post` = `pre` * the same ramp); the
+  wells are cleared before the post row's well is added; a VCA strip keeps the post row's room empty so the faders line up; drag and drop between a
+  POST cell and an insert cell goes through each column's own base pointer; the Atmos job's readers are closed before its work folder is deleted;
+  the Composer in a post-fader slot counts for keepRunning only while the slot runs.
