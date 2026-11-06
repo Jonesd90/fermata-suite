@@ -2,6 +2,7 @@
 #include "LiveTakeView.h"
 #include "NotePanel.h"
 #include "StationNotes.h"
+#include "SecondSeat.h"
 #include "LiveDesk.h"
 #include "../core/AudioOps.h"
 #include "../ui/SpectralWindow.h"                 // fermata's ReTouch window (shared: COMPATIBILITY.md)
@@ -280,7 +281,7 @@ public:
         showDetail();
         if (onChoose) onChoose (id);
     }
-    void focusReply() { replyBox.grabKeyboardFocus(); }
+    juce::Component* focusReply() { replyBox.grabKeyboardFocus(); return &replyBox; }
     void refresh()
     {
         std::vector<Shown> now;
@@ -386,6 +387,110 @@ private:
     juce::String primaryName;
 };
 
+/** 0.6.0: the second seat's panel - the Fixer's own keyboard and mouse (SecondSeat.h): which they are, on and off, the pointer's speed. */
+class SeatPanel final : public juce::Component, private juce::Timer
+{
+public:
+    explicit SeatPanel (SecondSeat& s) : seat (s)
+    {
+        for (auto* l : { &intro, &status, &kbLabel, &mouseLabel, &speedLabel, &hint })
+        {
+            l->setFont (juce::FontOptions (13.0f)); l->setColour (juce::Label::textColourId, theme::text); l->setJustificationType (juce::Justification::topLeft);
+            addAndMakeVisible (l);
+        }
+        intro.setText ("A keyboard and a mouse of the Fixer's own, on this PC. Windows never sees them: the mouse moves the orange pointer on the Fixer's "
+                       "screen and works only the Fixer's windows, the keyboard types only into the Fixer. The Primary's keyboard and mouse are not touched.",
+                       juce::dontSendNotification);
+        hint.setText ("To give them back at once: Esc five times on the Fixer's keyboard, or Let go here (either mouse can click it), or close the Fixer.",
+                      juce::dontSendNotification);
+        hint.setColour (juce::Label::textColourId, theme::dimText);
+        speedLabel.setText ("Pointer speed", juce::dontSendNotification);
+        for (auto* b : { &learnKb, &forgetKb, &learnMouse, &forgetMouse, &onOff })
+        { addAndMakeVisible (b); b->setWantsKeyboardFocus (false); }
+        learnKb.onClick = [this] { seat.learn (SecondSeat::Learn::keyboard); };
+        learnMouse.onClick = [this] { seat.learn (SecondSeat::Learn::mouse); };
+        forgetKb.onClick = [this] { seat.forget (true, false); };
+        forgetMouse.onClick = [this] { seat.forget (false, true); };
+        onOff.onClick = [this]
+        {
+            if (seat.isOn()) { seat.stop (true); return; }
+            juce::String why;
+            if (! seat.start (why)) message = why;
+            refresh();
+        };
+        speed.setRange (0.3, 5.0, 0.1); speed.setValue (seat.speed, juce::dontSendNotification);
+        speed.setSliderStyle (juce::Slider::LinearHorizontal); speed.setTextBoxStyle (juce::Slider::TextBoxRight, false, 50, 20);
+        speed.onValueChange = [this] { seat.speed = speed.getValue(); };
+        addAndMakeVisible (speed);
+        refresh();
+        startTimer (300);
+    }
+    void refresh()
+    {
+        juce::String st;
+        if (! seat.driverPresent()) st = "Not available: " + seat.driverProblem();
+        else if (seat.learning() == SecondSeat::Learn::keyboard) st = "Press any key on the FIXER'S keyboard now (everything still reaches Windows meanwhile)...";
+        else if (seat.learning() == SecondSeat::Learn::mouse) st = "Click the left button of the FIXER'S mouse now...";
+        else st = seat.isOn() ? "ON: the Fixer's keyboard and mouse work the Fixer only." : "Off: the Fixer's keyboard and mouse are ordinary ones.";
+        if (message.isNotEmpty()) st << "\n" << message;
+        status.setText (st, juce::dontSendNotification);
+        status.setColour (juce::Label::textColourId, seat.isOn() ? juce::Colour (0xffffa040) : theme::text);
+        kbLabel.setText ("Keyboard:  " + (seat.keyboard().valid() ? seat.keyboard().describe() : seat.keyboard().hardwareId.isNotEmpty() ? juce::String ("chosen, not plugged in") : juce::String ("not chosen")), juce::dontSendNotification);
+        mouseLabel.setText ("Mouse:  " + (seat.mouse().valid() ? seat.mouse().describe() : seat.mouse().hardwareId.isNotEmpty() ? juce::String ("chosen, not plugged in") : juce::String ("not chosen")), juce::dontSendNotification);
+        const bool can = seat.driverPresent() && ! seat.isOn() && seat.learning() == SecondSeat::Learn::none;
+        for (auto* b : { &learnKb, &forgetKb, &learnMouse, &forgetMouse }) b->setEnabled (can);
+        onOff.setEnabled (seat.driverPresent());
+        onOff.setButtonText (seat.isOn() ? "Let go" : "Start the second seat");
+        onOff.setColour (juce::TextButton::buttonColourId, seat.isOn() ? juce::Colour (0xffb04a20) : theme::accent);
+    }
+    void resized() override
+    {
+        auto r = getLocalBounds().reduced (12);
+        intro.setBounds (r.removeFromTop (54)); r.removeFromTop (6);
+        status.setBounds (r.removeFromTop (40)); r.removeFromTop (6);
+        auto row = [&r] (juce::Label& l, juce::Button& a, juce::Button& b)
+        {
+            auto x = r.removeFromTop (28); b.setBounds (x.removeFromRight (80)); x.removeFromRight (6); a.setBounds (x.removeFromRight (80)); x.removeFromRight (8);
+            l.setBounds (x); r.removeFromTop (6);
+        };
+        row (kbLabel, learnKb, forgetKb);
+        row (mouseLabel, learnMouse, forgetMouse);
+        { auto x = r.removeFromTop (26); speedLabel.setBounds (x.removeFromLeft (110)); speed.setBounds (x); }
+        r.removeFromTop (10);
+        onOff.setBounds (r.removeFromTop (32).removeFromLeft (220));
+        r.removeFromTop (8);
+        hint.setBounds (r.removeFromTop (40));
+    }
+    void paint (juce::Graphics& g) override { g.fillAll (theme::window); }
+private:
+    void timerCallback() override { refresh(); }
+    SecondSeat& seat;
+    juce::Label intro, status, kbLabel, mouseLabel, speedLabel, hint;
+    juce::TextButton learnKb { "Learn" }, forgetKb { "Forget" }, learnMouse { "Learn" }, forgetMouse { "Forget" }, onOff { "Start the second seat" };
+    juce::Slider speed;
+    juce::String message;
+};
+
+/** 0.6.0: the contents of one of the Fixer's own small windows (its mixer, the seat panel), with the keys it has no use for itself (M, N, Space,
+    the arrows ...) going on to the Fixer's main window, as if typed there. (A tool window's forwardKeys hands them to the last take window: the
+    Fixer has none, so M in the Fixer's mixer did nothing - with either keyboard.) */
+class KeysToFixer final : public juce::Component
+{
+public:
+    KeysToFixer (juce::Component* inner, std::function<bool (const juce::KeyPress&)> to) : content (inner), onward (std::move (to))
+    {
+        addAndMakeVisible (*content);
+        setSize (content->getWidth(), content->getHeight());
+    }
+    void resized() override { content->setBounds (getLocalBounds()); }
+    bool keyPressed (const juce::KeyPress& k) override { return content->keyPressed (k) || (onward && onward (k)); }
+    juce::Component* inner() const noexcept { return content.get(); }
+
+private:
+    std::unique_ptr<juce::Component> content;
+    std::function<bool (const juce::KeyPress&)> onward;
+};
+
 class FixerComponent final : public juce::Component, private juce::Timer, private juce::ChangeListener, private juce::ListBoxModel
 {
 public:
@@ -394,7 +499,7 @@ public:
         setWantsKeyboardFocus (true);
         for (auto* c : std::initializer_list<juce::Component*> { &badge, &pieceLabel, &followBtn, &delayLabel, &delayBox, &backBtn, &playBtn, &fwdBtn, &playhead, &behind, &mixerBtn,
                                                                  &status, &flags, &view, &fixTitle, &selLabel, &fixKind, &amount, &amountLabel, &tryBtn, &abBtn, &saveBtn, &fixNote, &tellPrimary, &retouchBtn,
-                                                                 &versions, &progressLabel, &noteBtn, &todBtn, &nameLabel, &nameBox })
+                                                                 &versions, &progressLabel, &noteBtn, &todBtn, &nameLabel, &nameBox, &seatBtn })
             addAndMakeVisible (c);
         addChildComponent (notePanel);
         // 0.5.0: notes, the name, the time of day
@@ -407,12 +512,27 @@ public:
         nameBox.setText (app.settings->getValue ("stationName"), false);
         nameBox.setTextToShowWhenEmpty ("Fixer", theme::dimText.withAlpha (0.6f));
         nameBox.setTooltip ("The name your replies, notes and fix versions carry (\"by ...\"), which the Primary sees. Empty: \"Fixer\".");
-        nameBox.onReturnKey = [this] { app.setStationName (nameBox.getText()); grabKeyboardFocus(); };
+        nameBox.onReturnKey = [this] { app.setStationName (nameBox.getText()); grabKeyboardFocus(); if (seat != nullptr && seat->dispatching()) seat->setKeyTarget (this); };
         nameBox.onFocusLost = [this] { app.setStationName (nameBox.getText()); };
         notePanel.onSave = [this] (const juce::String& id, const juce::String& text) { app.setNoteText (id, text); };
         notePanel.onDelete = [this] (const juce::String& id) { app.removeNote (id); };
-        notePanel.onClosed = [this] { view.selectedNote.clear(); resized(); grabKeyboardFocus(); view.repaint(); };
-        for (juce::Button* b : std::initializer_list<juce::Button*> { &noteBtn, &todBtn }) b->setWantsKeyboardFocus (false);
+        notePanel.onClosed = [this] { view.selectedNote.clear(); resized(); grabKeyboardFocus(); if (seat != nullptr && seat->dispatching()) seat->setKeyTarget (this); view.repaint(); };
+        for (juce::Button* b : std::initializer_list<juce::Button*> { &noteBtn, &todBtn, &seatBtn }) b->setWantsKeyboardFocus (false);
+        // 0.6.0: the second seat - the Fixer's own keyboard and mouse on the Primary's PC (SecondSeat.h)
+        seat = std::make_unique<SecondSeat> (*app.settings);
+        seat->label = app.stationName();
+        seat->home = [this]() -> juce::Component* { return this; };
+        seat->area = [this]
+        {
+            auto* top = getTopLevelComponent();
+            const auto* d = juce::Desktop::getInstance().getDisplays().getDisplayForRect (top != nullptr ? top->getScreenBounds() : getScreenBounds());
+            return d != nullptr ? d->totalArea : juce::Rectangle<int> (0, 0, 1920, 1080);
+        };
+        seat->say = [this] (const juce::String& t) { app.say (t); };
+        seat->onChanged = [this] { if (auto* w = dynamic_cast<KeysToFixer*> (seatWindow != nullptr ? seatWindow->getContentComponent() : nullptr)) if (auto* p = dynamic_cast<SeatPanel*> (w->inner())) p->refresh(); refreshSeatButton(); };
+        seatBtn.onClick = [this] { openSeatPanel(); };
+        seatBtn.setTooltip ("The second seat: a keyboard and a mouse of the Fixer's own on this PC (the Interception driver). Its mouse moves an orange pointer that works only the Fixer.");
+        refreshSeatButton();
         pieceLabel.setFont (juce::FontOptions (16.0f, juce::Font::bold)); pieceLabel.setColour (juce::Label::textColourId, desk::pal().cream);
         followBtn.setToggleState (app.follow, juce::dontSendNotification);
         followBtn.setTooltip ("Follow Primary: the playhead stays a few seconds behind the audio on the disk and cannot be moved. Untick it to move about.");
@@ -484,10 +604,13 @@ public:
             if (const auto L = safe->app.layout(); L != nullptr && L->timeOfDay && safe->app.cursorSeconds < L->firstSeconds()) safe->app.cursorSeconds = L->firstSeconds();
             safe->view.layout = safe->app.layout(); safe->view.playhead = safe->app.cursorSeconds;
             safe->view.zoomToFit();
+            if (safe->seat != nullptr) safe->seat->startIfWanted();        // (0.6.0: the second seat, if it was on when the Fixer closed)
         });
     }
     ~FixerComponent() override
     {
+        seatWindow.reset();
+        seat.reset();                                                     // (first: the Fixer's keyboard and mouse are Windows' again before anything else goes)
         app.removeChangeListener (this);
         notePanel.onClosed = nullptr;
         if (notePanel.isOpen()) notePanel.close();
@@ -534,7 +657,7 @@ public:
         top.removeFromLeft (10);
         {
             auto col = top.removeFromLeft (220);
-            todBtn.setBounds (col.removeFromTop (28).removeFromLeft (110));
+            { auto x = col.removeFromTop (28); todBtn.setBounds (x.removeFromLeft (104)); x.removeFromLeft (6); seatBtn.setBounds (x); }
             col.removeFromTop (4);
             auto x = col.removeFromTop (28); nameLabel.setBounds (x.removeFromLeft (72)); nameBox.setBounds (x.reduced (0, 2));
         }
@@ -585,7 +708,7 @@ public:
         if (plain && (code == 'M' || code == 'm')) { toggleMixer(); return true; }
         if (plain && (code == 'P' || code == 'p')) { wholeTake(); return true; }
         if (plain && (code == 'C' || code == 'c')) { view.centreOn (zoomAnchor()); return true; }
-        if (code == juce::KeyPress::returnKey) { flags.focusReply(); return true; }
+        if (code == juce::KeyPress::returnKey) { auto* box = flags.focusReply(); if (seat != nullptr && seat->dispatching()) seat->setKeyTarget (box); return true; }
         return false;
     }
 
@@ -618,8 +741,30 @@ private:
         view.selectedNote = id;
         notePanel.open (id, notes::heading (x, L.get()), x.text,
                         x.inSession || fresh ? juce::String() : juce::String ("From an earlier session: it is in the project, which the Fixer does not change (the Primary's fermata:Live or fermata can)."));
+        if (seat != nullptr && seat->dispatching()) seat->setKeyTarget (&notePanel.textBox());   // (0.6.0: the seat's keyboard writes the note it opened)
         resized();
         view.repaint();
+    }
+    // ---- 0.6.0: the second seat's panel
+    void openSeatPanel()
+    {
+        if (seatWindow != nullptr) { seatWindow->toFront (false); return; }
+        juce::Component::SafePointer<FixerComponent> safe (this);
+        seatWindow = std::make_unique<ToolWindow> ("Second seat - the Fixer's own keyboard and mouse", [safe] (ToolWindow*)
+        { if (safe != nullptr) juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->seatWindow.reset(); }); });
+        seat->label = app.stationName();
+        auto* p = new SeatPanel (*seat);
+        p->setSize (640, 330);
+        seatWindow->setContentOwned (new KeysToFixer (p, [safe] (const juce::KeyPress& k) { return safe != nullptr && safe->keyPressed (k); }), true);
+        if (auto* top = getTopLevelComponent()) seatWindow->setTopLeftPosition (top->getX() + 80, top->getY() + 80);
+        else seatWindow->centreWithSize (seatWindow->getWidth(), seatWindow->getHeight());
+        seatWindow->setVisible (true);
+        if (auto* top = getTopLevelComponent()) makeOwnedBy (*seatWindow, *top);
+    }
+    void refreshSeatButton()
+    {
+        seatBtn.setButtonText (seat != nullptr && seat->isOn() ? "Seat: ON" : "Second seat...");
+        seatBtn.setColour (juce::TextButton::buttonColourId, seat != nullptr && seat->isOn() ? juce::Colour (0xffb05a20) : getLookAndFeel().findColour (juce::TextButton::buttonColourId));
     }
     void pinNote()
     {
@@ -743,8 +888,7 @@ private:
         mixerWindow = std::make_unique<ToolWindow> ("Mixer - the Fixer's own", [safe] (ToolWindow*) { if (safe != nullptr) juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->mixerWindow.reset(); }); });
         auto* v = new LiveMixerView (*mixModel);
         v->setSize (1000, 600);
-        mixerWindow->setContentOwned (v, true);
-        mixerWindow->forwardKeys = true;
+        mixerWindow->setContentOwned (new KeysToFixer (v, [safe] (const juce::KeyPress& k) { return safe != nullptr && safe->keyPressed (k); }), true);
         mixerWindow->centreWithSize (mixerWindow->getWidth(), mixerWindow->getHeight());
         mixerWindow->setVisible (true);
         if (auto* top = getTopLevelComponent()) makeOwnedBy (*mixerWindow, *top);
@@ -1084,6 +1228,9 @@ private:
     juce::Label nameLabel;
     juce::TextEditor nameBox;
     NotePanel notePanel;
+    juce::TextButton seatBtn { "Second seat..." };
+    std::unique_ptr<SecondSeat> seat;                                     // (0.6.0: made in the constructor, gone first in the destructor)
+    std::unique_ptr<ToolWindow> seatWindow;
     int chosenTake = 0;
     juce::int64 shownLayoutKey = -2;
     juce::uint32 lastNotesMs = 0;

@@ -2,8 +2,80 @@
 
 The brief is in `docs/LIVE-BRIEF.md`, and the rules shared with fermata are in `COMPATIBILITY.md`. Newest entries come first.
 
+## 0.6.0: the second seat (6 November 2026, built in the fermata:Live conversation)
+Asked for on 6 November 2026: two people on one PC, each with their own mouse and keyboard, the second only working the program. Five ways were set
+out (take turns on one mouse; a Stream Deck; the Interception driver; Windows' Raw Input; a second PC with remote control); the user chose the
+driver (option 3) and will plan the Stream Decks later. The mixers move to 0.7.0. The user's guide is `docs/LIVE-SECOND-SEAT.md`.
+- **`SecondSeat` (`SecondSeat.h/.cpp`), the Fixer's process only.** The Interception API is loaded at run time from `interception.dll`
+  (`LoadLibraryW` + `GetProcAddress`: create / destroy context, set filter, wait with timeout, send, receive, hardware id), so fermata:Live builds
+  and runs without it; no driver = the panel says why. Devices 1-10 are keyboards, 11-20 mice. The filter predicates are plain functions reading
+  atomics (`gSeatKeyboard` / `gSeatMouse`). Only the chosen devices are ever filtered (`filterAll` for them); Learn filters key-downs or left
+  downs of every device but sends every stroke straight on at once, and picks the first one (15 s at most; the only keyboard / mouse refused).
+  The driver is used on the seat's thread only (high priority: a stroke not taken is the PC's input waiting), which sends everything not the
+  seat's straight on and queues the seat's (capped: the oldest go, never the PC's input) for the message thread (`handleAsyncUpdate`; moves
+  between clicks coalesced, but always sent before a click or a release, so a drag's last moves arrive).
+- **The pointer**: `PointerWindow`, a desktop window (windowIsTemporary | windowIgnoresMouseClicks, always on top, on Windows WS_EX_TRANSPARENT
+  | WS_EX_NOACTIVATE), placed at the hotspot + 1 px so JUCE's hit test (Linux `contains` asks the desktop windows above; Windows WindowFromPoint)
+  never finds it; raised again when a window the Fixer opens comes over it. Relative moves with a gentle acceleration (`speed`), absolute ones
+  (a tablet, remote desktop) scaled to the area; kept in `area()` (the Fixer's screen).
+- **Clicks**: `peerAt` (the Fixer's desktop windows front to back, skipping the pointer, the seat's list, click-through windows such as tooltips,
+  hidden and minimised ones; a drag stays with its window) and `ComponentPeer::handleMouseEvent` with **`InputSourceType::pen`** - a source of its
+  own beside the ordinary mouse, so the two never take each other's drag. JUCE makes the pen's source on the first pen event and drops that
+  event (`MouseInputSourceList::getOrCreateMouseInputSource` returns null when it adds one): `makePenSource` sends one first, or the seat's very
+  first click was lost (it was: that was the "clicks do nothing" of the first tries). JUCE takes a mouse event's Shift / Ctrl / Alt from the
+  global `ModifierKeys::currentModifiers`: `SeatKeys` puts the seat keyboard's there for the moment of each click, drag and wheel, then the real
+  ones back.
+- **The PC's keyboard stays the Primary's.** `NoActivate`, for each seat click: nothing clicked brings its window to the front as the active one
+  (setBroughtToFrontOnMouseClick off for the moment) or takes the keyboard (setMouseClickGrabsKeyboardFocus off for the moment); the window is
+  raised with toFront (false). Windows: `keepForeground` (20 times a second while the seat has its keyboard): when a Fixer window is the
+  foreground window anyway - one the Fixer opened (TopLevelWindow shows itself with toFront (true)), the ordinary mouse clicking it, or Windows
+  allowing a background program forward (the foreground lock time-out passes when the Primary has not touched anything for a while) - it calls
+  `SetForegroundWindow` on the window that had it (allowed, being in front at that moment), else the Primary's window found by its title.
+- **Keys**: scan codes tracked for Shift / Ctrl / Alt (left and right; the Windows and menu keys swallowed); Windows: `MapVirtualKeyW` (scan to
+  VK, then JUCE's key codes; the number pad by scan code) and `ToUnicodeEx` with the seat's own Shift (not the PC's) on the PC's layout, so the
+  seat's keys never touch the system's keyboard state. Delivered to `keyTarget` - what the seat last clicked (the deepest component wanting the
+  keyboard; a window: its contents) or opened (`setKeyTarget`: the note panel's box, the reply box after Enter, the Fixer after a box lets go) -
+  else the Fixer's main component; a modal component in front takes them; `keyPressed` up the parents. Never the component with JUCE's focus:
+  that is the PC keyboard's. Esc five times within 2 s: `stop`.
+- **Drop-down lists** (`SeatList`): JUCE's PopupMenu follows `MouseInputSource::getScreenPosition()`, which for a pen is the PC's own pointer,
+  polls it 20 times a second, and closes when no JUCE window has the keyboard - a pen cannot work it. A ComboBox clicked by the seat (text-editable
+  ones excepted) gets the seat's own list instead: its items (`PopupMenu::MenuItemIterator`, separators and headings shown, sub-menus' items in
+  line) under the box, the menu's colours, an orange edge; a click-through window the seat works directly (no JUCE dispatch: hover, click, press
+  - drag - let go, wheel, Up / Down / Home / End / Page keys, Enter, Esc; a click elsewhere closes it and goes no further). Choosing calls
+  `setSelectedId` as the menu would. The Fixer has no other popup menus (checked: FixerWindow, LiveTakeView, LiveMixer, SpectralWindow).
+- **Choosing again at start**: a device is found by its number and hardware id, else by its id alone only when no other device has that id (two
+  of the same model: never a guess, it could be the Primary's). The seat never starts with a chosen device missing.
+- **The Fixer** (`FixerWindow.cpp`): `SeatPanel` in a tool window; `Second seat...` / `Seat: ON`; the seat is made with the window and
+  `startIfWanted` after the first layout; the window's destructor ends it first. `KeysToFixer` wraps the mixer's and the seat panel's contents so
+  the keys they do not use go to the Fixer's main component (a ToolWindow's forwardKeys hands them to the last take window - the Fixer has none,
+  so M in the Fixer's mixer did nothing, with either keyboard).
+- **`NotePanel::refreshText`** never puts back the saved text over typing not yet kept (the seat types into the box without it having JUCE's
+  focus, so `typing()` was false and the first letters went).
+- **The Linux test feed** (`FERMATA_SEAT_TEST_FEED`, Linux only): a file of strokes appended to while the Fixer runs - `move dx dy`, `down` / `up`
+  `L|R|M`, `wheel n`, `scan hex e0 down|up`, `key juceKeyCode char down|up` - with two pretend keyboards and two pretend mice (Learn picks the
+  second of each). Everything after the driver is the real code.
+
+### Checked here
+- The Windows code compiles against the stubs (`tools/check-windows-code.sh`).
+- On screen (Linux build, the Test signal device, a session recording, the test feed): Learn; Start; the pointer with the name, kept on the
+  screen; the Note button and N (a note pinned, typed into with the seat's keys, every letter kept, Esc closing it); a flag chosen in the list,
+  the reply box clicked, a reply typed and sent with Enter ("Sam: fixing it now" under the flag); M opening the mixer, a fader dragged (-7.9 dB),
+  M closing it from the mixer (and with the ordinary keyboard too); the kind of fix chosen from the seat's list by click, by press-drag-release and
+  by the keys; Alt + drag taking one track; Esc five times letting go; Let go clicked with the seat's mouse; the seat starting by itself with the
+  Fixer, and refusing to with its keyboard missing. The ordinary mouse working the Fixer meanwhile (its own source: type 0, the seat's 2).
+
+### Not checked here (needs Windows, the driver and two keyboards and mice)
+- The driver itself: installing, Learn picking the right device, the filter taking only the chosen two, the devices coming back on Let go, on
+  Esc x5, on closing and on a crash of the Fixer.
+- The keys' names and characters from real scan codes (`MapVirtualKeyW`, `ToUnicodeEx`, the UK layout, Shift, the number pad).
+- That the PC's keyboard stays with the Primary while the seat clicks, opens the mixer or the ReTouch window (`keepForeground`), with the
+  Primary idle for several minutes (the foreground lock time-out), and that no taskbar flashing gets in the way.
+- The pointer and the seat's list being click-through (WS_EX_TRANSPARENT) and staying above the Fixer's windows; two screens with different
+  scaling (the area is the Fixer's screen; positions are JUCE's logical pixels).
+- Worth a review by a second reader (the user offered Fable on Monday): `SecondSeat.cpp` - the thread and the filter, the dispatch, `keepForeground`.
+
 ## 0.5.0: the timeline and notes (6 November 2026, built in the fermata:Live conversation)
-Asked for on 6 November 2026 in one list (the timeline, notes, names, colours, the Fixer's drag; the mixers and the mix exchange are 0.6.0 - their
+Asked for on 6 November 2026 in one list (the timeline, notes, names, colours, the Fixer's drag; the mixers and the mix exchange are 0.7.0 - their
 answers are in the brief). Built in two halves on the user's wish for bigger builds; this is the first.
 - **The time of day lives in the layout** (`TakeLayout.h`). `ShownTake::start` is the place on the timeline SHOWN; `windowStart` is fermata's (what the
   project keeps); `clockMs` the time of day of the first sample (the session's origin + its start, else the first file's BWF date + time reference -

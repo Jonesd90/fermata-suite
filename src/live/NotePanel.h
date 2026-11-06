@@ -70,10 +70,16 @@ public:
     bool isOpen() const noexcept                { return id.isNotEmpty() && isVisible(); }
     const juce::String& noteId() const noexcept { return id; }
     bool typing() const                         { return editor.hasKeyboardFocus (false); }
+    /** The text box (0.6.0: the second seat's keyboard types into it when the seat opened the note). */
+    juce::Component& textBox() noexcept         { return editor; }
     /** The heading again (the note's place may change while its take records). */
     void setHeading (const juce::String& head)  { if (heading.getText() != head) heading.setText (head, juce::dontSendNotification); }
-    /** The text again, when it changed elsewhere and is not being typed in here. */
-    void refreshText (const juce::String& text) { if (! typing() && ! isTimerRunning() && editor.getText() != text) { editor.setText (text, false); saved = text; } }
+    /** The text again, when it changed elsewhere and is not being typed in here. (0.6.0: nor when what was typed here is not kept yet - the second
+        seat's keyboard types without the box having the keyboard, and the first letters went before the pause that keeps them.) */
+    void refreshText (const juce::String& text)
+    {
+        if (! typing() && ! isTimerRunning() && editor.getText() == saved && editor.getText() != text) { editor.setText (text, false); saved = text; }
+    }
 
     void paint (juce::Graphics& g) override
     {

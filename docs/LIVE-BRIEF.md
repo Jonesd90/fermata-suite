@@ -73,6 +73,10 @@ Keep unchanged: Projects menu, Audio settings, Preamps, Project Designer, Plug-i
   finalised.
 - Fixer can type a reply to a flag. Replies are text and are shown on Primary's screen straight away.
 - Fixes are saved as new versions. The original recording is never changed.
+- **The second seat** (0.6.0, asked for on 6 November 2026): when the Fixer runs on the same PC as the Primary, the Fixer can have a mouse and a
+  keyboard of its own, which work the Fixer only. Its mouse moves an orange pointer of its own, with the Fixer's name, kept on the Fixer's
+  screen; the Primary's mouse and keyboard carry on as normal and are never touched. It needs the free Interception driver installed on the PC
+  (docs/LIVE-SECOND-SEAT.md). Stream Deck control is for the user to plan and ask for later.
 
 ### Fix review
 
@@ -122,7 +126,7 @@ Pre-take goes up to 5 minutes, written to disk, not held in memory.
   Plug-ins never sit in the recording path.
 - Each mixer's output is a stereo pair of ASIO outputs chosen by the user. Any pair can be chosen. Two mixers may share a pair, and their audio
   sums.
-- To build next (0.6.0, asked for on 6 November 2026): mixers that look better - VCAs, internal buses, an insert slot for a reverb on an internal
+- To build next (0.7.0, asked for on 6 November 2026 - it was to be 0.6.0; the second seat came first): mixers that look better - VCAs, internal buses, an insert slot for a reverb on an internal
   bus, a fader cap that looks like a real one, wider meters, and a master with a phase scope, a peak meter, an RMS meter and a LUFS meter
   (momentary, short-term, and integrated since REC). Stereo strips keep a pan for each channel, labelled L and R.
 - **The reverb on the Primary's live monitoring runs outside the recording path**, in a small program of its own: the dry sound stays instant
@@ -153,7 +157,8 @@ The same format as fermata. It opens in fermata as a take window, where edits an
 ## Still to test or decide
 
 - Buffer length, to be tested on real hardware.
-- Asked on 6 November 2026, to think through once the mixers are built: how two people could work the same program independently, perhaps with
-  only one of them on the mouse at a time - or better, a second mouse and keyboard that only work in the program.
+- Two people on one PC: the second seat is built (0.6.0, the Interception driver, chosen by the user from five ways set out on 6 November
+  2026). Still to test on the real PC: the driver, the user's own keyboards and mice, and that the PC's keyboard never moves to the Fixer.
+  Stream Deck (the user has a Neo and a Stream Deck + XL): the user will say later how they should work.
 - Drive-failure and gap handling, to be confirmed.
 - Whether the same-PC setup works under load.

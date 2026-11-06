@@ -88,3 +88,48 @@ typedef void* LPSECURITY_ATTRIBUTES;
 #define FILE_ATTRIBUTE_NORMAL 0x80
 HANDLE CreateFileW (LPCWSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
 BOOL FlushFileBuffers (HANDLE);
+// the second seat (fermata:Live 0.6.0, src/live/SecondSeat.cpp): the driver's library, the keys' names, the pointer that clicks go through
+typedef unsigned int UINT; typedef wchar_t WCHAR; typedef void* HWND; typedef void* HKL; typedef long long LONG_PTR;
+BOOL FreeLibrary (HMODULE);
+UINT MapVirtualKeyW (UINT, UINT);
+int ToUnicodeEx (UINT, UINT, const BYTE*, LPWSTR, int, UINT, HKL);
+HKL GetKeyboardLayout (DWORD);
+LONG_PTR GetWindowLongPtrW (HWND, int); LONG_PTR SetWindowLongPtrW (HWND, int, LONG_PTR);
+#define GWL_EXSTYLE (-20)
+#define WS_EX_TRANSPARENT 0x00000020L
+#define WS_EX_NOACTIVATE 0x08000000L
+#define VK_BACK 0x08
+#define VK_TAB 0x09
+#define VK_RETURN 0x0D
+#define VK_SHIFT 0x10
+#define VK_ESCAPE 0x1B
+#define VK_SPACE 0x20
+#define VK_PRIOR 0x21
+#define VK_NEXT 0x22
+#define VK_END 0x23
+#define VK_HOME 0x24
+#define VK_LEFT 0x25
+#define VK_UP 0x26
+#define VK_RIGHT 0x27
+#define VK_DOWN 0x28
+#define VK_INSERT 0x2D
+#define VK_DELETE 0x2E
+#define VK_F1 0x70
+#define VK_F2 0x71
+#define VK_F3 0x72
+#define VK_F4 0x73
+#define VK_F5 0x74
+#define VK_F6 0x75
+#define VK_F7 0x76
+#define VK_F8 0x77
+#define VK_F9 0x78
+#define VK_F10 0x79
+#define VK_F11 0x7A
+#define VK_F12 0x7B
+// (fermata:Live 0.6.0 the second seat: the PC's keyboard kept where it was)
+typedef long long LPARAM; typedef BOOL (*WNDENUMPROC) (HWND, LPARAM);
+#ifndef CALLBACK
+ #define CALLBACK
+#endif
+HWND GetForegroundWindow(); DWORD GetWindowThreadProcessId (HWND, LPDWORD); BOOL IsWindow (HWND); BOOL IsWindowVisible (HWND); BOOL IsIconic (HWND);
+BOOL SetForegroundWindow (HWND); BOOL EnumWindows (WNDENUMPROC, LPARAM); int GetWindowTextW (HWND, LPWSTR, int);

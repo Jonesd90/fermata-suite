@@ -8,8 +8,31 @@ fermata:Live is the live-concert recorder that goes with fermata (see `docs/LIVE
 
 A line that starts with **Shared:** is a change to the code fermata shares (see `COMPATIBILITY.md`), so fermata's next build mentions it too.
 
+## 0.6.0
+**The second seat** (asked for on 6 November 2026: two people working fermata:Live on one PC, each with a mouse and keyboard of their own - the
+user chose the driver way, option 3 of the five set out). Built in the fermata:Live conversation. The mixers, which were to be 0.6.0, are now 0.7.0.
+- **The Fixer's own keyboard and mouse.** With the Fixer on the same PC as the Primary, a USB keyboard and mouse can be the Fixer's: its mouse
+  moves an orange pointer of its own, with the Fixer's name, kept on the Fixer's screen, and works only the Fixer's windows (clicks, drags with
+  Shift / Ctrl / Alt, the wheel, the mixer, the ReTouch window); its keyboard types only into the Fixer - into what its mouse last clicked (the
+  reply box, a note, the name box), else the Fixer's keys (Space, N, M, P, the arrows). The Primary's mouse and keyboard carry on as normal and
+  are never touched, and the PC's keyboard stays with the Primary's window.
+- **Second seat...** (top right of the Fixer's window) opens its panel: Learn the Fixer's keyboard (press a key on it) and mouse (click with it),
+  the pointer's speed, **Start the second seat** / **Let go**. It is remembered: the next time the Fixer opens, the seat starts by itself. The
+  button says **Seat: ON** in orange while it is on.
+- **Giving them back**: Esc five times quickly on the Fixer's keyboard, Let go (either mouse can click it), or closing the Fixer. The PC's only
+  keyboard or only mouse is refused, and the seat never starts with one of its chosen devices missing (nor guesses between two of the same model).
+- **Drop-down lists** clicked with the seat's mouse open as the seat's own list (an orange edge): click an item, or press, drag and let go on one;
+  the wheel, Up / Down, Enter and Esc work it. (fermata's own menus follow the ordinary mouse only.)
+- It needs the free **Interception** driver installed on the PC (and `interception.dll` beside `fermata-Live.exe`): `docs/LIVE-SECOND-SEAT.md`
+  says how, and its licence (free for non-commercial use; the author offers commercial licences). Without the driver, the panel says so and
+  nothing else changes. Windows only.
+- **M in the Fixer's mixer** closes it again (with either keyboard): the keys the mixer has no use for go on to the Fixer's window, as from the
+  Primary's mixer. It did nothing before.
+- Shared: only the check tools - `tools/check-windows-code.sh` also compiles the second seat's Windows code, and `tools/win-stubs/windows.h` has
+  the Windows calls it makes. No code built into fermata changed: fermata needs no rebuild.
+
 ## 0.5.0
-**The timeline and notes** (the first half of the changes asked for on 6 November 2026; the mixers come next, in 0.6.0). Built in the fermata:Live conversation.
+**The timeline and notes** (the first half of the changes asked for on 6 November 2026; the mixers come next, in 0.7.0). Built in the fermata:Live conversation.
 - **Time of day** (a switch in the Primary's take window, and one in the Fixer's): the timeline becomes the clock. Every take sits at the time it was recorded, with the gaps between takes; the clock runs along the timeline all the time (a blue NOW line), and REC just switches the recording on and off at that moment. Past midnight it runs on into the next day, with the date (DD/MM/YYYY) shown once at each midnight. A take whose pre-take reached back over the end of the one before cuts that one short where it starts (it is the same recording, heard once). Off: fermata's timeline, the takes one after another from 00:00:00.000, as before. It only changes what fermata:Live shows - the project, and fermata, are as before. The take's time comes from the session's clock, or from the time stamp in its files (the BWF time reference fermata and fermata:Live write).
 - **The flag point**: while a take records, the playhead is no longer used (it is not drawn). Click the flag band where there is no flag to choose a moment that has passed - a yellow marker - and Enter (a flag) or N (a note) pins there, with its text; it goes back to NOW once pinned. A click on the tracks goes back to NOW too (and the view follows the recording again). A flag at the flag point reaches the Fixer like any other.
 - **When nothing records** the playhead is there to audition the takes, as before: click to put it anywhere.

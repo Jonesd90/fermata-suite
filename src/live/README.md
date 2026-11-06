@@ -8,7 +8,7 @@ fermata.
 fermata:Live is a single program, `fermata-Live.exe`. Put it anywhere and double-click it. The first time, Windows may say it "protected your PC"
 because the program is not signed: click **More info**, then **Run anyway**.
 
-## Trying this version (0.5.0)
+## Trying this version (0.6.0)
 
 1. **Audio settings**: choose the driver type and the device ("Test signal" is a pretend 16-input device for trying everything without an
    interface), the sample rate and the buffer ("Largest the driver offers" is the safest), and press **Open device**. Add a folder on each
@@ -30,6 +30,10 @@ because the program is not signed: click **More info**, then **Run anyway**.
    noise, ReTouch, listen, **Keep as a fix version**). The recording itself is never changed; the version goes into the project for fermata's review.
    A drag takes every track of the take; **Alt + drag** only the tracks you drag over. The Fixer has its own notes (N), its own Time of day
    switch and a box for its name.
+   **Second seat...** (0.6.0, Windows): with the Fixer on the same PC as the Primary, a USB keyboard and mouse of the Fixer's own that work the
+   Fixer only - an orange pointer with the Fixer's name, kept on the Fixer's screen - while the Primary's carry on as normal. It needs the free
+   Interception driver: `docs/LIVE-SECOND-SEAT.md` says how to install it, how to choose the two devices (Learn), and how to give them back
+   (Esc five times on the Fixer's keyboard, Let go, or closing the Fixer).
 5. **Mixer**: what you hear (live and when playing back) and what **Bounce out** uses. The Fixer's **Mixer** button opens its own, on its own
    outputs (3-4 unless you choose others; 1-2 on a device with two outputs).
 6. **Bounce out**: a take, whole or between marks 1 and 2 (keys 1 and 2 in the take window), to a stereo WAV in the project's Bounced Media folder.
