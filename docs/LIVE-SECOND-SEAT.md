@@ -65,7 +65,11 @@ Safety, because this is the recording PC:
   it (the Primary's): the Fixer's keyboard is the one for the Fixer.
 - **Unplugging and plugging back**: the driver gives a device a new number each time it is plugged in again (or the PC wakes from hibernation).
   After about 10 times for a keyboard (20 for a mouse) that device stops working until the PC is restarted - a limit of the driver. Leave the
-  Fixer's keyboard and mouse plugged in, and restart the PC before a concert. If the Fixer's devices are not found, Learn them again.
+  Fixer's keyboard and mouse plugged in, and restart the PC before a concert. If one of the Fixer's devices goes while the seat is on, the seat
+  lets go at once and says so (otherwise that keyboard would be an ordinary one again, typing into whichever window is in front): plug it in
+  and Start again (Learn it again if it is not found).
+- **Caps Lock, Num Lock and AltGr** on the Fixer's keyboard do nothing: Shift gives capitals, the number pad always types numbers, and the
+  characters AltGr makes on a UK keyboard (€, say) cannot be typed.
 - Two keyboards (or mice) of the same make and model look the same to the driver. The seat remembers which is which by where it is plugged in;
   after one of them has been unplugged, it will not guess - it does not start, says the Fixer's keyboard (or mouse) is not plugged in, and
   Learn chooses again. It never starts with one of the two chosen devices missing.

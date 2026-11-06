@@ -415,12 +415,12 @@ public:
         {
             if (seat.isOn()) { seat.stop (true); return; }
             juce::String why;
-            if (! seat.start (why)) message = why;
+            message = seat.start (why) ? juce::String() : why;
             refresh();
         };
         speed.setRange (0.3, 5.0, 0.1); speed.setValue (seat.speed, juce::dontSendNotification);
         speed.setSliderStyle (juce::Slider::LinearHorizontal); speed.setTextBoxStyle (juce::Slider::TextBoxRight, false, 50, 20);
-        speed.onValueChange = [this] { seat.speed = speed.getValue(); };
+        speed.onValueChange = [this] { seat.setSpeed (speed.getValue()); };
         addAndMakeVisible (speed);
         refresh();
         startTimer (300);

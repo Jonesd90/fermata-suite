@@ -18,8 +18,9 @@
       - a keyboard or mouse is refused when it is the only one the driver sees;
       - Esc pressed five times quickly on the Fixer's keyboard, or Let go in the panel (clickable with either mouse), gives them back at once.
 
-    Threads: the driver is used on the seat's own thread only (it is not shared); everything else is the message thread's. The strokes cross over
-    in a queue under a lock held only to move them. */
+    Threads: the driver's strokes are read on the seat's own thread; the message thread only asks the driver which devices there are (devices(),
+    under driverLock, so the two never overlap in the library). Everything else is the message thread's. The strokes cross over in a queue under
+    a lock held only to move them. */
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <atomic>
 #include <functional>
@@ -57,6 +58,8 @@ public:
     void learn (Learn what);
     Learn learning() const noexcept                 { return learningNow; }
     Device keyboard() const                         { return chosenKeyboard; }
+    /** The pointer's speed, kept in the settings. */
+    void setSpeed (double s);
     Device mouse() const                            { return chosenMouse; }
     void forget (bool keyboardToo, bool mouseToo);
 
@@ -75,7 +78,7 @@ public:
     std::function<void()> onChanged;                // anything the panel shows changed
     std::function<void (const juce::String&)> say;  // a line for the Fixer's status
     juce::String label;                              // the name beside the pointer
-    double speed = 1.5;                              // the pointer's speed (1 = one pixel a count)
+    double speed = 1.5;                              // the pointer's speed (1 = one pixel a count; setSpeed keeps it)
     /** True while the seat's own input is being handed on (so the Fixer knows a key or click came from its own seat). */
     bool dispatching() const noexcept               { return inDispatch; }
     /** The component the seat's keyboard types into from now on (a text box it opened, say). */
@@ -109,6 +112,8 @@ private:
     bool listMouse();                                                    // the seat's mouse while that list is open (true: used)
     void closeList();
     void keepForeground();                                               // (Windows: the PC's keyboard stays where it was while the seat has its own)
+    void checkDevices();                                                 // (a chosen device gone from where it was: the seat lets go, and says so)
+    void drain (bool sendOn);                                            // (the seat's thread: strokes the driver still holds under the old filter)
     Device find (const juce::String& id, int number, bool keyboard) const;
     void saveChoice();
     int countOf (bool keyboard) const;
@@ -122,6 +127,8 @@ private:
     std::atomic<int> seatKeyboard { 0 }, seatMouse { 0 };
     std::mutex queueLock;
     std::vector<Stroke> queue;
+    mutable std::mutex driverLock;                   // (the driver's calls: the seat's thread and devices() on the message thread never overlap)
+    int ticks = 0;                                   // (the timer's ticks while on: checkDevices once a second)
     Learn learningNow = Learn::none;
     juce::uint32 learnUntil = 0;
     Device chosenKeyboard, chosenMouse;

@@ -55,8 +55,31 @@ driver (option 3) and will plan the Stream Decks later. The mixers move to 0.7.0
   `L|R|M`, `wheel n`, `scan hex e0 down|up`, `key juceKeyCode char down|up` - with two pretend keyboards and two pretend mice (Learn picks the
   second of each). Everything after the driver is the real code.
 
+### The review (Claude Fable, the same day, after it worked on Linux) and what changed
+- **The driver from two threads.** `devices()` (the panel, Learn, start) asked the driver for the hardware ids on the message thread while the
+  seat's thread was in receive / send / set filter on the same context. The library is not written for that. Now `driverLock`: the seat's thread
+  holds it for set filter, receive and send (not for the wait, which is on the driver's events, not a call into it), `devices()` for its loop.
+- **Strokes the driver still held when the filter changed** stayed in its queue: the seat's own, from before Let go, would have come out as the
+  first strokes of the next Start (an old Esc counting towards five, a stale button). Now a filter change clears every filter, then `drain`s what
+  was captured under the old one: learning's strokes go on to Windows (a key pressed on any keyboard - the Primary's, perhaps - in that moment is
+  not lost), the seat's own go (Windows never saw their key-downs, so nothing sticks).
+- **A chosen device unplugged while on**: the driver gives it a new number when it comes back, the filter stayed on the old one, so the keyboard
+  would have been an ordinary one again - typing into whichever window was in front, most likely the Primary's. `checkDevices` (once a second
+  from the timer) finds each chosen device by its number and id; one gone or moved stops the seat and says so.
+- **The click's target.** `NoActivate` quietened the component found by an integer hit test; JUCE finds its target with a float one (the same
+  position, unrounded, divided by the desktop scale), so at a half-pixel on a boundary the two could differ - and then JUCE's target would still
+  grab the keyboard (`grabKeyboardFocusInternal` only returns early for the target's own flag; else it walks to a child or a parent that wants
+  focus and `SetFocus` activates the Fixer's window). `hitAt` now finds it exactly as JUCE does; the keys' target and the drop-down list use it too.
+- `findPrimary` skips a minimised Primary window (giving the keyboard to a minimised window puts it nowhere); Learn's filter takes E0 key-downs
+  too (the arrows, the right Ctrl), so any key chooses; the panel's message clears on a start that worked; the speed is kept when it is changed.
+- Read and left as they are: the stroke structs and filter values (as interception.h has them, x64), the predicates (called by the library only
+  inside set filter, after the atomics are set), `keepForeground` (SetForegroundWindow is allowed because this program is the foreground one at
+  that moment; it leaves other programs' windows alone), the pointer and list windows (JUCE's non-opaque desktop windows are layered on Windows,
+  and WS_EX_TRANSPARENT makes a layered window click-through for every program), `keyFromScan` (MapVirtualKeyW with the E0 prefix is right from
+  Vista on; ToUnicodeEx with flag 4 leaves the PC's keyboard state alone). Caps Lock, Num Lock and AltGr are not followed (documented).
+
 ### Checked here
-- The Windows code compiles against the stubs (`tools/check-windows-code.sh`).
+- The Windows code compiles against the stubs (`tools/check-windows-code.sh`), before and after the review.
 - On screen (Linux build, the Test signal device, a session recording, the test feed): Learn; Start; the pointer with the name, kept on the
   screen; the Note button and N (a note pinned, typed into with the seat's keys, every letter kept, Esc closing it); a flag chosen in the list,
   the reply box clicked, a reply typed and sent with Enter ("Sam: fixing it now" under the flag); M opening the mixer, a fader dragged (-7.9 dB),
@@ -72,7 +95,7 @@ driver (option 3) and will plan the Stream Decks later. The mixers move to 0.7.0
   Primary idle for several minutes (the foreground lock time-out), and that no taskbar flashing gets in the way.
 - The pointer and the seat's list being click-through (WS_EX_TRANSPARENT) and staying above the Fixer's windows; two screens with different
   scaling (the area is the Fixer's screen; positions are JUCE's logical pixels).
-- Worth a review by a second reader (the user offered Fable on Monday): `SecondSeat.cpp` - the thread and the filter, the dispatch, `keepForeground`.
+- The review above was a reading, not a run: the driver lock, the drain and the device check have only been read, not tried with the driver.
 
 ## 0.5.0: the timeline and notes (6 November 2026, built in the fermata:Live conversation)
 Asked for on 6 November 2026 in one list (the timeline, notes, names, colours, the Fixer's drag; the mixers and the mix exchange are 0.7.0 - their

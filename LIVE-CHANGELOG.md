@@ -23,6 +23,8 @@ user chose the driver way, option 3 of the five set out). Built in the fermata:L
   keyboard or only mouse is refused, and the seat never starts with one of its chosen devices missing (nor guesses between two of the same model).
 - **Drop-down lists** clicked with the seat's mouse open as the seat's own list (an orange edge): click an item, or press, drag and let go on one;
   the wheel, Up / Down, Enter and Esc work it. (fermata's own menus follow the ordinary mouse only.)
+- A chosen device that goes while the seat is on (unplugged) makes the seat let go at once, with a message (otherwise it would be an ordinary
+  keyboard again, typing into whichever window is in front). Learn takes any key, the arrows too.
 - It needs the free **Interception** driver installed on the PC (and `interception.dll` beside `fermata-Live.exe`): `docs/LIVE-SECOND-SEAT.md`
   says how, and its licence (free for non-commercial use; the author offers commercial licences). Without the driver, the panel says so and
   nothing else changes. Windows only.

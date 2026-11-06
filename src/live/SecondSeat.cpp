@@ -26,7 +26,7 @@ struct MouseStroke { unsigned short state = 0, flags = 0; short rolling = 0; int
 struct KeyStroke   { unsigned short code = 0, state = 0; unsigned int information = 0; };
 constexpr int strokeBytes = (int) sizeof (MouseStroke);                 // (InterceptionStroke: the bigger of the two)
 constexpr unsigned short keyUp = 0x01, keyE0 = 0x02;
-constexpr unsigned short filterNone = 0x0000, filterAll = 0xFFFF, filterKeyDown = 0x0001, filterMouseLeftDown = 0x0001;
+constexpr unsigned short filterNone = 0x0000, filterAll = 0xFFFF, filterKeyDown = 0x0001, filterKeyE0 = 0x0004, filterMouseLeftDown = 0x0001;
 constexpr unsigned short leftDown = 0x001, leftUp = 0x002, rightDown = 0x004, rightUp = 0x008, middleDown = 0x010, middleUp = 0x020,
                          wheel = 0x400, hwheel = 0x800;
 constexpr unsigned short moveAbsolute = 0x001;
@@ -280,6 +280,7 @@ std::vector<SecondSeat::Device> SecondSeat::devices() const
         return out;
     }
     if (context == nullptr) return out;
+    const std::lock_guard<std::mutex> g (driverLock);
     for (int d = 1; d <= 2 * icp::maxKeyboards; ++d)
     {
         wchar_t buf[512] = {};
@@ -318,6 +319,12 @@ void SecondSeat::saveChoice()
     settings.setValue ("seatMouseId", chosenMouse.hardwareId); settings.setValue ("seatMouseNumber", chosenMouse.number);
     settings.setValue ("seatSpeed", speed);
     settings.saveIfNeeded();
+}
+
+void SecondSeat::setSpeed (double v)
+{
+    speed = juce::jlimit (0.3, 5.0, v);
+    settings.setValue ("seatSpeed", speed);
 }
 
 void SecondSeat::setMode (int m)
@@ -465,8 +472,11 @@ void SecondSeat::run()
         const int want = mode.load();
         if (want != appliedMode.load())
         {
+            const int was = appliedMode.load();
+            const std::lock_guard<std::mutex> g (driverLock);
             api->setFilter (context, anyDevice, icp::filterNone);           // (everything back first)
-            if (want == 1) api->setFilter (context, aKeyboard, icp::filterKeyDown);
+            drain (was == 1 || was == 2);                                   // (strokes the driver still held: learning's go on to Windows, the seat's go)
+            if (want == 1) api->setFilter (context, aKeyboard, (unsigned short) (icp::filterKeyDown | icp::filterKeyE0));   // (any key, the arrows too)
             else if (want == 2) api->setFilter (context, aMouse, icp::filterMouseLeftDown);
             else if (want == 3)
             {
@@ -477,12 +487,15 @@ void SecondSeat::run()
             appliedMode = want;
         }
         if (want == 0) { wait (200); continue; }
-        const int d = api->waitTimeout (context, 50);
+        const int d = api->waitTimeout (context, 50);                      // (the wait is on the driver's events, not a call into it: not locked)
         if (d <= 0) continue;
         alignas (8) char buf[icp::strokeBytes] = {};
-        if (api->receive (context, d, buf, 1) <= 0) continue;
         const bool seatDevice = want == 3 && ((d == gSeatKeyboard.load() && gSeatKeyboard.load() != 0) || (d == gSeatMouse.load() && gSeatMouse.load() != 0));
-        if (! seatDevice) api->send (context, d, buf, 1);                   // (learning, or anything else: straight on to Windows, at once)
+        {
+            const std::lock_guard<std::mutex> g (driverLock);
+            if (api->receive (context, d, buf, 1) <= 0) continue;
+            if (! seatDevice) api->send (context, d, buf, 1);               // (learning, or anything else: straight on to Windows, at once)
+        }
         if (want == 3 && ! seatDevice) continue;
         Stroke s; s.device = d; s.keyboard = icp::isKeyboard (d);
         if (s.keyboard) { icp::KeyStroke k; std::memcpy (&k, buf, sizeof k); s.code = k.code; s.state = k.state; }
@@ -494,7 +507,25 @@ void SecondSeat::run()
         }
         triggerAsyncUpdate();
     }
-    if (context != nullptr && testFeed.isEmpty()) api->setFilter (context, anyDevice, icp::filterNone);   // (closing: every device is Windows' again)
+    if (context != nullptr && testFeed.isEmpty())
+    {   // closing: every device is Windows' again (what the driver still held of the seat's goes; learning's goes on)
+        const std::lock_guard<std::mutex> g (driverLock);
+        const int was = appliedMode.load();
+        api->setFilter (context, anyDevice, icp::filterNone);
+        drain (was == 1 || was == 2);
+    }
+}
+
+void SecondSeat::drain (bool sendOn)
+{   // (driverLock held, the filter just cleared: nothing new comes - only what was captured before)
+    for (int n = 0; n < 4096; ++n)
+    {
+        const int d = api->waitTimeout (context, 0);
+        if (d <= 0) return;
+        alignas (8) char buf[icp::strokeBytes] = {};
+        if (api->receive (context, d, buf, 1) <= 0) return;
+        if (sendOn) api->send (context, d, buf, 1);
+    }
 }
 
 // ---- the message thread
@@ -506,15 +537,37 @@ void SecondSeat::timerCallback()
         if (say) say ("No key or click came: nothing was chosen.");
         if (onChanged) onChanged();
     }
-    if (on) { keepForeground(); return; }
+    if (on)
+    {
+        keepForeground();
+        if (++ticks >= 20) { ticks = 0; checkDevices(); }
+        return;
+    }
     if (learningNow == Learn::none) stopTimer();
+}
+
+void SecondSeat::checkDevices()
+{
+    if (testFeed.isNotEmpty()) return;
+    for (auto* c : { &chosenKeyboard, &chosenMouse })
+    {
+        if (! c->valid()) continue;
+        const auto now = find (c->hardwareId, c->number, c->keyboard);
+        if (now.number == c->number) continue;
+        // unplugged, or plugged in elsewhere (the driver gives it a new number): the filter would be on the old number, so the device would be an
+        // ordinary one of Windows' - typing into whichever window is in front. The seat lets go instead, and says so.
+        stop (true);
+        if (say) say (juce::String ("The Fixer's ") + (c->keyboard ? "keyboard" : "mouse") + " went (unplugged?): the second seat let go. Plug it in and Start again"
+                      + (now.valid() ? "." : " (Learn it again if it is not found)."));
+        return;
+    }
 }
 
 #if FERMATA_SEAT_WINDOWS
 static BOOL CALLBACK findPrimary (HWND h, LPARAM out)
 {   // the Primary's main window: "fermata:Live <version> - Primary", of another program than this one
     DWORD pid = 0; GetWindowThreadProcessId (h, &pid);
-    if (pid == GetCurrentProcessId() || ! IsWindowVisible (h)) return TRUE;
+    if (pid == GetCurrentProcessId() || ! IsWindowVisible (h) || IsIconic (h)) return TRUE;
     WCHAR t[200] = {};
     GetWindowTextW (h, t, 199);
     const juce::String title (t);
@@ -594,6 +647,16 @@ void SecondSeat::clampToArea()
 /** A click of the seat's never makes a window of the Fixer the PC's active one - the Primary's keyboard would follow it there. So for the moment it
     is handed on, what is clicked does not bring its window to the front as the active one, nor take the PC's keyboard (the seat's keys go where
     it clicked: keyTarget); the window is raised, not activated. */
+/** The component a click at this place reaches, found exactly as JUCE finds it (the same scaling and the same float hit test): what it goes to
+    is what NoActivate must quieten, and what the seat's keys then go to. */
+static juce::Component* hitAt (juce::ComponentPeer& peer, juce::Point<float> screenPos)
+{
+    auto& comp = peer.getComponent();
+    auto local = peer.globalToLocal (screenPos);
+    if (const float scale = comp.getDesktopScaleFactor(); scale != 1.0f) local /= scale;   // (JUCE's unscaledScreenPosToScaled)
+    return comp.contains (local) ? comp.getComponentAt (local) : nullptr;
+}
+
 struct NoActivate
 {
     NoActivate (juce::Component& top, juce::Component* hit)
@@ -721,7 +784,7 @@ void SecondSeat::sendMouse()
         std::unique_ptr<NoActivate> still;
         if (buttons != 0 && ! wasDown)
         {
-            still = std::make_unique<NoActivate> (peer->getComponent(), peer->getComponent().getComponentAt (peer->globalToLocal (pos).roundToInt()));
+            still = std::make_unique<NoActivate> (peer->getComponent(), hitAt (*peer, pos));
             if (pointer != nullptr) pointer->toFront (false);
         }
         makePenSource (*peer, peer->globalToLocal (pos));
@@ -732,7 +795,7 @@ void SecondSeat::sendMouse()
     if (buttons != 0 && ! wasDown)
     {   // a click: what the seat's keyboard types into from now on - the text box clicked (or whatever took the focus)
         dragPeer = peer;
-        juce::Component* hit = peer->getComponent().getComponentAt (peer->globalToLocal (pos).roundToInt());
+        juce::Component* hit = hitAt (*peer, pos);
         while (hit != nullptr && ! hit->getWantsKeyboardFocus()) hit = hit->getParentComponent();
         if (auto* w = dynamic_cast<juce::ResizableWindow*> (hit)) if (auto* c = w->getContentComponent()) hit = c;   // (the window itself: its contents have its keys)
         keyTarget = hit;
@@ -742,7 +805,7 @@ void SecondSeat::sendMouse()
 
 bool SecondSeat::openListAt (juce::ComponentPeer& peer, juce::Point<float> local)
 {
-    auto* hit = peer.getComponent().getComponentAt (local.roundToInt());
+    auto* hit = hitAt (peer, peer.localToGlobal (local));
     juce::ComboBox* box = nullptr;
     for (auto* c = hit; c != nullptr && box == nullptr; c = c->getParentComponent()) box = dynamic_cast<juce::ComboBox*> (c);
     if (box == nullptr || ! box->isEnabled() || box->isTextEditable() || box->getNumItems() == 0 || box->isCurrentlyBlockedByAnotherModalComponent()) return false;
