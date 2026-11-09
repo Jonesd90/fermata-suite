@@ -235,6 +235,7 @@ inline double rateFromVar (const var& v) { const double d = (double) v; return s
 inline double secondsFromVar (const var& v) { const double d = (double) v; return std::isfinite (d) ? juce::jlimit (-3600.0, 3600.0, d) : 0.0; }
 
 static thread_local bool g_clearEmptySlots = false;        // 3.27.1: set by applyMix (MixParts::clearEmptySlots): a slot the snapshot has empty is emptied too
+static thread_local const std::vector<juce::Uuid>* g_renderOnlyMixers = nullptr;   // 3.45.1: set by cloneForRender while it reads the copy (null: every mixer's plug-ins start)
 
 void slotsFromVar (InsertSlot* slots, const var& v, const InsertFactory& factory, double sr = 48000.0, int maxBlock = 512, int count = kNumSlots)
 {
@@ -2284,13 +2285,18 @@ bool Project::fromVar (const var& root)
             m->mainBus = juce::Uuid (v["mainBus"].toString());
             if (v["editId"].toString().isNotEmpty()) m->editId = juce::Uuid (v["editId"].toString());
             if (v.hasProperty ("ditherBits")) { const int db = (int) v["ditherBits"]; m->ditherBits.store (db == 16 || db == 0 ? db : 24); }
+            // 3.45.1: a render copy starts the plug-ins of the mixers it renders through only (see cloneForRender); the others keep theirs as saved
+            const bool startPlugins = g_renderOnlyMixers == nullptr || g_renderOnlyMixers->empty()
+                                      || std::find (g_renderOnlyMixers->begin(), g_renderOnlyMixers->end(), m->id) != g_renderOnlyMixers->end();
+            const InsertFactory noPlugins;
+            const InsertFactory& factory = startPlugins ? insertFactory : noPlugins;
             if (auto* ss = v["strips"].getArray())
                 for (auto& sv : *ss)
-                    stripFromVar (*m->stripFor (juce::Uuid (sv["track"].toString())), sv, insertFactory, restoreSampleRate, restoreBlock, true, legacyFx);
+                    stripFromVar (*m->stripFor (juce::Uuid (sv["track"].toString())), sv, factory, restoreSampleRate, restoreBlock, true, legacyFx);
             for (const char* key : { "busStates", "fxReturns" })
                 if (auto* fs = v[key].getArray())
                     for (auto& fv : *fs)
-                        busFromVar (*m->busFor (juce::Uuid (fv.hasProperty ("bus") ? fv["bus"].toString() : fv["fx"].toString())), fv, insertFactory, restoreSampleRate, restoreBlock, true, true);
+                        busFromVar (*m->busFor (juce::Uuid (fv.hasProperty ("bus") ? fv["bus"].toString() : fv["fx"].toString())), fv, factory, restoreSampleRate, restoreBlock, true, true);
             vcaStatesFromVar (*m, v["vcaStates"]);
             if (! v.hasProperty ("mainFlags"))                // a project from before 2.65: its one main bus (or the first Ext Bus) becomes the ticked one
             {
@@ -2883,7 +2889,7 @@ juce::String Project::alignOwnerFor (bool isEdit, const juce::Uuid& id) const
     return best.isNotEmpty() ? best : own;
 }
 
-std::unique_ptr<Project> Project::cloneForRender (double sampleRate, int maxBlock) const
+std::unique_ptr<Project> Project::cloneForRender (double sampleRate, int maxBlock, const std::vector<juce::Uuid>& onlyMixers) const
 {
     auto c = std::make_unique<Project>();
     c->insertFactory = insertFactory;                      // the copy gets its own plug-in instances, built from the saved state of the live ones
@@ -2898,7 +2904,11 @@ std::unique_ptr<Project> Project::cloneForRender (double sampleRate, int maxBloc
             return f (desc, state);
         };
     c->restoreSampleRate = sampleRate; c->restoreBlock = maxBlock;
-    c->fromVar (toVar());
+    {
+        g_renderOnlyMixers = &onlyMixers;                 // (3.45.1: the plug-ins of the other mixers are not started - a render never runs those mixers)
+        struct Reset { ~Reset() { g_renderOnlyMixers = nullptr; } } reset;
+        c->fromVar (toVar());
+    }
     c->projectFile = projectFile;
     return c;
 }

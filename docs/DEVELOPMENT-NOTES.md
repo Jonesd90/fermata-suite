@@ -2251,6 +2251,48 @@ pitch in every quarter second; the chord's partials change under 0.3 dB; what co
 outside the box changes; Soft takes 4.5 - 7.5 dB; an unticked hum stays; `applyFix` gives the same samples. On the real files (not in the repo): the
 finder's lists are in the conversation; after De-hum nothing stands out where the hums were, and the music before the box is bit-identical.
 
+## 3.45.1: freeze reports of 9 November 2026 - the ReHarmoniSer's job, render copies, the render fingerprint, plug-ins starting (9 November 2026)
+
+What the reports were (`Fermata 3.42.0 freeze 103401`, `3.43.0 freeze 133031 / 151447`, `3.45.0 freeze 153007`, read with the stacks the stall watch
+wrote into fermata-log.txt): 10:34, closing a ReHarmoniSer window - `~ReHarmoniserEditor` destroyed its `Worker`, whose destructor called
+`stopThread (60000)` while the job ran on; 13:30 and 15:30, opening the project - `Project::fromVar` → `busFromVar` → `slotsFromVar` → the
+plug-in factory → `VST3ComponentHolder::initialise` inside Seventh Heaven Professional (`InitDll`, `WinVerifyTrust` on its own file, ~190 threads of
+its own), "set up 18629 ms"; 15:14, Render previews - `checkRenders` → `MasterRenderBatch` → `Bouncer` → `Project::cloneForRender` → the same
+plug-in, 25 s. The same session also had `MasterRenders::check` → `save` → `ReplaceFileW` 5 s (from the window's timer), and
+`masterRenderFingerprint` → `describe` → `String::operator+=` 5-7 s. The closing that day: "finished cleanly in 5.9 s" (5.1 s of it the plug-ins
+letting go). The two 3.30.0 crash reports of 3 November are from that build and match nothing here.
+
+**ReHarmoniSer jobs** (`ReHarmoniserEditor::Worker`, as `AudioJob` since 3.1.x). One `Worker` per job, made with `Worker::launch`; the editor keeps a
+plain pointer to the last one and calls `release()` when it starts the next or closes: cancel, `wanted` = false (its posted `done` is dropped), and
+the job deletes itself on the message thread once `run()` has ended (`endLock` / `released` / `finished`: whichever of `release()` and the end of
+`run()` comes second deletes). Jobs still never overlap: each new job is given the previous one's `ended` event and its thread waits for it before
+it runs its work ("Waiting for the last job to stop") - jobs share the spectrogram (`recombine` changes `spec`'s gains in place). A job let go while
+it waits still waits for the one before it before it signals its own end (the first try broke off the wait, and then the job after it ran beside
+the one before: found by a test harness built from the class itself, under the address and thread checkers). The work lambdas capture
+shared pointers and values only (never the editor), so a job left running after the window has gone is safe. The Cancel button and the progress
+timer check for a null job.
+
+**Render copies start only the mixers they render through** (`Project::cloneForRender (sr, block, onlyMixers)`; `g_renderOnlyMixers`, a thread-local
+read by `fromVar`'s mixer loop, gives the other mixers an empty factory - their slots keep `savedDescription` / `savedState`, as a plug-in that would
+not start). The `Bouncer` works the list out as `render()` picks each item's mixer (its own if it still exists, else the settings' mixer), and
+checks only those with `pluginsMissingFrom` - so the processing mixer, which a master render through each piece's own mixer never runs, is neither
+started nor checked. The offline engine runs only `offlineMixerId` (`renderOffline`), so a mixer left without its plug-ins is never heard.
+
+**The render fingerprint** (`MasterRender.cpp`, `FpHash`). The description used to be one `juce::String` built with `<<`; a JUCE String grows by
+exactly what is added (`makeUniqueWithByteSize`), so each part copied the whole text again - quadratic, seconds with a big plug-in state (and
+`lookAtRenders` runs whenever the project changes while the DDP tab is open). Now each part is fed to the hash as it comes. The hash must not change
+(the renders.json fingerprints of every render made so far): the old loop stepped a `CharPointer_UTF8` - one step per character, hashing the
+character's low 8 bits, not the UTF-8 bytes - and the length was characters; `FpHash::add` does the same. Checked against the old code on a test
+project and with non-ASCII plug-in names and states (identical), and a core test rebuilds the old text from `masterRenderParts` and compares.
+`MasterRenders::check` no longer adds an empty entry for a piece with nothing rendered (it made the first look write the list, with an fsync).
+
+**Plug-ins starting** (`StallWatch.h`: `PluginStarting`, `PluginStartLabel`; `PluginHost::create` and the factory's `setStateInformation`). While a
+plug-in starts, the stall watch counts the time apart: the 5-second stacks and the 15-second freeze report go by Fermata's own time in the stall (or
+60 s / 120 s in all), and the stall's line adds "N s of it waiting for a plug-in to start (the longest: <name>, N s)". A start or a settings load of
+2 s or more is logged ("Plug-in slow to start: ..."). Nothing makes the plug-in itself start faster: a VST3 plug-in is made on the main thread.
+
+Also: `EditTimeline::gainMarkAt`'s helper lambda was called `near` (3.45.0) - a Windows header macro; renamed `closeTo` (found by check-windows-code).
+
 ## 3.45.0: volume changes as boxes round their tracks; crossfades drawn as they sound (9 November 2026)
 
 **Volume change boxes** (`EditTimeline::gainUnits`, used by the painting and by `gainMarkAt`). A *unit* is a lone change, or every point of one

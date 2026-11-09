@@ -120,21 +120,33 @@ public:
 } // namespace
 
 // ================================================================================================== the background worker
+/** One job on a thread of its own (3.45.1). The editor keeps the job it started last and lets go of it with release() - when it starts the next job, and
+    when it closes: the work is asked to stop, what it would report is dropped, and the job deletes itself once its thread has finished (at once if it
+    has). So the main thread never waits for a job. Before, closing the window - or starting a job while one ran - waited on the main thread, up to a
+    minute, for the running job to notice that it should stop; an analysis that looks at that only now and then froze Fermata until it did (a freeze
+    report of 9 November 2026). A new job still never runs beside the one before it: its thread first waits, on its own, for that one to end. */
 class ReHarmoniserEditor::Worker : private juce::Thread
 {
 public:
-    Worker() : juce::Thread ("Re-HarmoniSer job"), gen (std::make_shared<std::atomic<int>> (0)) {}
-    ~Worker() override { cancelFlag = true; ++(*gen); stopThread (60000); }
-    void start (std::function<juce::String (Worker&)> w, std::function<void (const juce::String&)> d)
+    using Work = std::function<juce::String (Worker&)>;
+    using Done = std::function<void (const juce::String&)>;
+    /** Starts the work on a new thread, after 'previous' (the job started before it, or null) has ended. Message thread. */
+    static Worker* launch (Work w, Done d, const Worker* previous)
     {
-        cancelFlag = true; ++(*gen); stopThread (60000);
-        work = std::move (w); done = std::move (d); myGen = gen->load(); cancelFlag = false; frac = 0.0;
-        { juce::ScopedLock l (lock); stageText.clear(); }
-        startThread();
+        auto* j = new Worker (std::move (w), std::move (d), previous != nullptr ? previous->ended : nullptr);
+        j->startThread();
+        return j;
+    }
+    /** The editor lets go of the job: see the class. Message thread. */
+    void release()
+    {
+        cancelFlag = true; *wanted = false;
+        const juce::ScopedLock sl (endLock);
+        released = true;
+        if (finished || ! isThreadRunning()) deleteSoon();
     }
     void cancel() { cancelFlag = true; }
     bool cancelled() const { return cancelFlag.load(); }
-    bool running() const { return isThreadRunning(); }
     double progress() const { return frac.load(); }
     juce::String stage() const { juce::ScopedLock l (lock); return stageText; }
     Hooks hooks()
@@ -145,20 +157,40 @@ public:
         return h;
     }
 private:
+    Worker (Work w, Done d, std::shared_ptr<juce::WaitableEvent> before)
+        : juce::Thread ("Re-HarmoniSer job"), work (std::move (w)), done (std::move (d)), previous (std::move (before)) {}
+    ~Worker() override { cancelFlag = true; stopThread (10000); }        // (only once run() has returned, or never ran: see release)
     void run() override
     {
         juce::String err;
-        try { err = work (*this); }
-        catch (const Cancelled&) { err = "Cancelled."; }
-        catch (const std::exception& e) { err = e.what(); }
-        catch (...) { err = "Something went wrong."; }
-        auto g = gen; const int my = myGen; auto cb = done;
-        juce::MessageManager::callAsync ([g, my, cb, err] { if (g->load() == my && cb) cb (err); });
+        if (previous != nullptr && ! previous->wait (0))                  // the job before this one is let go but may still be stopping: it ends first -
+        {                                                                 // always, even when this one is let go too (or the one after would not wait)
+            { juce::ScopedLock l (lock); stageText = "Waiting for the last job to stop"; }
+            previous->wait (-1);
+        }
+        previous = nullptr;
+        if (cancelFlag.load()) err = "Cancelled.";
+        else
+        {
+            try { err = work (*this); }
+            catch (const Cancelled&) { err = "Cancelled."; }
+            catch (const std::exception& e) { err = e.what(); }
+            catch (...) { err = "Something went wrong."; }
+        }
+        auto w = wanted; auto cb = done;
+        juce::MessageManager::callAsync ([w, cb, err] { if (w->load() && cb) cb (err); });     // (dropped when the editor has let go of this job)
+        ended->signal();
+        const juce::ScopedLock sl (endLock);
+        finished = true;
+        if (released) deleteSoon();                                       // (the editor has let go: nothing else will)
     }
-    std::function<juce::String (Worker&)> work; std::function<void (const juce::String&)> done;
-    std::shared_ptr<std::atomic<int>> gen; int myGen = 0;
-    std::atomic<bool> cancelFlag { false }; std::atomic<double> frac { 0.0 };
+    void deleteSoon() { juce::MessageManager::callAsync ([this] { delete this; }); }
+    Work work; Done done;
+    std::shared_ptr<juce::WaitableEvent> previous, ended = std::make_shared<juce::WaitableEvent> (true);
+    std::shared_ptr<std::atomic<bool>> wanted = std::make_shared<std::atomic<bool>> (true);
+    std::atomic<bool> cancelFlag { false }, finished { false }; std::atomic<double> frac { 0.0 };
     juce::CriticalSection lock; juce::String stageText;
+    juce::CriticalSection endLock; bool released = false;                // (release() and the end of run(): whichever comes second deletes the job)
 };
 
 // ================================================================================================== the spectrogram view
@@ -935,7 +967,6 @@ ReHarmoniserEditor::ReHarmoniserEditor() : bar (progressValue)
 {
     look = std::make_unique<SageLook>(); setLookAndFeel (look.get());
     setWantsKeyboardFocus (true);
-    worker = std::make_unique<Worker>();
     view = std::make_unique<View> (*this); addAndMakeVisible (*view);
     editsList = std::make_unique<EditsList> (*this); editsView.setViewedComponent (editsList.get(), false); editsView.setScrollBarsShown (true, false);
     addAndMakeVisible (editsView);
@@ -1120,7 +1151,7 @@ ReHarmoniserEditor::ReHarmoniserEditor() : bar (progressValue)
     loopBtn.onClick = [this] { looping = loopBtn.getToggleState(); };
     originalBtn.setTooltip ("Plays the audio with none of the changes. Press again to hear them. Greyed out until something has been changed.");
     originalBtn.onClick = [this] { toggleOriginal(); };
-    writeBtn.onClick = [this] { writeBack(); }; cancelBtn.onClick = [this] { if (worker->running()) worker->cancel(); if (host.cancel) host.cancel(); };
+    writeBtn.onClick = [this] { writeBack(); }; cancelBtn.onClick = [this] { if (worker != nullptr) worker->cancel(); if (host.cancel) host.cancel(); };
     writeBtn.setTooltip (host.leaveUnchangedOk ? "Puts all the corrected notes back into the clip and closes this window. In an Out / In pair, press it on a stream you did not change too: that stream is simply left as it is." : "Puts all the corrected notes back into the clip and closes this window");
     // the drop-downs do not take the keyboard when clicked (the buttons and sliders already do not): the arrows keep zooming and Enter keeps applying
     // the correction after a click on one, instead of changing the drop-down (3.1.2)
@@ -1157,7 +1188,9 @@ void ReHarmoniserEditor::saveViewSettings()
 }
 
 ReHarmoniserEditor::~ReHarmoniserEditor() {
-    saveViewSettings(); setLookAndFeel (nullptr); stopTimer(); if (worker) worker->cancel(); }
+    saveViewSettings(); setLookAndFeel (nullptr); stopTimer();
+    if (worker != nullptr) { worker->release(); worker = nullptr; }      // (3.45.1: asked to stop, never waited for: see Worker)
+}
 
 int ReHarmoniserEditor::appliedCount() const { int n = 0; for (auto& e : edits) if (e.enabled) ++n; return n; }
 bool ReHarmoniserEditor::hasAppliedChanges() const { return appliedCount() > 0; }
@@ -1186,13 +1219,15 @@ void ReHarmoniserEditor::startJob (const juce::String& stage, std::function<juce
     setParallelThreads (td::workers::threadsFor (1 << 20));                    // 3.37.0: every core fermata may use (those not kept for its audio) - it stopped at 8
     busy = true; progressValue = 0.0; bar.setVisible (true); setStatus (stage); updateButtons();
     juce::Component::SafePointer<ReHarmoniserEditor> self (this);
-    worker->start (std::move (work), [self, done] (const juce::String& err)
+    auto* previous = worker;
+    worker = Worker::launch (std::move (work), [self, done] (const juce::String& err)
     {
         if (self == nullptr) return;
         self->busy = false; self->bar.setVisible (false);
         if (done) done (err);
         self->updateButtons();
-    });
+    }, previous);
+    if (previous != nullptr) previous->release();                       // (it ends on its own; the new job starts once it has)
 }
 
 // ---------------------------------------------------------------------------------------------------- loading and analysis
@@ -2121,7 +2156,7 @@ bool ReHarmoniserEditor::keyPressed (const juce::KeyPress& k)
 void ReHarmoniserEditor::timerCallback()
 {
     if (seeDirty && ! busy && spec != nullptr && juce::Time::getMillisecondCounter() - seeDirtyAt > 350) recombine();
-    if (busy) { progressValue = worker->progress(); const auto st = worker->stage(); if (st.isNotEmpty()) status.setText (st + "...", juce::dontSendNotification); }
+    if (busy && worker != nullptr) { progressValue = worker->progress(); const auto st = worker->stage(); if (st.isNotEmpty()) status.setText (st + "...", juce::dontSendNotification); }
     const double p = host.playPosition ? host.playPosition() : -1.0;
     if (p != playT)
     {

@@ -37,17 +37,38 @@ void flattenVar (const juce::var& v, const juce::String& path, std::map<juce::St
     else out[path] = v.toString();
 }
 
-/** The description as text, without the parts known to change by themselves. */
-juce::String describe (const juce::var& v, const juce::String& tag, const juce::String& editId)
+/** The fingerprint's hash, fed piece by piece (3.45.1): two 64-bit FNV-1a hashes with different starting values (128 bits in all), and the number of
+    characters. It used to be worked out from one long text made by adding each part to the end of it - and a JUCE String grows by exactly what is
+    added, so the whole text was copied again for every part: a mixer with a big reverb's settings in it (hundreds of kB, thousands of parts) took
+    seconds on the main thread, every time the Mastering window looked at its renders (freezes of 9 November 2026). Fed the same characters in the same
+    order, the result is the same as before, so the renders already made stay up to date. */
+struct FpHash
+{
+    juce::uint64 h1 = 1469598103934665603ull, h2 = 0x9E3779B97F4A7C15ull;
+    juce::int64 chars = 0;                                       // (what juce::String::length() counted: characters, not bytes)
+    /** One step per character, with the low 8 bits of the character - as the loop over the whole text did (a CharPointer_UTF8 steps by character). */
+    void add (const juce::String& s) noexcept
+    {
+        for (auto c = s.toUTF8(); *c != 0; ++c)
+        {
+            const auto b = (juce::uint8) *c;
+            h1 = (h1 ^ b) * 1099511628211ull; h2 = (h2 ^ b) * 0x100000001B3ull + 0x7F4A7C15ull;
+            ++chars;
+        }
+    }
+    void add (const char* ascii) noexcept { add (juce::String (ascii)); }
+    juce::String result() const { return juce::String::toHexString ((juce::int64) h1) + juce::String::toHexString ((juce::int64) h2) + "-" + juce::String (chars); }
+};
+
+/** The description, without the parts known to change by themselves, into the hash: "path=value\n" for each part, in order. */
+void describe (const juce::var& v, const juce::String& tag, const juce::String& editId, FpHash& h)
 {
     std::map<juce::String, juce::String> flat;
     flattenVar (v, tag, flat);
     if (g_capture != nullptr) for (auto& kv : flat) (*g_capture)[kv.first] = kv.second;
     const std::set<juce::String>* skip = nullptr;
     { const juce::ScopedLock sl (storeLock()); auto it = volatileParts().find (editId); if (it != volatileParts().end()) skip = &it->second; }
-    juce::String text;
-    for (auto& kv : flat) { if (skip != nullptr && skip->count (kv.first) != 0) continue; text << kv.first << "=" << kv.second << "\n"; }
-    return text;
+    for (auto& kv : flat) { if (skip != nullptr && skip->count (kv.first) != 0) continue; h.add (kv.first); h.add ("="); h.add (kv.second); h.add ("\n"); }
 }
 } // namespace
 
@@ -109,19 +130,20 @@ juce::String masterRenderFingerprint (const Project& cp, const EditDef& e, const
     juce::var ev = p.editToVar (e);
     removeKeys (ev, { "name", "window", "insertIndex", "markIn", "markOut", "fixIn", "fixOut", "fixTracks", "playhead", "trackIds" });   // (where the cursor is does not change the sound)
     const auto editId = e.id.toString();
-    juce::String text = describe (ev, "E", editId);
+    FpHash h;                                                                        // (3.45.1: fed part by part - see FpHash)
+    describe (ev, "E", editId, h);
 
     // the audio files the pieces use: a file mended in place changes the sound without changing the edit
-    juce::String files;
+    juce::StringArray files;                                                         // (each "|path:size:time", in order)
     auto addFiles = [&files] (const std::vector<EditRegion>& rs)
     {
         for (auto& r : rs)
             for (auto& f : r.files)
-                files << "|" << f.file.getFullPathName() << ":" << juce::String (f.file.getSize()) << ":" << juce::String (f.file.getLastModificationTime().toMilliseconds());
+                files.add ("|" + f.file.getFullPathName() + ":" + juce::String (f.file.getSize()) + ":" + juce::String (f.file.getLastModificationTime().toMilliseconds()));
     };
     addFiles (e.regions); addFiles (e.overdubs);
-    text << files;
-    if (g_capture != nullptr) (*g_capture)["~files"] = files;                        // (the parts outside describe() are captured whole, so a comparison of parts sees them too)
+    for (auto& f : files) h.add (f);
+    if (g_capture != nullptr) (*g_capture)["~files"] = files.joinIntoString ({});   // (the parts outside describe() are captured whole, so a comparison of parts sees them too)
 
     // the mixers the sound goes through: the Edit's own (or the one chosen for everything), and any other mixer an automation lane drives
     std::vector<const MixerState*> ms;
@@ -183,7 +205,7 @@ juce::String masterRenderFingerprint (const Project& cp, const EditDef& e, const
                         }
                     }
             }
-        text << "|M:" << describe (mv, "M" + m->id.toString(), editId);
+        h.add ("|M:"); describe (mv, "M" + m->id.toString(), editId, h);
     }
 
     // the design (formats, buses) and the render settings
@@ -193,12 +215,9 @@ juce::String masterRenderFingerprint (const Project& cp, const EditDef& e, const
     design << "|S:" << rp.sourceId.toString() << ":" << juce::String (rp.tailSeconds, 4) << ":" << (rp.ownMixers ? "own" : rp.mixerId.toString());
     design << "|A:" << p.alignSignature (p.alignOwnerFor (true, e.id));              // the spot-mic delays it plays with
     if (p.postFaderSlots) design << "|P:1";                                         // 3.40.0: the post-fader slots are in the sound (only then: the fingerprints of the renders made before stay as they were)
-    text << design;
+    h.add (design);
     if (g_capture != nullptr) (*g_capture)["~design"] = design;
-    // two 64-bit FNV-1a hashes with different starting values (128 bits in all)
-    juce::uint64 h1 = 1469598103934665603ull, h2 = 0x9E3779B97F4A7C15ull;
-    for (auto c = text.toUTF8(); *c != 0; ++c) { h1 = (h1 ^ (juce::uint8) *c) * 1099511628211ull; h2 = (h2 ^ (juce::uint8) *c) * 0x100000001B3ull + 0x7F4A7C15ull; }
-    return juce::String::toHexString ((juce::int64) h1) + juce::String::toHexString ((juce::int64) h2) + "-" + juce::String (text.length());
+    return h.result();
 }
 
 // ----------------------------------------------------------------------------- the two slots
@@ -267,6 +286,9 @@ MasterRenders::Info MasterRenders::check (const juce::Uuid& id, const juce::Stri
     else if (! e.stale && e.s[e.active].fp == fp) { r.state = State::Ready; fill (e.active); }
     else if (! e.stale && valid (id, e, 1 - e.active) && e.s[1 - e.active].fp == fp) { e.active = 1 - e.active; r.state = State::Ready; fill (e.active); r.hasBackup = valid (id, e, 1 - e.active); }
     else { r.state = State::Stale; fill (e.active); }
+    // 3.45.1: a piece with nothing rendered and nothing to remember is not added to the list: the first look at pieces not rendered yet rewrote the
+    // list (with an fsync) on the main thread, and on a slow or busy drive that took 5 s (9 November 2026)
+    if (e.active < 0 && ! e.pinned && ! e.stale && e.s[0].fp.isEmpty() && e.s[1].fp.isEmpty() && before.count (id.toString()) == 0) m.erase (id.toString());
     if (changed (m, before)) save (m);                            // (3.27.1: the list used to be rewritten, with an fsync, on every look)
     return r;
 }

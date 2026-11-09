@@ -1,4 +1,5 @@
 #include "PluginHost.h"
+#include "StallWatch.h"
 #include "../core/CrashReport.h"
 #include "WinOwner.h"
 #include "../core/HostTransport.h"
@@ -442,9 +443,22 @@ void PluginHost::run()
     });
 }
 
+/** 3.45.1: a plug-in that takes a long time to start is named in the log with the time it took. Fermata waits for it on the main thread (a VST3 plug-in
+    is made there), so the stall watch is told which plug-in it is waiting for and does not call it a freeze (see PluginStartLabel). */
+static void logSlowStart (const juce::String& name, double startedAt, const char* what)
+{
+    const double ms = juce::Time::getMillisecondCounterHiRes() - startedAt;
+    if (ms >= 2000.0)
+        juce::Logger::writeToLog ("Plug-in slow to start: " + name + " took " + juce::String (ms / 1000.0, 1) + " s " + what
+                                  + " (its own start-up: Fermata waits for it)");
+}
+
 std::unique_ptr<InsertProcessor> PluginHost::create (const juce::PluginDescription& d, double sr, int block, juce::String& error)
 {
+    const PluginStartLabel starting (d.name);
+    const auto t0 = juce::Time::getMillisecondCounterHiRes();
     auto instance = formats.createPluginInstance (d, sr, block, error);
+    logSlowStart (d.name, t0, "to load");
     if (instance == nullptr) return nullptr;
     return std::make_unique<Vst3Insert> (std::move (instance), d);
 }
@@ -474,8 +488,11 @@ InsertFactory PluginHost::makeFactory (std::function<double()> sampleRate, std::
         juce::MemoryBlock mb;
         if (state.isNotEmpty() && mb.fromBase64Encoding (state))
         {
+            const PluginStartLabel starting (d.name);                         // (3.45.1: its settings going in can take a while too)
+            const auto t0 = juce::Time::getMillisecondCounterHiRes();
             static_cast<Vst3Insert*> (p.get())->getPlugin().setStateInformation (mb.getData(), (int) mb.getSize());
             static_cast<Vst3Insert*> (p.get())->stateWasSet();
+            logSlowStart (d.name, t0, "to take its settings");
         }
         return p;
     };

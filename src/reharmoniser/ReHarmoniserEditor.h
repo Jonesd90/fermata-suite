@@ -176,7 +176,7 @@ private:
 
     // ---- the parts
     std::unique_ptr<View> view;
-    std::unique_ptr<Worker> worker;
+    Worker* worker = nullptr;                 // the job started last (3.45.1: it deletes itself once let go - see Worker::release - and is never waited for)
     juce::Label status, noteInfo, tipLabel;
     juce::TextButton startBtn { "|<" }, endBtn { ">|" }, isoBtn { "Isolate" }, playBtn { "Play" }, stopBtn { "Stop" }, loopBtn { "Loop" }, originalBtn { "Original" }, writeBtn { "Write back to clip" }, cancelBtn { "Cancel" };
     double progressValue = 0.0; juce::ProgressBar bar;

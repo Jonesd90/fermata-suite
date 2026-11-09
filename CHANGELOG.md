@@ -6,6 +6,28 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.45.1
+Built 9 November 2026 (the conversation for both programs), with Claude Opus. From the freeze reports of 9 November 2026: none of them was a crash, and
+none happened while Fermata was closing (each closing that day finished cleanly). Three were the reverb Seventh Heaven Professional starting up, and
+one was Fermata's own.
+- **Closing the ReHarmoniSer while it is busy no longer freezes Fermata.** The window waited for its job (an analysis, a measurement) to notice that
+  it should stop - up to a minute, on the main thread. Now the job is asked to stop and left to finish on its own; the window closes at once. Starting
+  a job while one runs no longer waits either (the new one starts by itself once the old one has stopped).
+- **Rendering the Mastering previews starts only the plug-ins it needs.** The render made its own copy of every plug-in in the project - every
+  Edit's mixer, the processing mixer, all of them - on the main thread, so one out-of-date piece waited for every reverb in the project to start
+  (25 s on 9 November). Now only the plug-ins of the mixers the pieces are rendered through are started. The same in the Bounce window.
+- **The Mastering window no longer stops Fermata for seconds while it checks the renders.** Working out whether a preview is up to date took
+  seconds for a mixer with a big plug-in's settings in it (the work grew with the square of the size), every time the project changed while the DDP
+  tab was open; it is now a fraction of a second. The renders made by earlier versions stay up to date (the result is exactly as before). Looking at
+  pieces that have never been rendered no longer rewrites the list of renders on the disk (that took 5 s on a busy drive).
+- **A plug-in that is slow to start is named, and not called a freeze.** Fermata has to wait for a plug-in while it starts (a VST3 plug-in is made on
+  the main thread) and cannot make it faster. The log now says which plug-in took how long ("Plug-in slow to start: Seventh Heaven Professional took
+  18.9 s to load"), the stall watch says how much of a stall was spent waiting for plug-ins, and no freeze report (and no "Fermata got stuck" message
+  at the next start) is written for that time - only for time Fermata itself was stuck, or a stall over 2 minutes in all (a plug-in that never
+  finishes starting).
+- Shared: `src/core/MasterRender.cpp` (the fingerprint, the render list), `src/core/Project.h/.cpp` (`cloneForRender` with a list of mixers),
+  `src/core/Bounce.cpp`. fermata:Live needs a rebuild (its own behaviour is unchanged).
+
 ## 3.45.0
 Built 9 November 2026 (the conversation for both programs), with Claude Opus.
 - **A volume change shows which tracks it changes.** Instead of a teal line from the top of the edit to the bottom at each end, a change is now a teal

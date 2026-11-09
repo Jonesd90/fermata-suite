@@ -15,14 +15,22 @@ Bouncer::Bouncer (const Project& live, const BounceSettings& s) : settings (s)
     if (! haveMixer) { prepareError = "The mixer to bounce through no longer exists."; return; }
     if (s.sources.empty() && s.sourcesPre.empty()) { prepareError = "Choose at least one output to bounce (an Ext bus, an Int bus or an audio track)."; return; }
     if (s.items.empty()) { prepareError = "Nothing to bounce."; return; }
-    shadow = live.cloneForRender (s.sampleRate, kBlock);
-    // A plug-in that would not start in the render copy used to be left out of the bounce without a word, so the file did not sound like the mix.
-    // Now the bounce is refused and says which (the log says why it would not start). Every mixer the render goes through is checked: the
-    // one in the settings and each piece's own (3.27.1: with "each piece through its own mixer" only the processing mixer was looked at,
-    // which the master render does not even use, so a plug-in on an edit's mixer that failed to start was left out without a word).
-    std::vector<juce::Uuid> mixersUsed { s.mixerId };
+    // The mixers the render goes through: each piece's own, or the one in the settings for a piece without one (or whose mixer has gone) - as render()
+    // picks them. 3.45.1: only their plug-ins are started in the copy (each can take seconds, on the main thread: a big reverb on every Edit's mixer
+    // made a preview render of one piece wait for all of them), and only they are checked below.
+    std::vector<juce::Uuid> mixersUsed;
+    auto use = [&mixersUsed] (const juce::Uuid& id) { if (std::find (mixersUsed.begin(), mixersUsed.end(), id) == mixersUsed.end()) mixersUsed.push_back (id); };
     for (auto& it : s.items)
-        if (! it.mixerId.isNull() && std::find (mixersUsed.begin(), mixersUsed.end(), it.mixerId) == mixersUsed.end()) mixersUsed.push_back (it.mixerId);
+    {
+        bool own = false;
+        if (! it.mixerId.isNull()) for (auto& m : live.mixers) own = own || m->id == it.mixerId;
+        use (own ? it.mixerId : s.mixerId);
+    }
+    shadow = live.cloneForRender (s.sampleRate, kBlock, mixersUsed);
+    // A plug-in that would not start in the render copy used to be left out of the bounce without a word, so the file did not sound like the mix.
+    // Now the bounce is refused and says which (the log says why it would not start). Every mixer the render goes through is checked (3.27.1: with
+    // "each piece through its own mixer" only the processing mixer was looked at, which the master render does not even use, so a plug-in on an
+    // edit's mixer that failed to start was left out without a word).
     juce::StringArray missing;
     for (auto& mid : mixersUsed) missing.addArray (live.pluginsMissingFrom (*shadow, mid));
     missing.removeDuplicates (false);

@@ -571,8 +571,11 @@ public:
         ticked as the processing mixer's main output and sent to the driver's outputs 1-2. Returns it. */
     BusDef& addDefaultMainBus();
 
-    /** A private, independent copy of the whole project (plug-ins re-created from their state) for offline rendering. */
-    std::unique_ptr<Project> cloneForRender (double sampleRate, int maxBlock) const;
+    /** A private, independent copy of the whole project (plug-ins re-created from their state) for offline rendering. With 'onlyMixers' (3.45.1), only
+        the plug-ins of those mixers are started in the copy - the others keep theirs as saved, not running: a render runs only the mixers it renders
+        through, and starting a plug-in can take many seconds on the main thread (a big reverb on every Edit's mixer made each preview render wait for
+        all of them). */
+    std::unique_ptr<Project> cloneForRender (double sampleRate, int maxBlock, const std::vector<juce::Uuid>& onlyMixers = {}) const;
     /** The plug-ins that are running (not bypassed) in this project's mixer 'mixerId' but could not be started in 'copy' (a render copy made by
         cloneForRender): "<plug-in> on <strip>", one per slot. Empty: the copy has every one of them, and a render through it sounds like the mix. */
     juce::StringArray pluginsMissingFrom (const Project& copy, const juce::Uuid& mixerId) const;

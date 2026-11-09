@@ -3565,7 +3565,36 @@ int main()
                 CHECK (masterRenderFingerprint (mp, ed, rp) == f0);
                 em->stripFor (mp.tracks[0].id)->pan.set (0.4f);
                 CHECK (masterRenderFingerprint (mp, ed, rp) != f0);
-                ed.automationOn = false; }
+                ed.automationOn = false;
+                // 3.45.1: the fingerprint is worked out part by part (it was one long text, copied again for every part added to it: seconds on the main
+                // thread for a mixer with big plug-in settings) - and comes out exactly as the long text did, characters outside ASCII included (one
+                // step per character, its low 8 bits), so the renders made by earlier versions stay up to date
+                {
+                    auto& sl = em->stripFor (mp.tracks[0].id)->slots[1];
+                    sl.savedDescription = juce::String (juce::CharPointer_UTF8 ("<PLUGIN name=\"R\xc3\xa9verb \xe2\x98\x83\"/>"));
+                    juce::MemoryOutputStream bigOut;
+                    for (int i = 0; i < 40000; ++i) { bigOut << "QmFzZTY0"; if (i % 9 == 0) bigOut << juce::String (juce::CharPointer_UTF8 ("\xc3\xa9\xe2\x98\x83")); }
+                    sl.savedState = bigOut.toUTF8();
+                    const auto parts = masterRenderParts (mp, ed, rp);            // (every part, with its path: "E/...", "M<mixer>/...", "~files", "~design")
+                    juce::MemoryOutputStream text;
+                    int mixersSeen = 0;
+                    for (auto& kv : parts) if (kv.first.startsWith ("E")) text << kv.first << "=" << kv.second << "\n";
+                    if (parts.count ("~files") != 0) text << parts.at ("~files");
+                    text << "|M:";
+                    for (auto& kv : parts) if (kv.first.startsWith ("M")) { text << kv.first << "=" << kv.second << "\n"; mixersSeen = 1; }
+                    if (parts.count ("~design") != 0) text << parts.at ("~design");
+                    const auto whole = text.toUTF8();
+                    juce::uint64 h1 = 1469598103934665603ull, h2 = 0x9E3779B97F4A7C15ull;
+                    for (auto c = whole.toUTF8(); *c != 0; ++c) { h1 = (h1 ^ (juce::uint8) *c) * 1099511628211ull; h2 = (h2 ^ (juce::uint8) *c) * 0x100000001B3ull + 0x7F4A7C15ull; }
+                    const auto before = juce::String::toHexString ((juce::int64) h1) + juce::String::toHexString ((juce::int64) h2) + "-" + juce::String (whole.length());
+                    const auto t0 = juce::Time::getMillisecondCounterHiRes();
+                    const auto now = masterRenderFingerprint (mp, ed, rp);
+                    const auto took = juce::Time::getMillisecondCounterHiRes() - t0;
+                    CHECK (mixersSeen == 1 && whole.length() > 320000);                 // (the big state is in it: 40000 x 8 characters and more)
+                    CHECK (now == before);
+                    CHECK (took < 1500.0);
+                    sl.savedDescription.clear(); sl.savedState.clear();
+                } }
             // the source: a missing output falls back to the first Ext bus
             {   mp.mastering.sourceId = ed.id; juce::Uuid mxid, srid;
                 CHECK (resolveRenderSource (mp, mp.mastering, mxid, srid).isEmpty() && srid == bus && mxid == mx.id); }
@@ -10242,6 +10271,38 @@ int main()
             own.stripFor (tt)->slots[0].bypass.set (true);
             Bouncer b2 (bq, bs2);
             CHECK (b2.getPrepareError().isEmpty());
+
+            // 3.45.1: the render copy starts only the plug-ins of the mixers the render goes through - a big reverb on every Edit's mixer made each
+            // preview render wait for all of them, seconds each, on the main thread. The others keep theirs as saved (not running).
+            auto& other = bq.addMixer ("Other");
+            other.stripFor (tt)->slots[0].set (std::make_unique<NamedLat> ("Elsewhere", 10), 48000.0, 512, 2);
+            const auto realFactory = bq.insertFactory;
+            auto started = std::make_shared<juce::StringArray>();
+            bq.insertFactory = [realFactory, started] (const juce::String& d, const juce::String& st) { started->add (d.fromFirstOccurrenceOf ("named:", false, false).upToFirstOccurrenceOf (":", false, false)); return realFactory (d, st); };
+            {
+                auto copy = bq.cloneForRender (48000.0, 512, { own.id });
+                CHECK (started->size() == 1 && started->contains ("Broken"));                 // (own's, bypassed but there; not "Fine" on M nor "Elsewhere")
+                const MixerState* oc = nullptr; for (auto& m : copy->mixers) if (m->id == other.id) oc = m.get();
+                CHECK (oc != nullptr && oc->stripPool.size() >= 1);
+                bool kept = false; if (oc != nullptr) for (auto& sp : oc->stripPool) kept = kept || sp->slots[0].savedDescription.contains ("Elsewhere");
+                CHECK (kept);                                                                  // (kept as saved, not started)
+                started->clear();
+                auto all = bq.cloneForRender (48000.0, 512);
+                CHECK (started->contains ("Fine") && started->contains ("Broken") && started->contains ("Elsewhere"));   // (no list: every mixer's, as before)
+            }
+            started->clear();
+            {
+                Bouncer b3 (bq, bs2);                                                          // through 'own': only own's plug-ins start
+                CHECK (b3.getPrepareError().isEmpty() && started->size() == 1 && started->contains ("Broken"));
+                auto res = b3.render();
+                CHECK (res.error.isEmpty() && res.files.size() == 1);
+            }
+            started->clear();
+            {
+                Bouncer b4 (bq, bs);                                                           // through M (the settings' mixer): only M's
+                CHECK (b4.getPrepareError().isEmpty() && started->size() == 1 && started->contains ("Fine"));
+            }
+            bq.insertFactory = realFactory;
         }
     }
 

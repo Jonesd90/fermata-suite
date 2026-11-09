@@ -2314,9 +2314,9 @@ private:
             for (auto& b : u.boxes)                                                     // the box: its left and right edges, and the glides inside it
             {
                 if (p.y < b.getY() || p.y > b.getBottom()) continue;
-                auto near = [&] (int a, int w) { const int d = p.x < a ? a - p.x : (p.x > a + w ? p.x - a - w : 0); if (d <= 4 && d < bestDist) { bestDist = d; best = u.hit; } };
-                near (b.getX(), 0); near (b.getRight(), 0);
-                for (auto& pt : u.points) near (pt.x, pt.glide);
+                auto closeTo = [&] (int a, int w) { const int d = p.x < a ? a - p.x : (p.x > a + w ? p.x - a - w : 0); if (d <= 4 && d < bestDist) { bestDist = d; best = u.hit; } };     // (3.45.1: not "near", a Windows macro)
+                closeTo (b.getX(), 0); closeTo (b.getRight(), 0);
+                for (auto& pt : u.points) closeTo (pt.x, pt.glide);
             }
             if (u.boxes.empty() && std::abs (p.x - u.x0) <= 4 && std::abs (p.x - u.x0) < bestDist) { bestDist = std::abs (p.x - u.x0); best = u.hit; }
         }
