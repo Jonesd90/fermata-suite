@@ -230,6 +230,8 @@ public:
         begin (*e);
         double fin = 0.3, fout = 0.3; bool haveStart = false, haveEnd = false;
         t0 = std::numeric_limits<juce::int64>::max(); t1 = 0;
+        juce::int64 pieceEnd = 0;                                    // (3.45.0: the end of the last piece it is in - its end only when it has no glide back; it used to be
+                                                                     //  taken before the glide back was seen, so the title said the change ran to the end of its piece)
         for (auto& r : e->regions)
             for (size_t i = 0; i < r.gains.size(); ++i)
             {
@@ -239,7 +241,7 @@ public:
                 if (g.role == 3) { t1 = juce::jmax (t1, r.startSample + g.at + rampS); if (! haveEnd) { fout = g.ramp; haveEnd = true; } continue; }
                 t0 = juce::jmin (t0, r.startSample + g.at);
                 if (g.role == 1 && ! haveStart) { fin = g.ramp; haveStart = true; }
-                if (! haveEnd) t1 = juce::jmax (t1, r.endSample());
+                pieceEnd = juce::jmax (pieceEnd, r.endSample());
                 for (size_t k = 0; k < r.files.size() && k < g.db.size(); ++k)          // what this change does to each track: its level less the one before it
                 {
                     const auto tid = r.files[k].trackId;
@@ -250,6 +252,7 @@ public:
                 }
             }
         if (t0 == std::numeric_limits<juce::int64>::max()) t0 = 0;
+        if (! haveEnd) t1 = juce::jmax (t1, pieceEnd);
         const auto toId = [] (double sec) { return juce::jlimit (1, 20, (int) std::lround (sec * 20.0)); };
         build (toId (fin), toId (fout));
         info.setText ("Change the amounts or the fade times: you hear each change at once (press Play to listen). Done keeps it; Cancel puts it back as it was.",

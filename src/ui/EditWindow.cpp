@@ -1,4 +1,5 @@
 #include "WaveDraw.h"
+#include "XfadeWave.h"
 #include "EditWindow.h"
 #include "PaintProfile.h"
 #include <set>
@@ -48,6 +49,7 @@ public:
         setWantsKeyboardFocus (true);
         startTimerHz (30);
         app.project.addChangeListener (this);
+        xfadeWaves.onReady = [this] { repaint(); };                                    // 3.45.0: a crossfade's mix has been worked out
     }
     ~EditTimeline() override { juce::Desktop::getInstance().removeGlobalMouseListener (&guideDeselect); app.project.removeChangeListener (this); }
 
@@ -692,6 +694,64 @@ public:
             shade (r.fadeOutBegin(), r.fadeOutFinish(), selectedJoin == (int) k + 1 ? juce::Colour (0x77ff9d2e) : juce::Colour (0x44ff9d2e));
         }
 
+        // 3.45.0: through every crossfade, the sound it makes on each track - both pieces' audio through their fades, added (XfadeWaveCache) - instead of
+        // one file up to the join and the other after it; hatched, with the fades' tint over it. Until the mix is worked out (a moment, on its own thread)
+        // the old picture stays. Not where the crossfade is under 4 pixels wide (nothing to see), on the LTC track (cut hard), or on a part out for processing.
+        profPieces.next ("crossfades");
+        for (size_t k = 1; k < e->regions.size(); ++k)
+        {
+            const auto& a = e->regions[k - 1]; const auto& b = e->regions[k];
+            const juce::int64 z0 = juce::jmax (a.startSample, juce::jmin (a.fadeOutBegin(), b.fadeInBegin()));
+            const juce::int64 z1 = juce::jmin (b.endSample(), juce::jmax (a.fadeOutFinish(), b.fadeInFinish()));
+            if (z1 <= z0) continue;
+            const int xa = xOf ((double) z0 / rate), xb = xOf ((double) z1 / rate);
+            if (xb - xa < 4 || xb < clip.getX() || xa > clip.getRight()) continue;
+            const int xj = juce::jlimit (xa, xb, xOf ((double) b.startSample / rate));
+            const bool selA = isSelected (a.id), selB = isSelected (b.id);
+            auto waitingOn = [] (const EditRegion& r, const RegionFile* f)
+            {
+                return f != nullptr && r.waiting.active() && (r.waiting.tracks.empty() || std::find (r.waiting.tracks.begin(), r.waiting.tracks.end(), f->trackId) != r.waiting.tracks.end());
+            };
+            for (size_t ti = 0; ti < tracks.size(); ++ti)
+            {
+                if (tracks[ti].id.isNull() || tracks[ti].isLtc) continue;
+                const auto row = juce::Rectangle<int> (xa, top + (int) ti * rowH + 3, xb - xa, rowH - 6);
+                if (row.getBottom() < clip.getY() || row.getY() > clip.getBottom() || row.getHeight() < 4) continue;
+                const RegionFile* fa = nullptr; const RegionFile* fb = nullptr;
+                for (auto& f : a.files) if (f.trackId == tracks[ti].id) fa = &f;
+                for (auto& f : b.files) if (f.trackId == tracks[ti].id) fb = &f;
+                if ((fa == nullptr && fb == nullptr) || waitingOn (a, fa) || waitingOn (b, fb)) continue;
+                XfadeWaveCache::Side sa, sb;
+                sa.fades = XfadeWaveCache::Fades::of (a); sb.fades = XfadeWaveCache::Fades::of (b);
+                if (fa != nullptr) { sa.file = fa->file; sa.offset = a.srcIn - a.startSample - fa->fileStart; }
+                if (fb != nullptr) { sb.file = fb->file; sb.offset = b.srcIn - b.startSample - fb->fileStart; }
+                const auto mix = xfadeWaves.get (sa, sb, z0, z1);
+                if (mix == nullptr) continue;
+                const auto tc = rowColour[ti];
+                const auto inner = row.reduced (0, 1);                                   // (the frame's top and bottom lines stay)
+                g.setColour (chan::clipFill (tc, selA)); g.fillRect (inner.withRight (xj));
+                g.setColour (chan::clipFill (tc, selB)); g.fillRect (inner.withLeft (xj));
+                {
+                    juce::Graphics::ScopedSaveState ss (g); g.reduceClipRegion (inner);
+                    setWaveColour (g, chan::waveColour (tc));
+                    const auto wcA = fa != nullptr ? app.waveColourOf (fa->file) : nullptr, wcB = fb != nullptr ? app.waveColourOf (fb->file) : nullptr;
+                    drawXfadeMix (g, inner, *mix, rate, wcA.get(), wcB.get(), sa, sb);
+                    g.setColour (theme::text.withAlpha (0.14f));                         // the hatching: a crossfade, not one take
+                    for (int hx = inner.getX() - inner.getHeight(); hx < inner.getRight(); hx += 7)
+                        g.drawLine ((float) hx, (float) inner.getBottom(), (float) (hx + inner.getHeight()), (float) inner.getY(), 1.0f);
+                    auto tint = [&] (juce::int64 s0, juce::int64 s1, juce::Colour col)
+                    {
+                        if (s1 <= s0) return;
+                        g.setColour (col); g.fillRect (juce::Rectangle<int>::leftTopRightBottom (xOf ((double) s0 / rate), inner.getY(), juce::jmax (xOf ((double) s0 / rate) + 2, xOf ((double) s1 / rate)), inner.getBottom()));
+                    };
+                    tint (a.fadeOutBegin(), a.fadeOutFinish(), selectedJoin == (int) k ? juce::Colour (0x77ff9d2e) : juce::Colour (0x44ff9d2e));
+                    tint (b.fadeInBegin(), b.fadeInFinish(), selectedJoin == (int) k ? juce::Colour (0x77ffd24a) : juce::Colour (0x44ffd24a));
+                }
+                if (selA) { g.setColour (juce::Colour (0xffc26500)); g.fillRect (xa, row.getY() + 1, xj - xa, 1); g.fillRect (xa, row.getBottom() - 2, xj - xa, 1); }     // (a selected piece's frame is 2 px)
+                if (selB) { g.setColour (juce::Colour (0xffc26500)); g.fillRect (xj, row.getY() + 1, xb - xj, 1); g.fillRect (xj, row.getBottom() - 2, xb - xj, 1); }
+            }
+        }
+
         profPieces.next ("edit points and the rest");
         // The edit points: every fade of the edit, numbered in order along the timeline. Edit 1 is where the first piece starts, the last one is where
         // the final piece fades out, and each join between two pieces is one edit. (Overdubs do not count.) The flag stands in the middle of the crossfade
@@ -776,22 +836,38 @@ public:
                 g.setColour (selected ? juce::Colour (0xffc26500) : juce::Colour (0xff6a4cc2)); g.drawRect (rr, selected ? 2 : 1);
             }
         }
-        // volume changes: a teal line where each one starts, with the glide shaded
+        // volume changes (3.45.0): a teal box round only the tracks the change moves - from where it starts to where it ends (a change between the 1/2
+        // marks: to the end of its glide back), its glides shaded inside the box - and a triangle at the top of the rows where it starts and ends
+        // (double-click either, or the box's edge, to change it or remove it). The level a piece starts with keeps its small mark on the lane.
         {
-            auto marks = [&] (const EditRegion& r)
+            const auto teal = juce::Colour (0xff1aa39a);
+            auto smallMarks = [&] (const EditRegion& r)
             {
                 for (auto& gc : r.gains)
-                {
-                    if (gc.at == 0 && gc.ramp == 0.0) { g.setColour (juce::Colour (0xff1aa39a)); g.fillRect (xOf ((double) r.startSample / rate), kRulerH + kLaneH - 4, 7, 3); continue; }
-                    const int x = xOf ((double) (r.startSample + gc.at) / rate);
-                    const int gw = (int) (gc.ramp * pixelsPerSecond);
-                    if (gw > 1) { g.setColour (juce::Colour (0x331aa39a)); g.fillRect (x, top, gw, rowsEnd - top); }
-                    g.setColour (juce::Colour (0xff1aa39a)); g.fillRect (x, top, 1, rowsEnd - top);
-                    juce::Path tri; tri.addTriangle ((float) x - 4, (float) top, (float) x + 5, (float) top, (float) x, (float) top + 7); g.fillPath (tri);
-                }
+                    if (gc.group.isEmpty() && gc.at == 0 && gc.ramp == 0.0) { g.setColour (teal); g.fillRect (xOf ((double) r.startSample / rate), kRulerH + kLaneH - 4, 7, 3); }
             };
-            for (auto& r : e->regions)  marks (r);
-            for (auto& r : e->overdubs) marks (r);
+            for (auto& r : e->regions)  smallMarks (r);
+            for (auto& r : e->overdubs) smallMarks (r);
+            for (auto& u : gainUnits (*e, tracks, rate))
+            {
+                if (u.x1 + 8 < clip.getX() || u.x0 - 8 > clip.getRight()) continue;
+                for (auto& run : u.boxes)
+                {
+                    g.setColour (teal.withAlpha (0.07f)); g.fillRect (run);
+                    for (auto& pt : u.points) if (pt.glide > 1) { g.setColour (teal.withAlpha (0.20f)); g.fillRect (juce::Rectangle<int> (pt.x, run.getY(), pt.glide, run.getHeight()).getIntersection (run)); }
+                    for (auto& pt : u.points) if (pt.x > u.x0 + 1 && pt.x < u.x1 - 1 && pt.triangle) { g.setColour (teal.withAlpha (0.8f)); g.fillRect (pt.x, run.getY(), 1, run.getHeight()); }
+                    g.setColour (teal); g.drawRect (run, 2);
+                }
+                if (u.boxes.empty()) { g.setColour (teal.withAlpha (0.6f)); g.fillRect (u.x0, top, 1, rowsEnd - top); }          // (a change that moves nothing: a thin line, so it can still be found)
+                g.setColour (teal);
+                for (auto& pt : u.points)
+                    if (pt.triangle)
+                    {
+                        juce::Path tri; tri.addTriangle ((float) pt.x - 7.0f, (float) top, (float) pt.x + 8.0f, (float) top, (float) pt.x + 0.5f, (float) top + 11.0f);
+                        g.fillPath (tri);
+                        g.setColour (juce::Colours::black.withAlpha (0.45f)); g.strokePath (tri, juce::PathStrokeType (1.0f)); g.setColour (teal);
+                    }
+            }
         }
 
         // where the next take will be placed: a flag in its own strip under the markers (drag it; it snaps to the starts and ends of the pieces)
@@ -2087,26 +2163,163 @@ private:
         return nullptr;
     }
 
-    /** 3.18.5: the volume change whose teal line (or shaded glide) is under 'p', if any: the piece it is in, where, and its group. Changes Fermata
-        keeps up to date itself ("normalise volume over next take") and the level a piece starts with (its small mark on the lane) are left out. */
-    struct GainHit { juce::Uuid regionId; juce::int64 at = 0; juce::String group; };
-    std::optional<GainHit> gainMarkAt (EditDef& ed, juce::Point<int> p, double rate)
+    /** 3.45.0: a crossfade's mix (XfadeWaveCache::Mix) drawn in 'area' as the other waveforms are (one band per channel, the window's waveform size and
+        shape, WaveColour from whichever piece is louder at that moment): a min / max bar for every pixel column, or, zoomed in past a pixel per sample,
+        the sample curve itself. */
+    void drawXfadeMix (juce::Graphics& g, juce::Rectangle<int> area, const XfadeWaveCache::Mix& m, double rate, const WaveColorData* wcA, const WaveColorData* wcB,
+                       const XfadeWaveCache::Side& a, const XfadeWaveCache::Side& b)
     {
-        if (p.x <= kNameW || p.y < bandH()) return std::nullopt;
-        std::optional<GainHit> best; int bestDist = 1 << 30;
+        const auto clipR = g.getClipBounds().getIntersection (area);
+        if (clipR.getWidth() < 1 || area.getHeight() < 3) return;
+        const int nCh = juce::jmax (1, m.channels);
+        const int band = juce::jmax (1, area.getHeight() / nCh);
+        const float vz = app.waveZoom, shape = app.waveShape();
+        auto tOf = [&] (int x) { return (double) (x - kNameW) / pixelsPerSecond * rate; };          // timeline samples at pixel x
+        std::vector<juce::Colour> cols;
+        if (wcA != nullptr || wcB != nullptr)
+            for (int x = clipR.getX(); x < clipR.getRight(); ++x)
+            {
+                const double t0 = tOf (x), t1 = tOf (x + 1);
+                const auto tm = (juce::int64) ((t0 + t1) * 0.5);
+                const bool useA = a.fades.gainAt (tm) >= b.fades.gainAt (tm);
+                const auto* wc = useA ? wcA : wcB; const auto off = (double) (useA ? a.offset : b.offset);
+                cols.push_back (wc != nullptr ? wc->colourFor ((t0 + off) / rate, (t1 + off) / rate) : currentWaveColour());
+            }
+        const bool curve = m.spp == 1 && pixelsPerSecond > rate;                        // more than a pixel per sample
+        for (int c = 0; c < nCh; ++c)
+        {
+            const float centre = (float) area.getY() + (float) band * ((float) c + 0.5f), half = (float) band * 0.5f * vz;
+            const float lo = (float) area.getY() + (float) band * (float) c, hi = lo + (float) band;
+            auto yOf = [&] (float v) { return juce::jlimit (lo, hi, centre - waveshape::apply (v, shape) * half); };
+            if (! curve)
+            {
+                std::vector<float> tops, bots;
+                for (int x = clipR.getX(); x < clipR.getRight(); ++x)
+                {
+                    float mn = 0.0f, mx = 0.0f;
+                    if (! m.minMax (c, tOf (x), tOf (x + 1), mn, mx)) mn = mx = 0.0f;
+                    tops.push_back (yOf (mx)); bots.push_back (yOf (mn));
+                }
+                fillEnvelope (g, (float) clipR.getX(), tops, bots, cols.size() == tops.size() ? &cols : nullptr, (float) band);
+            }
+            else
+            {
+                const juce::int64 s0 = juce::jmax (m.z0, (juce::int64) std::floor (tOf (clipR.getX())) - 1), s1 = juce::jmin (m.z1 - 1, (juce::int64) std::ceil (tOf (clipR.getRight())) + 1);
+                juce::Path p; bool started = false;
+                for (juce::int64 sIdx = s0; sIdx <= s1; ++sIdx)
+                {
+                    const float x = (float) kNameW + (float) ((double) sIdx / rate * pixelsPerSecond), y = yOf ((float) m.mn[(size_t) c][(size_t) (sIdx - m.z0)] / 32767.0f);
+                    if (! started) { p.startNewSubPath (x, y); started = true; } else p.lineTo (x, y);
+                }
+                g.strokePath (p, juce::PathStrokeType (1.2f));
+            }
+        }
+    }
+    /** 3.18.5: a volume change, as the double-click and the right-click menu open it: the piece it is in, where, and its group. */
+    struct GainHit { juce::Uuid regionId; juce::int64 at = 0; juce::String group; };
+    /** 3.45.0: one volume change as it is drawn - a lone change, or every point of a "between the 1/2 marks" change (its group, across pieces): where it
+        starts (x0) and ends (x1: a lone change - the next change in its piece that moves one of the same tracks, or the piece's end; a group - the end of
+        its glide back), the boxes round the rows of the tracks it moves (a run of neighbouring rows is one box: tracks 2, 3 and 7 are two boxes), and
+        its points (a triangle where it starts and where its glide back starts; a piece the area only carries on into has no triangle). Changes Fermata
+        keeps up to date itself ("normalise volume over next take") and the level a piece starts with are left out. */
+    struct GainUnit
+    {
+        struct Point { int x = 0, glide = 0; bool triangle = true; };
+        GainHit hit; int x0 = 0, x1 = 0;
+        std::vector<Point> points; std::vector<juce::Rectangle<int>> boxes;
+    };
+    std::vector<GainUnit> gainUnits (const EditDef& ed, const std::vector<TrackDef>& tracks, double rate) const
+    {
+        std::vector<GainUnit> out;
+        const int top = bandH();
+        auto rowOf = [&] (const juce::Uuid& id) { for (size_t i = 0; i < tracks.size(); ++i) if (tracks[i].id == id) return (int) i; return -1; };
+        // the rows whose level the change at index i of piece r really moves (0.05 dB or more), from the level just before it
+        auto movedRows = [&] (const EditRegion& r, size_t i, std::set<int>& rows)
+        {
+            const auto& gc = r.gains[i];
+            for (size_t f = 0; f < r.files.size() && f < gc.db.size(); ++f)
+            {
+                const float before = juce::Decibels::gainToDecibels (r.levelAfter (f, i, gc.at), -100.0f), after = juce::jmax (-100.0f, gc.db[f]);
+                if (std::abs (after - before) >= 0.05f) if (const int row = rowOf (r.files[f].trackId); row >= 0) rows.insert (row);
+            }
+        };
+        auto boxesFor = [&] (const std::set<int>& rows, int x0, int x1)
+        {
+            std::vector<juce::Rectangle<int>> b;
+            for (auto it = rows.begin(); it != rows.end();)
+            {
+                const int r0 = *it; int r1 = r0;
+                for (++it; it != rows.end() && *it == r1 + 1; ++it) r1 = *it;
+                b.push_back ({ x0, top + r0 * rowH + 2, juce::jmax (3, x1 - x0), (r1 - r0 + 1) * rowH - 4 });
+            }
+            return b;
+        };
+        std::map<juce::String, size_t> groups;                                          // group -> its unit in 'out'
+        std::map<juce::String, std::set<int>> groupRows;
+        std::map<juce::String, bool> groupHasEnd; std::map<juce::String, int> groupPieceEnd;
         auto look = [&] (const EditRegion& r)
         {
-            for (auto& gc : r.gains)
+            for (size_t i = 0; i < r.gains.size(); ++i)
             {
-                if (gc.autoNorm || (gc.at == 0 && gc.ramp == 0.0)) continue;
+                const auto& gc = r.gains[i];
+                if (gc.autoNorm || (gc.group.isEmpty() && gc.at == 0 && gc.ramp == 0.0)) continue;
                 const int x = xOf ((double) (r.startSample + gc.at) / rate), gw = juce::jmax (0, (int) (gc.ramp * pixelsPerSecond));
-                if (p.x < x - 4 || p.x > x + gw + 4) continue;
-                const int d = p.x < x ? x - p.x : (p.x > x + gw ? p.x - x - gw : 0);
-                if (d < bestDist) { bestDist = d; best = GainHit { r.id, gc.at, gc.group }; }
+                if (gc.group.isNotEmpty())
+                {
+                    auto [it, fresh] = groups.emplace (gc.group, out.size());
+                    if (fresh) { GainUnit u; u.hit = { r.id, gc.at, gc.group }; u.x0 = x; u.x1 = x + gw; out.push_back (u); }
+                    auto& u = out[it->second];
+                    u.points.push_back ({ x, gw, gc.role != 2 });
+                    u.x0 = juce::jmin (u.x0, x); u.x1 = juce::jmax (u.x1, x + juce::jmax (gw, 1));
+                    if (gc.role == 3) groupHasEnd[gc.group] = true;
+                    else movedRows (r, i, groupRows[gc.group]);
+                    groupPieceEnd[gc.group] = juce::jmax (groupPieceEnd[gc.group], xOf ((double) r.endSample() / rate));     // (no glide back: it lasts to the end of the last piece it is in)
+                    continue;
+                }
+                GainUnit u; u.hit = { r.id, gc.at, {} }; u.x0 = x; u.points.push_back ({ x, gw, true });
+                std::set<int> rows; movedRows (r, i, rows);
+                // it lasts until a later change in the piece moves one of the same tracks (or the piece ends)
+                juce::int64 until = r.endSample();
+                for (size_t j = i + 1; j < r.gains.size(); ++j)
+                {
+                    if (r.gains[j].autoNorm) continue;
+                    std::set<int> later; movedRows (r, j, later);
+                    bool shared = false; for (int row : later) shared = shared || rows.count (row) > 0;
+                    if (shared || rows.empty()) { until = r.startSample + r.gains[j].at; break; }
+                }
+                u.x1 = juce::jmax (x + gw, xOf ((double) until / rate));
+                u.boxes = boxesFor (rows, u.x0, u.x1);
+                out.push_back (u);
             }
         };
         for (auto& r : ed.regions) look (r);
         for (auto& r : ed.overdubs) look (r);
+        for (auto& [grp, idx] : groups)
+        {
+            if (! groupHasEnd[grp]) out[idx].x1 = juce::jmax (out[idx].x1, groupPieceEnd[grp]);
+            out[idx].boxes = boxesFor (groupRows[grp], out[idx].x0, out[idx].x1);
+        }
+        return out;
+    }
+    /** 3.18.5 (3.45.0: the triangle, or the edge of the box round the tracks it moves): the volume change under 'p', if any. */
+    std::optional<GainHit> gainMarkAt (EditDef& ed, juce::Point<int> p, double rate)
+    {
+        if (p.x <= kNameW || p.y < bandH()) return std::nullopt;
+        const int top = bandH();
+        std::optional<GainHit> best; int bestDist = 1 << 30;
+        for (auto& u : gainUnits (ed, rowTracks(), rate))
+        {
+            for (auto& pt : u.points)                                                   // the triangle at the top of the rows
+                if (pt.triangle && p.y >= top && p.y <= top + 13 && std::abs (p.x - pt.x) <= 8 && std::abs (p.x - pt.x) < bestDist) { bestDist = std::abs (p.x - pt.x); best = u.hit; }
+            for (auto& b : u.boxes)                                                     // the box: its left and right edges, and the glides inside it
+            {
+                if (p.y < b.getY() || p.y > b.getBottom()) continue;
+                auto near = [&] (int a, int w) { const int d = p.x < a ? a - p.x : (p.x > a + w ? p.x - a - w : 0); if (d <= 4 && d < bestDist) { bestDist = d; best = u.hit; } };
+                near (b.getX(), 0); near (b.getRight(), 0);
+                for (auto& pt : u.points) near (pt.x, pt.glide);
+            }
+            if (u.boxes.empty() && std::abs (p.x - u.x0) <= 4 && std::abs (p.x - u.x0) < bestDist) { bestDist = std::abs (p.x - u.x0); best = u.hit; }
+        }
         return best;
     }
     void openGainChange (const GainHit& h)
@@ -2370,6 +2583,7 @@ private:
     juce::AudioFormatManager formatManager;
     WaveThumb::Pool thumbPool;
     DirectWaveCache directWave { formatManager };
+    XfadeWaveCache xfadeWaves;                                                          // 3.45.0: what each crossfade sounds like, track by track
     std::map<juce::String, std::unique_ptr<WaveThumb>> thumbs;
     bool dragging = false; int dragIndex = -1; std::vector<EditRegion> baseRegions;
     bool markDrag = false, markActive = false, markAlt = false; double markAnchor = 0.0; int markStartX = 0, markRow0 = 0;     // dragging over audio that is not selected sets marks 1 and 2

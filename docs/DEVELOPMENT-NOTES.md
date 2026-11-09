@@ -2250,3 +2250,26 @@ is kept. Hard takes 25 dB or more off every harmonic (measured from 1.4 s, past 
 pitch in every quarter second; the chord's partials change under 0.3 dB; what comes out has the hums' own rms (9.7e-5), not the hiss's; nothing
 outside the box changes; Soft takes 4.5 - 7.5 dB; an unticked hum stays; `applyFix` gives the same samples. On the real files (not in the repo): the
 finder's lists are in the conversation; after De-hum nothing stands out where the hums were, and the music before the box is bit-identical.
+
+## 3.45.0: volume changes as boxes round their tracks; crossfades drawn as they sound (9 November 2026)
+
+**Volume change boxes** (`EditTimeline::gainUnits`, used by the painting and by `gainMarkAt`). A *unit* is a lone change, or every point of one
+"between the 1/2 marks" change (its `group`, across pieces). Its rows are the tracks whose level the change really moves: for each file, the change's
+`db` against `levelAfter (file, i, at)` (the level just before it), 0.05 dB or more; a run of neighbouring rows is one box. A group runs from its first
+point to the end of its glide back (role 3: `at + ramp`), or, with no glide back, to the end of the last piece it is in - worked out after every point
+has been seen (taking a piece's end before the glide back had been seen made the box, and the range box's title, run to the end of the piece:
+fixed in `RangeVolumePanel` too). A lone change runs to the next change in its piece that moves one of the same tracks, or the piece's end. Triangles
+(15 x 11 px, was 9 x 7) where a group starts and glides back (role 2, a piece the area only carries on into, has none) and where a lone change starts;
+the glides shaded inside the box; a change that moves nothing keeps a thin line. The level a piece starts with keeps its small mark on the lane.
+`gainMarkAt`: the triangle (8 px either side, 13 px down), or within 4 px of a box's left or right edge or a glide, on the box's rows.
+
+**Crossfade waveforms** (`src/ui/XfadeWave.h`, `XfadeWaveCache`; the pass after the pieces in `paintAll`; `drawXfadeMix`). For each join, the zone is
+[min (a.fadeOutBegin, b.fadeInBegin), max (a.fadeOutFinish, b.fadeInFinish)], cut to the two pieces. On each track (not LTC, not a part out for processing)
+the mix is a's file x a's fade gain + b's file x b's (`Fades::gainAt` = `EditRegion::gainAt`, the engine's curves; a side with no file on that track is
+silence), worked out on the cache's own thread (newest request first) from the files themselves and kept as a 16-bit min / max outline - one point per
+sample up to 32768 samples, coarser beyond (30 s at 96 kHz at most) - in a 64 MB LRU; the key is both files, their offsets, both pieces' fade times and
+curves and the zone, so moving a fade asks for a new one; a file rewritten in place is noticed within 5 s (its date). The window repaints once a batch
+is done. Drawn only where the zone is 4 px wide or more: the row's fill again (each side in its piece's selection colour), the outline with
+`fillEnvelope` (WaveColour from whichever piece is louder at that moment), or the sample curve when zoomed in past a pixel a sample; then hatching
+(7 px, theme text at 14 %) and the fades' tints; the selected pieces' second frame line drawn again. Volume changes are not applied, as the rest of
+the waveform is the files as they are.

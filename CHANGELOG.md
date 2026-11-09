@@ -6,6 +6,20 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.45.0
+Built 9 November 2026 (the conversation for both programs), with Claude Opus.
+- **A volume change shows which tracks it changes.** Instead of a teal line from the top of the edit to the bottom at each end, a change is now a teal
+  box round only the tracks it moves - from where it starts to where its glide back ends (a change from here to the next edit: to the next change of
+  the same tracks, or the end of the piece) - with its glides shaded inside the box. Tracks that are not next to each other get a box each (tracks 2,
+  3 and 7: two boxes). The triangles at the top of the tracks, where it starts and where it glides back, are bigger. Double-click a triangle (or the
+  edge of the box) to change it again or press Remove this change, as before. The box that opens now says where the change really ends (it said the
+  end of the piece).
+- **Crossfades are drawn as they sound.** Through every crossfade, each track shows the sound it makes - the first piece fading out and the next
+  fading in, added together with the fades' own curves - instead of one take's waveform up to the join and then a hard switch to the other. The
+  crossfade is hatched, with its yellow / orange tint, so it is clear where it is. It is worked out on its own thread the first time a crossfade
+  comes into view (zoomed in far enough for it to be 4 pixels wide or more); until then, for a moment, the old picture shows. The fades are drawn,
+  not the pieces' volume changes (as the rest of the waveform shows the files as they are).
+
 ## 3.44.0
 Built 9 November 2026 (the conversation for both programs), with Claude Fable.
 - **The De-Hummer: a De-hum tab in Spectral Repair and in Noise mode (key H).** Draw a box round the hum - a stretch of room only is best, two seconds
