@@ -9,6 +9,51 @@
 
 namespace td
 {
+/** 3.46.0: which take window to search for a piece's other versions, and which take of it the piece comes from.
+    A piece cut in fermata says both itself (its windowId and takeId). A piece that came in another way - an edit imported from an AAF made in Pyramix,
+    say - says neither, and Find other versions used to stop at "the take window this piece came from is not in the project any more" even when the
+    takes were all there in a take window. Now, for such a piece:
+    1. its audio file is looked for among the takes - first in the take window whose "To edit" is this edit (the link the person set), then in every
+       other one: the same file, or a file of the same name and size. Found: that take is the piece's take, so the search has the music either side
+       of the marked part (the better search), and 'shift' turns the piece's own positions into the take's (the piece counts from its file's start);
+    2. else the take window whose "To edit" is this edit is searched (the marked part on its own);
+    3. else the only take window there is; with several, 'windowId' stays null and the person is asked (showVersions). */
+struct VersionsSource
+{
+    juce::Uuid windowId = juce::Uuid::null(), takeId = juce::Uuid::null();
+    juce::int64 shift = 0;                     // take sample = piece sample + shift
+    bool linked = false;                       // found by one of the new ways (not the piece's own windowId / takeId)
+};
+inline VersionsSource versionsSourceFor (Project& p, const juce::Uuid& editId, const EditRegion& piece)
+{
+    VersionsSource out;
+    if (auto* w = p.findTakeWindow (piece.windowId)) { out.windowId = w->id; if (w->findGroup (piece.takeId) != nullptr) out.takeId = piece.takeId; return out; }
+    for (auto& w : p.takeWindows) if (w->findGroup (piece.takeId) != nullptr) { out.windowId = w->id; out.takeId = piece.takeId; return out; }
+    out.linked = true;
+    std::vector<TakeWindowDef*> order;                                       // the window that sends to this edit first
+    for (auto& w : p.takeWindows) if (w->targetEdit == editId) order.push_back (w.get());
+    const TakeWindowDef* target = order.empty() ? nullptr : order.front();
+    for (auto& w : p.takeWindows) if (w->targetEdit != editId) order.push_back (w.get());
+    auto isLtc = [&p] (const juce::Uuid& trackId) { for (auto& t : p.tracks) if (t.id == trackId) return t.isLtc; return false; };
+    for (int pass = 0; pass < 2; ++pass)                                     // the same file; then a file of the same name and size (a copy in another folder)
+        for (auto* w : order)
+            for (auto& g : w->groups)
+                for (auto& tf : g.files)
+                {
+                    if (tf.file == juce::File() || isLtc (tf.trackId)) continue;
+                    for (auto& pf : piece.files)
+                    {
+                        if (pf.file == juce::File() || isLtc (pf.trackId)) continue;
+                        const bool same = pass == 0 ? pf.file == tf.file
+                                                    : (pf.file.getFileName().equalsIgnoreCase (tf.file.getFileName()) && pf.file.existsAsFile() && tf.file.existsAsFile() && pf.file.getSize() == tf.file.getSize());
+                        if (same) { out.windowId = w->id; out.takeId = g.id; out.shift = -pf.fileStart; return out; }
+                    }
+                }
+    if (target != nullptr) out.windowId = target->id;
+    else if (p.takeWindows.size() == 1) out.windowId = p.takeWindows.front()->id;
+    return out;
+}
+
 /** Find other versions (3.5.0). The producer marks the part of the edit that wants replacing (keys 1 and 2), right-clicks the piece and asks for
     the other versions: every place in every take of the same take window where that music was played - a take that has it twice (a repeat, a false
     start and the real thing, several passes) is listed twice. The list is in recording order. Audition puts a version into the edit in place of the
@@ -26,7 +71,8 @@ namespace td
 class VersionsComponent : public juce::Component, private juce::ListBoxModel, private juce::Timer
 {
 public:
-    VersionsComponent (AppContext& a, const juce::Uuid& eid) : app (a), editId (eid), hold (a)
+    /** 'chosenWindow' (3.46.0): the take window the person picked when the piece names none and nothing links it to one (see versionsSourceFor). */
+    VersionsComponent (AppContext& a, const juce::Uuid& eid, const juce::Uuid& chosenWindow = juce::Uuid::null()) : app (a), editId (eid), hold (a)
     {
         registerAudioFormats (formats);
         auto* e = app.project.findEdit (editId);
@@ -38,10 +84,11 @@ public:
         // the piece the marked part lies in, and where that part is in its take
         for (auto& r : e->regions)
             if (from >= r.startSample && to <= r.endSample()) { piece = r; break; }
-        windowId = piece.windowId;
-        if (app.project.findTakeWindow (windowId) == nullptr)
-            for (auto& w : app.project.takeWindows) if (w->findGroup (piece.takeId) != nullptr) { windowId = w->id; break; }
+        const auto src = versionsSourceFor (app.project, editId, piece);         // (3.46.0: also a piece that names no take window - an imported edit)
+        windowId = src.windowId; srcTakeId = src.takeId;
+        if (windowId.isNull() && app.project.findTakeWindow (chosenWindow) != nullptr) windowId = chosenWindow;
         passageFrom = piece.srcIn + (from - piece.startSample); passageTo = piece.srcIn + (to - piece.startSample);
+        takeFrom = passageFrom + src.shift; takeTo = passageTo + src.shift;      // (the same places in the take: its own files start at its sample 0)
 
         auto cap = [this] (juce::Label& l, const juce::String& t, float size, bool bold = false)
         {
@@ -175,19 +222,19 @@ private:
     {
         if (! passage.empty()) return true;
         auto* w = app.project.findTakeWindow (windowId);
-        const TakeGroup* src = w != nullptr ? w->findGroup (piece.takeId) : nullptr;
+        const TakeGroup* src = w != nullptr ? w->findGroup (srcTakeId) : nullptr;
         if (src != nullptr)
         {
-            auto fp = app.takeMatch.fingerprintFor (piece.takeId);
+            auto fp = app.takeMatch.fingerprintFor (srcTakeId);
             if (fp == nullptr)
             {
-                const auto st = app.takeMatch.statusOf (piece.takeId).state;
+                const auto st = app.takeMatch.statusOf (srcTakeId).state;
                 if (st != TakeMatchService::State::NoAudio && st != TakeMatchService::State::Failed) return false;      // (being made: the timer asks again)
             }
             else
             {
                 const double fps = fp->fps;
-                const int p0 = juce::jlimit (0, fp->frames(), (int) std::lround ((double) passageFrom / rate * fps)), p1 = juce::jlimit (p0, fp->frames(), (int) std::lround ((double) passageTo / rate * fps));
+                const int p0 = juce::jlimit (0, fp->frames(), (int) std::lround ((double) takeFrom / rate * fps)), p1 = juce::jlimit (p0, fp->frames(), (int) std::lround ((double) takeTo / rate * fps));
                 const int need = (int) std::lround (takematch::kContextSeconds * fps);
                 int c0 = p0, c1 = p1;
                 if (c1 - c0 < need)
@@ -197,7 +244,8 @@ private:
                     if (c1 - c0 < need) { c0 = juce::jmax (0, c1 - need); c1 = juce::jmin (fp->frames(), c0 + need); }
                 }
                 part = fp->slice (p0, p1); passage = fp->slice (c0, c1); innerFrom = p0 - c0; innerTo = p1 - c0; withContext = true;
-                return ! part.empty();
+                if (! part.empty()) return true;
+                withContext = false;                                             // (3.46.0: nothing of it there - the take's file was matched wrongly: the part on its own, below)
             }
         }
         part = takematch::analyseRange (formats, sourcesOf (piece.files), passageFrom, passageTo);
@@ -210,13 +258,13 @@ private:
     {
         lo = hi = 0;
         auto* w = app.project.findTakeWindow (windowId);
-        const TakeGroup* src = w != nullptr ? w->findGroup (piece.takeId) : nullptr;
+        const TakeGroup* src = w != nullptr ? w->findGroup (srcTakeId) : nullptr;
         if (src == nullptr || src->barIn <= 0 || src->lengthSeconds() <= 0.0) return;
         auto fp = app.takeMatch.fingerprintFor (src->id);
         const auto map = takematch::barMapOf (fp != nullptr ? *fp : takematch::Fingerprint(), src->barIn, src->barOut, src->lengthSeconds());
         if (! map.valid()) return;
-        lo = map.barAt ((double) passageFrom / rate);
-        hi = juce::jmax (lo, map.barAt ((double) juce::jmax (passageFrom, passageTo - 1) / rate));
+        lo = map.barAt ((double) takeFrom / rate);
+        hi = juce::jmax (lo, map.barAt ((double) juce::jmax (takeFrom, takeTo - 1) / rate));
     }
     /** Where in a take with these bars bars lo..hi should be (seconds), with room either side for the bars not being evenly spread: two bars, plus a
         twentieth of the take's music, plus two seconds. */
@@ -231,7 +279,7 @@ private:
     void search()
     {
         auto* w = app.project.findTakeWindow (windowId);
-        if (w == nullptr) { status.setText ("The take window this piece came from is not in the project any more.", juce::dontSendNotification); return; }
+        if (w == nullptr) { status.setText ("There is no take window to search for this piece.", juce::dontSendNotification); return; }
         if (! makePassage())
         {
             status.setText ("Analysing the take the marked part comes from...", juce::dontSendNotification);
@@ -247,12 +295,12 @@ private:
         int barLo = 0, barHi = 0; passageBars (barLo, barHi);
         rows.clear();
         int waiting = 0, leftOut = 0, noBars = 0;
-        const double own = (double) passageFrom / rate;
+        const double own = (double) takeFrom / rate;
         for (auto& g : w->groups)
         {
             // 3.16.0: when the marked part's bars are known, only the takes that have at least one of them are searched - a take with no bars entered
             // is left out too - and each only around where those bars are in it
-            if (barLo > 0 && g.id != piece.takeId)
+            if (barLo > 0 && g.id != srcTakeId)
             {
                 if (g.barIn <= 0) { ++noBars; continue; }
                 if (! takematch::BarMap { g.barIn, juce::jmax (g.barIn, g.barOut), 0.0, 1.0 }.hasAny (barLo, barHi)) { ++leftOut; continue; }
@@ -286,7 +334,7 @@ private:
                 if (f0 > 0 || f1 < full->frames()) { window = full->slice (f0, f1); fp = &window; offset = (double) f0 / full->fps; }
             }
             auto shifted = [offset] (takematch::Version v) { v.start += offset; v.end += offset; return v; };
-            auto notOwn = [&] (const takematch::Version& v) { return g.id != piece.takeId || std::abs (v.start - own) >= 1.0; };
+            auto notOwn = [&] (const takematch::Version& v) { return g.id != srcTakeId || std::abs (v.start - own) >= 1.0; };
             std::vector<takematch::Version> sure, maybe;
             for (auto v : takematch::findVersions (passage, *fp, takematch::kVersionCost, innerFrom, innerTo))
             {
@@ -322,7 +370,7 @@ private:
         if (leftOut > 0) s += "; " + juce::String (leftOut) + (leftOut == 1 ? " take does" : " takes do") + " not have those bars";
         if (noBars > 0) s += "; " + juce::String (noBars) + (noBars == 1 ? " take has" : " takes have") + " no bars entered (left out)";
         if (barLo == 0) s += " (enter the bars of this piece's take - B in the take window - to search only the takes with those bars)";
-        if (! withContext) s += " (the marked part's take is no longer in the window: searched without the music either side - check by ear)";
+        if (! withContext) s += " (the marked part's own take was not found in \"" + w->name + "\": searched without the music either side - check by ear)";
         s += ".";
         status.setText (s, juce::dontSendNotification);
         stillWaiting = waiting > 0;
@@ -442,6 +490,8 @@ private:
     juce::AudioFormatManager formats;
     double rate = 48000.0;
     juce::int64 from = 0, to = 0, passageFrom = 0, passageTo = 0;
+    juce::Uuid srcTakeId = juce::Uuid::null();                               // the take of the window the marked part comes from (3.46.0: versionsSourceFor; null = not there)
+    juce::int64 takeFrom = 0, takeTo = 0;                                    // the marked part in that take's own samples (= passageFrom / To for a piece cut in fermata)
     EditRegion piece;
     takematch::Fingerprint passage, part;                                    // the marked part with the music either side, and on its own
     int innerFrom = 0, innerTo = -1;                                         // where the marked part is in 'passage' (frames)
@@ -470,13 +520,37 @@ inline void showVersions (AppContext& app, const juce::Uuid& editId, juce::Compo
     if (piece == nullptr) { fixtools::say ("Find other versions", "The marked part must lie within one piece of the main track (it runs across an edit point, or over a gap). Mark the part inside one piece."); return; }
     if (to - from < (juce::int64) (0.5 * e->sampleRate)) { fixtools::say ("Find other versions", "The marked part is too short to search for (half a second at least)."); return; }
     if (to - from > (juce::int64) (120.0 * e->sampleRate)) { fixtools::say ("Find other versions", "The marked part is too long to search for (two minutes at most)."); return; }
-    {   // 3.18.0: take matching is switched on per take window - this piece's take window needs it
-        juce::Uuid wid = piece->windowId;
-        if (app.project.findTakeWindow (wid) == nullptr)
-            for (auto& w : app.project.takeWindows) if (w->findGroup (piece->takeId) != nullptr) { wid = w->id; break; }
-        if (app.project.findTakeWindow (wid) != nullptr && app.takeMatchingUnavailable (wid, "Find other versions")) return;
+    // 3.18.0: take matching is switched on per take window - the take window that is searched needs it. 3.46.0: that window is also found for a
+    // piece that names none (an edit imported from an AAF): by its files, or by the take window that sends to this edit (versionsSourceFor);
+    // when nothing says which, the person picks it.
+    juce::Component::SafePointer<juce::Component> parentSafe (parent);
+    auto open = [appPtr = &app, editId, parentSafe] (const juce::Uuid& chosen)
+    {
+        auto& a = *appPtr;
+        auto* ed = a.project.findEdit (editId);
+        if (ed == nullptr) return;
+        if (a.isPlaying()) a.stopPlayback();
+        fixtools::launchDialog (std::make_unique<VersionsComponent> (a, editId, chosen), "Find other versions", parentSafe.getComponent());
+    };
+    const auto src = versionsSourceFor (app.project, editId, *piece);
+    if (! src.windowId.isNull())
+    {
+        if (app.takeMatchingUnavailable (src.windowId, "Find other versions")) return;
+        open (juce::Uuid::null());
+        return;
     }
-    if (app.isPlaying()) app.stopPlayback();
-    fixtools::launchDialog (std::make_unique<VersionsComponent> (app, editId), "Find other versions", parent);
+    if (app.project.takeWindows.empty()) { fixtools::say ("Find other versions", "There is no take window in this project to search. Import or record the other takes of this piece into a take window first."); return; }
+    juce::PopupMenu m;
+    m.addSectionHeader ("This piece does not say which take window it came from. Search the takes of:");
+    for (int i = 0; i < (int) app.project.takeWindows.size(); ++i)
+        m.addItem (i + 1, app.project.takeWindows[(size_t) i]->name + "   (" + juce::String ((int) app.project.takeWindows[(size_t) i]->groups.size()) + " takes)");
+    std::vector<juce::Uuid> ids; for (auto& w : app.project.takeWindows) ids.push_back (w->id);
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (parent), [appPtr = &app, ids, open] (int r)
+    {
+        if (r <= 0 || r > (int) ids.size()) return;
+        if (appPtr->project.findTakeWindow (ids[(size_t) (r - 1)]) == nullptr) return;
+        if (appPtr->takeMatchingUnavailable (ids[(size_t) (r - 1)], "Find other versions")) return;
+        open (ids[(size_t) (r - 1)]);
+    });
 }
 } // namespace td

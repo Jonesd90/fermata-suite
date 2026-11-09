@@ -17,7 +17,8 @@ namespace td
 
     The mix needs the samples of both files over the crossfade, so it is worked out on a thread of its own (a crossfade is short: a few thousand samples
     a track), kept as a min / max outline (one point per sample for a crossfade up to about a third of a second at 96 kHz, coarser for longer ones), and
-    the window repaints when it is ready; until then the old picture shows. A file rewritten in place (a relinked RX file) is noticed within five seconds.
+    the window repaints when it is ready; until then the old picture shows. A file rewritten in place (a relinked RX file) is noticed within five seconds,
+    and so is a missing file that has come back (3.46.0: a mix that cannot be made is remembered as such until then).
     The fades only - not the pieces' volume changes - are applied, as the rest of the waveform is drawn as the files are. */
 class XfadeWaveCache
 {
@@ -85,7 +86,7 @@ public:
                     e.checkedAt = now;
                     if (modOf (a.file) != e.modA || modOf (b.file) != e.modB) { shared->done.erase (it); it = shared->done.end(); }
                 }
-                if (it != shared->done.end()) return it->second.mix;
+                if (it != shared->done.end()) return it->second.mix;        // (null for one that could not be made: drawn as before, not asked for again)
             }
             if (shared->pending.count (key) > 0) return nullptr;
             shared->pending.insert (key);
@@ -196,7 +197,12 @@ private:
                 {
                     std::lock_guard<std::mutex> l (shared->lock);
                     shared->pending.erase (j.key);
-                    if (mix != nullptr) shared->done[j.key] = std::move (e);
+                    // 3.46.0: a mix that could not be made (a file that is missing or will not open) is kept too, as "none": it used to be forgotten,
+                    // so the repaint below asked for it again, which failed again and repainted again - the edit window drew itself without end, and
+                    // this thread never rested, for as long as a crossfade with a missing file was in view. It is tried again when the file changes
+                    // (get() looks every five seconds), not before.
+                    shared->done[j.key] = std::move (e);
+                    if (mix == nullptr) continue;                           // (nothing new to draw: the old picture stays)
                     if (! shared->jobs.empty()) continue;                   // (more to do: one repaint when the batch is done)
                 }
                 std::weak_ptr<Shared> weak (shared);

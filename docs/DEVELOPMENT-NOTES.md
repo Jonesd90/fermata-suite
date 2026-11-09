@@ -2251,6 +2251,48 @@ pitch in every quarter second; the chord's partials change under 0.3 dB; what co
 outside the box changes; Soft takes 4.5 - 7.5 dB; an unticked hum stays; `applyFix` gives the same samples. On the real files (not in the repo): the
 finder's lists are in the conversation; after De-hum nothing stands out where the hums were, and the music before the box is bit-identical.
 
+## 3.46.0: a look for bugs through the whole code; Find other versions for imported edits (9 November 2026)
+
+**What was looked at.** The mastering section read line by line (`MasterRender.*`, `MasterExport.cpp`, `MasterDef.cpp`, `Bounce.cpp`, `AdmWriter.*`,
+`Dither.h`, `Resampler.h`, `Loudness.h`, `Ddp.cpp`'s image and file-set writers, `MasteringWindow.cpp` from the settings refresh to the end, the disc
+audition in `AppContext::playRenders`); `XfadeWave.h`; every `.cpp` of both programs (69 files, the font data left out) through Clang's static
+analyser (`clang++ --analyze`, checkers core, cplusplus, unix, deadcode.DeadStores) - about twenty reports, every one a path that cannot happen or
+a value stored and not read; and searches for the shapes behind 3.45.1's freezes (`stopThread` on the message thread: all the remaining ones wait
+for work that looks at its cancel flag every block; `callAsync` and `Thread::launch` holding `this`). Not read by eye this time: the edit, take and
+mixer windows (apart from the above), the fix tools, fermata:Live's own code. Nothing was run on screen.
+
+**The crossfade pictures' retry loop** (`XfadeWaveCache`, 3.45.0). `work()` returns null when a file will not open; the worker then erased the key
+from `pending`, stored nothing in `done`, and still posted `ready` - so the repaint asked for the same mix, which failed again. Now a null mix is
+stored like any other (its entry's mod times are the files' as they were: a missing file's is 0), no repaint is posted for it, and `get()` returns
+the null (drawn as before 3.45.0) until the five-second look sees a file's time change.
+
+**Pieces through one mixer** (`Bouncer::render`). One engine and one set of plug-in instances render every item; nothing emptied the plug-ins
+between items, and with the Mastering window's default Tail of 0 s a reverb was cut mid-ring and went on under the next piece (the delay
+compensation's `skip` throws away only the latency's worth). A re-prepare would clear them but is the message thread's business (a VST3's
+`prepareToPlay` takes the message lock: a deadlock in waiting if the window is closing). So: `mixersRendered` - when an item's mixer has been
+rendered before in this pass (also A, B, A: A's plug-ins stood still while B rendered), the engine is run on silence with the same target, the
+captures thrown away, until their peak is under 1e-5 for half a second, a minute at most. Test: "3.46.0 two pieces through one mixer" (a leaky
+integrator as the reverb).
+
+**The Atmos export without a stereo source.** `makeAtmosSpec` built its list with `makeFilesSpec`, whose `commonChecks` wanted
+`resolveRenderSource` to find a stereo source; and its `MasterRenderBatch` rendered the stereo master of every stale piece on the way. Now
+`makeFilesSpec (..., needSource = false)` goes on without a source (never without a mixer), and the batch is made `stemsOnly`: the master renders
+are not looked at (no fingerprint, no `check`, no entry in renders.json), not rendered and not asked for at the end. Test: a surround-only project.
+
+**`adm::FileWriter::finish`** checks the stream's status after each flush and the file's size on the disk against what it wrote; a file that
+fails is deleted (the destructor only deleted one that was never finished while the stream was still open).
+
+**`MasterExportResult::previousPieces`**: the items the batch says are `isPrevious`, by edit name (`MasterRenderBatch::nameFor`), shown by
+`MasteringComponent::showDoneBox` with the warning icon.
+
+**Find other versions for a piece that names no take window** (`VersionsWindow.h`: `versionsSourceFor`, `VersionsSource`). An AAF import makes
+its pieces with `windowId` null and no `takeId` (`FixTools.cpp`: "from no take window: null, not a made-up id"), and `TakeWindowDef::targetEdit`
+was only ever read by the take window. The resolver's order: the piece's own window / take (as before); the piece's file among the takes' files -
+the same `juce::File`, then the same name and size - in the window whose `targetEdit` is the edit first; that window; the only window. The matched
+take becomes `srcTakeId`, and `takeFrom` / `takeTo` are the marked part in the take's own samples: a take's files start at its sample 0, so the
+place is the piece's `srcIn` less its file's `fileStart` (`shift`). `passageFrom` / `passageTo` stay the piece's own (the fallback read and
+`refineJoin` read the piece's files with their `fileStart`). `showVersions` asks with a menu when nothing says which window.
+
 ## 3.45.1: freeze reports of 9 November 2026 - the ReHarmoniSer's job, render copies, the render fingerprint, plug-ins starting (9 November 2026)
 
 What the reports were (`Fermata 3.42.0 freeze 103401`, `3.43.0 freeze 133031 / 151447`, `3.45.0 freeze 153007`, read with the stacks the stall watch

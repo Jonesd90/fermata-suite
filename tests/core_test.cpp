@@ -10306,6 +10306,66 @@ int main()
         }
     }
 
+    SECTION ("3.46.0 two pieces through one mixer in one render: the first piece's reverb is not under the start of the second");
+    {
+        // a "reverb": every sample rings on, falling 60 dB in about two seconds (the same plug-in instance for every piece that goes through its mixer)
+        struct Ring : InsertProcessor
+        {
+            void prepare (double, int, int) override { s[0] = s[1] = 0.0; }
+            void process (juce::AudioBuffer<float>& b) override
+            {
+                for (int c = 0; c < b.getNumChannels() && c < 2; ++c)
+                {
+                    auto* x = b.getWritePointer (c);
+                    for (int i = 0; i < b.getNumSamples(); ++i) { s[c] = s[c] * 0.99993 + (double) x[i] * 0.00007; x[i] = (float) s[c]; }
+                }
+            }
+            juce::String getName() const override { return "Ring"; }
+            juce::String getDescription() const override { return "ring"; }
+            double s[2] = { 0.0, 0.0 };
+        };
+        Project rq;
+        rq.projectFile = tmp.getChildFile ("RingRender.fermata");
+        rq.insertFactory = [] (const juce::String& desc, const juce::String&) -> std::unique_ptr<InsertProcessor> { if (desc == "ring") return std::make_unique<Ring>(); return nullptr; };
+        rq.setInputCount (1); rq.setOutputCount (2);
+        rq.tracks.clear();
+        const auto tt = rq.addTrack ("Violin", TrackFormat::Mono, 0).id;
+        rq.retireAllMixers();
+        const auto bob = rq.addBus ("Out", true).id;
+        auto& rm = rq.addMixer ("M");
+        rq.setSendLevel (rm, tt, bob, 0.0f); rm.busFor (bob)->outFirst.store (0);
+        const auto loud = makeConstWav (tmp.getChildFile ("ring-loud.wav"), 0.5, 1);                 // one second at 0.5
+        auto& ed = rq.addEdit ("E", juce::Uuid::null());
+        EditRegion r; r.srcIn = 0; r.srcOut = 48000; r.sampleRate = 48000.0; r.sourceLength = 48000;
+        RegionFile rf; rf.trackId = tt; rf.trackName = "Violin"; rf.file = loud; r.files.push_back (rf);
+        ed.insertRegion (r);
+        rm.stripFor (tt)->slots[0].set (std::make_unique<Ring>(), 48000.0, 512, 2);
+        BounceSettings bs;
+        bs.sampleRate = 48000.0; bs.mixerId = rm.id; bs.sources = { bob }; bs.folder = tmp.getChildFile ("ring-render"); bs.floatFiles = true;
+        bs.segments = segmentsForEdit (rq, ed);
+        bs.items.push_back ({ "Loud", 0, 48000 });                       // the music, no tail asked for: it is cut while it still rings
+        bs.items.push_back ({ "After", 96000, 120000 });                 // half a second of nothing, well after the music
+        Bouncer b (rq, bs);
+        CHECK (b.getPrepareError().isEmpty());
+        auto res = b.render();
+        CHECK (res.error.isEmpty() && res.files.size() == 2);
+        if (res.files.size() == 2)
+        {
+            juce::AudioFormatManager fm2; registerAudioFormats (fm2);
+            auto peakOf = [&fm2] (const juce::File& f) -> float
+            {
+                std::unique_ptr<juce::AudioFormatReader> rd (fm2.createReaderFor (f));
+                if (rd == nullptr) return -1.0f;
+                juce::AudioBuffer<float> bb ((int) rd->numChannels, (int) rd->lengthInSamples);
+                rd->read (&bb, 0, (int) rd->lengthInSamples, 0, true, true);
+                return bb.getMagnitude (0, bb.getNumSamples());
+            };
+            const float first = peakOf (juce::File (res.files[0])), second = peakOf (juce::File (res.files[1]));
+            CHECK (first > 0.2f);                                        // the music, through the ring
+            CHECK (second >= 0.0f && second < 2.0e-5f);                  // nothing of it in the second piece (it began at about 0.48 there: the ring of the first, carried over)
+        }
+    }
+
     SECTION ("3.1.5 the audio device stops and starts again during a take: at the same rate the take goes on (and says so); at another rate the take is ended with what it has, its files at the old rate");
     {
         /** The device as the engine sees it when JUCE starts it again: only its rate and buffer size matter here. */
@@ -14033,6 +14093,39 @@ int main()
                     CHECK (pos == mb.getSize());
                 }
             }
+        }
+        // 3.46.0: a project with no stereo bus at all (surround only). The Virtual Master has nothing to render from and says so; the Atmos export
+        // needs none - it used to refuse with the Virtual Master's "There is nothing to render yet: add a stereo Ext bus" - and makes no stereo render
+        {
+            Project sp; sp.projectFile = tmp.getChildFile ("AtmosOnly.fermata");
+            sp.setInputCount (2); sp.setOutputCount (24); sp.tracks.clear();
+            const auto tid = sp.addTrack ("Spot", TrackFormat::Mono, 0).id;
+            sp.retireAllMixers();
+            const auto bed = sp.addBus ("Bed", false, BusFormat::S714).id;
+            auto& mx = sp.addMixer ("Processing");
+            sp.setSendLevel (mx, tid, bed, 0.0f);
+            auto* sd = mx.stripFor (tid)->sends.find (bed); sd->panFollow.set (false); sd->panX.set (0.0f); sd->panY.set (1.0f); sd->panZ.set (0.0f);      // C
+            for (auto& t : sp.tracks) { t.setArmed (false); t.setMonitor (Monitor::Session); }
+            const auto src = makeConstWav (tmp.getChildFile ("atmosonly.wav"), 0.5, 2);
+            auto& ed = sp.addEdit ("Gloria", juce::Uuid::null());
+            EditRegion r; r.takeId = juce::Uuid(); r.srcIn = 0; r.srcOut = 24000; r.sampleRate = 48000.0; r.takeName = "001"; r.sourceLength = 96000;
+            RegionFile rf; rf.trackId = tid; rf.trackName = "Spot"; rf.file = src; r.files.push_back (rf);
+            ed.insertRegion (r);
+            sp.mastering.sync (sp.edits);
+            sp.mastering.vm.folder = tmp.getChildFile ("master-only").getFullPathName();
+            sp.mastering.atmos.busIds = { bed };
+            sp.mastering.atmos.folder = tmp.getChildFile ("atmos-only").getFullPathName();
+            MasterJobSpec fs;
+            CHECK (makeFilesSpec (sp, sp.mastering, fs).contains ("nothing to render"));                // (the stereo master: as before)
+            AtmosJobSpec spec;
+            const auto err = makeAtmosSpec (sp, sp.mastering, spec);
+            CHECK (err.isEmpty() && spec.sourceId.isNull() && spec.items.size() == 1);
+            AtmosExportJob job (sp, spec, nullptr, false);
+            auto res = job.execute();
+            CHECK (res.error.isEmpty() && res.files.size() == 1 && res.channels == 12 && res.frames.size() == 1);
+            if (res.frames.size() == 1) CHECK (res.frames[0] == masterLengthSamples (ed, 0.0));
+            CHECK (res.peakDb > -7.0f && res.peakDb < -5.0f);                                           // (the spot at 0.5 in C)
+            CHECK (MasterRenders::folderFor (sp).findChildFiles (juce::File::findFiles, false, "*.wav").isEmpty());      // (no stereo render was made or kept)
         }
         // the LFE low-pass: a 4th-order Butterworth at 120 Hz lets 30 Hz through, is 3 dB down at 120 Hz and holds 1 kHz down by more than 70 dB
         {

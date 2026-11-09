@@ -81,10 +81,12 @@ struct MasterExportResult
     LoudnessCheck loudness;          // what was measured (a loudness target only)
     int stemFiles = 0;               // 3.26.0: how many of 'files' are stems
     juce::StringArray clippedStems;  // stems whose level went over 0 dBFS at the master's gain ("01 - Kyrie - Strings  +0.8 dB")
+    juce::StringArray previousPieces; // 3.46.0: the pieces written from their PREVIOUS render ("Use previous render" is on for them), by name: what was
+                                      // changed in them since is not in the files, and the export used to say nothing of it
 };
 
 /** Builds the list of files for the Virtual Master (or says why it cannot): included edits, in list order, named and tagged. */
-juce::String makeFilesSpec (const Project&, const MasteringDef&, MasterJobSpec& spec, bool listeningCopies = false);     // (3.42.0: listening copies are named after the edit's version: "The Lion - Edit 2 - More reverb")
+juce::String makeFilesSpec (const Project&, const MasteringDef&, MasterJobSpec& spec, bool listeningCopies = false, bool needSource = true);     // (3.42.0: listening copies are named after the edit's version: "The Lion - Edit 2 - More reverb"; 3.46.0, needSource false: the list is made without a stereo output to render from - the Atmos export, which renders its surround buses only)
 /** The listening copies on their own (the Listening copy tab): the same pieces as the Virtual Master, at the Virtual Master's levels, with the audio
     inside each page as chosen on that tab (WAV / FLAC / MP3, its own sample rate and bit depth). No audio files are made. */
 juce::String makeFormsSpec (const Project&, const MasteringDef&, MasterJobSpec& spec);

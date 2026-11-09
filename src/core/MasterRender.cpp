@@ -387,8 +387,8 @@ void MasterRenders::clearAll()
 
 // ----------------------------------------------------------------------------- the batch
 MasterRenderBatch::MasterRenderBatch (const Project& live, const std::vector<juce::Uuid>& editIds, const RenderParams& rp, bool force,
-                                      const std::vector<juce::Uuid>& stemIds, const juce::File& stemFolder, bool keepSurroundStems)
-    : folder (MasterRenders::folderFor (live)), stems (stemIds), stemDir (stemFolder)
+                                      const std::vector<juce::Uuid>& stemIds, const juce::File& stemFolder, bool keepSurroundStems, bool stemsOnly)
+    : folder (MasterRenders::folderFor (live)), stems (stemIds), stemDir (stemFolder), onlyStems (stemsOnly)
 {
     if (! keepSurroundStems)      // (3.39.0: the Virtual Master's stems are stereo files; 3.40.0: the Atmos export keeps its surround buses, at their full width)
         stems.erase (std::remove_if (stems.begin(), stems.end(), [&live] (const juce::Uuid& id) { return surround::isSurround (live.busFormat (id)); }), stems.end());
@@ -404,6 +404,7 @@ MasterRenderBatch::MasterRenderBatch (const Project& live, const std::vector<juc
         auto* e = p.findEdit (id);
         if (e == nullptr || e->isEmpty()) continue;
         Item it; it.editId = id; it.rate = e->sampleRate; it.name = e->name;
+        if (onlyStems) { items.push_back (std::move (it)); continue; }      // (3.46.0: the master renders are not this batch's business)
         it.fp = masterRenderFingerprint (live, *e, rp);
         if (force) store.markStale (id);
         const auto info = store.check (id, it.fp);
@@ -507,7 +508,7 @@ juce::String MasterRenderBatch::run (std::atomic<float>* progress, const std::at
     store.removeTemps();
     for (auto& it : items)
     {
-        if (it.stale || ! it.file.existsAsFile()) problem = "A render is missing.";
+        if (! onlyStems && (it.stale || ! it.file.existsAsFile())) problem = "A render is missing.";
         if (! stems.empty()) { if ((int) it.stemFiles.size() != (int) stems.size()) problem = "A stem render is missing."; else for (auto& f : it.stemFiles) if (! f.existsAsFile()) problem = "A stem render is missing."; }
     }
     return problem;

@@ -136,6 +136,7 @@ BounceResult Bouncer::render (std::atomic<float>* progress, const std::atomic<bo
     float overallPeak = 0.0f;
     juce::Array<juce::File> toClean;                  // anything half-made, removed if we stop early
     auto cleanUp = [&] { for (auto& f : toClean) f.deleteFile(); };       // files of earlier, finished pieces are kept
+    std::vector<juce::Uuid> mixersRendered;           // (3.46.0) the mixers a piece has gone through already in this render: see below
 
     for (auto& it : settings.items)
     {
@@ -150,6 +151,26 @@ BounceResult Bouncer::render (std::atomic<float>* progress, const std::atomic<bo
             for (auto& m : shadow->mixers) have = have || m->id == it.mixerId;
             if (have && ! it.mixerId.isNull()) renderedMixer = it.mixerId;
             engine->setOfflineTarget (renderedMixer, settings.sources, settings.sourcesPre);
+        }
+        // 3.46.0: a mixer that an earlier piece of this render went through still rings with that piece - its reverbs and delays are the same
+        // plug-ins, and nothing empties them - so the end of one piece sounded under the start of the next (every piece through one mixer: the
+        // Mastering window's "All pieces through ...", a bounce of several ranges; with each piece through its own mixer it cannot happen). The mixer
+        // is now run on silence, its output thrown away, until what it gives is below -100 dB for half a second (a minute at most: a plug-in that
+        // makes a noise of its own never falls silent). On this thread, with no word to the plug-ins: nothing they could mind.
+        if (std::find (mixersRendered.begin(), mixersRendered.end(), renderedMixer) == mixersRendered.end()) mixersRendered.push_back (renderedMixer);
+        else
+        {
+            for (auto& tb : trackBufs) tb.clear();
+            const juce::int64 atMost = (juce::int64) (60.0 * settings.sampleRate), quietFor = (juce::int64) (0.5 * settings.sampleRate);
+            juce::int64 quiet = 0;
+            for (juce::int64 run = 0; run < atMost && quiet < quietFor; run += kBlock)
+            {
+                if (cancel != nullptr && cancel->load()) { res.cancelled = true; return res; }
+                engine->renderOffline (trackBufs, kBlock, captures);
+                float pk = 0.0f;
+                for (auto& cap : captures) pk = juce::jmax (pk, cap.getMagnitude (0, juce::jmin (kBlock, cap.getNumSamples())));
+                quiet = pk < 1.0e-5f ? quiet + kBlock : 0;
+            }
         }
         bool replan = autoPlan != nullptr && autoPlan->end();               // (the previous piece's automation lets go)
         autoPlan = planForEdit (it.automationEdit.isNull() ? settings.automationEdit : it.automationEdit, renderedMixer);

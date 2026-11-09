@@ -155,10 +155,10 @@ juce::String resolveRenderSource (const Project& p, const MasteringDef& def, juc
 
 namespace
 {
-juce::String commonChecks (const Project& p, const MasteringDef& def, MasterJobSpec& spec, std::vector<EditDef*>& edits)
+juce::String commonChecks (const Project& p, const MasteringDef& def, MasterJobSpec& spec, std::vector<EditDef*>& edits, bool needSource = true)
 {
     juce::String err = resolveRenderSource (p, def, spec.mixerId, spec.sourceId);
-    if (err.isNotEmpty()) return err;
+    if (err.isNotEmpty() && (needSource || spec.mixerId.isNull())) return err;       // (3.46.0: without a stereo output only when none is needed; never without a mixer)
     spec.tailSeconds = def.tailSeconds;
     spec.ownMixers = def.mixerId.isNull();               // "each piece's own mixer" unless one mixer was chosen for everything
     if (edits.empty()) return "Tick at least one edit that has audio in it.";
@@ -168,7 +168,7 @@ juce::String commonChecks (const Project& p, const MasteringDef& def, MasterJobS
 }
 } // namespace
 
-juce::String makeFilesSpec (const Project& p, const MasteringDef& def, MasterJobSpec& spec, bool listeningCopies)
+juce::String makeFilesSpec (const Project& p, const MasteringDef& def, MasterJobSpec& spec, bool listeningCopies, bool needSource)
 {
     spec = MasterJobSpec();
     spec.kind = MasterJobSpec::Kind::Files; spec.out = def.vm;
@@ -183,7 +183,7 @@ juce::String makeFilesSpec (const Project& p, const MasteringDef& def, MasterJob
         if (e == nullptr || e->isEmpty()) continue;
         edits.push_back (e); its.push_back (&it);
     }
-    auto err = commonChecks (p, def, spec, edits);
+    auto err = commonChecks (p, def, spec, edits, needSource);
     if (err.isNotEmpty()) return err;
     if (def.vm.format == MasterFormat::Mp3 || (def.vm.extraFormats & (1 << (int) MasterFormat::Mp3)) != 0)
     {
@@ -495,6 +495,7 @@ MasterExportResult MasterExportJob::executeInner()
     if (batch->total() != n) { R.error = "The renderer made a different number of files than expected."; return R; }
     std::vector<juce::File> rendered;
     for (int i = 0; i < n; ++i) rendered.push_back (batch->fileFor (i));
+    for (int i = 0; i < n; ++i) if (batch->isPrevious (i)) R.previousPieces.add (batch->nameFor (i));      // (3.46.0: said in the box at the end)
     const int nStems = batch->numStems();                                 // 3.26.0: each piece's stems (their renders are in the work folder)
     std::vector<std::vector<juce::File>> stemProc ((size_t) n);
     for (int i = 0; i < n; ++i) for (int st = 0; st < nStems; ++st) stemProc[(size_t) i].push_back (batch->stemFileFor (i, st));
@@ -788,7 +789,9 @@ juce::String makeAtmosSpec (const Project& p, const MasteringDef& def, AtmosJobS
         auto d = def;
         d.vm.folder = def.atmos.folder.trim().isNotEmpty() ? def.atmos.folder.trim() : p.masteredFolder().getChildFile ("Atmos").getFullPathName();
         d.vm.format = MasterFormat::Wav; d.vm.extraFormats = 0; d.stemIds.clear();
-        if (const auto err = makeFilesSpec (p, d, files); err.isNotEmpty()) return err;
+        // 3.46.0: and without a stereo output to render from - the file holds the ticked surround buses, and a project with no stereo bus at all
+        // (surround only) was refused with "There is nothing to render yet: add a stereo Ext bus"
+        if (const auto err = makeFilesSpec (p, d, files, false, false); err.isNotEmpty()) return err;
     }
     spec.items = files.items; spec.mixerId = files.mixerId; spec.sourceId = files.sourceId; spec.ownMixers = files.ownMixers; spec.tailSeconds = files.tailSeconds;
     for (auto& b : p.buses)                                               // the ticked buses in the settings' order, gone ones and stereo ones left out
@@ -878,7 +881,8 @@ AtmosExportJob::AtmosExportJob (const Project& live, const AtmosJobSpec& s, std:
     if (earlyError.isEmpty())
     {
         RenderParams rp; rp.sourceId = spec.sourceId; rp.mixerId = spec.mixerId; rp.ownMixers = spec.ownMixers; rp.tailSeconds = spec.tailSeconds;
-        batch = std::make_unique<MasterRenderBatch> (live, ids, rp, false, spec.busIds, spec.workFolder.getChildFile ("atmos"), true);
+        // (3.46.0, the last 'true': the surround buses only - the stereo master render is neither needed nor made here)
+        batch = std::make_unique<MasterRenderBatch> (live, ids, rp, false, spec.busIds, spec.workFolder.getChildFile ("atmos"), true, true);
         if (batch->getPrepareError().isNotEmpty()) earlyError = batch->getPrepareError();
     }
     if (startNow) startThread (juce::Thread::Priority::normal);

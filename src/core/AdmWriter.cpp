@@ -356,19 +356,26 @@ bool FileWriter::finish()
     if (! putChunk ("axml", ax) || ! putChunk ("chna", buildChna (desc))) return false;
     const juce::int64 total = out->getPosition();
     out->flush();
+    // 3.46.0: what the stream still held (the end of the audio, the axml and chna chunks) reaches the disk only now, and a drive that fills at this
+    // moment used to go unnoticed - the file was reported as written with its description cut short or missing. Checked here, after the sizes are
+    // patched, and once more against the file's size on the disk when it is closed (as every other export checks what it wrote).
+    auto failed = [this] (const juce::String& why) { fail (why); out.reset(); file.deleteFile(); return false; };
+    if (out->getStatus().failed()) return failed ("Cannot write " + file.getFullPathName() + " (is the drive full?)");
     if (rf64)
     {
         juce::uint8 d[28] = {};
         le64 (d, (juce::uint64) (total - 8)); le64 (d + 8, (juce::uint64) dataBytes); le64 (d + 16, (juce::uint64) desc.frames); le32 (d + 24, 0u);
-        if (! out->setPosition (ds64At) || ! put (d, 28)) return false;
+        if (! out->setPosition (ds64At) || ! put (d, 28)) return failed ("Cannot finish " + file.getFullPathName() + " (is the drive full?)");
     }
     else
     {
         juce::uint8 s[4]; le32 (s, (juce::uint32) (total - 8));
-        if (! out->setPosition (riffSizeAt) || ! put (s, 4)) return false;
+        if (! out->setPosition (riffSizeAt) || ! put (s, 4)) return failed ("Cannot finish " + file.getFullPathName() + " (is the drive full?)");
     }
     out->flush();
+    if (out->getStatus().failed()) return failed ("Cannot write " + file.getFullPathName() + " (is the drive full?)");
     out.reset();
+    if (file.getSize() != total) return failed ("The Atmos file " + file.getFileName() + " is not whole on the disk (" + juce::String (file.getSize()) + " of " + juce::String (total) + " bytes): is the drive full?");
     finished = true;
     return ok();
 }

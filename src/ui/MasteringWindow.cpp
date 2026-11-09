@@ -1528,6 +1528,16 @@ void MasteringComponent::showDoneBox (const MasterExportResult& r, int kind)
             if (r.clippedStems.size() > 8) text << "\n   ... and " << (r.clippedStems.size() - 8) << " more";
         }
     }
+    // 3.46.0: pieces written from their previous render ("Use previous render" on the DDP builder tab stays on until it is switched off or the piece
+    // is rendered again): the files do not hold what was changed in those pieces since, and nothing said so
+    if (! stopped && ! r.previousPieces.isEmpty())
+    {
+        text << "\n\nNOTE: " << (r.previousPieces.size() == 1 ? "one piece was" : juce::String (r.previousPieces.size()) + " pieces were")
+             << " written from the PREVIOUS render, not the newest (\"Use previous render\" is on, on the DDP builder tab):";
+        for (int i = 0; i < juce::jmin (8, r.previousPieces.size()); ++i) text << "\n   " << r.previousPieces[i];
+        if (r.previousPieces.size() > 8) text << "\n   ... and " << (r.previousPieces.size() - 8) << " more";
+        text << "\nAnything changed in " << (r.previousPieces.size() == 1 ? "it" : "them") << " since that render is not in the files.";
+    }
     // 3.42.0: listening copies are of a version of each piece: offer to freeze those versions now (never done by itself), so the comments that come back
     // go to each version's own lane and the editing carries on in the next number
     juce::StringArray toFreeze;
@@ -1540,7 +1550,7 @@ void MasteringComponent::showDoneBox (const MasterExportResult& r, int kind)
              << "\nFreeze " << (toFreeze.size() == 1 ? "this version" : "these versions") << " now and carry on editing in the next number? Each stays as it is - pieces, fades, levels, automation, markers, comments and its mixer - "
              << "and the comments that come back from the listening cop" << (toFreeze.size() == 1 ? "y go" : "ies go") << " to its own lane above the timeline.";
     }
-    const bool warn = stopped || r.clipped || ! r.clippedStems.isEmpty();
+    const bool warn = stopped || r.clipped || ! r.clippedStems.isEmpty() || ! r.previousPieces.isEmpty();
     auto* aw = new juce::AlertWindow (stopped ? "Export stopped" : "Export complete", text, warn ? juce::MessageBoxIconType::WarningIcon : juce::MessageBoxIconType::InfoIcon, this);
     const auto out = lastOutput;
     if (! toFreeze.isEmpty()) aw->addButton ("Freeze", 2);

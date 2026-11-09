@@ -83,9 +83,11 @@ public:
         pass of their own: an up-to-date master render and its backup are never touched). The stem renders are not kept with the master renders: they go
         to 'stemFolder' (stemFileFor), for the caller to use and delete. */
     MasterRenderBatch (const Project& live, const std::vector<juce::Uuid>& editIds, const RenderParams&, bool force = false,
-                       const std::vector<juce::Uuid>& stems = {}, const juce::File& stemFolder = {}, bool keepSurroundStems = false);
+                       const std::vector<juce::Uuid>& stems = {}, const juce::File& stemFolder = {}, bool keepSurroundStems = false, bool stemsOnly = false);
     /** 3.40.0, keepSurroundStems: a surround bus among the stems is kept and rendered at its full width (the Atmos export); otherwise the stems are
-        stereo buses only (a surround one is dropped: the Virtual Master's stems are stereo files). */
+        stereo buses only (a surround one is dropped: the Virtual Master's stems are stereo files).
+        3.46.0, stemsOnly: only the stems are rendered - the master renders are neither looked at, made nor asked for (RenderParams::sourceId may be
+        null). The Atmos export: it used to need a stereo output to render a stereo master it never used, and refused a surround-only project. */
     ~MasterRenderBatch();
     const juce::String& getPrepareError() const { return prepareError; }
     int total() const { return (int) items.size(); }
@@ -99,6 +101,7 @@ public:
     juce::int64 framesFor (int i) const { return items[(size_t) i].frames; }       // the length of the render, tail included
     bool needsRender (int i) const { return items[(size_t) i].stale; }
     bool isPrevious (int i) const { return items[(size_t) i].previous; }           // the earlier version was chosen for this Edit
+    juce::String nameFor (int i) const { return items[(size_t) i].name; }          // the Edit's name (3.46.0)
     bool hasBackup (int i) const { return items[(size_t) i].backup; }
     /** After run(): the render of the i-th Edit through stem bus s (32-bit float, the Edit's rate, as long as its master render). */
     juce::File stemFileFor (int i, int s) const { const auto& v = items[(size_t) i].stemFiles; return juce::isPositiveAndBelow (s, (int) v.size()) ? v[(size_t) s] : juce::File(); }
@@ -114,6 +117,7 @@ private:
     juce::String prepareError;
     std::vector<juce::Uuid> stems;
     juce::File stemDir;
+    bool onlyStems = false;
 };
 
 /** A MasterRenderBatch on a background thread. Create and destroy on the message thread; 'done' is called on the message thread (error "", "Cancelled." or a problem). */

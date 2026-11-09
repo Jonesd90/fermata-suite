@@ -6,6 +6,30 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.46.0
+Built 9 November 2026 (the conversation for both programs), with Claude Fable. After a look through the whole code for bugs (the mastering section read
+closely; every source file of both programs through a static analyser): five things put right, and Find other versions for edits that came from an AAF.
+- **Find other versions works for an edit imported from an AAF** (an edit made in Pyramix, say). Its pieces do not say which take window they came
+  from, and the search stopped there. Now the take window is found for them: by the piece's audio file being one of a take's files (first in the
+  take window whose "To edit" is this edit, then in any other) - the search then has the music either side of the marked part, as for a piece cut in
+  fermata; else the take window whose "To edit" is this edit; else the only take window there is. With several take windows and nothing to say
+  which, a menu asks. Take matching still has to be switched on for that take window.
+- **A crossfade with a missing audio file no longer makes the edit window redraw without end** (3.45.0's crossfade pictures: a file that could not
+  be read was asked for again at every redraw, which caused the next redraw). Such a crossfade is drawn as before 3.45.0 and tried again when the
+  file is back.
+- **Several pieces through one mixer: the first piece's reverb is no longer under the start of the next.** Rendered one after another through the
+  same mixer (the Mastering window's "All pieces through ...", a bounce of several ranges), the pieces shared its reverbs and delays, still ringing.
+  The mixer is now left to ring out, unheard, before the next piece. With each piece through its own mixer (the usual setting) it never happened.
+- **The Atmos tab no longer needs a stereo output.** It asked for one - "There is nothing to render yet: add a stereo Ext bus" - to render a stereo
+  master the Atmos file never used. A surround-only project now exports, and an Atmos export no longer renders the stereo masters on the side.
+- **An Atmos file is checked on the disk when it is finished**, as every other export is: a drive that filled in the last moment could leave the
+  file without its description and still be reported as written.
+- **The export box says when a piece came from its previous render.** "Use previous render" (DDP builder tab) stays on for a piece until it is
+  switched off or the piece is rendered again, and every export then uses that older render without a word. The box at the end of an export now
+  names those pieces.
+- Shared: `src/core/Bounce.cpp`, `src/core/MasterRender.h/.cpp`, `src/core/MasterExport.h/.cpp`, `src/core/AdmWriter.cpp`. fermata:Live needs a
+  rebuild (its own behaviour is unchanged).
+
 ## 3.45.1
 Built 9 November 2026 (the conversation for both programs), with Claude Opus. From the freeze reports of 9 November 2026: none of them was a crash, and
 none happened while Fermata was closing (each closing that day finished cleanly). Three were the reverb Seventh Heaven Professional starting up, and
