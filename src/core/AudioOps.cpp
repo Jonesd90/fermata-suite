@@ -406,7 +406,7 @@ static void keepMasked (const std::vector<std::vector<float>>& before, std::vect
 
 void applyFix (std::vector<std::vector<float>>& chans, double sr, long s0, long s1, const FixSpec& spec, long xfade)
 {
-    if (spec.mask != nullptr && spec.mask->valid() && (spec.kind == FixSpec::Kind::Patch || spec.kind == FixSpec::Kind::Denoise)
+    if (spec.mask != nullptr && spec.mask->valid() && (spec.kind == FixSpec::Kind::Patch || spec.kind == FixSpec::Kind::Denoise || spec.kind == FixSpec::Kind::Dehum)
         && (spec.lostKnown ? spec.lost.empty() : ! findsLost (spec, sr, s0, s1)))
     {   // 3.33.0: a soft selection - the fix on its box, then only what the mask lets through (not with lost samples to put back: they move the timing)
         const auto before = chans;
@@ -455,6 +455,7 @@ void applyFix (std::vector<std::vector<float>>& chans, double sr, long s0, long 
             case FixSpec::Kind::Denoise:
                 if (spec.dnProfiles != nullptr && ! spec.dnProfiles->empty()) denoiseBox (x, sr, a, b, spec.f0, spec.f1, spec, (*spec.dnProfiles)[juce::jmin (ci, spec.dnProfiles->size() - 1)]);
                 break;
+            case FixSpec::Kind::Dehum: dehum::remove (x, sr, a, b, spec.hum); break;       // 3.44.0 (its own 50 ms fades at the box's edges; two seconds round the box settle its filters)
             case FixSpec::Kind::Pitch:
             {
                 const long ctx = (long) (0.4 * sr);                                    // sound around the part, so the shift is clean right to its edges
@@ -489,7 +490,7 @@ void applyFix (std::vector<std::vector<float>>& chans, double sr, long s0, long 
 
 static juce::int64 marginFor (const FixSpec& spec, double sr, double patchSeconds, double otherSeconds)
 {
-    return (juce::int64) ((spec.kind == FixSpec::Kind::Patch || spec.kind == FixSpec::Kind::Denoise ? patchSeconds : otherSeconds) * sr);
+    return (juce::int64) ((spec.kind == FixSpec::Kind::Patch || spec.kind == FixSpec::Kind::Denoise || spec.kind == FixSpec::Kind::Dehum ? patchSeconds : otherSeconds) * sr);
 }
 
 

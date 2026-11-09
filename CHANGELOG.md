@@ -6,6 +6,26 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.44.0
+Built 9 November 2026 (the conversation for both programs), with Claude Fable.
+- **The De-Hummer: a De-hum tab in Spectral Repair and in Noise mode (key H).** Draw a box round the hum - a stretch of room only is best, two seconds
+  or more - and press H (or Find hums): every tone that never changes in the box is listed, loudest first - the mains (100 Hz), a buzz with its
+  harmonics as ONE line ("Buzz at 30.18 Hz: 16 harmonics, 211 - 1751 Hz"), a row of evenly spaced tones high up (a power supply's whine), a whistle -
+  each with how far it stands above the room, how far it wanders, a tick, and its pitch in a box to retype if it looks wrong (a buzz: its fundamental,
+  and the harmonics follow; the exact pitch is measured near what you type). The faint ones (under 15 dB) start unticked. Add types a hum the finder
+  missed. Soft <-> Hard: how much comes off (6 to 40 dB, shown) through a notch 1.5 to 4 Hz wide plus each tone's own wander. De-hum then takes the
+  ticked hums out of the box's stretch of time on every track - each tone through its own narrow notch that follows the hum's level from moment to
+  moment, so the room noise and the music beside it are untouched - fading in and out at the box's edges. Nothing changes outside the box. Spectral
+  Repair: a fix like the others (Play, Undo, Write back); Noise mode: straight into the edit, and with no box the whole edit, after asking. Press H
+  again afterwards to see what is left (the list shows the twelve loudest). A note held right through the box cannot be told from a hum: untick it.
+  Checked on the user's 17 room and spot recordings (the 1440 Hz whistle, the 30.18 Hz buzz with harmonics 7 to 49, the mains at 100 Hz, and a
+  decaying chord left alone), and in tests/core_test.cpp.
+- Harmonics in Spectral Repair and Noise mode moved from H to **Shift+H**.
+- Shared: `src/core/DeHum.h` (new: the finder and the remover), `src/core/AudioOps.h/.cpp` (`FixSpec::Kind::Dehum`, `FixSpec::hum`), and the ReTouch
+  window itself (`src/ui/SpectralWindow.h`: the De-hum tab) - fermata:Live's Fixer gets the tab in its ReTouch window, and (0.7.0, its own change) a
+  one-step "De-hum" in its fix list that finds and takes out the hums of the chosen part. fermata:Live needs its rebuild and a try of both. No file
+  format changes.
+
 ## 3.43.0
 Built 9 November 2026 (the conversation for both programs), with Claude Opus.
 - **Transport keys in every mixer.** Right of the "Mixer name" box: |< (back to the start), << (back 5 s), Play / Stop, >> (forward 5 s) and >| (to

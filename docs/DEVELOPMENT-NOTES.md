@@ -2192,3 +2192,61 @@ from the rows as before; the guide's waveform uses `guideZoomNow()`. Per window,
 without moving puts the playhead on the mouse-up. The triangle, or the whole ruler with everything in view, is `Mode::ruler` as before. Cursors:
 the hand / left-right arrows.
 
+
+## 3.44.0: the De-Hummer (9 November 2026, with Claude Fable)
+
+**What the user's hum is.** 17 example files (room pairs and twelve spot mics, 96 kHz, 5.2 s: a chord that dies away in 1.3 s, then room). Measured
+with long frames (1.46 Hz per bin): the "hum around 1400 Hz, give or take 100" is two things - a *whistle* at 1439 - 1440 Hz, 25 - 30 dB above the room
+in the room mics, wandering about a hertz; and a *buzz*: a 30.18 Hz fundamental (a motor at 1811 rpm, or a pump) with harmonics 7, 11, 12, 15, 16,
+20, 21, 28 and 42 - 49 (211, 332, 362, 453, 483, 604, 634, 845 and 1268 - 1479 Hz), dead steady, each 15 - 28 dB above the room. The 211 Hz "hum" the
+user heard is the buzz's 7th harmonic, 5 Hz under the chord's bass A (216 Hz, A = 432). Besides those: the mains' 100 Hz in every mic, a 48 Hz
+tone, a 55.56 Hz-spaced comb at 15.0 - 15.8 kHz (-117 dBFS: a switching supply) and quieter rows at 5.4 - 7.1 kHz 50 Hz apart. The Python used to
+measure all this (`analyse.py`, `steady.py`, `region.py`, `comb.py`, `proto2.py` - the finder's prototype, which the C++ follows) lived in the
+conversation's scratch folder; the conclusions are here and in `src/core/DeHum.h`'s head comment, which is the reference.
+
+**The finder** (`dehum::find`, `DeHum.h`). Frames of 2^n samples near 1.5 Hz per bin (65536 at 96 kHz), hop a quarter, at most 64 frames spread
+evenly over the box, per channel (the picture's tracks' mono mixes in Spectral Repair; `readTrackMix` of each track's pieces in Noise mode). The
+*steady spectrum* is each bin's 10th-percentile level over the frames (the lowest with fewer than 10): what is there all the time; the floor is the
+running median over +-40 Hz; a tone is a local maximum 12 dB or more above the floor and at least -126 dBFS, *narrow* (falls 6 dB each side and is at
+most 10 bins wide where it has fallen 20 dB or 70 % of its height: a very loud tone's Hann skirt runs on for many bins; a hum right beside a note
+stops at the saddle between them and still counts), and *steady* when followed frame to frame (the peak within 2 bins: its pitch's 15th - 85th
+percentile range, the *wander*, is 6 Hz or less, and its 80th-percentile level is within 12 dB of its 10th - a note sounding through some frames
+lifts those only). Tones heard by several channels are merged (the channel that hears it best speaks for it). Grouping: *series* first - whole-number
+multiples (up to the 60th) of one fundamental 20 Hz - 2 kHz, the fundamental fitted by least squares through the origin, members within
+min(1.5, 0.5 + 0.001 f) Hz; a series needs 4 + the number chance would give (n x 2.4 / f0) members, three of them up to the 30th harmonic; the gaps
+inside a run of heard harmonics, and one step beyond a run of three, are filled by faint peaks (7 dB) - then *rows* of 4 or more evenly spaced tones
+(10 - 400 Hz) with one gap allowed, extended at the ends by faint peaks; the rest are single tones. Loudest first, the twelve loudest, those 15 dB or
+more above the room ticked. Under 2048 samples: refused with a note. `measureAt` is the same analysis near a typed pitch (+-2 %, at least 5 Hz),
+picking the nearest strong tone (a dB of height counts as a hertz of distance); nothing there: the typed pitch, `aboveDb` 0.
+
+**The remover** (`dehum::remove`; `FixSpec::Kind::Dehum`, `spec.hum`): for each pitch of the ticked hums (each once, `Params::notches`), the sound over the
+box plus 2 s each side is multiplied by a rotating phasor (renormalised every 1024 samples) that shifts the tone to 0 Hz; a 4th-order Butterworth
+low-pass (two biquads, Q 0.541 and 1.307, transposed direct form II started at the steady state) is run forwards and backwards at half the notch
+width (zero phase, flat to the cutoff, steep beyond it - a 2nd-order one left a wandering whistle 20 dB down at the notch's edges); shifted back up
+and summed, that is the hums as they are in the sound; `fraction` x (a 50 ms fade at each edge of the box) of it is subtracted inside the box, and
+nothing outside it. The notch is 1.5 - 4 Hz (Soft .. Hard, `Params::hardness` 0..1) plus twice the tone's wander (so a wandering whistle sits in the
+flat middle); the fraction is 6 - 40 dB (`reductionDb`). The box is worked in one-minute stretches, each with 2 s of context either side, the
+context BEFORE a stretch taken from a copy of the original (`keep`) - the stretch before has already been written over in place, and reading the
+de-hummed sound there put a step into the filter and a 1e-3 click at every join (found by comparing against a single stretch: now 1.6e-8). In `applyFix` it is a per-channel case like Denoise, a Patch-length margin (8 s) is read
+round it, and a soft (brush) mask applies to it as to a Patch. One op per stretch of time of the selection (`selectionSpans`, as De-click) unless the
+selection is brushed (then `selectionParts` with masks). Cost: samples x tones x a few dozen flops - a 5 s box with 18 tones in 0.1 s; an hour's
+Noise mode edit with a dozen tones is minutes, which is why it asks first with no box.
+
+**The windows** (`HumPanel` in `src/ui/SpectralWindow.h`, used by `RepairDialog` and `NoiseModeDialog`): Find hums [H] and a summary line; the list
+(tick, words - `Hum::text()` and `loudness()` - and a `TextEditor` with the pitch: Enter or leaving it calls `onRetune`, which the window answers with
+`measureAt` on a job thread and `set`; a series' fundamental is taken as typed, since it is seldom there to measure); Add with its box; Soft <-> Hard
+(the number shown is the dB that come off; remembered as `repair.humHard` / `noisemode.humHard`). The De-hum button sits in the action corner as
+the other tabs' buttons do. The tab needs five rows, so the tool panel grows by two rows while it shows (the picture is that much shorter on that tab
+only). The scan and the measurement run through `runJob` like a fix (the window's buttons are off meanwhile). Keys: H = the tab and Find; Harmonics
+moved to Shift+H. fermata:Live's Fixer opens the same window, so it has the tab; and its fix list (0.7.0, `FixerWindow.cpp`) has a one-step De-hum:
+`runFix` builds a `dehum::Source` over the chosen part from `readTakeSpan` (each track's channels averaged), runs `dehum::find` on the job thread, keeps
+the hums it ticks (15 dB or more above the room), writes what it found into `what` (said when the try plays) and refuses with the finder's note when
+nothing stands out; the slider is the hardness as dB off (6 - 40). Two seconds of context are read round the part for its filters.
+
+**Tests.** `tests/core_test.cpp` "3.44.0 De-Hummer": a synthetic room (hiss at -100 dBFS, the 30.18 Hz buzz's 16 harmonics at -88 / -94 dBFS, a whistle
+at 1439 Hz wandering +-1.5 Hz, the mains at 100 Hz, a chord at 216 + 432 Hz for 1.3 s). The finder lists exactly the series (all 16 harmonics), the
+whistle (wander 1.5 - 5 Hz) and the mains, never the chord; a 0.1 s box is refused with a note; 1440 typed finds 1439, 5000 typed finds nothing and
+is kept. Hard takes 25 dB or more off every harmonic (measured from 1.4 s, past the chord's tail), 30 off the mains, 25 off the whistle at its own
+pitch in every quarter second; the chord's partials change under 0.3 dB; what comes out has the hums' own rms (9.7e-5), not the hiss's; nothing
+outside the box changes; Soft takes 4.5 - 7.5 dB; an unticked hum stays; `applyFix` gives the same samples. On the real files (not in the repo): the
+finder's lists are in the conversation; after De-hum nothing stands out where the hums were, and the music before the box is bit-identical.

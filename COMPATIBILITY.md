@@ -34,6 +34,8 @@ Everything listed here is built into BOTH programs, so a change to any of it cha
 - `cmake/SharedCore.cmake`: that list, plus the JUCE settings and Windows audio drivers (ASIO, WASAPI) that both programs are built with.
 - `src/reharmoniser/third_party/pocketfft_hdronly.h`: the FFT the shared denoiser uses (`src/core/DenoiseFft.cpp`), and (fermata 3.37.0) the spectral
   pictures' and the ReTouch fixes' (`dsp::FastFFT`, in the same file).
+- `src/core/DeHum.h` (fermata 3.44.0, fermata:Live 0.7.0): the De-Hummer - the hum finder and remover behind the De-hum tab of the shared ReTouch window
+  (`FixSpec::Kind::Dehum` in `src/core/AudioOps.h`). Header-only; it uses the shared denoiser's FFT. No file format: a de-hum is a fix like the others.
 - `third_party/signalsmith-stretch/`: the time-stretcher the shared ReTimEr code uses (`src/core/Retime.cpp`).
 - `tests/compat_test.cpp`, `tools/compat-check.sh`, `COMPATIBILITY.md`, `CLAUDE.md`: the check, and the rules themselves.
 - **fermata's look** (contract 3: fermata:Live's windows are drawn with it). These files stay in fermata's folder, unchanged, and are shared from

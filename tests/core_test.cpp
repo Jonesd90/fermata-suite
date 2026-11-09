@@ -9180,6 +9180,116 @@ int main()
         mixDone:;
     }
 
+    SECTION ("3.44.0 De-Hummer: finds a buzz (as one series), a wandering whistle and the mains, leaves a decaying note alone, takes them out and nothing else");
+    {
+        // 6 s at 96 kHz, like the user's room mics: a buzz at 30.18 Hz with harmonics 7, 11, 12, 15, 16, 20, 21, 28 and 42 - 49; a whistle at 1439 Hz
+        // that wanders +-1.5 Hz; the mains' 100 Hz; a note at 216 Hz (A at 432) sounding for the first 1.3 s and decaying; and hiss under it all.
+        const double sr = 96000.0; const int n = (int) (6.0 * sr);
+        const int harm[] = { 7, 11, 12, 15, 16, 20, 21, 28, 42, 43, 44, 45, 46, 47, 48, 49 };
+        std::vector<float> x ((size_t) n), noise ((size_t) n); std::mt19937 rng (7); std::normal_distribution<float> gauss (0.0f, 1.0f);
+        for (int i = 0; i < n; ++i)
+        {
+            const double t = i / sr; double v = 0.0;
+            for (int k : harm) v += (k >= 42 ? 2.0e-5 : 4.0e-5) * std::sin (2.0 * juce::MathConstants<double>::pi * 30.18 * k * t + 0.3 * k);
+            v += 3.0e-5 * std::sin (2.0 * juce::MathConstants<double>::pi * (1439.0 * t + 1.5 / (2.0 * juce::MathConstants<double>::pi * 0.4) * std::sin (2.0 * juce::MathConstants<double>::pi * 0.4 * t)));
+            v += 5.0e-5 * std::sin (2.0 * juce::MathConstants<double>::pi * 100.0 * t);
+            if (t < 1.3) v += 0.01 * std::exp (-3.0 * t) * (std::sin (2.0 * juce::MathConstants<double>::pi * 216.0 * t) + 0.5 * std::sin (2.0 * juce::MathConstants<double>::pi * 432.0 * t));
+            noise[(size_t) i] = 1.0e-5f * gauss (rng);
+            x[(size_t) i] = (float) v + noise[(size_t) i];
+        }
+        const juce::int64 a = (juce::int64) (0.5 * sr), b = (juce::int64) (5.5 * sr);
+        auto fd = dehum::find (dehum::Source::ofVectors ({ &x }, a, b), sr, 20.0, 20000.0);
+        std::printf ("  (%d hums, %d frames, %.2f Hz per bin)\n", (int) fd.hums.size(), fd.frames, fd.binHz);
+        for (auto& h : fd.hums) std::printf ("    %s %s: %s\n", h.on ? "[x]" : "[ ]", h.text().toRawUTF8(), h.loudness().toRawUTF8());
+        const dehum::Hum* series = nullptr; const dehum::Hum* whistle = nullptr; const dehum::Hum* mains = nullptr; bool noteListed = false;
+        for (auto& h : fd.hums)
+        {
+            if (h.kind == dehum::Hum::Kind::Series && std::abs (h.hz - 30.18) < 0.05) series = &h;
+            if (h.kind == dehum::Hum::Kind::Tone && std::abs (h.hz - 1439.0) < 1.5) whistle = &h;
+            if (h.kind == dehum::Hum::Kind::Tone && std::abs (h.hz - 100.0) < 0.5) mains = &h;
+            for (double f : h.frequencies()) if (std::abs (f - 216.0) < 3.0 || std::abs (f - 432.0) < 3.0) noteListed = true;
+        }
+        CHECK (series != nullptr && whistle != nullptr && mains != nullptr && ! noteListed);
+        if (series != nullptr)
+        {
+            CHECK (series->harmonics.size() >= 14 && series->on && series->aboveDb > 20.0);           // (the fundamental is the 1st harmonic; a faint 7 dB one may join)
+            bool all = true; for (int k : harm) all = all && std::find (series->harmonics.begin(), series->harmonics.end(), k) != series->harmonics.end();
+            CHECK (all);
+            CHECK (series->text().startsWith ("Buzz at 30.18 Hz") && series->frequencies().front() > 211.0 && series->frequencies().front() < 211.5);
+        }
+        if (whistle != nullptr) CHECK (whistle->wanderHz > 1.5 && whistle->wanderHz < 5.0 && whistle->on);
+        if (mains != nullptr) CHECK (mains->on && mains->wanderHz < 1.0);
+        // a box of a tenth of a second is too coarse to tell anything; the finder says so instead of listing junk
+        auto tiny = dehum::find (dehum::Source::ofVectors ({ &x }, a, a + (juce::int64) (0.1 * sr)), sr, 20.0, 20000.0);
+        CHECK (tiny.hums.empty() && tiny.note.isNotEmpty());
+        // a pitch typed in is measured where it stands: 1440 typed finds the 1439 whistle; 5000 typed finds nothing steady and is kept as typed
+        auto typed = dehum::measureAt (dehum::Source::ofVectors ({ &x }, a, b), sr, 1440.0, 20.0);
+        CHECK (typed.user && std::abs (typed.hz - 1439.0) < 1.5 && typed.aboveDb > 15.0);
+        auto blank = dehum::measureAt (dehum::Source::ofVectors ({ &x }, a, b), sr, 5000.0, 20.0);
+        CHECK (blank.user && blank.hz == 5000.0 && blank.aboveDb <= 0.0);
+        // the fix: everything ticked, Hard - the hums go (30 dB or more at the whistle, 25 dB at every buzz tone), the note and the hiss stay, nothing outside the box changes
+        dehum::Params p; p.hums = fd.hums; p.hardness = 1.0; for (auto& h : p.hums) h.on = true;
+        CHECK (p.notches().size() >= 18 && p.reductionDb() == 40.0);
+        auto y = x; dehum::remove (y, sr, a, b, p);
+        bool outsideSame = true; for (juce::int64 i = 0; i < a; ++i) outsideSame = outsideSame && y[(size_t) i] == x[(size_t) i]; for (juce::int64 i = b; i < n; ++i) outsideSame = outsideSame && y[(size_t) i] == x[(size_t) i];
+        CHECK (outsideSame);
+        auto level = [&] (const std::vector<float>& v, double hz, double t0, double t1)                 // a tone's level in dBFS: heterodyne over the stretch
+        {
+            const juce::int64 i0 = (juce::int64) (t0 * sr), i1 = (juce::int64) (t1 * sr); std::complex<double> acc (0.0, 0.0);
+            for (juce::int64 i = i0; i < i1; ++i) acc += (double) v[(size_t) i] * std::polar (1.0, -2.0 * juce::MathConstants<double>::pi * hz * (double) i / sr);
+            return 20.0 * std::log10 (2.0 * std::abs (acc) / (double) (i1 - i0) + 1e-30);
+        };
+        for (int k : harm)                                                                      // (from 1.4 s: the note's tail would spoil the measurement at 211 Hz)
+        {
+            const double before = level (x, 30.18 * k, 1.4, 5.0), after = level (y, 30.18 * k, 1.4, 5.0);
+            if (! (before - after > 25.0)) std::printf ("  harmonic %d: %.1f -> %.1f dBFS\n", k, before, after);
+            CHECK (before - after > 25.0);
+        }
+        CHECK (level (x, 100.0, 1.0, 5.0) - level (y, 100.0, 1.0, 5.0) > 30.0);
+        {   // the whistle wanders, so it is measured frame by frame at its own pitch
+            double worst = -1.0e9;
+            for (double t = 1.0; t < 5.0; t += 0.25)
+            {
+                const double hz = 1439.0 + 1.5 * std::cos (2.0 * juce::MathConstants<double>::pi * 0.4 * (t + 0.125));
+                const double d = level (y, hz, t, t + 0.25) - level (x, hz, t, t + 0.25);
+                if (d > -25.0) std::printf ("  whistle at %.2f s (%.1f Hz): %.1f dB\n", t, hz, d);
+                worst = juce::jmax (worst, d);
+            }
+            CHECK (worst < -25.0);
+        }
+        // the note: its 216 and 432 Hz between 0.5 and 1.3 s are within 0.3 dB of what they were (the nearest notch, 211.3 Hz, is 4.7 Hz away)
+        CHECK (std::abs (level (x, 216.0, 0.6, 1.2) - level (y, 216.0, 0.6, 1.2)) < 0.3 && std::abs (level (x, 432.0, 0.6, 1.2) - level (y, 432.0, 0.6, 1.2)) < 0.3);
+        // what was taken out is the hums and nothing else: its rms is the hums' own (9.8e-5, a little less for the fades), not the hiss's as well
+        double diff = 0.0, hiss = 0.0; for (juce::int64 i = a; i < b; ++i) { const double d = y[(size_t) i] - x[(size_t) i]; diff += d * d; hiss += (double) noise[(size_t) i] * noise[(size_t) i]; }
+        diff = std::sqrt (diff / (double) (b - a)); hiss = std::sqrt (hiss / (double) (b - a));
+        std::printf ("  (taken out: %.2e rms; the hiss alone is %.2e rms)\n", diff, hiss);
+        CHECK (diff > 0.85e-4 && diff < 1.05e-4 && hiss > 0.9e-5);
+        // Soft takes 6 dB off and no more
+        dehum::Params soft = p; soft.hardness = 0.0; auto z = x; dehum::remove (z, sr, a, b, soft);
+        const double softDrop = level (x, 100.0, 1.0, 5.0) - level (z, 100.0, 1.0, 5.0);
+        CHECK (softDrop > 4.5 && softDrop < 7.5);
+        // a hum unticked is left alone
+        dehum::Params some = p; for (auto& h : some.hums) h.on = h.kind == dehum::Hum::Kind::Series; auto w = x; dehum::remove (w, sr, a, b, some);
+        CHECK (std::abs (level (x, 100.0, 1.0, 5.0) - level (w, 100.0, 1.0, 5.0)) < 0.5 && level (x, 30.18 * 44, 1.0, 5.0) - level (w, 30.18 * 44, 1.0, 5.0) > 25.0);
+        // a long box is worked in one-minute stretches (two seconds of the original either side): the join at 61 s is as clean as the rest (a stretch that read
+        // its context from the sound already de-hummed before it put a 1e-3 step there, once)
+        {
+            const double sr2 = 48000.0; const int n2 = (int) (70.0 * sr2);
+            std::vector<float> xl ((size_t) n2);
+            for (int i = 0; i < n2; ++i) xl[(size_t) i] = (float) (1e-3 * std::sin (2.0 * juce::MathConstants<double>::pi * 1439.0 * i / sr2)) + 1.0e-5f * gauss (rng);
+            dehum::Params pl; pl.hardness = 1.0; dehum::Hum hl; hl.hz = 1439.0; hl.aboveDb = 40.0; pl.hums.push_back (hl);
+            auto yl = xl; dehum::remove (yl, sr2, (juce::int64) (1.0 * sr2), (juce::int64) (69.0 * sr2), pl);
+            auto lvl = [&] (const std::vector<float>& v, double t0, double t1) { std::complex<double> acc; for (juce::int64 i = (juce::int64) (t0 * sr2); i < (juce::int64) (t1 * sr2); ++i) acc += (double) v[(size_t) i] * std::polar (1.0, -2.0 * juce::MathConstants<double>::pi * 1439.0 * (double) i / sr2); return 20.0 * std::log10 (2.0 * std::abs (acc) / ((t1 - t0) * sr2) + 1e-30); };
+            double worstJoin = -1.0e9; for (double t = 60.0; t < 63.0; t += 0.25) worstJoin = juce::jmax (worstJoin, lvl (yl, t, t + 0.25) - lvl (xl, t, t + 0.25));
+            std::printf ("  (the one-minute join: the whistle is %.1f dB down at worst between 60 and 63 s)\n", -worstJoin);
+            CHECK (worstJoin < -35.0 && lvl (yl, 30.0, 31.0) - lvl (xl, 30.0, 31.0) < -35.0);
+        }
+        // the fix through FixSpec: the same result
+        FixSpec spec; spec.kind = FixSpec::Kind::Dehum; spec.hum = p;
+        std::vector<std::vector<float>> chans { x }; audioops::applyFix (chans, sr, (long) a, (long) b, spec, (long) (0.02 * sr));
+        CHECK (spec.shortName() == "de-hum" && std::equal (chans[0].begin(), chans[0].end(), y.begin()));
+    }
+
     SECTION ("2.102 a window never takes a file another window has, so a save never tidies away a file it has just written");
     {
         const auto dir = tmp.getChildFile ("ownedpaths"); dir.deleteRecursively(); dir.createDirectory();

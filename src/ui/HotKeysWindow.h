@@ -207,7 +207,8 @@ inline const std::vector<Line>& lines()
         { "ReTouch, DeClick & Denoise (Spectral Repair)", "P", "Paste the consonant chosen in the Consonants list at the red playhead (click the time ruler to place it)." },
         { "ReTouch, DeClick & Denoise (Spectral Repair)", ", / .", "Nudge the consonant just pasted 1 ms earlier / later." },
         { "ReTouch, DeClick & Denoise (Spectral Repair)", "Shift+, / Shift+.", "Nudge the consonant just pasted 5 ms earlier / later." },
-        { "ReTouch, DeClick & Denoise (Spectral Repair)", "H", "Harmonics: boxes on the harmonics of the note in the box (the fundamental is the 1st), or take them away (3.33.0)." },
+        { "ReTouch, DeClick & Denoise (Spectral Repair)", "H", "The De-hum tab, and look for the hums in the box (3.44.0): every tone that never changes - the mains, a buzz and its harmonics (one line), a whistle - listed loudest first with a tick and its pitch. Tick, untick or retype, then press De-hum. Press H again afterwards to see what is left." },
+        { "ReTouch, DeClick & Denoise (Spectral Repair)", "Shift+H", "Harmonics: boxes on the harmonics of the note in the box (the fundamental is the 1st), or take them away (3.33.0; it was H until 3.44.0)." },
         { "ReTouch, DeClick & Denoise (Spectral Repair)", "S / T / B", "Select with a Rectangle / a stretch of Time (every pitch) / the Brush (3.33.0)." },
         { "ReTouch, DeClick & Denoise (Spectral Repair)", "[ / ]", "The brush smaller / larger." },
         { "ReTouch, DeClick & Denoise (Spectral Repair)", "Z / \\ / X", "Before <-> After (Side) to L (0 %, only the sound before the box) / C (50 %) / R (100 %, only after it) (3.33.0)." },
@@ -220,7 +221,8 @@ inline const std::vector<Line>& lines()
         // ---------------------------------------------------------------------------------------------------- noise mode
         { "Noise mode", "Space", "Play from the red playhead (or the left of the page) to the end of the edit, turning the pages (Loop repeats the page), or stop." },
         { "Noise mode", "R / G / D / L / N", "As in Spectral Repair, but each fix goes straight into the edit; D with no box covers the whole edit, and asks first (3.38.1: Enter and Esc are Cancel)." },
-        { "Noise mode", "H / S / T / B / [ / ] / Z / \\ / X / Click", "As in Spectral Repair: harmonics, the selection tools and the brush's size, L / C / R, and a click for the playhead (3.33.0)." },
+        { "Noise mode", "H", "The De-hum tab, and look for the hums in the box, as in Spectral Repair (3.44.0). De-hum puts the fix straight into the edit; with no box it covers the whole edit, and asks first." },
+        { "Noise mode", "Shift+H / S / T / B / [ / ] / Z / \\ / X / Click", "As in Spectral Repair: harmonics, the selection tools and the brush's size, L / C / R, and a click for the playhead (3.33.0)." },
         { "Noise mode", "C / P / , / .", "Consonants (3.36.0), as in Spectral Repair: C the tab, P pastes the chosen consonant at the playhead, comma and full stop nudge the one just pasted 1 ms (with Shift 5 ms)." },
         { "Noise mode", "Home / End", "Playhead to the start / the end of the edit." },
         { "Noise mode", "Left / Right", "Zoom out / in, in time." },
@@ -241,6 +243,7 @@ inline const std::vector<Line>& lines()
         { "Spectral Repair and Noise mode: with the mouse", "double-click", "The picture: clear the box." },
         { "Spectral Repair and Noise mode: with the mouse", "double-click or Alt+click", "Denoise Amount / Residual: back to 0 dB / -12 dB." },
         { "Spectral Repair and Noise mode: with the mouse", "double-click or Alt+click", "The slider of the box's gain: back to 0 dB." },
+        { "Spectral Repair and Noise mode: with the mouse", "double-click or Alt+click", "De-hum's Soft <-> Hard slider: back to 30 dB (3.44.0)." },
         { "Spectral Repair and Noise mode: with the mouse", "double-click or Alt+click", "Spectral Repair, Consonants tab: the Level slider back to 0 dB." },
         { "Spectral Repair and Noise mode: with the mouse", "right-click / double-click", "Noise mode's clock: as the take and edit windows' clock." },
 

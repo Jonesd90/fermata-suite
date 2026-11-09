@@ -1764,6 +1764,183 @@ private:
     juce::TextButton featherBtn { "Feather: off" };
 };
 
+/** 3.44.0: the De-hum tab's controls, in the ReTouch window and in Noise mode (the window owns the De-hum button, in the action corner, and does the
+    work: finding the hums in the box - DeHum.h - and the fix). Find hums [H] lists what the finder found, loudest first, each with a tick (the faint
+    ones under 15 dB start unticked), its words and a box with its pitch to change by hand (a buzz: its fundamental, and the harmonics follow); Add
+    types a pitch the finder missed; Soft <-> Hard sets how hard the hums are taken out. */
+class HumPanel : public juce::Component
+{
+public:
+    static constexpr int kRows = 5;                                   // the panel rows it needs (one more than the others: the list needs room)
+    std::function<void()> onFind;                                     // Find hums [H]
+    std::function<void (double)> onAdd;                               // Add: a pitch typed (the window measures it and calls add())
+    std::function<void (int, double)> onRetune;                       // a listed hum's pitch typed (the window measures it and calls set())
+    std::function<void()> onChange;                                   // a tick, or the slider
+    HumPanel()
+    {
+        findBtn.setTooltip ("Looks through the box (its time, its pitch range; all the tracks) for tones that never change - hums, buzzes, whistles - and lists them, loudest first. "
+                            "Two seconds or more of box gives a sharp answer; under half a second the tones blur together. A buzz with a fundamental is one line: its harmonics are taken out together. "
+                            "Press it again after De-hum to see what is left. Key: H");
+        findBtn.onClick = [this] { if (onFind) onFind(); };
+        summary.setColour (juce::Label::textColourId, theme::text); summary.setFont (juce::FontOptions (12.5f)); summary.setMinimumHorizontalScale (0.7f);
+        summary.setText ("Draw a box round the hum (a stretch of room only is best) and press Find hums.", juce::dontSendNotification);
+        addAndMakeVisible (findBtn); addAndMakeVisible (summary);
+        viewport.setViewedComponent (&rows, false); viewport.setScrollBarsShown (true, false); viewport.setScrollBarThickness (10);
+        addAndMakeVisible (viewport);
+        addCap.setText ("Add", juce::dontSendNotification); addCap.setColour (juce::Label::textColourId, theme::text);
+        addBox.setInputRestrictions (9, "0123456789.");
+        addBox.setTextToShowWhenEmpty ("Hz", theme::dimText); addBox.setSelectAllWhenFocused (true);
+        addBox.setTooltip ("A hum the finder missed: type roughly where it is (in Hz) and press Add (or Enter). The exact pitch is measured within 2 % of what you typed; if nothing steady is there, what you typed is taken out exactly.");
+        addBox.onReturnKey = [this] { addPressed(); };
+        addBox.onEscapeKey = [this] { addBox.setText ({}); if (auto* p = getParentComponent()) p->grabKeyboardFocus(); };
+        addBtn.onClick = [this] { addPressed(); };
+        addBtn.setTooltip (addBox.getTooltip());
+        addAndMakeVisible (addCap); addAndMakeVisible (addBox); addAndMakeVisible (addBtn);
+        hardCap.setText ("Soft <-> Hard", juce::dontSendNotification); hardCap.setColour (juce::Label::textColourId, theme::text);
+        hard.setSliderStyle (juce::Slider::LinearHorizontal); hard.setRange (0.0, 100.0, 1.0); hard.setValue (70.0, juce::dontSendNotification); hard.setScrollWheelEnabled (false);
+        hard.setTextBoxStyle (juce::Slider::TextBoxRight, false, 58, 22); hard.setDoubleClickReturnValue (true, 70.0);
+        hard.textFromValueFunction = [] (double v) { dehum::Params p; p.hardness = v / 100.0; return juce::String ((int) std::lround (p.reductionDb())) + " dB"; };
+        hard.valueFromTextFunction = [] (const juce::String& t) { return juce::jlimit (0.0, 100.0, (t.retainCharacters ("0123456789.").getDoubleValue() - 6.0) / 34.0 * 100.0); };
+        hard.setNumDecimalPlacesToDisplay (0); hard.updateText();                      // (the text function came after the box: write it again)
+        hard.setTooltip ("How hard the hums are taken out. Soft (left): 6 dB off each tone through a notch 1.5 Hz wide - gentle, for a hum that is only a little too loud. "
+                         "Hard (right): 40 dB off (all of it) through a notch 4 Hz wide, so a hum that drifts a little still goes. Every notch is widened by how far that tone was measured to wander. "
+                         "The number is how many dB come off. Double-click: 30 dB.");
+        hard.onValueChange = [this] { if (onChange) onChange(); };
+        addAndMakeVisible (hardCap); addAndMakeVisible (hard);
+        for (auto* c : std::initializer_list<juce::Component*> { &findBtn, &addBtn }) c->setWantsKeyboardFocus (false);
+    }
+    /** The hums found (or none, with the finder's note). */
+    void setHums (std::vector<dehum::Hum> found, const juce::String& note, double seconds, double f0, double f1)
+    {
+        list = std::move (found); scanned = true;
+        if (list.empty()) summary.setText (note.isNotEmpty() ? note : juce::String ("No steady tone stands out in the box."), juce::dontSendNotification);
+        else summary.setText (juce::String ((int) list.size()) + (list.size() == 1 ? " hum found in " : " hums found in ") + juce::String (seconds, 1) + " s, " + juce::String ((int) f0) + " - " + juce::String ((int) f1)
+                              + " Hz. Untick what is music, change a pitch if it looks wrong, then press De-hum.", juce::dontSendNotification);
+        rebuild();
+        if (onChange) onChange();
+    }
+    /** A hum typed in (Add), measured by the window. */
+    void add (dehum::Hum h)
+    {
+        h.on = true;
+        for (auto& x : list) if (std::abs (x.editable() - h.hz) < 0.5 && x.kind == dehum::Hum::Kind::Tone) { x = h; rebuild(); if (onChange) onChange(); return; }
+        list.insert (list.begin(), h);
+        addBox.setText ({});
+        rebuild();
+        if (onChange) onChange();
+    }
+    /** A listed hum's pitch, as measured by the window after it was typed. */
+    void set (int index, const dehum::Hum& measured)
+    {
+        if (index < 0 || index >= (int) list.size()) return;
+        auto& h = list[(size_t) index];
+        h.setEditable (measured.hz);
+        if (h.kind == dehum::Hum::Kind::Tone) { h.aboveDb = measured.aboveDb; h.levelDb = measured.levelDb; h.wanderHz = measured.wanderHz; }
+        rebuild();
+        if (onChange) onChange();
+    }
+    const std::vector<dehum::Hum>& hums() const noexcept { return list; }
+    bool anyOn() const { for (auto& h : list) if (h.on) return true; return false; }
+    bool hasScanned() const noexcept { return scanned; }
+    double hardness() const { return hard.getValue() / 100.0; }
+    void setHardness (double h) { hard.setValue (juce::jlimit (0.0, 100.0, h * 100.0), juce::dontSendNotification); }
+    dehum::Params params() const { dehum::Params p; p.hums = list; p.hardness = hardness(); return p; }
+    /** Nothing selected any more, or the sound changed under the list: the list stays (its pitches still hold), the summary says what to do. */
+    void setStatus (const juce::String& s) { summary.setText (s, juce::dontSendNotification); }
+    void setReady (bool ready, bool haveSelection)
+    {
+        findBtn.setEnabled (ready); addBtn.setEnabled (ready); addBox.setEnabled (ready); hard.setEnabled (ready);
+        for (auto& r : rowsUi) { r.tick->setEnabled (ready); r.pitch->setEnabled (ready); }
+        juce::ignoreUnused (haveSelection);
+    }
+    void resized() override
+    {
+        const int rowH = 24, gap = 4;
+        auto r = getLocalBounds();
+        auto top = r.removeFromTop (rowH);
+        findBtn.setBounds (top.removeFromLeft (116)); top.removeFromLeft (8); summary.setBounds (top);
+        r.removeFromTop (gap);
+        auto bottom = r.removeFromBottom (rowH);
+        r.removeFromBottom (gap);
+        viewport.setBounds (r);
+        addCap.setBounds (bottom.removeFromLeft (34)); addBox.setBounds (bottom.removeFromLeft (72)); bottom.removeFromLeft (4); addBtn.setBounds (bottom.removeFromLeft (50)); bottom.removeFromLeft (16);
+        hardCap.setBounds (bottom.removeFromLeft (92)); hard.setBounds (bottom.removeFromLeft (juce::jmin (bottom.getWidth(), 210)));
+        layoutRows();
+    }
+private:
+    struct Row { std::unique_ptr<juce::ToggleButton> tick; std::unique_ptr<juce::Label> text; std::unique_ptr<juce::TextEditor> pitch; };
+    void addPressed()
+    {
+        const double hz = addBox.getText().getDoubleValue();
+        if (hz < 20.0 || hz > 20000.0) { summary.setText ("Type a pitch between 20 and 20000 Hz, then Add.", juce::dontSendNotification); return; }
+        if (onAdd) onAdd (hz);
+        if (auto* p = getParentComponent()) p->grabKeyboardFocus();
+    }
+    void rebuild()
+    {
+        rebuilding = true;                                                           // (a pitch box that has the focus loses it as it goes: no retune from that)
+        rowsUi.clear();
+        rebuilding = false;
+        for (size_t i = 0; i < list.size(); ++i)
+        {
+            const auto& h = list[i];
+            Row r;
+            r.tick = std::make_unique<juce::ToggleButton>(); r.tick->setToggleState (h.on, juce::dontSendNotification); r.tick->setWantsKeyboardFocus (false);
+            r.tick->setTooltip (h.on ? "Ticked: this one is taken out by De-hum. Untick it if it is part of the music." : "Unticked: left alone. Tick it to take it out too.");
+            const int k = (int) i;
+            r.tick->onClick = [this, k] { if (k < (int) list.size()) { list[(size_t) k].on = rowsUi[(size_t) k].tick->getToggleState(); if (onChange) onChange(); } };
+            r.text = std::make_unique<juce::Label>(); r.text->setColour (juce::Label::textColourId, h.on ? theme::text : theme::dimText); r.text->setFont (juce::FontOptions (12.5f)); r.text->setMinimumHorizontalScale (0.7f);
+            r.text->setText (h.text() + "  -  " + h.loudness() + (h.user ? " (yours)" : ""), juce::dontSendNotification);
+            r.text->setTooltip (h.kind == dehum::Hum::Kind::Series ? "A buzz: tones at whole-number multiples of one fundamental (the fundamental is the 1st harmonic). They go together; the box holds the fundamental - change it and every harmonic follows."
+                                : h.kind == dehum::Hum::Kind::Row ? "A row of tones evenly spaced, with no fundamental among them (a switching power supply, say). They go together; the box holds the lowest - change it and the others follow."
+                                : "One steady tone. The box holds its pitch: type another if it looks wrong, and the exact pitch is measured near what you typed.");
+            r.pitch = std::make_unique<juce::TextEditor>(); r.pitch->setInputRestrictions (9, "0123456789."); r.pitch->setJustification (juce::Justification::centredRight);
+            r.pitch->setSelectAllWhenFocused (true);                                    // (a click in the box and typing replaces the pitch)
+            r.pitch->setText (juce::String (h.editable(), h.kind == dehum::Hum::Kind::Series ? 2 : 1), juce::dontSendNotification);
+            r.pitch->setTooltip (r.text->getTooltip());
+            r.pitch->onReturnKey = [this, k] { retune (k); };
+            r.pitch->onFocusLost = [this, k] { retune (k); };
+            r.pitch->onEscapeKey = [this, k] { if (k < (int) list.size()) rowsUi[(size_t) k].pitch->setText (juce::String (list[(size_t) k].editable(), list[(size_t) k].kind == dehum::Hum::Kind::Series ? 2 : 1), juce::dontSendNotification); if (auto* p = getParentComponent()) p->grabKeyboardFocus(); };
+            rows.addAndMakeVisible (*r.tick); rows.addAndMakeVisible (*r.text); rows.addAndMakeVisible (*r.pitch);
+            rowsUi.push_back (std::move (r));
+        }
+        layoutRows();
+    }
+    void retune (int k)
+    {
+        if (rebuilding || k < 0 || k >= (int) list.size() || k >= (int) rowsUi.size()) return;
+        const double hz = rowsUi[(size_t) k].pitch->getText().getDoubleValue();
+        const double was = list[(size_t) k].editable();
+        const bool series = list[(size_t) k].kind == dehum::Hum::Kind::Series;
+        if (std::abs (hz - was) < 0.005) return;
+        if (hz < (series ? 10.0 : 20.0) || hz > 20000.0)                                 // (a fundamental may be as low as 10 Hz; a tone 20 Hz - 20 kHz)
+        {
+            rowsUi[(size_t) k].pitch->setText (juce::String (was, series ? 2 : 1), juce::dontSendNotification);
+            summary.setText (series ? "A fundamental must be between 10 and 20000 Hz." : "A pitch must be between 20 and 20000 Hz.", juce::dontSendNotification);
+            return;
+        }
+        if (series) { list[(size_t) k].setEditable (hz); rebuild(); if (onChange) onChange(); }     // (a fundamental is taken as typed: it is seldom there to measure)
+        else if (onRetune) onRetune (k, hz);
+        if (auto* p = getParentComponent()) p->grabKeyboardFocus();
+    }
+    void layoutRows()
+    {
+        const int w = juce::jmax (100, viewport.getWidth() - (rowsUi.size() * 24 > (size_t) viewport.getHeight() ? 12 : 0)), h = 24;
+        rows.setSize (w, juce::jmax (viewport.getHeight(), (int) rowsUi.size() * h));
+        int y = 0;
+        for (auto& r : rowsUi)
+        {
+            r.tick->setBounds (0, y, 24, h); r.pitch->setBounds (w - 78, y + 1, 76, h - 2); r.text->setBounds (26, y, w - 26 - 84, h);
+            y += h;
+        }
+    }
+    std::vector<dehum::Hum> list; bool scanned = false, rebuilding = false;
+    juce::TextButton findBtn { "Find hums [H]" }, addBtn { "Add" };
+    juce::Label summary, addCap, hardCap;
+    juce::TextEditor addBox; juce::Slider hard;
+    juce::Viewport viewport; juce::Component rows; std::vector<Row> rowsUi;
+};
+
 class RepairDialog : public JobDialogBase
 {
 public:
@@ -1773,6 +1950,15 @@ public:
         intro.setText (ctx.what, juce::dontSendNotification); intro.setColour (juce::Label::textColourId, theme::text); intro.setJustificationType (juce::Justification::topLeft);
         addAndMakeVisible (intro); addAndMakeVisible (view); addAndMakeVisible (info);
         addAndMakeVisible (harmBar); addAndMakeVisible (toolsBar);
+        addAndMakeVisible (humPanel); addAndMakeVisible (dehumBtn);                           // 3.44.0: the De-hum tab
+        humPanel.onFind = [this] { findHums(); };
+        humPanel.onAdd = [this] (double hz) { measureHum (-1, hz); };
+        humPanel.onRetune = [this] (int k, double hz) { measureHum (k, hz); };
+        humPanel.onChange = [this] { refreshControls(); };
+        dehumBtn.onClick = [this] { preview (3); };
+        dehumBtn.setColour (juce::TextButton::buttonColourId, theme::accent);
+        dehumBtn.setTooltip ("Takes the ticked hums out of the box's stretch of time on every track - each tone through its own narrow notch that follows the hum's level, fading in and out at the box's edges - "
+                             "and shows the result. With no box, the whole of what is loaded. Same rules as ReTouch: nothing is written yet, Play to listen, Undo if it did not work. Press Find hums again to see what is left.");
         info.setColour (juce::Label::textColourId, theme::text);
         dirBox.addItem ("Direction: Horizontal", 1); dirBox.addItem ("Direction: Vertical", 2); dirBox.addItem ("Direction: 2D (both)", 3);
         dirBox.setSelectedId (1, juce::dontSendNotification); dirBox.onChange = [this] { refreshControls(); invalidate(); };
@@ -1943,6 +2129,7 @@ public:
         if (p.containsKey (prefKey ("link"))) linkBtn.setToggleState (p.getBoolValue (prefKey ("link")), juce::dontSendNotification);
         if (p.containsKey (prefKey ("roll"))) view.setRoll (p.getDoubleValue (prefKey ("roll")));
         num ("consLevel", level);
+        if (p.containsKey (prefKey ("humHard"))) humPanel.setHardness (p.getDoubleValue (prefKey ("humHard")));
         tab = juce::jlimit (0, (int) kTabCount - 1, p.getIntValue (prefKey ("tab"), kTabTouch)); lightTab();
         const int sc = scaleBox.getSelectedId();
         if (sc == 6) view.setMel(); else { static const double w[] = { 0.0, 0.25, 0.5, 0.75, 1.0 }; view.setScale (w[juce::jlimit (0, 4, sc - 1)]); }
@@ -1956,6 +2143,7 @@ public:
         p.setValue (prefKey ("scale"), scaleBox.getSelectedId()); p.setValue (prefKey ("detail"), detailBox.getSelectedId());
         p.setValue (prefKey ("multi"), multiBtn.getToggleState()); p.setValue (prefKey ("link"), linkBtn.getToggleState()); p.setValue (prefKey ("roll"), view.rollValue()); p.setValue (prefKey ("tab"), tab);
         p.setValue (prefKey ("consLevel"), level.getValue());
+        p.setValue (prefKey ("humHard"), humPanel.hardness());
     }
     /** Closing (Cancel, the X or Escape) with fixes made but not written back asks first (they used to go without a word - Escape is easily pressed).
         False when it has asked: the answer closes the window. */
@@ -1983,7 +2171,7 @@ public:
         if (ctx.hold) ctx.hold (false);
     }
     // ---- the tools at the bottom: one tab for each tool (only one set of controls shows at a time, so the picture keeps the room), then the transport and the fixes ----
-    enum { kTabTouch, kTabGain, kTabClick, kTabDenoise, kTabConsonant, kTabCount };
+    enum { kTabTouch, kTabGain, kTabClick, kTabDenoise, kTabConsonant, kTabHum, kTabCount };       // (3.44.0: De-hum)
     static constexpr int kTabRows = (kTabCount + 1) / 2;                          // the tabs stand in two columns
     static constexpr int kRowH = 24, kRowGap = 4, kPanelPad = 6, kTabW = 104, kTabGap = 12, kCapGap = 12, kTransportH = 26, kActionW = 116;      // (kActionW: the button that does the work, the same size and in the same place on every tab)
     static constexpr int sliderW = 140;                                           // a slider with its number: short on purpose
@@ -2019,6 +2207,7 @@ public:
             case kTabClick:   return { &sensCap, &sens, &declickBtn };
             case kTabConsonant: return { &copyBtn, &copyMoveBtn, &consHint, &consCap, &consBox, &renameBtn, &forgetBtn, &levelCap, &level,
                                          &nudgeCap, &nudgeL5, &nudgeL1, &nudgeRead, &nudgeR1, &nudgeR5, &pasteBtn };
+            case kTabHum:     return { &humPanel, &dehumBtn };
             default:          return { &amountCap, &amount, &residualCap, &residual, &roomBtn, &roomCap, &denoiseBtn, &quietBox };
         }
     }
@@ -2032,10 +2221,11 @@ public:
     }
     void setupTabs()
     {
-        const char* names[] = { "ReTouch [R]", "Gain [G]", "De-click [D]", "Denoise [N]", "Consonants [C]" };
+        const char* names[] = { "ReTouch [R]", "Gain [G]", "De-click [D]", "Denoise [N]", "Consonants [C]", "De-hum [H]" };
         const char* tips[] = { "ReTouch: rebuilds or turns down the box you drew from its surroundings (key R).", "Gain: makes the sound in the box louder or quieter (key G).",
                                "De-click: finds and mends clicks (key D).", "Denoise: takes the room noise out of the box (keys L and N).",
-                               "Consonants: copy a consonant (every track, every channel, as each heard it), move an early or late one, or paste a kept one where one is missing (key C; P pastes; comma and full stop nudge)." };
+                               "Consonants: copy a consonant (every track, every channel, as each heard it), move an early or late one, or paste a kept one where one is missing (key C; P pastes; comma and full stop nudge).",
+                               "De-hum: finds the hums in the box - electrical hum, a buzz and its harmonics, a whistle - lists them for you to tick and tune, and takes them out (key H finds them)." };
         for (int i = 0; i < kTabCount; ++i)
         {
             auto& t = tabBtn[i]; t.setButtonText (names[i]); t.setTooltip (tips[i]); t.setClickingTogglesState (false);
@@ -2095,6 +2285,13 @@ public:
                 declickBtn.setBounds (action);
                 break;
             }
+            case kTabHum:
+            {   // 3.44.0: the panel has the rows to itself (Find and the summary, the list, Add and Soft <-> Hard); De-hum in the action corner
+                auto r = in.withBottom (lastRow.getBottom());
+                humPanel.setBounds (r.withTrimmedRight (kActionW + 8));
+                dehumBtn.setBounds (action);
+                break;
+            }
             case kTabConsonant:
             {   // copy; the kept ones; then the level, the nudge and Paste (in the action corner)
                 auto r0 = rowOf (in, 0);
@@ -2129,7 +2326,7 @@ public:
     {
         const int tabsW = 2 * kTabW + kRowGap;
         const int contentW = juce::jmax (100, area.getWidth() - 2 * kPanelPad - tabsW - kTabGap);
-        const int rows = juce::jmax ((int) kTabRows, reTouchRows (contentW));     // (the same height whichever tab shows, so the picture does not jump; the tabs need their rows)
+        const int rows = juce::jmax ((int) kTabRows, reTouchRows (contentW), tab == kTabHum ? HumPanel::kRows : 0);     // (the same height whichever tab shows, so the picture does not jump; the tabs need their rows. 3.44.0: De-hum's list needs two more)
         const int panelH = 2 * kPanelPad + rows * kRowH + (rows - 1) * kRowGap;
         const int trRows = transportRows (area.getWidth());
         const int total = panelH + trRows * (kRowGap + kTransportH);
@@ -2195,10 +2392,16 @@ protected:
             if (previewBtn.isEnabled()) preview (0);
             return true;
         }
-        if ((k.getTextCharacter() == 'h' || k.getTextCharacter() == 'H') && ! k.getModifiers().isAnyModifierKeyDown())      // 3.33.0: H: the harmonics of the box, on or off
+        if ((k.getTextCharacter() == 'h' || k.getTextCharacter() == 'H') && k.getModifiers().withoutMouseButtons() == juce::ModifierKeys::shiftModifier)      // 3.33.0: Shift+H (3.44.0: was H): the harmonics of the box, on or off
         {
             selectTab (kTabTouch);
             harmBar.toggle();
+            return true;
+        }
+        if ((k.getTextCharacter() == 'h' || k.getTextCharacter() == 'H') && ! k.getModifiers().isAnyModifierKeyDown())      // 3.44.0: H: the De-hum tab, and look for the hums in the box
+        {
+            selectTab (kTabHum);
+            findHums();
             return true;
         }
         if (sideKey (k)) return true;                                                                                         // 3.33.0: Z, \ and X: L, C and R
@@ -2390,6 +2593,7 @@ private:
         playBtn.setEnabled (ready); stopBtn.setEnabled (ready); loopBtn.setEnabled (ready); hearBox.setEnabled (ready);
         previewBtn.setEnabled (ready && view.hasSelection()); declickBtn.setEnabled (ready); gainBtn.setEnabled (ready && view.hasSelection());
         denoiseBtn.setEnabled (ready && view.hasSelection() && haveRoomTone()); roomBtn.setEnabled (ready && view.hasSelection());
+        dehumBtn.setEnabled (ready && humPanel.anyOn()); humPanel.setReady (ready, view.hasSelection());                     // 3.44.0
         roomCap.setText (roomShortText(), juce::dontSendNotification); roomCap.setTooltip (roomText());
         finishBtn.setEnabled (ready && (haveRepair() || ctx.pairWritten != nullptr));
         revertBtn.setEnabled (ready && ! history.empty());
@@ -2406,12 +2610,17 @@ private:
         nudgeRead.setText (nudgeText(), juce::dontSendNotification);
         resized();                                   // (what is shown decides how the boxes are packed)
     }
-    /** The settings as they are now (and the part of the area they apply to). what: 0 = ReTouch (or Gain), 1 = De-click, 2 = Denoise. */
+    /** The settings as they are now (and the part of the area they apply to). what: 0 = ReTouch (or Gain), 1 = De-click, 2 = Denoise, 3 = De-hum. */
     FixSpec buildSpec (juce::int64& t0, juce::int64& t1, int what) const
     {
         FixSpec spec; t0 = 0; t1 = ctx.length;
         if (view.hasSelection()) { t0 = (juce::int64) std::llround (view.selT0() * ctx.rate); t1 = (juce::int64) std::llround (view.selT1() * ctx.rate); }
-        if (what == 2)
+        if (what == 3)
+        {
+            spec.kind = FixSpec::Kind::Dehum; spec.hum = humPanel.params();
+            spec.f0 = view.hasSelection() ? view.selF0() : 0.0; spec.f1 = view.hasSelection() ? view.selF1() : ctx.rate * 0.5;
+        }
+        else if (what == 2)
         {
             spec.kind = FixSpec::Kind::Denoise; spec.f0 = view.selF0(); spec.f1 = view.selF1();
             spec.dn.amountDb = amount.getValue(); spec.dn.residualDb = residual.getValue(); spec.dn.quietest = rtBoxT1 > rtBoxT0 && rtQuietest;
@@ -2435,6 +2644,60 @@ private:
     }
     double seconds() const { return (double) ctx.length / ctx.rate; }
     juce::String keepName() const { return ctx.acceptText.isNotEmpty() ? ctx.acceptText : juce::String ("Write back to file"); }     // (the keep button, as it is named)
+    /** 3.44.0: the box as the hum finder reads it - the picture's tracks (one mono channel each) over the selection's time span (all of it with no box). */
+    dehum::Source humSource (double& f0, double& f1) const
+    {
+        juce::int64 t0 = 0, t1 = ctx.length;
+        if (view.hasSelection()) { t0 = (juce::int64) std::llround (view.selT0() * ctx.rate); t1 = (juce::int64) std::llround (view.selT1() * ctx.rate); }
+        f0 = view.hasSelection() ? view.selF0() : 20.0; f1 = view.hasSelection() ? view.selF1() : ctx.rate * 0.5;
+        auto tracks = origTracks;                                                // (kept alive by the source's lambda)
+        dehum::Source src; src.channels = tracks != nullptr ? (int) tracks->size() : 0; src.length = juce::jmax ((juce::int64) 0, t1 - t0);
+        src.read = [tracks, t0] (int ch, juce::int64 at, int n, float* dst)
+        {
+            if (tracks == nullptr || ch < 0 || ch >= (int) tracks->size()) return false;
+            const auto& x = (*tracks)[(size_t) ch];
+            for (int i = 0; i < n; ++i) { const juce::int64 j = t0 + at + i; dst[i] = j >= 0 && j < (juce::int64) x.size() ? x[(size_t) j] : 0.0f; }
+            return true;
+        };
+        return src;
+    }
+    /** H: looks for the hums in the box (on a job thread: a long box is many frames) and lists them in the De-hum tab. */
+    void findHums()
+    {
+        if (! scanned || running || origTracks == nullptr) return;
+        double f0 = 0.0, f1 = 0.0; auto src = humSource (f0, f1); const double rate = ctx.rate;
+        const double secs = (double) src.length / rate;
+        auto found = std::make_shared<dehum::Found>();
+        status.setText ("Looking for hums in " + juce::String (secs, 1) + " s, " + juce::String ((int) f0) + " - " + juce::String ((int) f1) + " Hz...", juce::dontSendNotification);
+        juce::Component::SafePointer<RepairDialog> self (this);
+        runJob ([src, rate, f0, f1, found] (AudioJob& j) -> juce::String { *found = dehum::find (src, rate, f0, f1, [&j] { return j.cancelled(); }); return {}; },
+                [self, found, secs, f0, f1] (const juce::String& err)
+                {
+                    if (self == nullptr) return;
+                    if (err.isNotEmpty()) { self->status.setText (err, juce::dontSendNotification); self->refreshControls(); return; }
+                    self->humPanel.setHums (found->hums, found->note, secs, f0, f1);
+                    self->status.setText (found->hums.empty() ? found->note : juce::String ((int) found->hums.size()) + (found->hums.size() == 1 ? " hum found" : " hums found") + " (loudest first). Untick what is music, then press De-hum; Play to listen, Undo if it did not work.", juce::dontSendNotification);
+                    self->refreshControls();
+                });
+    }
+    /** A pitch typed in the De-hum tab (k < 0: Add; else the k-th hum's): measured in the box near what was typed, then listed. */
+    void measureHum (int k, double hz)
+    {
+        if (! scanned || running || origTracks == nullptr || hz <= 0.0) return;
+        double f0 = 0.0, f1 = 0.0; auto src = humSource (f0, f1); const double rate = ctx.rate;
+        auto out = std::make_shared<dehum::Hum>();
+        juce::Component::SafePointer<RepairDialog> self (this);
+        runJob ([src, rate, hz, out] (AudioJob& j) -> juce::String { *out = dehum::measureAt (src, rate, hz, juce::jmax (5.0, 0.02 * hz), [&j] { return j.cancelled(); }); return {}; },
+                [self, out, k, hz] (const juce::String& err)
+                {
+                    if (self == nullptr) return;
+                    if (err.isNotEmpty()) { self->status.setText (err, juce::dontSendNotification); self->refreshControls(); return; }
+                    if (k < 0) self->humPanel.add (*out); else self->humPanel.set (k, *out);
+                    self->status.setText (out->aboveDb > 0.0 ? juce::String (hz, 1) + " Hz typed: a steady tone at " + juce::String (out->hz, 1) + " Hz, " + out->loudness() + ". Ticked; press De-hum to take it out."
+                                                             : juce::String (hz, 1) + " Hz typed: nothing steady stands out within 2 % of it, so exactly that pitch is taken out.", juce::dontSendNotification);
+                    self->refreshControls();
+                });
+    }
     /** G: the gain set in the panel applied to the box (3.29.0: no pop-up - the slider sits in the panel), a fix like ReTouch (Undo takes it off). */
     void applyGain()
     {
@@ -2449,7 +2712,8 @@ private:
     {
         if (! scanned || running || origTracks == nullptr) return;
         if (what == 2 && ! haveRoomTone()) { status.setText ("No room tone: draw a box over a part that is only room and press L, or use the edit window's Room tone button first.", juce::dontSendNotification); return; }
-        if (what != 1 && ! view.hasSelection()) return;                            // (3.30.1: only De-click works without a box)
+        if (what == 3 && ! humPanel.anyOn()) { status.setText (humPanel.hasScanned() ? "No hum is ticked: tick one in the list, or add one by hand." : "Press Find hums (H) first: it lists the hums in the box for De-hum to take out.", juce::dontSendNotification); return; }
+        if (what != 1 && what != 3 && ! view.hasSelection()) return;               // (3.30.1: only De-click works without a box; 3.44.0: and De-hum, over everything loaded)
         juce::int64 t0 = 0, t1 = 0; const auto spec = buildSpec (t0, t1, what);
         startFixes (opsOverSelection (spec, t0, t1));
     }
@@ -2461,7 +2725,7 @@ private:
     {
         std::vector<RepairOp> group;
         if (! view.hasSelection()) { group.push_back ({ spec, t0, t1 }); return group; }
-        if (spec.kind == FixSpec::Kind::Declick)
+        if (spec.kind == FixSpec::Kind::Declick || (spec.kind == FixSpec::Kind::Dehum && ! view.brushed()))     // (3.44.0: De-hum takes its own tones, whatever the box's pitch range: one change per stretch of time; a brush shape keeps its mask)
         {
             for (auto& sp : view.selectionSpans()) group.push_back ({ spec, (juce::int64) std::llround (sp.first * ctx.rate), (juce::int64) std::llround (sp.second * ctx.rate) });
             return group;
@@ -2495,8 +2759,8 @@ private:
         const auto trackIds = ctx.trackIds;
         struct Out { MergedSpectrogram spec; std::shared_ptr<std::vector<std::vector<float>>> tracks; std::vector<RepairOp> ops; SpectralRepair::DeclickReport rep { 0, 0, 0, 0 }; };
         auto out = std::make_shared<Out>();
-        status.setText (spec.kind == FixSpec::Kind::Denoise ? "Denoising the box..." : spec.kind == FixSpec::Kind::Paste ? "Pasting the consonant..." : "Fixing...", juce::dontSendNotification);
-        previewBtn.setEnabled (false); declickBtn.setEnabled (false); denoiseBtn.setEnabled (false); finishBtn.setEnabled (false); revertBtn.setEnabled (false); compareBtn.setEnabled (false);
+        status.setText (spec.kind == FixSpec::Kind::Denoise ? "Denoising the box..." : spec.kind == FixSpec::Kind::Paste ? "Pasting the consonant..." : spec.kind == FixSpec::Kind::Dehum ? "Taking the hums out..." : "Fixing...", juce::dontSendNotification);
+        previewBtn.setEnabled (false); declickBtn.setEnabled (false); denoiseBtn.setEnabled (false); dehumBtn.setEnabled (false); finishBtn.setEnabled (false); revertBtn.setEnabled (false); compareBtn.setEnabled (false);
         juce::Component::SafePointer<RepairDialog> self (this);
         const int detailN = detailSize();
         auto roomMono = std::make_shared<std::vector<denoise::Profile>> (ctx.roomMono);
@@ -2600,6 +2864,11 @@ private:
                         lostNote << "Gain " << (fixRef.repair.gainDb <= -120.0 ? juce::String ("-inf") : (fixRef.repair.gainDb > 0 ? "+" : "") + juce::String (fixRef.repair.gainDb, 1)) << " dB on the box. ";
                     if (fixRef.kind == FixSpec::Kind::Denoise)
                         lostNote << "Denoised the box (" << (int) fixRef.f0 << " - " << (int) fixRef.f1 << " Hz, residual " << juce::String (fixRef.dn.residualDb, 0) << " dB). ";
+                    if (fixRef.kind == FixSpec::Kind::Dehum)
+                    {
+                        lostNote << "De-hum: " << fixRef.hum.summary() << " taken out of " << specTime ((double) self->pvT0 / self->ctx.rate, 2) << " - " << specTime ((double) self->pvT1 / self->ctx.rate, 2) << " on every track. ";
+                        self->humPanel.setStatus ("Taken out: " + fixRef.hum.summary() + ". Play to listen; Undo takes it off; Find hums again shows what is left.");
+                    }
                     if (fixRef.kind == FixSpec::Kind::Declick)
                     {
                         const auto& r = out->rep;
@@ -2699,6 +2968,7 @@ private:
     {
         if (history.empty() || running) return;
         if (ctx.stop) ctx.stop();
+        if (humPanel.hasScanned()) humPanel.setStatus ("Undo: the sound is as it was before the last fix. Press Find hums again to see the hums as they are now.");     // (3.44.0: the list may be stale)
         origTracks = history.back().tracks; origSpec = history.back().spec; const int n = juce::jmax (1, history.back().ops);
         const double from = showingAfter ? history.back().from : 0.0, to = showingAfter ? history.back().to : -1.0;     // (showing the sound before it already: anywhere)
         history.pop_back();
@@ -2799,6 +3069,7 @@ private:
         r.removeFromLeft (juce::jmin (kCapGap, r.getWidth()));
     }
     juce::TextButton roomBtn { "This box is the room tone [L]" }, denoiseBtn { "Denoise [N]" }; double rtBoxT0 = -1.0, rtBoxT1 = -1.0;
+    HumPanel humPanel; juce::TextButton dehumBtn { "De-hum" };                                               // 3.44.0: the De-hum tab
     std::vector<std::pair<double, double>> rtSpans; bool rtQuietest = false; juce::ToggleButton quietBox;      // 3.29.0: the room tone's stretches; learned from the quietest moments
     juce::Slider gainSlider; juce::Label gainCap;                                                             // 3.29.0: the Gain tab's amount, in the panel (G applies it at once)
     juce::TextButton playBtn { "Play" }, stopBtn { "Stop" };

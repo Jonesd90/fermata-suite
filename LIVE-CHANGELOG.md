@@ -8,6 +8,18 @@ fermata:Live is the live-concert recorder that goes with fermata (see `docs/LIVE
 
 A line that starts with **Shared:** is a change to the code fermata shares (see `COMPATIBILITY.md`), so fermata's next build mentions it too.
 
+## 0.7.0
+Built 9 November 2026 (the conversation for both programs), with Claude Fable.
+- **De-hum in the Fixer** (asked for on 9 November 2026). The Fixer's fix list has "De-hum: find the hums in the part and take them out": Try looks
+  through the chosen part of the take (every track) for tones that never change - the mains, a buzz and its harmonics, a whistle - and takes out
+  every one that stands 15 dB or more above the room, each through its own narrow notch that follows the hum's level; the slider is Soft <-> Hard
+  (6 dB off, gently, to 40 dB - all of it; 30 to start). What it found is said as the try plays ("De-hum (30 dB off): Buzz at 30.18 Hz: 16
+  harmonics, 211 - 1479 Hz (28 dB above the room), 1439.0 Hz (25 dB...)"); nothing found: it says so and does nothing. Save it as a version as any
+  other try. The Fixer's ReTouch window (the shared one) has the full De-hum tab too: key H lists the hums for you to tick, untick and retune.
+- **Shared:** fermata 3.44.0's De-Hummer - `src/core/DeHum.h` (new), `FixSpec::Kind::Dehum` (`src/core/AudioOps.h/.cpp`) and the ReTouch window's
+  De-hum tab (`src/ui/SpectralWindow.h`; Harmonics moved from H to Shift+H). fermata:Live's own changes are in `FixerWindow.cpp` only. No file
+  format changes.
+
 ## 0.6.0
 **The second seat** (asked for on 6 November 2026: two people working fermata:Live on one PC, each with a mouse and keyboard of their own - the
 user chose the driver way, option 3 of the five set out). Built in the fermata:Live conversation. The mixers, which were to be 0.6.0, are now 0.7.0.

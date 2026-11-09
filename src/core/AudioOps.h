@@ -4,6 +4,7 @@
 #include "PitchShift.h"
 #include "SpectralRepair.h"
 #include "Denoise.h"
+#include "DeHum.h"
 #include "ConsonantData.h"
 #include <unordered_map>
 
@@ -38,7 +39,7 @@ struct SoftMask
 /** What a fix does to the audio. */
 struct FixSpec
 {
-    enum class Kind { Pitch, Patch, Declick, Reharmonise, Denoise, Paste } kind = Kind::Pitch;
+    enum class Kind { Pitch, Patch, Declick, Reharmonise, Denoise, Paste, Dehum } kind = Kind::Pitch;      // (3.44.0: Dehum)
     double cents = 0.0;                     // Pitch: +100 = one semitone up
     bool useCurve = false;                  // Pitch: follow 'curve' instead of the fixed 'cents'
     PitchCurve curve;                       // Pitch curve: cents against time (seconds); time 0 is 'curveZero' samples after the first sample of the fixed part
@@ -88,9 +89,13 @@ struct FixSpec
         that was cut at the start of a piece of an edit begins part of the way into its mask. */
     std::shared_ptr<const SoftMask> mask;
     juce::int64 maskLead = 0;
+    /** 3.44.0: Dehum - the De-Hummer (DeHum.h) on the box's time span [s0, s1): the ticked hums' tones taken out of every channel, whatever the box's
+        pitch range (the hums were found in it, or typed in). */
+    dehum::Params hum;
     juce::String shortName() const
     {
         if (kind == Kind::Paste) return "consonant";
+        if (kind == Kind::Dehum) return "de-hum";
         if (kind == Kind::Pitch && useCurve) return "pitch curve";
         if (kind == Kind::Pitch) return "pitch " + juce::String (cents >= 0 ? "+" : "") + juce::String (cents, 0) + "c";
         if (kind == Kind::Reharmonise) return "reharmonised";

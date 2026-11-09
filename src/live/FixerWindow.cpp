@@ -79,12 +79,34 @@ static bool readTakeSpan (const FixTry& t, const FixTry::Track& tr, ChunkTimelin
 
 static juce::String runFix (FixTry& t, AudioJob& job)
 {
-    const juce::int64 ctx = (juce::int64) std::llround (1.0 * t.rate);
+    const juce::int64 ctx = (juce::int64) std::llround ((t.spec.kind == FixSpec::Kind::Dehum ? 2.0 : 1.0) * t.rate);     // (a de-hum's filters settle over two seconds)
     const juce::int64 c0 = juce::jmax ((juce::int64) 0, t.from - ctx), c1 = juce::jmin (t.takeLength > 0 ? t.takeLength : t.to + ctx, t.to + ctx);
     if (c1 <= c0 || t.to <= t.from) return "Nothing to fix there.";
     ChunkTimeline timeline;
     openTimeline (t, timeline);
     const int n = (int) (c1 - c0);
+    if (t.spec.kind == FixSpec::Kind::Dehum)                          // 0.7.0: the hums are found first, in the part itself (every track's mono mix), and the ticked ones taken out
+    {
+        dehum::Source src; src.channels = (int) t.tracks.size(); src.length = t.to - t.from;
+        src.read = [&t, &timeline] (int ch, juce::int64 at, int cnt, float* dst)
+        {
+            std::vector<std::vector<float>> buf;
+            if (ch < 0 || ch >= (int) t.tracks.size() || ! readTakeSpan (t, t.tracks[(size_t) ch], timeline, t.from + at, cnt, buf) || buf.empty()) return false;
+            const float inv = 1.0f / (float) buf.size();
+            for (int i = 0; i < cnt; ++i) { float v = 0.0f; for (auto& c : buf) v += i < (int) c.size() ? c[(size_t) i] : 0.0f; dst[i] = v * inv; }
+            return true;
+        };
+        auto found = dehum::find (src, t.rate, t.spec.f0, t.spec.f1, [&job] { return job.cancelled(); });
+        if (job.cancelled()) return "Cancelled.";
+        t.spec.hum.hums = found.hums;
+        if (! t.spec.hum.notches().empty())
+        {
+            juce::String names; int k = 0;
+            for (auto& h : t.spec.hum.hums) if (h.on) names << (k++ > 0 ? ", " : "") << h.text() << " (" << (int) std::lround (h.aboveDb) << " dB above the room)";
+            t.what << ": " << names;
+        }
+        else return found.note.isNotEmpty() ? found.note : juce::String ("No steady hum stands 15 dB above the room in that part. Open the ReTouch window to see the fainter ones and tick them yourself.");
+    }
     int done = 0;
     for (auto& tr : t.tracks)
     {
@@ -135,7 +157,7 @@ static juce::String renderOps (const FixTry& t, const std::vector<fixtools::Repa
         if (op.s1 <= op.s0) continue;
         const auto reach = audioops::findsLost (op.spec, sr, op.s0, op.s1) ? audioops::lostReach (sr) : 0;       // (putting lost samples back reaches past the box)
         lo = juce::jmin (lo, juce::jmax ((juce::int64) 0, op.s0 - reach)); hi = juce::jmax (hi, juce::jmin (len, op.s1 + reach));
-        margin = juce::jmax (margin, (juce::int64) ((op.spec.kind == FixSpec::Kind::Patch || op.spec.kind == FixSpec::Kind::Denoise ? 8.0 : 1.0) * sr));
+        margin = juce::jmax (margin, (juce::int64) ((op.spec.kind == FixSpec::Kind::Patch || op.spec.kind == FixSpec::Kind::Denoise || op.spec.kind == FixSpec::Kind::Dehum ? 8.0 : 1.0) * sr));
         fo.push_back (op);
     }
     if (fo.empty() || hi <= lo) return "Nothing to do.";
@@ -212,6 +234,7 @@ static juce::String describeOps (const std::vector<fixtools::RepairOp>& ops)
             case FixSpec::Kind::Declick: k = "De-click"; break;
             case FixSpec::Kind::Denoise: k = "Denoise"; break;
             case FixSpec::Kind::Paste:   k = "consonant pasted"; break;
+            case FixSpec::Kind::Dehum:   k = "De-hum"; break;                                    // (0.7.0: fermata 3.44.0's De-Hummer)
             case FixSpec::Kind::Patch:   k = o.spec.repair.mode == RepairMode::Gain ? "Gain" : "ReTouch"; break;
             default:                     k = "fix"; break;
         }
@@ -572,7 +595,11 @@ public:
         selLabel.setFont (juce::FontOptions (12.5f)); selLabel.setColour (juce::Label::textColourId, theme::text);
         fixKind.addItem ("De-click", 1); fixKind.addItem ("Repair: pull down what sticks out (a cough, a pencil, a click)", 2); fixKind.addItem ("Repair: rebuild from the sound around it", 3);
         fixKind.addItem ("Denoise (the room tone of the quietest moments around it)", 4); fixKind.addItem ("Gain", 5);
+        fixKind.addItem ("De-hum: find the hums in the part and take them out", 6);          // 0.7.0 (fermata 3.44.0's De-Hummer)
         fixKind.setSelectedId (2, juce::dontSendNotification);
+        fixKind.setTooltip ("What Try does to the part. De-hum looks through the part for tones that never change - the mains, a buzz and its harmonics, a whistle - and takes out every one "
+                            "that stands 15 dB or more above the room (the slider says how hard: 6 dB off, gently, to 40 dB, all of it); what it found is said when it plays. "
+                            "To see the hums, tick and tune them yourself, open the ReTouch window: its De-hum tab (key H).");
         fixKind.onChange = [this] { lastTry.reset(); app.setAudition (nullptr); refreshFixControls(); };
         amount.setSliderStyle (juce::Slider::LinearHorizontal); amount.setTextBoxStyle (juce::Slider::TextBoxRight, false, 60, 20);
         amount.onValueChange = [this] { lastTry.reset(); app.setAudition (nullptr); };
@@ -909,6 +936,7 @@ private:
         if (k == 1) { amountLabel.setText ("Sensitivity (1 - 10)", juce::dontSendNotification); amount.setRange (1.0, 10.0, 0.5); amount.setValue (6.0, juce::dontSendNotification); }
         else if (k == 2 || k == 3) { amountLabel.setText ("Strength (%)", juce::dontSendNotification); amount.setRange (10.0, 100.0, 1.0); amount.setValue (100.0, juce::dontSendNotification); }
         else if (k == 4) { amountLabel.setText ("Amount (dB more / less)", juce::dontSendNotification); amount.setRange (-6.0, 6.0, 0.5); amount.setValue (0.0, juce::dontSendNotification); }
+        else if (k == 6) { amountLabel.setText ("Soft <-> Hard (dB off)", juce::dontSendNotification); amount.setRange (6.0, 40.0, 1.0); amount.setValue (30.0, juce::dontSendNotification); }
         else { amountLabel.setText ("Gain (dB)", juce::dontSendNotification); amount.setRange (-30.0, 12.0, 0.5); amount.setValue (-6.0, juce::dontSendNotification); }
         const auto* t = selectedTake();
         if (selB <= selA) selLabel.setText ("Drag on the timeline to choose what to fix: every track of the take (Alt + drag: only the tracks you drag over; P: a whole take, its header clicked first).", juce::dontSendNotification);
@@ -949,6 +977,8 @@ private:
                     fx->what = "Repair, rebuilt from the sound around it (" + juce::String ((int) v) + " %)"; break;
             case 4: spec.kind = FixSpec::Kind::Denoise; spec.f0 = 20.0; spec.f1 = juce::jmin (24000.0, t->rate * 0.5); spec.dn.amountDb = v;
                     fx->what = "Denoise (" + juce::String (v, 1) + " dB)"; break;
+            case 6: spec.kind = FixSpec::Kind::Dehum; spec.f0 = 20.0; spec.f1 = juce::jmin (20000.0, t->rate * 0.5); spec.hum.hardness = (v - 6.0) / 34.0;      // (the hums are found in runFix, from the part itself)
+                    fx->what = "De-hum (" + juce::String ((int) v) + " dB off)"; break;
             default: spec.kind = FixSpec::Kind::Patch; spec.f0 = 20.0; spec.f1 = juce::jmin (24000.0, t->rate * 0.5); spec.repair.mode = RepairMode::Gain; spec.repair.gainDb = v;
                     fx->what = "Gain " + juce::String (v, 1) + " dB"; break;
         }
