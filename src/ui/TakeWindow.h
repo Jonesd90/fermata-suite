@@ -17,6 +17,9 @@ class TakeWindowComponent : public juce::Component, public juce::FileDragAndDrop
 {
 public:
     TakeWindowComponent (AppContext&, const juce::Uuid& windowId);
+    /** 3.43.0: one of this window's transport keys, pressed from the transport row of a mixer that plays it (the processing or a cue mixer): exactly as the key here. */
+    void transportKey (AppContext::TransportKey k);
+    const juce::Uuid& getWindowId() const noexcept { return windowId; }
     ~TakeWindowComponent() override;
     void resized() override;
     bool keyPressed (const juce::KeyPress&) override;

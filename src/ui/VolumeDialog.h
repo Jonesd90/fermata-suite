@@ -4,6 +4,30 @@
 
 namespace td
 {
+/** 3.43.0: the level fader of the "Change volume" box: -inf at the bottom to +36 dB (kVolumeChangeMaxDb) at the top. The lower four-fifths of its travel
+    feel exactly as the whole fader did before (-inf to +12 dB, -20 dB half way up them); the top fifth goes on from +12 to +36 dB. */
+inline juce::NormalisableRange<double> volumeFaderRange()
+{
+    constexpr double lo = -100.0, knee = 12.0, hi = (double) kVolumeChangeMaxDb, kneeAt = 0.8;
+    const double skew = std::log (0.5) / std::log ((-20.0 - lo) / (knee - lo));
+    auto from01 = [=] (double, double, double p)
+    {
+        p = juce::jlimit (0.0, 1.0, p);
+        if (p >= kneeAt) return knee + (p - kneeAt) / (1.0 - kneeAt) * (hi - knee);
+        const double q = p / kneeAt;
+        return q <= 0.0 ? lo : lo + (knee - lo) * std::exp (std::log (q) / skew);
+    };
+    auto to01 = [=] (double, double, double v)
+    {
+        v = juce::jlimit (lo, hi, v);
+        if (v >= knee) return kneeAt + (v - knee) / (hi - knee) * (1.0 - kneeAt);
+        const double q = (v - lo) / (knee - lo);
+        return q <= 0.0 ? 0.0 : kneeAt * std::pow (q, skew);
+    };
+    auto snap = [=] (double, double, double v) { return juce::jlimit (lo, hi, std::round (v * 10.0) / 10.0); };
+    return juce::NormalisableRange<double> (lo, hi, from01, to01, snap);
+}
+
 /** The little mixer for changing the volume inside a grouped piece (like Pyramix's and SADiE's clip volume): one fader per file of the piece.
     The change starts at the point you right-clicked (or at the start of the piece), and can glide over 0.1 - 1.0 s instead of jumping. */
 class VolumeChangePanel : public juce::Component
@@ -25,7 +49,7 @@ public:
         {
             auto s = std::make_unique<juce::Slider> (juce::Slider::LinearVertical, juce::Slider::TextBoxBelow);
             setupFader (*s);
-            s->setValue (juce::jlimit (-100.0f, 12.0f, ex != nullptr && (size_t) i < ex->db.size() ? ex->db[(size_t) i] : r->levelDbAt ((size_t) i, rel)), juce::dontSendNotification);
+            s->setValue (juce::jlimit (-100.0f, kVolumeChangeMaxDb, ex != nullptr && (size_t) i < ex->db.size() ? ex->db[(size_t) i] : r->levelDbAt ((size_t) i, rel)), juce::dontSendNotification);
             addAndMakeVisible (*s);
             auto l = std::make_unique<juce::Label>();
             l->setText (r->files[(size_t) i].trackName, juce::dontSendNotification);
@@ -37,13 +61,13 @@ public:
         }
         allFader.reset (new juce::Slider (juce::Slider::LinearVertical, juce::Slider::TextBoxBelow));
         setupFader (*allFader);
-        allFader->setRange (-24.0, 24.0, 0.1); allFader->setSkewFactor (1.0);
+        allFader->setRange (-(double) kVolumeChangeMaxDb, (double) kVolumeChangeMaxDb, 0.1); allFader->setSkewFactor (1.0);     // (3.43.0: +/-36 dB, was 24)
         allFader->setValue (0.0, juce::dontSendNotification);
-        allFader->setTooltip ("Moves every fader up or down together, keeping the balance between them");
+        allFader->setTooltip ("Moves every fader up or down together, keeping the balance between them (up to +36 dB)");
         allFader->onValueChange = [this]
         {
             const double d = allFader->getValue() - lastAll; lastAll = allFader->getValue();
-            for (auto& f : faders) f->setValue (juce::jlimit (-100.0, 12.0, f->getValue() + d), juce::dontSendNotification);
+            for (auto& f : faders) f->setValue (juce::jlimit (-100.0, (double) kVolumeChangeMaxDb, f->getValue() + d), juce::dontSendNotification);
         };
         addAndMakeVisible (*allFader);
         allLabel.setText ("All", juce::dontSendNotification); allLabel.setJustificationType (juce::Justification::centred);
@@ -106,13 +130,15 @@ public:
 private:
     static void setupFader (juce::Slider& s)
     {
-        s.setRange (-100.0, 12.0, 0.1);
-        s.setSkewFactorFromMidPoint (-20.0);
+        s.setNormalisableRange (volumeFaderRange());              // 3.43.0: -inf to +36 dB (was +12), the part below +12 as before
+        s.setTooltip ("This track's level from here: 0 = untouched, up to +36 dB (the top fifth of the fader is +12 to +36). Double-click: 0 dB. You can type a number in the box under it.");
         s.setDoubleClickReturnValue (true, 0.0);
         s.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 62, 20);
         s.setTextValueSuffix (" dB");
         s.textFromValueFunction = [] (double v) { return v <= -99.9 ? juce::String ("-inf") : juce::String (v, 1); };
         s.valueFromTextFunction = [] (const juce::String& t) { return t.containsIgnoreCase ("inf") ? -100.0 : t.getDoubleValue(); };
+        s.setNumDecimalPlacesToDisplay (1);
+        s.updateText();                                           // (3.43.0: the range has no step of its own now, so the box is written again with the function above)
     }
 
     void doApply()
@@ -168,7 +194,7 @@ inline void showVolumeChange (AppContext& app, const juce::Uuid& editId, const j
 }
 
 /** A volume change over a stretch of time (the area between marks 1 and 2) for the tracks that are marked (all of them, or just those chosen with Ctrl + Alt + drag).
-    Each track has a fader from +30 dB (top) through 0 (no change, middle) down to -inf (bottom). The level glides to the new value over the fade-in time at the start of
+    Each track has a fader from +36 dB (top; 3.43.0, was +30) through 0 (no change, middle) down to -inf (bottom). The level glides to the new value over the fade-in time at the start of
     the area and glides back to where it was over the fade-out time at the end of it.
     3.18.5: the change is heard at once (Play in the box plays it), and it can be opened again later (double-click or right-click its teal line in the edit window) to
     change the amounts and the fade times: its points share a group (GainChange::group / role). While the box is open the undo history waits, so Done is one
@@ -275,10 +301,11 @@ public:
 
 private:
     static constexpr int kColW = 74;
+    static constexpr float kMostKept = 60.0f;                   // 3.43.0: the most a level can be after the change (what a project file keeps: Project.cpp, dbFromVar), so +36 is added in full
     static void setupFader (juce::Slider& s)
     {
-        s.setRange (-100.0, 30.0, 0.1);
-        s.setSkewFactorFromMidPoint (0.0);                      // 0 dB (no change) is in the middle of the fader: +30 at the top, -inf at the bottom
+        s.setRange (-100.0, (double) kVolumeChangeMaxDb, 0.1);
+        s.setSkewFactorFromMidPoint (0.0);                      // 0 dB (no change) is in the middle of the fader: +36 at the top, -inf at the bottom
         s.setDoubleClickReturnValue (true, 0.0);
         s.setValue (0.0, juce::dontSendNotification);
         s.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 62, 20);
@@ -319,7 +346,7 @@ private:
         allFader->onValueChange = [this]
         {
             const double d = allFader->getValue() - lastAll; lastAll = allFader->getValue();
-            for (auto& f : faders) f->setValue (juce::jlimit (-100.0, 30.0, f->getValue() <= -99.9 && d > 0 ? d : f->getValue() + d), juce::dontSendNotification);
+            for (auto& f : faders) f->setValue (juce::jlimit (-100.0, (double) kVolumeChangeMaxDb, f->getValue() <= -99.9 && d > 0 ? d : f->getValue() + d), juce::dontSendNotification);
             pending = true;
         };
         addAndMakeVisible (*allFader);
@@ -402,7 +429,7 @@ private:
                         bool used = false; const double d = deltaFor (r.files[k].trackId, used);
                         if (! used) continue;
                         const float base = juce::Decibels::gainToDecibels (r.levelAfter (k, (size_t) iStart, g.at), -100.0f);
-                        g.db[k] = d <= -99.9 ? -100.0f : juce::jlimit (-100.0f, 40.0f, base + (float) d);
+                        g.db[k] = d <= -99.9 ? -100.0f : juce::jlimit (-100.0f, kMostKept, base + (float) d);
                     }
                     if (g.role == 1) g.ramp = (double) juce::jmin ((juce::int64) std::llround (fin * rate), half) / rate;
                 }
@@ -434,7 +461,7 @@ private:
             for (size_t k = 0; k < r.files.size(); ++k)
             {
                 bool used = false; const double d = deltaFor (r.files[k].trackId, used);
-                if (used) inDb[k] = d <= -99.9 ? -100.0f : juce::jlimit (-100.0f, 40.0f, atA[k] + (float) d);
+                if (used) inDb[k] = d <= -99.9 ? -100.0f : juce::jlimit (-100.0f, kMostKept, atA[k] + (float) d);
             }
             // earlier changes inside the area are replaced
             r.gains.erase (std::remove_if (r.gains.begin(), r.gains.end(), [&] (const GainChange& g) { return g.at > aRel && g.at < bRel; }), r.gains.end());

@@ -6,6 +6,28 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.43.0
+Built 9 November 2026 (the conversation for both programs), with Claude Opus.
+- **Transport keys in every mixer.** Right of the "Mixer name" box: |< (back to the start), << (back 5 s), Play / Stop, >> (forward 5 s) and >| (to
+  the end), for the window the mixer plays: an edit's own mixer works its edit window (with loop, the guide's solo and the window's playhead exactly
+  as that window's own keys); the processing mixer and the cue mixers work the take window that is playing, or the take window used last. They work
+  with that window closed too (on its playhead in the project). The tooltips say which window; not while recording.
+- **Send dials: double-click to type the level.** Double-click a send dial, or the number under it, and only the little box opens - type the level
+  ("-6", "+2.5", "off") and press Enter. Ctrl + click is 0 dB now (as on the faders and pans; a double-click used to be 0 dB). A single click still
+  opens the send's panel after a moment.
+- **Change volume goes to +36 dB.** The right-click "Change volume..." boxes (from here to the next edit, between fades, between the 1/2 marks, and
+  "Change this volume change") go up to +36 dB of extra gain (was +12 dB, and +30 between the marks). In the per-piece box the lower four-fifths of
+  each fader work as before (-inf to +12 dB) and the top fifth goes on to +36; its All fader moves +/-36 dB. The trim window's Level faders still
+  work in +/-12 dB, but widen to show a take that has been raised further, instead of stopping at +12.
+- **The visual guide sizes on its own.** Click the guide's name box in the edit window (GUIDE, its S or the take's name): it lights up, and while it
+  is selected Up / Down make the guide alone shorter / taller and , / . make its waveform smaller / bigger - the tracks are left as they are. From then
+  on the guide keeps its own height and waveform size (while the window is open, as the tracks' heights). A click anywhere else ends the selection.
+- **ReHarmoniSer: drag the time ruler to move along.** Zoomed in, drag the time ruler above the picture left or right to move through the audio
+  (the picture follows the mouse, as the piano keys move the pitch). A click on the ruler still puts the playhead there; the playhead's white
+  triangle still drags the playhead; with everything in view the whole ruler drags the playhead as before; double-click still shows it all.
+- Shared: `src/core/Edit.h` - the most a piece's level (the trim window's Level) can be is +36 dB (was +24), the same number the volume boxes use
+  (`kVolumeChangeMaxDb`). Nothing in the project file changes (it always kept up to +60 dB). fermata:Live only needs its normal rebuild.
+
 ## 3.42.0
 Built 7-8 November 2026 (the conversation for both programs), with Claude Fable.
 - **Edit versions: Edit 1, Edit 2, Edit 3 ...** Every edit is a version of itself, numbered from 1. When a version goes out to be listened to you

@@ -330,8 +330,12 @@ public:
     std::shared_ptr<std::atomic<bool>> sharpCancel;
     struct SharpTimer : juce::Timer { View* v = nullptr; void timerCallback() override { stopTimer(); if (v != nullptr) v->startSharp(); } } sharpTimer;
 
-    enum class Mode { none, box, edge, keys, ruler, brush } mode = Mode::none;
-    juce::Point<int> downPos, lastStroke; double anchorT = 0, anchorM = 0, panM0 = 0, panM1 = 0; bool moved = false;
+    enum class Mode { none, box, edge, keys, ruler, rulerPan, brush } mode = Mode::none;
+    juce::Point<int> downPos, lastStroke; double anchorT = 0, anchorM = 0, panM0 = 0, panM1 = 0, panT0 = 0, panT1 = 0; bool moved = false;
+    /** 3.43.0: on the playhead's white triangle in the ruler (it drags the playhead; the rest of the ruler drags the view along). */
+    bool onCueHandle (int x) const { return ed.cueT >= vt0 && ed.cueT <= vt1 && std::abs (x - tX (ed.cueT)) <= 7; }
+    /** 3.43.0: zoomed in, so there is somewhere to move along to. */
+    bool canPanTime() const { return vt1 - vt0 < juce::jmax (0.1, ed.dur) - 1.0e-6; }
     /** The box's edge handles: which edge(s) of the note box the mouse is on (bit 1 left, 2 right, 4 top, 8 bottom), or 0. */
     int edgeAt (juce::Point<int> p) const;
     int edgeDrag = 0;                             // the edge(s) being dragged
@@ -674,7 +678,12 @@ void ReHarmoniserEditor::View::mouseDown (const juce::MouseEvent& e)
 {
     downPos = e.getPosition(); moved = false; ed.grabKeyboardFocus();
     if (e.x < kKeys && e.y >= kRuler) { mode = Mode::keys; panM0 = vm0; panM1 = vm1; anchorM = yM (e.y); return; }
-    if (e.y < kRuler) { mode = Mode::ruler; ed.cueT = juce::jlimit (0.0, ed.dur, xT (e.x)); repaint(); return; }
+    if (e.y < kRuler)
+    {   // 3.43.0: zoomed in, the ruler is a handle on the view: drag it to move along (the picture follows the mouse); a click without moving puts the
+        // playhead there (on the mouse-up). The playhead's own triangle still drags the playhead, and so does the whole ruler when everything is in view.
+        if (canPanTime() && ! onCueHandle (e.x)) { mode = Mode::rulerPan; panT0 = vt0; panT1 = vt1; setMouseCursor (juce::MouseCursor::DraggingHandCursor); return; }
+        mode = Mode::ruler; ed.cueT = juce::jlimit (0.0, ed.dur, xT (e.x)); repaint(); return;
+    }
     if (ed.brushMode() && ed.mix != nullptr)
     {
         mode = Mode::brush; ed.strokeBegin(); lastStroke = e.getPosition();
@@ -717,6 +726,11 @@ void ReHarmoniserEditor::View::mouseDrag (const juce::MouseEvent& e)
         vm0 = panM0 + dm; vm1 = panM1 + dm; clampView();
     }
     else if (mode == Mode::ruler) { ed.cueT = juce::jlimit (0.0, ed.dur, xT (e.x)); repaint(); }
+    else if (mode == Mode::rulerPan && moved)
+    {   // the picture follows the mouse: drag right to go back in time, left to go on (as the keys move the pitch)
+        const double dt = (double) (e.x - downPos.x) / juce::jmax (1, plot().getWidth()) * (panT1 - panT0);
+        vt0 = panT0 - dt; vt1 = panT1 - dt; clampView();
+    }
     else if (mode == Mode::brush)
     {
         if (e.getPosition().getDistanceFrom (lastStroke) >= 3) { lastStroke = e.getPosition(); ed.strokePoint (juce::jlimit (0.0, ed.dur, xT (e.x)), midiHz (yM (e.y), ed.a4)); }
@@ -739,6 +753,11 @@ void ReHarmoniserEditor::View::mouseDrag (const juce::MouseEvent& e)
 void ReHarmoniserEditor::View::mouseMove (const juce::MouseEvent& e)
 {
     if (mode != Mode::none) return;
+    if (e.y < kRuler)                                             // 3.43.0: the ruler: a hand where it moves the view along, arrows on the playhead's triangle
+    {
+        setMouseCursor (onCueHandle (e.x) ? juce::MouseCursor::LeftRightResizeCursor : canPanTime() ? juce::MouseCursor::DraggingHandCursor : juce::MouseCursor::NormalCursor);
+        return;
+    }
     int cur = 0;
     if (hasSel && ed.cand.has && ! ed.brushMode()) cur = edgeAt (e.getPosition());
     setMouseCursor (cur == 0 ? (e.x < kKeys && e.y >= kRuler ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::NormalCursor)
@@ -753,12 +772,15 @@ void ReHarmoniserEditor::View::mouseUp (const juce::MouseEvent& e)
         if (ed.host.playTone) ed.host.playTone (midiHz (m, ed.a4), ed.keyRow.s.getValue());
     }
     else if (mode == Mode::brush) ed.strokeEnd();
+    else if (mode == Mode::rulerPan && ! moved) { ed.cueT = juce::jlimit (0.0, ed.dur, xT (e.x)); repaint(); }                  // 3.43.0: a click on the ruler (no drag) puts the playhead there
     else if (mode == Mode::box && ! moved && e.x >= kKeys) { ed.cueT = juce::jlimit (0.0, ed.dur, xT (e.x)); repaint(); }       // a click puts the playhead there
     else if ((mode == Mode::box || mode == Mode::edge) && moved && hasSel)
     {
         ed.selectBox (juce::jmin (sT0, sT1), juce::jmax (sT0, sT1), midiHz (juce::jmin (sM0, sM1), ed.a4), midiHz (juce::jmax (sM0, sM1), ed.a4));
     }
+    const bool wasPan = mode == Mode::rulerPan;
     mode = Mode::none; edgeDrag = 0;
+    if (wasPan) mouseMove (e);                                     // (the hand again, or the arrows if it was let go over the playhead's triangle)
 }
 
 void ReHarmoniserEditor::View::mouseDoubleClick (const juce::MouseEvent& e)
@@ -929,7 +951,7 @@ ReHarmoniserEditor::ReHarmoniserEditor() : bar (progressValue)
     tipUse.setVisible (false); tipIgnore.setVisible (false);
     loopBtn.setClickingTogglesState (true); originalBtn.setClickingTogglesState (true); isoBtn.setClickingTogglesState (true);
     startBtn.setTooltip ("To the beginning: puts the playhead at the start"); endBtn.setTooltip ("To the end: puts the playhead at the end");
-    playBtn.setTooltip ("Play from the playhead (the white line: click the picture or the ruler to move it). Space does the same."); stopBtn.setTooltip ("Stop"); loopBtn.setTooltip ("Loop between the green loop markers (keys 1 and 2 set them, 5 clears them)");
+    playBtn.setTooltip ("Play from the playhead (the white line: click the picture or the ruler to move it, or drag its triangle). Space does the same. Zoomed in, drag the ruler to move along."); stopBtn.setTooltip ("Stop"); loopBtn.setTooltip ("Loop between the green loop markers (keys 1 and 2 set them, 5 clears them)");
     startBtn.onClick = [this] { cueT = 0.0; view->follow (0.0); view->repaint(); };
     endBtn.onClick = [this] { cueT = juce::jmax (0.0, dur - 0.05); view->follow (cueT); view->repaint(); };
     isoBtn.setTooltip ("Isolate: Audition and Play then give just the picked note, with some of the music before and after it (see the lead-in and tail in Note ReShape, Advanced). The rest of the sound under the note is taken away. Needs a note picked first.");
@@ -1208,7 +1230,7 @@ void ReHarmoniserEditor::startAnalysis()
         if (err.isEmpty()) { spec = *specOut; if (seeDirty) seeDirtyAt = 0; }
         if (err.isNotEmpty()) { setStatus (err == "Cancelled." ? err : "Could not analyse the audio: " + err, err != "Cancelled."); view->repaint(); return; }
         mix = result->first; refDb = result->second; view->dirty = true; view->repaint();
-        setStatus ("Drag a box round a note on the picture (time across, pitch up). Space plays; click the ruler to put the playhead.");
+        setStatus ("Drag a box round a note on the picture (time across, pitch up). Space plays; click the ruler to put the playhead, drag it to move along when zoomed in.");
         updateInfo();
     });
 }

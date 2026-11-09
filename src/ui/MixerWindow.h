@@ -146,6 +146,12 @@ private:
     juce::TextButton auditionButton, deleteButton { "Delete this mixer" };
     juce::TextButton atmosButton { "Atmos pass" };          // 3.39.0: shown while the project has a Dolby Atmos Composer (see checkAtmos)
     juce::ToggleButton followBox { "Follow Processing Mixer" };    // a cue mixer: plays the processing mixer's main mix instead of its own (which is kept)
+    // 3.43.0: the transport of the window whose audio this mixer plays - an edit's mixer: its edit window; the processing and cue mixers: the take window
+    // playing, or used last - beside the name box: |< << Play/Stop >> >|. With that window closed it works through the project just the same.
+    IconButton tStart { "|<" }, tBack { "<<" }, tPlay { "Play" }, tFwd { ">>" }, tEnd { ">|" };
+    void transportKey (AppContext::TransportKey k);
+    void updateTransport (bool full);                          // full: the window it plays looked up again (tooltips), else just Play / Stop and enabled
+    juce::String transportTarget;                              // "the edit 'The Lion - Edit 2'" / "the take window 'Session 1'" (empty: nothing to play)
     std::unique_ptr<juce::Component> followCover;               // over the strips while it follows (they rest, untouchable, until it is unticked)
     void updateFollow();
     int slotCount = 1;                    // insert slots shown on every strip: one more than the highest one in use
@@ -153,6 +159,7 @@ private:
     juce::String routeSignature();        // 3.23.0: the strips' outputs and the Main out ticks (a change rebuilds the strips: their send dials follow it)
     juce::String routeSig;
     int topBarMinWidth() const;
+    static constexpr int kTransportW = 10 + 5 * 32;           // 3.43.0: the transport row's width (a gap, five keys)
     void showCopyMenu();
     juce::TextButton pasteButton;
     void pasteHere();

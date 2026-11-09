@@ -85,6 +85,7 @@ private:
     juce::Label infoLabel, fadeLabel, trackCaption, curveCaption, rollCaption;
     juce::ComboBox trackBox, curveBox;
     juce::Slider preSlider, postSlider, levelA, levelB;
+    juce::Uuid levelRangeFor[2];                            // 3.43.0: the pieces the Level faders' ranges were last fitted to (a range widens for a piece raised beyond 12 dB)
     juce::Label levelACap, levelBCap;
     juce::ToggleButton normaliseBox { "Normalise volume over next take" };
     juce::TextButton zoomIn { "Zoom +" }, zoomOut { "Zoom -" }, centreButton { "Centre on join" }, resetFade { "Reset crossfade" },

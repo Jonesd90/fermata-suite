@@ -27,6 +27,9 @@ public:
     void mouseDown (const juce::MouseEvent&) override;
     bool isInterestedInFileDrag (const juce::StringArray& files) override;
     void goToSeconds (double seconds) { goTo (seconds); }       // (the timeline's feedback flags use it)
+    /** 3.43.0: one of this window's transport keys, pressed from the transport row of the edit's mixer: exactly as the key here (|< << Play >> >|). */
+    void transportKey (AppContext::TransportKey k);
+    const juce::Uuid& getEditId() const noexcept { return editId; }
     void removeTracks (const std::vector<juce::Uuid>& ids) { for (auto& t : ids) removeTrackFromEdit (t); }   // (the timeline's name menu)
     void filesDropped (const juce::StringArray& files, int x, int y) override;
     /** Plays from 'from' (to 'to', looping: as AppContext::playEdit) - the edit, or the visual guide on its own while the guide's S is on. */

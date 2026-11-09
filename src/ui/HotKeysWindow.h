@@ -131,6 +131,7 @@ inline const std::vector<Line>& lines()
         { "Edit window", "Left / Right", "Zoom out / in." },
         { "Edit window", "Up / Down", "Shorter / taller tracks." },
         { "Edit window", ". / ,", "Bigger / smaller waveforms." },
+        { "Edit window", "Up / Down, . / ,", "With the visual guide's name box selected (click GUIDE, its S or the take's name): the guide alone - shorter / taller, bigger / smaller waveform. It keeps its own size from then on (while the window is open). A click anywhere else ends it." },
 
         // ---------------------------------------------------------------------------------------------------- edit window: with the mouse
         { "Edit window: with the mouse", "Ctrl+click", "A piece: select the whole piece, ready to move. Ctrl + click more pieces to add them; Ctrl + click a selected one to take it out." },
@@ -182,7 +183,10 @@ inline const std::vector<Line>& lines()
         { "Mixer", "double-click", "The dB number under a fader: type a level." },
         { "Mixer", "click", "Press and hold the small arrows beside the fader number: 1 dB steps that keep repeating." },
         { "Mixer", "double-click or Ctrl+click", "A PAN slider: back to the centre (a stereo track's PAN L hard left, PAN R hard right)." },
-        { "Mixer", "double-click / Ctrl+double-click", "A send dial: 0 dB / type a level." },
+        { "Mixer", "double-click", "A send dial, or the number under it: type a level (just the little box; \"off\" or -inf turns the send off)." },
+        { "Mixer", "Ctrl+click", "A send dial: 0 dB." },
+        { "Mixer", "click", "A send dial (and wait a moment): its panel - pre / post fader, MUTE, follow mute, its inserts and a fader." },
+        { "Mixer", "click", "The transport keys right of \"Mixer name\" (|< << Play >> >|): back to the start, back 5 s, play / stop, forward 5 s, to the end - in the window this mixer plays: an edit's mixer its edit, the processing and cue mixers the take window playing (or the one used last). They work with that window closed too." },
         { "Mixer", "double-click or Alt+click", "The fader in a send's panel: 0 dB." },
         { "Mixer", "Alt+drag or Shift+drag", "An insert's name onto another slot, in any mixer: an exact copy with all its settings (a plain drag moves the plug-in; two plug-ins swap places)." },
         { "Mixer", "right-click", "An insert slot: open, bypass, remove or replace the plug-in, scan for plug-ins." },
@@ -264,6 +268,8 @@ inline const std::vector<Line>& lines()
         { "ReHarmoniSer", "Esc", "Otherwise: close the window. With corrected notes not yet written back it asks first (Write back to clip keeps them); so do Cancel and the X." },
         { "ReHarmoniSer", "Enter", "In the \"meant to be\" box: the target note (F5, Ab4 ...). In \"Reference A4\": the A (400 - 480 Hz)." },
         { "ReHarmoniSer", "wheel / Ctrl+wheel / Shift+wheel", "Over the picture: zoom in time round the mouse / zoom the pitch range / scroll in time." },
+        { "ReHarmoniSer", "drag", "The time ruler, zoomed in: move along in time (the picture follows the mouse). A click on it puts the playhead; the playhead's white triangle drags the playhead (with everything in view, so does the whole ruler)." },
+        { "ReHarmoniSer", "drag", "The piano keys on the left: move up and down in pitch." },
         { "ReHarmoniSer", "double-click", "The time ruler: the whole length." },
         { "ReHarmoniSer", "double-click", "The picture: clear the selection and put the playhead there." },
         { "ReHarmoniSer", "double-click", "The Colour wheel (View): back to the original amber." },

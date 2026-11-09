@@ -49,7 +49,7 @@ public:
         startTimerHz (30);
         app.project.addChangeListener (this);
     }
-    ~EditTimeline() override { app.project.removeChangeListener (this); }
+    ~EditTimeline() override { juce::Desktop::getInstance().removeGlobalMouseListener (&guideDeselect); app.project.removeChangeListener (this); }
 
     double pixelsPerSecond = 12.0;
     int rowH = 52;                              // height of one track row (changed with the up / down arrow keys)
@@ -135,7 +135,46 @@ public:
     bool guideSolo = false;                     // its S (starts off in every window, so an edit never opens playing the guide)
     bool guideDrag = false, guideMoved = false;
     juce::int64 guideDragBase = 0;
-    int guideH() const { auto* e = edit(); return e != nullptr && e->guide.active() && e->showGuide ? juce::jlimit (40, 90, rowH) : 0; }
+    int guideH() const { auto* e = edit(); return e != nullptr && e->guide.active() && e->showGuide ? (guideOwnH > 0 ? guideOwnH : juce::jlimit (40, 90, rowH)) : 0; }
+    // ---- 3.43.0: the guide's own height and waveform size. Click its name box (GUIDE, its S, the take's name) to select it: while it is selected the
+    //      keys that size the tracks (Up / Down) and their waveforms (. / ,) size the guide alone - from then on it keeps its own (this window, as the
+    //      tracks' heights). A click anywhere else ends it (any window: a global mouse listener while it is selected).
+    bool guideSelected = false;
+    int guideOwnH = 0;                          // 0: as the tracks (40 - 90 px)
+    float guideWaveZoom = 0.0f;                 // 0: as every waveform (app.waveZoom)
+    float guideZoomNow() const { return guideWaveZoom > 0.0f ? guideWaveZoom : app.waveZoom; }
+    bool guideIsSelected() const { return guideSelected && guideH() > 0; }
+    /** The guide's name box where it is on the timeline now (it stays at the left as the view scrolls across, and at the top as it scrolls down). */
+    juce::Rectangle<int> guideNameBox() const { return { viewport.getViewPositionX(), kGuideTop + viewport.getViewPositionY(), kNameW, guideH() }; }
+    void selectGuide (bool on)
+    {
+        if (on && guideH() <= 0) on = false;
+        if (on == guideSelected) return;
+        guideSelected = on;
+        if (on) juce::Desktop::getInstance().addGlobalMouseListener (&guideDeselect);
+        else juce::Desktop::getInstance().removeGlobalMouseListener (&guideDeselect);
+        if (on) app.setNotice ("Guide selected: Up / Down make the guide alone shorter / taller, and , / . its waveform smaller / bigger. Click anywhere else to finish.");
+        repaint (guideNameBox().expanded (2));
+    }
+    void guideHeightBy (double f)
+    {
+        const int now = guideH(); if (now <= 0) return;
+        const int maxH = juce::jmax (90, viewport.getMaximumVisibleHeight() / 2);
+        guideOwnH = juce::jlimit (40, maxH, (int) std::lround ((double) now * f + (f > 1.0 ? 1.0 : -1.0)));
+        updateSize(); repaint();
+    }
+    void guideWaveBy (float f) { guideWaveZoom = juce::jlimit (0.25f, 40.0f, guideZoomNow() * f); repaint(); }
+    struct GuideDeselect : public juce::MouseListener
+    {
+        explicit GuideDeselect (EditTimeline* owner) : t (owner) {}
+        EditTimeline* t = nullptr;
+        void mouseDown (const juce::MouseEvent& e) override
+        {
+            if (t == nullptr) return;
+            const auto box = t->guideNameBox().translated (t->getScreenX(), t->getScreenY());
+            if (! t->isShowing() || ! box.contains (e.getScreenPosition())) t->selectGuide (false);
+        }
+    } guideDeselect { this };
     /** The top band's height: markers, comments, insert flag, ruler and the pieces' banners, then the guide's lane when there is one. The tracks start under it. */
     int bandH() const { return kRulerH + kLaneH + guideH(); }
     bool inGuideLane (int y) const { const int h = guideH(); return h > 0 && y >= kGuideTop && y < kGuideTop + h; }
@@ -418,8 +457,8 @@ public:
             setWaveColour (g, juce::Colour (0xffdfe3e8));
             juce::Graphics::ScopedSaveState ss (g); g.reduceClipRegion (rr.reduced (1));
             const double f0 = (double) gd.srcIn / gr + (visStart - startSec), f1 = (double) gd.srcOut / gr;       // (seconds in the file)
-            if (! directWave.draw (g, rr.reduced (1), gd.file, f0, f1, app.waveZoom, nullptr, gr, app.waveShape()))
-                if (auto* th = thumbnailFor (gd.file)) drawThumbnailEnvelope (g, rr.reduced (1), *th, f0, f1, app.waveZoom, nullptr, app.waveShape());
+            if (! directWave.draw (g, rr.reduced (1), gd.file, f0, f1, guideZoomNow(), nullptr, gr, app.waveShape()))          // (3.43.0: its own size, once it has one)
+                if (auto* th = thumbnailFor (gd.file)) drawThumbnailEnvelope (g, rr.reduced (1), *th, f0, f1, guideZoomNow(), nullptr, app.waveShape());
         }
         g.setColour (grey.withAlpha (0.95f));
         g.drawRect (rr.withTrimmedLeft (startSec < 0.0 ? 2 : 0), 1);
@@ -458,7 +497,12 @@ public:
         g.setColour (theme::dimText); g.setFont (juce::FontOptions (11.5f));
         g.drawText (e.guide.takeName + "  -  " + e.guide.trackName, sx + 10, kGuideTop + 21, kNameW - 16, 16, juce::Justification::centredLeft, true);
         if (h >= 58)
-            g.drawText (guideSolo ? "S on: Space plays the guide only" : "drag it sideways to line it up", sx + 10, kGuideTop + 37, kNameW - 16, 16, juce::Justification::centredLeft, true);
+            g.drawText (guideSelected ? "Up / Down, , / . size the guide" : guideSolo ? "S on: Space plays the guide only" : "drag it sideways to line it up", sx + 10, kGuideTop + 37, kNameW - 16, 16, juce::Justification::centredLeft, true);
+        if (guideSelected)                                                     // 3.43.0: selected - the keys size the guide alone
+        {
+            g.setColour (theme::accent.withAlpha (0.16f)); g.fillRect (r.withTrimmedLeft (6).withTrimmedBottom (2));
+            g.setColour (theme::accent); g.drawRect (r.withTrimmedBottom (2), 2);
+        }
     }
     /** Right-click on the guide: take it away, put its start at 0:00 or at the playhead, hide it. */
     void showGuideMenu()
@@ -503,9 +547,10 @@ public:
     {
         const int sx = viewport.getViewPositionX();
         if (e.mods.isPopupMenu()) { showGuideMenu(); return; }
-        if (e.x >= sx && e.x < sx + kNameW)                                  // the name column: only the S does anything
+        if (e.x >= sx && e.x < sx + kNameW)                                  // the name column: the S, and (3.43.0) a click anywhere in it selects the guide for sizing
         {
             if (guideSoloRect (sx).expanded (2).contains (e.getPosition())) setGuideSolo (! guideSolo);
+            selectGuide (true);
             return;
         }
         if (guideSolo && app.isPlaying() && app.playInfo.kind == AppContext::PlayInfo::Kind::Edit && app.playInfo.id == editId) app.stopPlayback();   // (what plays would no longer be where it is drawn)
@@ -3167,6 +3212,19 @@ void EditWindowComponent::refreshGuideButton()
 
 void EditWindowComponent::goToEnd() { if (auto* e = edit()) goTo (e->lengthSeconds()); }
 
+void EditWindowComponent::transportKey (AppContext::TransportKey k)
+{
+    using K = AppContext::TransportKey;
+    switch (k)
+    {
+        case K::Start:    goTo (0.0); break;
+        case K::Back:     jumpBy (-5.0); break;
+        case K::PlayStop: togglePlay(); break;
+        case K::Forward:  jumpBy (5.0); break;
+        case K::End:      goToEnd(); break;
+    }
+}
+
 // ----------------------------------------------------------------------------- listeners' comments
 void EditWindowComponent::showFeedbackMenu()
 {
@@ -3698,6 +3756,13 @@ bool EditWindowComponent::keyPressed (const juce::KeyPress& k)
     {
         if (auto* e = edit()) { e->fixIn = -1.0; e->fixOut = -1.0; e->fixTracks.clear(); app.project.changed(); }
         return true;
+    }
+    if (timeline->guideIsSelected())                                     // 3.43.0: the guide's name box is selected - these size the guide alone
+    {
+        if (c == '.' || c == '>') { timeline->guideWaveBy (1.4f);        return true; }
+        if (c == ',' || c == '<') { timeline->guideWaveBy (1.0f / 1.4f); return true; }
+        if (k == juce::KeyPress::upKey)   { timeline->guideHeightBy (1.0 / 1.25); return true; }
+        if (k == juce::KeyPress::downKey) { timeline->guideHeightBy (1.25);       return true; }
     }
     if (c == '.' || c == '>') { app.changeWaveZoom (1.4f);        return true; }          // . bigger waveforms
     if (c == ',' || c == '<') { app.changeWaveZoom (1.0f / 1.4f); return true; }          // , smaller

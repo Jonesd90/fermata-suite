@@ -6,6 +6,7 @@
 #include "LowCutPanel.h"
 #include "SurroundUi.h"
 #include "EditWindow.h"
+#include "TakeWindow.h"
 
 namespace td
 {
@@ -1049,13 +1050,10 @@ public:
         };
         knob.onClickWithoutDrag = [this] { openPanel(); };
         juce::Component::SafePointer<SendDial> safe (this);
-        knob.onDoubleClick = [safe]
-        {
-            if (safe == nullptr) return;
-            if (juce::ModifierKeys::currentModifiers.isCtrlDown()) safe->askValue();       // Ctrl + double-click types a level
-            else safe->knob.setValue (0.0, juce::sendNotificationSync);                    // double-click: straight to 0 dB
-        };
+        knob.onDoubleClick = [safe] { if (safe != nullptr) safe->askValue(); };            // 3.43.0: double-click: just the box to type the level in (was: 0 dB)
+        knob.setDoubleClickReturnValue (true, 0.0, juce::ModifierKeys::ctrlModifier);      // Ctrl + click: 0 dB (as the faders and pans; a real double-click types)
         addAndMakeVisible (knob);
+        valueClick = std::make_unique<valueentry::ReadoutClick> (value, true, [safe] { if (safe != nullptr) safe->askValue(); });   // double-click the number under the dial: the same box
         refreshFromModel();
     }
     void refreshFromModel()
@@ -1081,7 +1079,7 @@ public:
             label.setText (destName + (s != nullptr && ! s->followMute.get() ? " *" : ""), juce::dontSendNotification);
             label.setColour (juce::Label::textColourId, s != nullptr && s->active() ? mixTheme().text : mixTheme().dim);
         }
-        knob.setTooltip ("Send to " + destName + ". Drag up / down to change, double-click for 0 dB (Ctrl + double-click to type a level), click once for pre / post fader, MUTE, inserts and a fader. "
+        knob.setTooltip ("Send to " + destName + ". Drag up / down to change, double-click (here or on the number under it) to type a level, Ctrl + click for 0 dB, click once for pre / post fader, MUTE, inserts and a fader. "
                          + (pre ? "(Taken before the fader: the yellow square.)" : "(Taken after the fader.)")
                          + (own ? " MUTED (its own MUTE, in the panel)." : byChannel ? " Silenced by the channel's MUTE (red outline)." : "")
                          + (s != nullptr && ! s->followMute.get() ? " * = does not follow mute: it carries on when the channel is muted." : "")
@@ -1107,7 +1105,7 @@ private:
             const bool dragged = e.mouseWasDraggedSinceMouseDown();
             juce::Slider::mouseUp (e);
             if (secondClick) { secondClick = false; return; }
-            if (! dragged && ! e.mods.isPopupMenu() && onClickWithoutDrag) startTimer (juce::MouseEvent::getDoubleClickTimeout() + 60);
+            if (! dragged && ! e.mods.isPopupMenu() && ! e.mods.isCtrlDown() && onClickWithoutDrag) startTimer (juce::MouseEvent::getDoubleClickTimeout() + 60);   // (3.43.0: Ctrl + click is 0 dB, not the panel)
         }
         void timerCallback() override { stopTimer(); if (onClickWithoutDrag) onClickWithoutDrag(); }
         bool secondClick = false;
@@ -1150,6 +1148,7 @@ private:
     AppContext& app; MixerState& mixer; juce::Uuid srcId, destId; juce::String destName; bool destIsTrack = false;
     bool refused = false, ownMute = false, channelMute = false;
     juce::Label label, value; Knob knob;
+    std::unique_ptr<valueentry::ReadoutClick> valueClick;      // 3.43.0: (after 'value': it goes first)
 public:
     /** Set by a channel strip: runs a function on every strip linked to it right now (Shift + Alt held, see StripGang). */
     SendPanel::ForOthers forOthers;
@@ -2886,6 +2885,17 @@ MixerComponent::MixerComponent (AppContext& a, const juce::Uuid& id) : app (a), 
     nameEditor.onFocusLost = commitName;
     addAndMakeVisible (nameEditor);
 
+    // 3.43.0: the transport row, right of the name box (the keys of the window this mixer plays: see transportKey)
+    tStart.setIcon (Icon::Start, "Back to the start"); tBack.setIcon (Icon::Rewind, "Back 5 seconds"); tPlay.setIcon (Icon::Play, "Play / Stop");
+    tFwd.setIcon (Icon::Forward, "Forward 5 seconds"); tEnd.setIcon (Icon::End, "To the end");
+    tStart.onClick = [this] { transportKey (AppContext::TransportKey::Start); };
+    tBack.onClick  = [this] { transportKey (AppContext::TransportKey::Back); };
+    tPlay.onClick  = [this] { transportKey (AppContext::TransportKey::PlayStop); };
+    tFwd.onClick   = [this] { transportKey (AppContext::TransportKey::Forward); };
+    tEnd.onClick   = [this] { transportKey (AppContext::TransportKey::End); };
+    for (auto* b : { &tStart, &tBack, &tPlay, &tFwd, &tEnd }) { b->setWantsKeyboardFocus (false); addAndMakeVisible (b); }     // (the mixer's keys still go on to the take / edit window)
+    updateTransport (true);
+
     viewport.setViewedComponent (holder.get(), false);
     viewport.setScrollBarsShown (true, true);
     viewport.setScrollBarThickness (12);
@@ -2911,7 +2921,129 @@ int MixerComponent::topBarMinWidth() const
 {
     auto* m = mixer();
     const bool other = m != nullptr && ! app.isEngineerMixer (m->id);
-    return 84 + 180 + 76 + 140 + (other ? 600 : 0);                // name, the two icons, a little room for messages (a cue mixer: audition, delete, follow)
+    return 84 + 180 + kTransportW + 76 + 140 + (other ? 600 : 0);  // name, the transport row (3.43.0), the two icons, a little room for messages (a cue mixer: audition, delete, follow)
+}
+
+// ----------------------------------------------------------------------------- 3.43.0: the transport row
+namespace
+{
+/** The window (open, or down in the bar) whose contents are a C that 'match'es, or null. */
+template <typename C, typename F> C* findWindowContent (F&& match)
+{
+    auto& d = juce::Desktop::getInstance();
+    for (int i = 0; i < d.getNumComponents(); ++i)
+        if (auto* w = dynamic_cast<juce::DocumentWindow*> (d.getComponent (i)))
+            if (auto* c = dynamic_cast<C*> (w->getContentComponent())) if (match (*c)) return c;
+    return nullptr;
+}
+/** The take window the processing and cue mixers play: the one playing now, else the take window used most recently, else the one recorded into last,
+    else the first. Null when the project has none. */
+juce::Uuid takeWindowOfMixers (AppContext& app)
+{
+    if (app.isPlaying() && app.playInfo.kind == AppContext::PlayInfo::Kind::Take && app.project.findTakeWindow (app.playInfo.windowId) != nullptr) return app.playInfo.windowId;
+    if (auto* t = ToolWindow::lastTransportWindowWhere ([] (ToolWindow& w) { return dynamic_cast<TakeWindowComponent*> (w.getContentComponent()) != nullptr; }))
+        if (auto* tw = dynamic_cast<TakeWindowComponent*> (t->getContentComponent())) if (app.project.findTakeWindow (tw->getWindowId()) != nullptr) return tw->getWindowId();
+    if (app.project.findTakeWindow (app.recordTarget) != nullptr) return app.recordTarget;
+    return app.project.takeWindows.empty() ? juce::Uuid::null() : app.project.takeWindows.front()->id;
+}
+/** Where a key takes a playhead now at 'now' (seconds) on a timeline 'length' long. */
+double transportTo (AppContext::TransportKey k, double now, double length)
+{
+    using K = AppContext::TransportKey;
+    switch (k)
+    {
+        case K::Start:   return 0.0;
+        case K::Back:    return juce::jmax (0.0, now - 5.0);
+        case K::Forward: return now + 5.0;
+        case K::End:     return juce::jmax (0.0, length);
+        case K::PlayStop: break;
+    }
+    return now;
+}
+/** The keys for an edit whose window is closed: the same, through the project (the edit's own playhead), as its window would do them. */
+void editTransportClosed (AppContext& app, const juce::Uuid& editId, AppContext::TransportKey k)
+{
+    auto* e = app.project.findEdit (editId);
+    if (e == nullptr) return;
+    if (k == AppContext::TransportKey::PlayStop)
+    {
+        if (app.isPlaying()) { app.stopPlayback (true); return; }
+        if (const auto err = app.playEdit (editId, e->playheadSeconds); err.isNotEmpty()) showError ("Play", err);
+        return;
+    }
+    const bool here = app.isPlaying() && app.playInfo.kind == AppContext::PlayInfo::Kind::Edit && app.playInfo.id == editId;
+    const double to = transportTo (k, here ? juce::jmax (0.0, app.playheadSeconds()) : e->playheadSeconds, e->lengthSeconds());
+    e->playheadSeconds = to;
+    if (here) if (const auto err = app.playEdit (editId, to); err.isNotEmpty()) showError ("Play", err);
+    app.project.changed();
+}
+/** The same for a take window that is closed. */
+void takeTransportClosed (AppContext& app, const juce::Uuid& windowId, AppContext::TransportKey k)
+{
+    auto* w = app.project.findTakeWindow (windowId);
+    if (w == nullptr) return;
+    if (k == AppContext::TransportKey::PlayStop)
+    {
+        if (app.isPlaying()) { app.stopPlayback (true); return; }
+        if (const auto err = app.playTakeWindow (windowId, w->playheadSeconds); err.isNotEmpty()) showError ("Play", err);
+        return;
+    }
+    const bool here = app.isPlaying() && app.playInfo.kind == AppContext::PlayInfo::Kind::Take && app.playInfo.windowId == windowId;
+    const double to = transportTo (k, here && app.playInfo.windowTimeline ? juce::jmax (0.0, app.playheadSeconds()) : w->playheadSeconds, w->endSeconds());
+    w->setPlayhead (to);
+    if (here) if (const auto err = app.playTakeWindow (windowId, to); err.isNotEmpty()) showError ("Play", err);
+    app.project.changed();
+}
+} // namespace
+
+/** A transport key of this mixer: pressed in the window whose audio it plays, as if it had been pressed there (so loop, the guide's solo and the window's
+    playhead behave exactly as there); with that window closed, the same through the project. Not while recording. */
+void MixerComponent::transportKey (AppContext::TransportKey k)
+{
+    auto* m = mixer();
+    if (m == nullptr || app.engine.isRecording()) return;
+    if (! m->editId.isNull())
+    {
+        const auto id = m->editId;
+        if (auto* ew = findWindowContent<EditWindowComponent> ([&id] (EditWindowComponent& c) { return c.getEditId() == id; })) ew->transportKey (k);
+        else editTransportClosed (app, id, k);
+    }
+    else
+    {
+        const auto id = takeWindowOfMixers (app);
+        if (id.isNull()) { app.setNotice ("There is no take window for this mixer to play."); return; }
+        if (auto* tw = findWindowContent<TakeWindowComponent> ([&id] (TakeWindowComponent& c) { return c.getWindowId() == id; })) tw->transportKey (k);
+        else takeTransportClosed (app, id, k);
+    }
+    updateTransport (true);
+}
+
+void MixerComponent::updateTransport (bool full)
+{
+    if (full)
+    {
+        juce::String target;
+        if (auto* m = mixer())
+        {
+            if (! m->editId.isNull()) { if (auto* e = app.project.findEdit (m->editId)) target = "the edit '" + e->versionTitle (e->versionNumber()) + "'"; }
+            else if (auto* w = app.project.findTakeWindow (takeWindowOfMixers (app))) target = "the take window '" + w->name + "'";
+        }
+        if (target != transportTarget)
+        {
+            transportTarget = target;
+            const auto of = target.isEmpty() ? juce::String ("Nothing to play: this mixer has no take or edit window yet.")
+                                             : "For " + target + (mixer() != nullptr && mixer()->editId.isNull() ? " (the one playing, or the take window used last)" : juce::String()) + ", as its own keys do.";
+            tStart.setTooltip ("The playhead back to the start (it plays on from there if it was playing). " + of);
+            tBack.setTooltip ("The playhead back 5 seconds. " + of);
+            tPlay.setTooltip ("Play from the playhead, or stop. " + of + " (Space does the same from this window.)");
+            tFwd.setTooltip ("The playhead forward 5 seconds. " + of);
+            tEnd.setTooltip ("The playhead to the end. " + of);
+        }
+    }
+    const bool usable = transportTarget.isNotEmpty() && ! app.engine.isRecording();
+    for (auto* b : { &tStart, &tBack, &tPlay, &tFwd, &tEnd }) if (b->isEnabled() != usable) b->setEnabled (usable);
+    const juce::String playText (app.isPlaying() ? "Stop" : "Play");
+    if (tPlay.getButtonText() != playText) tPlay.setButtonText (playText);       // (the icon: a square while anything plays)
 }
 /** 3.23.0: where every strip's fader sends (its output on / off and its place) and which Ext Buses are ticked Main out: what decides which send dials the
     strips show (Project::sendDialBuses). When it changes the strips are built again. (A send's own level is not in it, so automation never rebuilds.) */
@@ -3447,6 +3579,10 @@ void MixerComponent::resized()
     if (atmosButton.isVisible()) atmosButton.setBounds (top.removeFromRight (100).reduced (3));
     nameCaption.setBounds (top.removeFromLeft (84).reduced (4, 0));
     nameEditor.setBounds (top.removeFromLeft (180).reduced (0, 3));
+    {   // 3.43.0: the transport row, right of the name box
+        auto row = top.removeFromLeft (kTransportW).withTrimmedLeft (10);
+        for (auto* b : { &tStart, &tBack, &tPlay, &tFwd, &tEnd }) { b->setBounds (row.removeFromLeft (30).withSizeKeepingCentre (30, 24)); row.removeFromLeft (2); }
+    }
     statusLabel.setBounds (top.reduced (8, 0));
     // Big enough for every strip: no scroll bars at all (never one that is only there because the other one takes some room). Smaller: bars.
     if (followCover != nullptr) followCover->setBounds (r);
@@ -3489,6 +3625,7 @@ void MixerComponent::timerCallback()
     if (refreshCounter % 90 == 0) checkAtmos();                // (every 3 s: a plug-in loaded or the sample rate changed)
     updateAuditionButton();
     if (auditionButton.isVisible() && auditionButton.getWidth() == 0) resized();
+    updateTransport (refreshCounter % 10 == 0);             // 3.43.0: Play / Stop every tick; the window it plays, 3 times a second
     if (++refreshCounter % 10 == 0)                         // 3 Hz: plug-in names, solo / mute changes
     {
         app.engine.checkLatency();                          // a plug-in's delay changed (loaded, bypassed ...): line the paths up again

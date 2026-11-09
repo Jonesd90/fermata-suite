@@ -206,6 +206,9 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     void setAlignOwner (const juce::String& owner);
     /** The piece the mixers should align for now: the one being recorded, played, or worked on (the take / edit window used last). */
     juce::String currentAlignOwner();
+    /** 3.43.0: the transport keys of a take or edit window (|< << Play/Stop >> >|), pressed for it from elsewhere: the transport row of the mixer that
+        plays its audio (MixerComponent::transportKey). */
+    enum class TransportKey { Start, Back, PlayStop, Forward, End };
     /** The take or edit window you last worked in registers how its Play button behaves; the remote's play / pause uses it. */
     void setTransportHandler (const void* owner, std::function<void()> fn) { transportOwner = owner; transportHandler = std::move (fn); }
     void clearTransportHandler (const void* owner) { if (transportOwner == owner) { transportOwner = nullptr; transportHandler = nullptr; } }

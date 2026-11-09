@@ -1051,6 +1051,13 @@ public:
         for (auto it = list.rbegin(); it != list.rend(); ++it) if (auto* w = it->getComponent()) return w;
         return nullptr;
     }
+    /** 3.43.0: the most recent of those windows that 'match'es (the most recent take window, say), or null. */
+    static ToolWindow* lastTransportWindowWhere (const std::function<bool (ToolWindow&)>& match)
+    {
+        auto& list = recentTransportWindows();
+        for (auto it = list.rbegin(); it != list.rend(); ++it) if (auto* w = it->getComponent()) if (match (*w)) return w;
+        return nullptr;
+    }
     static void noteTransportWindow (ToolWindow* w)
     {
         auto& list = recentTransportWindows();

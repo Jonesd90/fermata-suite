@@ -56,6 +56,10 @@ struct RegionFile
     juce::File   rxFrom {};            // 3.22.0: this file is a copy of a file saved in a linked program (RX, Melodyne ...); each later save of that file is brought in again (empty = not)
 };
 
+/** 3.43.0: the most a volume change raises a track - the right-click "Change volume" boxes and the trim window's Level go up to this (was +12 dB in the
+    boxes, +24 dB for a piece's level). A project file keeps up to +60 dB (Project.cpp: dbFromVar), so older programs read these levels unchanged. */
+inline constexpr float kVolumeChangeMaxDb = 36.0f;
+
 /** A volume change inside a piece of an edit: from 'at' (samples after the piece's start) each file moves to its own level 'db[i]'
     (aligned with the piece's files), instantly if 'ramp' is 0, otherwise gliding over 'ramp' seconds. */
 struct GainChange
@@ -168,7 +172,7 @@ struct EditRegion
         for (auto& g : gains)
             if (! g.autoNorm && g.at <= tol && ! g.db.empty()) { for (size_t k = 0; k < db.size() && k < g.db.size(); ++k) db[k] = g.db[k]; ramp = g.ramp; break; }
         bool allZero = true;
-        for (auto& x : db) { if (x > -99.0f) x = juce::jlimit (-99.0f, 24.0f, x + d); allZero = allZero && std::abs (x) < 0.0005f; }
+        for (auto& x : db) { if (x > -99.0f) x = juce::jlimit (-99.0f, kVolumeChangeMaxDb, x + d); allZero = allZero && std::abs (x) < 0.0005f; }
         if (allZero) { for (size_t i = 0; i < gains.size(); ++i) if (! gains[i].autoNorm && gains[i].at <= tol) { gains.erase (gains.begin() + (long) i); break; } return; }
         setGainChange (0, ramp, db);
     }

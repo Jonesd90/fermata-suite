@@ -2516,6 +2516,19 @@ void TakeWindowComponent::goTo (double seconds)
 
 void TakeWindowComponent::goToEnd() { if (auto* w = def()) goTo (w->endSeconds()); }
 
+void TakeWindowComponent::transportKey (AppContext::TransportKey k)
+{
+    using K = AppContext::TransportKey;
+    switch (k)
+    {
+        case K::Start:    goTo (0.0); break;
+        case K::Back:     jumpBy (-5.0); break;
+        case K::PlayStop: togglePlay(); break;
+        case K::Forward:  jumpBy (5.0); break;
+        case K::End:      goToEnd(); break;
+    }
+}
+
 void TakeWindowComponent::nudgeCursor (double seconds)
 {
     auto* w = def();

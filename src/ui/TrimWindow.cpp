@@ -550,8 +550,10 @@ TrimComponent::TrimComponent (AppContext& a, const juce::Uuid& eid, const juce::
         s->textFromValueFunction = [] (double v) { return (v > 0.04 ? "+" : "") + juce::String (v, 1); };
         addAndMakeVisible (s);
     }
-    levelA.setTooltip ("Raises or lowers the whole take that is going OUT of this edit (A), by up to 12 dB. 0 = untouched. Double-click for 0.");
-    levelB.setTooltip ("Raises or lowers the whole take that is coming IN at this edit (B), by up to 12 dB. 0 = untouched. Double-click for 0.");
+    levelA.setTooltip ("Raises or lowers the whole take that is going OUT of this edit (A), by up to 12 dB. 0 = untouched. Double-click for 0. "
+                       "(A take raised further with the right-click Change volume - up to +36 dB - widens the fader to show its level.)");
+    levelB.setTooltip ("Raises or lowers the whole take that is coming IN at this edit (B), by up to 12 dB. 0 = untouched. Double-click for 0. "
+                       "(A take raised further with the right-click Change volume - up to +36 dB - widens the fader to show its level.)");
     auto levelChanged = [this] (bool isA)
     {
         if (updatingControls) return;
@@ -755,8 +757,23 @@ void TrimComponent::refreshControls()
             prevButton.setEnabled (havePrev); nextButton.setEnabled (haveNext);
         }
         levelA.setEnabled (hasA); levelB.setEnabled (hasB); normaliseBox.setEnabled (hasB);
-        levelA.setValue (hasA ? rf.A->pieceLevelDb() : 0.0f, juce::dontSendNotification);
-        levelB.setValue (hasB ? rf.B->pieceLevelDb() : 0.0f, juce::dontSendNotification);
+        {   // 3.43.0: a piece set beyond +/-12 dB in the right-click Change volume box (it goes to +36): the fader widens to show its level as it is, instead of
+            // stopping at the end. For the same piece it only ever widens (the scale does not change under the hand after a drag down); another piece starts
+            // again from +/-12. Never while it is being dragged.
+            const double la = hasA ? (double) rf.A->pieceLevelDb() : 0.0, lb = hasB ? (double) rf.B->pieceLevelDb() : 0.0;
+            auto fit = [] (juce::Slider& s, juce::Uuid& fittedTo, const juce::Uuid& piece, double level)
+            {
+                if (s.isMouseButtonDown()) return;
+                double top = juce::jlimit (12.0, (double) kVolumeChangeMaxDb, std::ceil (std::abs (level) - 0.04));
+                if (piece == fittedTo) top = juce::jmax (top, s.getMaximum());
+                fittedTo = piece;
+                if (std::abs (s.getMaximum() - top) > 1.0e-9) s.setRange (-top, top, 0.1);
+            };
+            fit (levelA, levelRangeFor[0], hasA ? rf.A->id : juce::Uuid::null(), la);
+            fit (levelB, levelRangeFor[1], hasB ? rf.B->id : juce::Uuid::null(), lb);
+            levelA.setValue (la, juce::dontSendNotification);
+            levelB.setValue (lb, juce::dontSendNotification);
+        }
         normaliseBox.setToggleState (hasB && rf.B->normaliseIn, juce::dontSendNotification);
         const bool both = hasA && hasB;
         for (auto* b : std::initializer_list<juce::Component*> { &copyOutIn, &copyInOut, &origA, &origB, &slipLeftToggle, &slipRightToggle })

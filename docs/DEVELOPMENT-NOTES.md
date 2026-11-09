@@ -2160,3 +2160,35 @@ to master an earlier one, put everything back from it first (or keep that for a 
 shuffle, the mixer list and patch), `tests/compat_test.cpp` (the keys, contract 3). The Windows build and the windows themselves could not be
 run here beyond the Linux build; see the delivery message.
 
+## 3.43.0: mixer transport, send dials typed, +36 dB volume changes, the guide's own size, the ReHarmoniSer ruler (9 November 2026)
+
+**Mixer transport** (`MixerComponent::transportKey`, `updateTransport`; `kTransportW`). Five `IconButton`s right of the name box. A key is pressed in
+the window whose audio the mixer plays - an edit's mixer (`MixerState::editId`): the `EditWindowComponent` of that edit; the processing and cue mixers:
+`takeWindowOfMixers` (the take window playing now, else the most recent take window - `ToolWindow::lastTransportWindowWhere` - else
+`AppContext::recordTarget`, else the first) - found among the desktop's windows (`findWindowContent`, so a window down in the bar counts) and sent
+`transportKey (AppContext::TransportKey)`, which both windows now have (it calls their own goTo / jumpBy / togglePlay / goToEnd, so loop, the guide
+solo and the strip check behave as their own keys). With the window closed, `editTransportClosed` / `takeTransportClosed` do the same on the
+project's playhead (EditDef::playheadSeconds, TakeWindowDef::setPlayhead) and AppContext::playEdit / playTakeWindow. Disabled while recording.
+Play shows Stop while anything plays (as in the windows: pressing it stops whatever plays). The tooltips name the window (3 times a second).
+
+**Send dials** (`SendDial`): `knob.onDoubleClick` opens `valueentry::ask` (the small box) - it was 0 dB, with Ctrl + double-click typing;
+`setDoubleClickReturnValue (true, 0, ctrlModifier)` makes Ctrl + click 0 dB, and `Knob::mouseUp` no longer starts the panel's timer for a Ctrl + click.
+The read-out under the dial opens the same box on a double-click (`ReadoutClick`, declared after the label).
+
+**+36 dB** (`kVolumeChangeMaxDb` in `src/core/Edit.h`, shared): `VolumeChangePanel`'s faders use `volumeFaderRange()` - a `NormalisableRange` with its own
+mapping: proportion 0..0.8 is the old -100..+12 dB curve (skew from -20 dB at the middle), 0.8..1 is +12..+36 linear - so the usual range keeps its
+feel; its All fader is +/-36. `RangeVolumePanel`'s faders -100..+36 (0 in the middle), and a level after the change may reach `kMostKept` (+60 dB,
+what `dbFromVar` keeps) so +36 is added in full on top of a raised level. `EditRegion::setPieceLevelDb` clamps at +36 (was +24). The trim window
+widens a Level fader's range to show a piece beyond +/-12 (for the same piece it only widens; `levelRangeFor`), never during a drag.
+
+**The guide's own size** (`EditTimeline`: `guideSelected`, `guideOwnH`, `guideWaveZoom`): a click in the guide's name column (`guideMouseDown`) selects it
+(`selectGuide`), which adds a global mouse listener (`GuideDeselect`) that ends the selection on any click outside `guideNameBox()` (in screen
+terms, so it also works with the sticky band scrolled down and from other windows). `EditWindowComponent::keyPressed` sends Up / Down and , / . to
+`guideHeightBy` / `guideWaveBy` while `guideIsSelected()`. `guideH()` is `guideOwnH` once set (40 px up to half the visible height), else 40 - 90 px
+from the rows as before; the guide's waveform uses `guideZoomNow()`. Per window, not saved (the tracks' heights are not saved either).
+
+**ReHarmoniSer ruler** (`View`, `Mode::rulerPan`): zoomed in (`canPanTime`), a press on the ruler away from the playhead's triangle (`onCueHandle`,
+7 px) pans: `vt0/vt1 = panT0/1 - dx / width * span`, clamped by `clampView` (the sharp picture carries its columns, as when following); a press
+without moving puts the playhead on the mouse-up. The triangle, or the whole ruler with everything in view, is `Mode::ruler` as before. Cursors:
+the hand / left-right arrows.
+
