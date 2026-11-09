@@ -1,5 +1,6 @@
 #include "MasteringWindow.h"
 #include "../core/AudioFormats.h"
+#include "../core/EditVersions.h"
 
 namespace td
 {
@@ -1392,6 +1393,8 @@ void MasteringComponent::startFormExport()
     MasterJobSpec spec;
     const auto err = makeFormsSpec (app.project, def(), spec);
     if (err.isNotEmpty()) { formStatus.setColour (juce::Label::textColourId, theme::warn); formStatus.setText (err, juce::dontSendNotification); return; }
+    lastFormVersions.clear();
+    for (auto& it : spec.items) lastFormVersions.push_back ({ it.editId, it.editVersion });     // 3.42.0: which version of each piece the copies are of
     startJob (spec, 2);
 }
 
@@ -1525,16 +1528,51 @@ void MasteringComponent::showDoneBox (const MasterExportResult& r, int kind)
             if (r.clippedStems.size() > 8) text << "\n   ... and " << (r.clippedStems.size() - 8) << " more";
         }
     }
+    // 3.42.0: listening copies are of a version of each piece: offer to freeze those versions now (never done by itself), so the comments that come back
+    // go to each version's own lane and the editing carries on in the next number
+    juce::StringArray toFreeze;
+    if (kind == 2 && ! stopped)
+        for (auto& [id, ver] : lastFormVersions)
+            if (auto* e = app.project.findEdit (id)) if (ver > 0 && ver == e->versionNumber() && ! e->isEmpty()) toFreeze.add (e->versionTitle (ver));
+    if (! toFreeze.isEmpty())
+    {
+        text << "\n\nThe cop" << (toFreeze.size() == 1 ? "y is" : "ies are") << " of:  " << toFreeze.joinIntoString (",  ")
+             << "\nFreeze " << (toFreeze.size() == 1 ? "this version" : "these versions") << " now and carry on editing in the next number? Each stays as it is - pieces, fades, levels, automation, markers, comments and its mixer - "
+             << "and the comments that come back from the listening cop" << (toFreeze.size() == 1 ? "y go" : "ies go") << " to its own lane above the timeline.";
+    }
     const bool warn = stopped || r.clipped || ! r.clippedStems.isEmpty();
     auto* aw = new juce::AlertWindow (stopped ? "Export stopped" : "Export complete", text, warn ? juce::MessageBoxIconType::WarningIcon : juce::MessageBoxIconType::InfoIcon, this);
     const auto out = lastOutput;
+    if (! toFreeze.isEmpty()) aw->addButton ("Freeze", 2);
     if (! stopped && out.exists()) aw->addButton ("Show the files", 1);
-    aw->addButton ("OK", 0, juce::KeyPress (juce::KeyPress::returnKey), juce::KeyPress (juce::KeyPress::escapeKey));
-    aw->enterModalState (true, juce::ModalCallbackFunction::create ([aw, out] (int res)
+    aw->addButton (toFreeze.isEmpty() ? "OK" : "Not now", 0, juce::KeyPress (juce::KeyPress::returnKey), juce::KeyPress (juce::KeyPress::escapeKey));
+    juce::Component::SafePointer<MasteringComponent> safe (this);
+    aw->enterModalState (true, juce::ModalCallbackFunction::create ([aw, out, safe] (int res)
     {
         if (res == 1 && out.exists()) out.revealToUser();
+        if (res == 2 && safe != nullptr) safe->freezeExported();
         delete aw;
     }));
+}
+
+void MasteringComponent::freezeExported()
+{
+    juce::StringArray done;
+    for (auto& [id, ver] : lastFormVersions)
+    {
+        auto* e = app.project.findEdit (id);
+        if (e == nullptr || ver <= 0 || ver != e->versionNumber() || e->isEmpty()) continue;       // (frozen already from the edit window, or changed since: left alone)
+        juce::var mix;
+        if (auto* m = app.project.mixerOfEdit (id)) mix = app.project.mixSnapshot (*m, true);
+        const int frozen = editversions::freeze (*e, mix);
+        e->compareWith = frozen;
+        done.add (e->versionTitle (frozen));
+    }
+    lastFormVersions.clear();
+    if (done.isEmpty()) return;
+    app.project.markDirty(); app.project.changed();
+    if (app.refreshTitles) app.refreshTitles();
+    app.setNotice ("Frozen: " + done.joinIntoString (",  ") + ". The editing carries on in the next number of each.");
 }
 
 namespace

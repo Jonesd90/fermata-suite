@@ -27,6 +27,7 @@ struct Parsed
 {
     std::vector<FeedbackNote> notes;
     juce::String editId, piece, format;
+    int version = 0;                 // 3.42.0: the edit's version the listening copy was made from ("Edit 2": 2); 0 = not said (a copy from before, or another program's file)
     double offset = 0.0;
     bool hasOffset = false;
     std::vector<Parsed> parts;       // a listening copy that held several pieces: one part per piece that has comments (each with its own edit and offset); 'notes' is then empty
@@ -203,7 +204,7 @@ inline juce::String parseJson (const juce::var& root, double frameRate, const ju
         for (auto& pv : *pieces.getArray())
         {
             Parsed part;
-            part.editId = pv["edit"].toString(); part.piece = pv["piece"].toString(); part.format = out.format;
+            part.editId = pv["edit"].toString(); part.piece = pv["piece"].toString(); part.format = out.format; part.version = juce::jmax (0, (int) pv["version"]);
             if (! pv["offset"].isVoid()) { part.offset = (double) pv["offset"]; part.hasOffset = true; }
             readNotes (pv["notes"], frameRate, source, root["who"].toString(), part.notes);
             if (! part.notes.empty()) out.parts.push_back (std::move (part));
@@ -214,7 +215,7 @@ inline juce::String parseJson (const juce::var& root, double frameRate, const ju
     const juce::var* list = &root; juce::var notesVar;
     if (root.isObject())
     {
-        out.editId = root["edit"].toString(); out.piece = root["piece"].toString();
+        out.editId = root["edit"].toString(); out.piece = root["piece"].toString(); out.version = juce::jmax (0, (int) root["version"]);
         if (! root["offset"].isVoid()) { out.offset = (double) root["offset"]; out.hasOffset = true; }
         out.format = root["fermata"].toString().isNotEmpty() ? "Fermata review" : "json";
         notesVar = root["notes"]; if (notesVar.isVoid()) notesVar = root["comments"];

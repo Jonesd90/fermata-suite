@@ -6,6 +6,7 @@
 namespace td
 {
 class EditTimeline;
+class VersionStrip;
 
 /** The edit window: the pieces you sent from the take window(s), placed on a timeline. It stands on its own: it keeps working
     even if the takes are later removed from their take windows. Slide a piece with the mouse; Slip Left / Slip Right
@@ -96,5 +97,6 @@ private:
     std::unique_ptr<EditTimeline> timeline;
     std::unique_ptr<juce::Viewport> viewportOwner;
     std::unique_ptr<KeepKeysOnTimeline> keysKeeper;           // declared after the viewport: destroyed first
+    std::unique_ptr<VersionStrip> versionStrip;               // 3.42.0: the versions' tabs and lanes above the timeline (uses the timeline and viewport: destroyed first)
 };
 } // namespace td

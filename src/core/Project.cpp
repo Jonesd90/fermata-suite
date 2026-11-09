@@ -1619,10 +1619,10 @@ var Project::mixerToVar (const MixerState& mref) const
     return o;
 }
 
-var Project::editToVar (const EditDef& e) const { return editToVarIn (e, projectFile.getParentDirectory()); }
+var Project::editToVar (const EditDef& e, bool withVersions) const { return editToVarIn (e, projectFile.getParentDirectory(), withVersions); }
 var Project::takeWindowToVar (const TakeWindowDef& w) const { return takeWindowToVarIn (w, projectFile.getParentDirectory()); }
 
-var Project::editToVarIn (const EditDef& eref, const juce::File& base)
+var Project::editToVarIn (const EditDef& eref, const juce::File& base, bool withVersions)
 {
     const EditDef* e = &eref;
     var o = obj();
@@ -1724,6 +1724,23 @@ var Project::editToVarIn (const EditDef& eref, const juce::File& base)
         put (o, "autoBefore", ab);
     }
     put (o, "regions", rs);
+    if (e->subheading.isNotEmpty()) put (o, "subheading", e->subheading);                     // 3.42.0: the versions (keys only added: a program from before reads the edit as it is)
+    if (e->compareWith > 0) put (o, "compareWith", e->compareWith);
+    if (withVersions && ! e->versions.empty())
+    {
+        juce::Array<var> vs;
+        for (auto& ver : e->versions)
+        {
+            if (ver.edit == nullptr) continue;
+            var vo = obj();
+            put (vo, "number", ver.number); if (ver.subheading.isNotEmpty()) put (vo, "subheading", ver.subheading);
+            put (vo, "frozenAt", ver.frozenAt.toMilliseconds()); if (! ver.laneShown) put (vo, "laneShown", false);
+            put (vo, "edit", editToVarIn (*ver.edit, base));
+            if (! ver.mixer.isVoid()) put (vo, "mixer", ver.mixer);
+            vs.add (vo);
+        }
+        put (o, "versions", vs);
+    }
     return o;
 }
 
@@ -2013,6 +2030,118 @@ void Project::addWindowsToVar (var& root) const
     put (root, "edits", eds);
 }
 
+/** 3.42.0: the reader of one edit (an edit saved in the project file or in its own .fmedit file), on its own so that a frozen version's edit
+    ("versions": the same shape, inside) is read by the same code. */
+static std::unique_ptr<EditDef> editFromVarIn (const var& v, const juce::File& base)
+{
+    auto e = std::make_unique<EditDef>();
+    e->id = juce::Uuid (v["id"].toString()); e->name = v["name"].toString(); e->windowId = juce::Uuid (v["window"].toString());
+    e->sampleRate = rateFromVar (v["rate"]); e->insertIndex = (int) v["insertIndex"];
+    if (v.hasProperty ("fixIn")) { e->fixIn = (double) v["fixIn"]; e->fixOut = (double) v["fixOut"]; }
+    if (auto* ft = v["fixTracks"].getArray()) for (auto& t : *ft) e->fixTracks.push_back (juce::Uuid (t.toString()));
+    auto regionFromVar = [&base] (const var& rv)
+    {
+        EditRegion r;
+        r.id = juce::Uuid (rv[key::k_id].toString()); r.windowId = juce::Uuid (rv[key::k_window].toString()); r.takeId = juce::Uuid (rv[key::k_take].toString());
+        r.takeName = rv[key::k_takeName].toString(); r.srcIn = samplesFromVar (rv[key::k_in]); r.srcOut = samplesFromVar (rv[key::k_out]);
+        r.startSample = samplesFromVar (rv[key::k_start]); r.sourceLength = samplesFromVar (rv[key::k_sourceLength]);
+        r.barIn = juce::jmax (0, (int) rv[key::k_barIn]); r.barOut = juce::jmax (0, (int) rv[key::k_barOut]);
+        r.sampleRate = rateFromVar (rv[key::k_rate]); r.curve = (FadeCurve) juce::jlimit (0, (int) FadeCurve::Count - 1, (int) rv[key::k_curve]);
+        r.fixIn = (bool) rv[key::k_fixIn]; r.fixOut = (bool) rv[key::k_fixOut]; r.snipIn = (bool) rv[key::k_snipIn]; r.snipOut = (bool) rv[key::k_snipOut]; r.normaliseIn = (bool) rv[key::k_normaliseIn];
+        if (rv.hasProperty (key::k_outCurve)) r.setOutCurve ((FadeCurve) juce::jlimit (0, (int) FadeCurve::Count - 1, (int) rv[key::k_outCurve]));
+        r.inStart = secondsFromVar (rv[key::k_inStart]); r.inEnd = secondsFromVar (rv[key::k_inEnd]); r.outStart = secondsFromVar (rv[key::k_outStart]); r.outEnd = secondsFromVar (rv[key::k_outEnd]);
+        if (auto* fs = rv[key::k_files].getArray())
+            for (auto& fv : *fs)
+            {
+                RegionFile f; f.trackId = juce::Uuid (fv[key::k_track].toString()); f.trackName = fv[key::k_trackName].toString();
+                f.file = getFilePath (fv, base); f.numChannels = (int) fv[key::k_channels];
+                f.fileStart = samplesFromVar (fv[key::k_fileStart]);
+                if (fv.hasProperty ("rxFrom")) f.rxFrom = getFilePath (fv["rxFrom"], base);
+                r.files.push_back (f);
+            }
+        if (rv.hasProperty (key::k_waiting)) r.waiting = waitingFromVar (rv[key::k_waiting], base);
+        if (auto* gs = rv[key::k_gains].getArray())
+            for (auto& gv : *gs)
+            {
+                GainChange g; g.at = samplesFromVar (gv[key::k_at]); g.ramp = secondsFromVar (gv[key::k_ramp]); g.autoNorm = (bool) gv[key::k_autoNorm]; g.group = gv[key::k_gainGroup].toString(); g.role = gv.hasProperty (key::k_gainRole) ? juce::jlimit (0, 3, (int) gv[key::k_gainRole]) : 0;
+                if (auto* dbs = gv[key::k_db].getArray()) for (auto& d : *dbs) g.db.push_back (dbFromVar (d));
+                g.db.resize (r.files.size(), 0.0f);
+                r.gains.push_back (g);
+            }
+        return r;
+    };
+    if (auto* rs = v["regions"].getArray())  for (auto& rv : *rs) e->regions.push_back (regionFromVar (rv));
+    if (auto* os = v["overdubs"].getArray()) for (auto& rv : *os) e->overdubs.push_back (regionFromVar (rv));
+    if (auto* ta = v["trackIds"].getArray()) for (auto& tv : *ta) { juce::Uuid u (tv.toString()); if (! u.isNull()) e->trackIds.push_back (u); }
+    if (v.hasProperty ("playhead")) e->playheadSeconds = juce::jmax (0.0, (double) v["playhead"]);
+    e->automationOn = (bool) v["automationOn"]; e->showLtc = v.hasProperty ("showLtc") && (bool) v["showLtc"]; markersFromVar (v["markers"], e->markers); feedbackFromVar (v["feedback"], e->feedback); e->showFeedback = v["showFeedback"].isVoid() ? true : (bool) v["showFeedback"]; e->showMarkers = v["showMarkers"].isVoid() ? true : (bool) v["showMarkers"];
+    if (const var gv = v["guide"]; gv.isObject())                              // the visual guide (2.102)
+    {
+        auto& gd = e->guide;
+        gd.windowId = juce::Uuid (gv["window"].toString()); gd.takeId = juce::Uuid (gv["take"].toString()); gd.trackId = juce::Uuid (gv["track"].toString());
+        gd.takeName = gv["takeName"].toString(); gd.trackName = gv["trackName"].toString();
+        gd.file = getFilePath (gv, base); gd.numChannels = juce::jmax (1, (int) gv[key::k_channels]);
+        gd.sampleRate = rateFromVar (gv["rate"]); gd.srcIn = samplesFromVar (gv["in"]); gd.srcOut = samplesFromVar (gv["out"]); gd.start = samplesFromVar (gv["start"]);
+        if (! gd.active()) gd = EditGuide();
+    }
+    e->showGuide = v["showGuide"].isVoid() ? true : (bool) v["showGuide"];
+    e->leadIn = (bool) v["leadIn"]; e->leadInSeconds = juce::jlimit (0.0, 3600.0, (double) v["leadInSeconds"]);
+    if (auto* ls = v["autoLanes"].getArray())
+        for (auto& lv : *ls)
+        {
+            AutoLane l; l.id = juce::Uuid (lv["id"].toString()); l.trackId = juce::Uuid (lv["track"].toString());
+            l.param = lv["param"].toString(); l.mixerId = juce::Uuid (lv["mixer"].toString()); l.locked = (bool) lv["locked"];
+            if (auto* ps = lv["points"].getArray())
+                for (auto& pv : *ps)
+                {
+                    AutoPoint p; p.id = juce::Uuid (pv["id"].toString()); p.region = juce::Uuid (pv["region"].toString()); p.take = juce::Uuid (pv["take"].toString());
+                    p.srcPos = samplesFromVar (pv["src"]); p.time = samplesFromVar (pv["time"]); p.value = finiteFloat (pv["value"], -1.0e6f, 1.0e6f);
+                    p.floating = (bool) pv["floating"];
+                    l.pts.push_back (p);
+                }
+            l.sortPoints();
+            e->lanes.push_back (std::move (l));
+        }
+    if (auto* lr = v["laneRows"].getArray())
+        for (auto& lv : *lr)
+        {
+            const auto node = lv["node"].toString();
+            auto* rows = lv["rows"].getArray();
+            if (node.isEmpty() || rows == nullptr || rows->isEmpty()) continue;
+            auto& dst = e->laneRows[node];
+            for (auto& rv : *rows)
+            {
+                EditDef::LaneShown sh; sh.param = rv["param"].toString(); sh.mixer = juce::Uuid (rv["mixer"].toString());
+                if (sh.param.isEmpty()) sh.param = autoparam::fader;
+                if ((int) dst.size() < EditDef::kMaxLaneRows) dst.push_back (sh);
+            }
+        }
+    if (auto* ab = v["autoBefore"].getArray())
+        for (auto& av : *ab)
+            if (const auto key = av["lane"].toString(); key.isNotEmpty() && ! av["value"].isVoid()) e->autoBefore[key] = finiteFloat (av["value"], -1.0e6f, 1.0e6f);
+    e->hardenEnds();                                    // older projects: the ends of the edit get their short fades too
+    e->clampAll();
+    e->commitAllJoins();                                // older projects: the edit points that were moved in the trim window get their pieces' edges moved with them (the sound does not change)
+    e->subheading = v["subheading"].toString();         // 3.42.0: the versions (a project from before has none: this edit is Edit 1)
+    e->compareWith = juce::jmax (0, (int) v["compareWith"]);
+    if (auto* vs = v["versions"].getArray())
+        for (auto& vv : *vs)
+        {
+            if (! vv["edit"].isObject()) continue;
+            EditVersion ver;
+            ver.number = juce::jmax (1, (int) vv["number"]); ver.subheading = vv["subheading"].toString();
+            ver.frozenAt = juce::Time ((juce::int64) vv["frozenAt"]); ver.laneShown = vv["laneShown"].isVoid() || (bool) vv["laneShown"];
+            ver.edit = editFromVarIn (vv["edit"], base);
+            ver.edit->versions.clear(); ver.edit->subheading = ver.subheading;
+            ver.mixer = vv["mixer"];
+            e->versions.push_back (std::move (ver));
+        }
+    std::sort (e->versions.begin(), e->versions.end(), [] (const EditVersion& a, const EditVersion& b) { return a.number < b.number; });
+    for (size_t i = 0; i < e->versions.size(); ++i) e->versions[i].number = (int) i + 1;      // (always Edit 1, 2, 3 ... with no gaps)
+    if (e->compareWith > (int) e->versions.size()) e->compareWith = 0;
+    return e;
+}
+
 bool Project::fromVar (const var& root)
 {
     if (! root.isObject() || ! isProjectFormat (root.getProperty ("format", {}).toString()))
@@ -2229,98 +2358,7 @@ bool Project::fromVar (const var& root)
         for (size_t i = 0; i < made.size(); ++i) { takeWindows.push_back (std::move (made[i])); if (moved[i]) filesMoved = true; }
     }
 
-    auto makeEdit = [&base] (const var& v)
-    {
-            auto e = std::make_unique<EditDef>();
-            e->id = juce::Uuid (v["id"].toString()); e->name = v["name"].toString(); e->windowId = juce::Uuid (v["window"].toString());
-            e->sampleRate = rateFromVar (v["rate"]); e->insertIndex = (int) v["insertIndex"];
-            if (v.hasProperty ("fixIn")) { e->fixIn = (double) v["fixIn"]; e->fixOut = (double) v["fixOut"]; }
-            if (auto* ft = v["fixTracks"].getArray()) for (auto& t : *ft) e->fixTracks.push_back (juce::Uuid (t.toString()));
-            auto regionFromVar = [&base] (const var& rv)
-            {
-                EditRegion r;
-                r.id = juce::Uuid (rv[key::k_id].toString()); r.windowId = juce::Uuid (rv[key::k_window].toString()); r.takeId = juce::Uuid (rv[key::k_take].toString());
-                r.takeName = rv[key::k_takeName].toString(); r.srcIn = samplesFromVar (rv[key::k_in]); r.srcOut = samplesFromVar (rv[key::k_out]);
-                r.startSample = samplesFromVar (rv[key::k_start]); r.sourceLength = samplesFromVar (rv[key::k_sourceLength]);
-                r.barIn = juce::jmax (0, (int) rv[key::k_barIn]); r.barOut = juce::jmax (0, (int) rv[key::k_barOut]);
-                r.sampleRate = rateFromVar (rv[key::k_rate]); r.curve = (FadeCurve) juce::jlimit (0, (int) FadeCurve::Count - 1, (int) rv[key::k_curve]);
-                r.fixIn = (bool) rv[key::k_fixIn]; r.fixOut = (bool) rv[key::k_fixOut]; r.snipIn = (bool) rv[key::k_snipIn]; r.snipOut = (bool) rv[key::k_snipOut]; r.normaliseIn = (bool) rv[key::k_normaliseIn];
-                if (rv.hasProperty (key::k_outCurve)) r.setOutCurve ((FadeCurve) juce::jlimit (0, (int) FadeCurve::Count - 1, (int) rv[key::k_outCurve]));
-                r.inStart = secondsFromVar (rv[key::k_inStart]); r.inEnd = secondsFromVar (rv[key::k_inEnd]); r.outStart = secondsFromVar (rv[key::k_outStart]); r.outEnd = secondsFromVar (rv[key::k_outEnd]);
-                if (auto* fs = rv[key::k_files].getArray())
-                    for (auto& fv : *fs)
-                    {
-                        RegionFile f; f.trackId = juce::Uuid (fv[key::k_track].toString()); f.trackName = fv[key::k_trackName].toString();
-                        f.file = getFilePath (fv, base); f.numChannels = (int) fv[key::k_channels];
-                        f.fileStart = samplesFromVar (fv[key::k_fileStart]);
-                        if (fv.hasProperty ("rxFrom")) f.rxFrom = getFilePath (fv["rxFrom"], base);
-                        r.files.push_back (f);
-                    }
-                if (rv.hasProperty (key::k_waiting)) r.waiting = waitingFromVar (rv[key::k_waiting], base);
-                if (auto* gs = rv[key::k_gains].getArray())
-                    for (auto& gv : *gs)
-                    {
-                        GainChange g; g.at = samplesFromVar (gv[key::k_at]); g.ramp = secondsFromVar (gv[key::k_ramp]); g.autoNorm = (bool) gv[key::k_autoNorm]; g.group = gv[key::k_gainGroup].toString(); g.role = gv.hasProperty (key::k_gainRole) ? juce::jlimit (0, 3, (int) gv[key::k_gainRole]) : 0;
-                        if (auto* dbs = gv[key::k_db].getArray()) for (auto& d : *dbs) g.db.push_back (dbFromVar (d));
-                        g.db.resize (r.files.size(), 0.0f);
-                        r.gains.push_back (g);
-                    }
-                return r;
-            };
-            if (auto* rs = v["regions"].getArray())  for (auto& rv : *rs) e->regions.push_back (regionFromVar (rv));
-            if (auto* os = v["overdubs"].getArray()) for (auto& rv : *os) e->overdubs.push_back (regionFromVar (rv));
-            if (auto* ta = v["trackIds"].getArray()) for (auto& tv : *ta) { juce::Uuid u (tv.toString()); if (! u.isNull()) e->trackIds.push_back (u); }
-            if (v.hasProperty ("playhead")) e->playheadSeconds = juce::jmax (0.0, (double) v["playhead"]);
-            e->automationOn = (bool) v["automationOn"]; e->showLtc = v.hasProperty ("showLtc") && (bool) v["showLtc"]; markersFromVar (v["markers"], e->markers); feedbackFromVar (v["feedback"], e->feedback); e->showFeedback = v["showFeedback"].isVoid() ? true : (bool) v["showFeedback"]; e->showMarkers = v["showMarkers"].isVoid() ? true : (bool) v["showMarkers"];
-            if (const var gv = v["guide"]; gv.isObject())                              // the visual guide (2.102)
-            {
-                auto& gd = e->guide;
-                gd.windowId = juce::Uuid (gv["window"].toString()); gd.takeId = juce::Uuid (gv["take"].toString()); gd.trackId = juce::Uuid (gv["track"].toString());
-                gd.takeName = gv["takeName"].toString(); gd.trackName = gv["trackName"].toString();
-                gd.file = getFilePath (gv, base); gd.numChannels = juce::jmax (1, (int) gv[key::k_channels]);
-                gd.sampleRate = rateFromVar (gv["rate"]); gd.srcIn = samplesFromVar (gv["in"]); gd.srcOut = samplesFromVar (gv["out"]); gd.start = samplesFromVar (gv["start"]);
-                if (! gd.active()) gd = EditGuide();
-            }
-            e->showGuide = v["showGuide"].isVoid() ? true : (bool) v["showGuide"];
-            e->leadIn = (bool) v["leadIn"]; e->leadInSeconds = juce::jlimit (0.0, 3600.0, (double) v["leadInSeconds"]);
-            if (auto* ls = v["autoLanes"].getArray())
-                for (auto& lv : *ls)
-                {
-                    AutoLane l; l.id = juce::Uuid (lv["id"].toString()); l.trackId = juce::Uuid (lv["track"].toString());
-                    l.param = lv["param"].toString(); l.mixerId = juce::Uuid (lv["mixer"].toString()); l.locked = (bool) lv["locked"];
-                    if (auto* ps = lv["points"].getArray())
-                        for (auto& pv : *ps)
-                        {
-                            AutoPoint p; p.id = juce::Uuid (pv["id"].toString()); p.region = juce::Uuid (pv["region"].toString()); p.take = juce::Uuid (pv["take"].toString());
-                            p.srcPos = samplesFromVar (pv["src"]); p.time = samplesFromVar (pv["time"]); p.value = finiteFloat (pv["value"], -1.0e6f, 1.0e6f);
-                            p.floating = (bool) pv["floating"];
-                            l.pts.push_back (p);
-                        }
-                    l.sortPoints();
-                    e->lanes.push_back (std::move (l));
-                }
-            if (auto* lr = v["laneRows"].getArray())
-                for (auto& lv : *lr)
-                {
-                    const auto node = lv["node"].toString();
-                    auto* rows = lv["rows"].getArray();
-                    if (node.isEmpty() || rows == nullptr || rows->isEmpty()) continue;
-                    auto& dst = e->laneRows[node];
-                    for (auto& rv : *rows)
-                    {
-                        EditDef::LaneShown sh; sh.param = rv["param"].toString(); sh.mixer = juce::Uuid (rv["mixer"].toString());
-                        if (sh.param.isEmpty()) sh.param = autoparam::fader;
-                        if ((int) dst.size() < EditDef::kMaxLaneRows) dst.push_back (sh);
-                    }
-                }
-            if (auto* ab = v["autoBefore"].getArray())
-                for (auto& av : *ab)
-                    if (const auto key = av["lane"].toString(); key.isNotEmpty() && ! av["value"].isVoid()) e->autoBefore[key] = finiteFloat (av["value"], -1.0e6f, 1.0e6f);
-            e->hardenEnds();                                    // older projects: the ends of the edit get their short fades too
-            e->clampAll();
-            e->commitAllJoins();                                // older projects: the edit points that were moved in the trim window get their pieces' edges moved with them (the sound does not change)
-            return e;
-    };
+    auto makeEdit = [&base] (const var& v) { return editFromVarIn (v, base); };
     if (auto* a = root["edits"].getArray())
     {
         std::vector<std::unique_ptr<EditDef>> made ((size_t) a->size());
@@ -2504,6 +2542,14 @@ juce::uint64 Project::saveHash (const EditDef& e)
     h.count (e.feedback.size());
     for (auto& n : e.feedback) { h.add (n.key); h.add (n.who); h.add (n.bar); h.add (n.text); h.add (n.colour); h.add (n.source); h.add (n.seconds); h.add (n.done); }
     h.count (e.autoBefore.size()); for (auto& kv : e.autoBefore) { h.add (kv.first); h.add (kv.second); }
+    h.add (e.subheading); h.add (e.compareWith);                                     // 3.42.0: the versions (saved, never undone - a frozen version's comments change, so all of it is hashed)
+    h.count (e.versions.size());
+    for (auto& ver : e.versions)
+    {
+        h.add (ver.number); h.add (ver.subheading); h.add (ver.frozenAt.toMilliseconds()); h.add (ver.laneShown);
+        if (ver.edit != nullptr) h.mix (saveHash (*ver.edit));
+        if (! ver.mixer.isVoid()) h.add (juce::JSON::toString (ver.mixer, true));
+    }
     return h.h;
 }
 
@@ -2515,7 +2561,8 @@ void strip (const var& o, std::initializer_list<const char*> keys)
 }
 const std::initializer_list<const char*> kTakeViewKeys = { "editTake", "editIn", "editOut", "editTracks", "cursorTake", "cursorSeconds", "playhead", "hiddenTracks", "overdub", "markers", "showMarkers", "takeMatching", "fixVersions" };   // (fixVersions: fermata:Live's, made outside - saved, never undone)
 const std::initializer_list<const char*> kTakeMachineKeys = { "length", "overruns", "lost", "writeFailed", "verified" };     // per take: the recorder's, not the person's (3.1.4)
-const std::initializer_list<const char*> kEditViewKeys = { "markIn", "markOut", "fixIn", "fixOut", "fixTracks", "playhead", "insertIndex", "markers", "feedback", "showFeedback", "showMarkers", "laneRows", "showGuide", "autoBefore" };
+const std::initializer_list<const char*> kEditViewKeys = { "markIn", "markOut", "fixIn", "fixOut", "fixTracks", "playhead", "insertIndex", "markers", "feedback", "showFeedback", "showMarkers", "laneRows", "showGuide", "autoBefore",
+                                                           "versions", "subheading", "compareWith" };       // (3.42.0: the frozen versions are saved, never undone)
 }
 
 juce::String Project::undoText (const TakeWindowDef& w) const
@@ -2528,7 +2575,7 @@ juce::String Project::undoText (const TakeWindowDef& w) const
 
 juce::String Project::undoText (const EditDef& e) const
 {
-    var v = editToVar (e);
+    var v = editToVar (e, false);                          // (3.42.0: without the frozen versions - they are never undone, and each is a whole edit)
     strip (v, kEditViewKeys);
     return juce::JSON::toString (v, true);
 }
@@ -2687,6 +2734,7 @@ bool restorePiece (Project& p, const Project::UndoPiece& piece, const juce::Uuid
             te->laneRows = live->laneRows;                                // (the automation rows shown: a view setting, like the ones above)
             te->autoBefore = live->autoBefore;                            // (3.27.0: where the automated controls were: an undo that takes a lane's points away puts the control back from here)
             te->showGuide = live->showGuide;                              // (the Guide button: a view; the guide itself is part of undo)
+            te->versions = live->versions; te->subheading = live->subheading; te->compareWith = live->compareWith;     // (3.42.0: the frozen versions: saved, never undone)
             *live = std::move (*te);
         }
         else { p.edits.push_back (std::move (te)); p.syncEditMixers(); structural = true; }
@@ -3040,16 +3088,17 @@ template <typename F> void forEachAudioFile (std::vector<std::unique_ptr<TakeWin
             for (auto& wp : g.waiting) for (auto& wf : wp.files) f (wf);
         }
     for (auto& e : eds)
-    {
-        auto doRegion = [&] (EditRegion& r)
+        withVersions (*e, [&] (EditDef& ed)                             // (3.42.0: the frozen versions' pieces too - they play and are put back)
         {
-            for (auto& rf : r.files) f (rf.file);
-            for (auto& wf : r.waiting.files) f (wf);
-        };
-        for (auto& r : e->regions) doRegion (r);
-        for (auto& r : e->overdubs) doRegion (r);
-        if (e->guide.active()) f (e->guide.file);                       // (the visual guide's clip: found again by a relink like the rest)
-    }
+            auto doRegion = [&] (EditRegion& r)
+            {
+                for (auto& rf : r.files) f (rf.file);
+                for (auto& wf : r.waiting.files) f (wf);
+            };
+            for (auto& r : ed.regions) doRegion (r);
+            for (auto& r : ed.overdubs) doRegion (r);
+            if (ed.guide.active()) f (ed.guide.file);                   // (the visual guide's clip: found again by a relink like the rest)
+        });
 }
 
 /** A fingerprint of what a window file would hold, worked out from the data itself (quicker than writing all of it out as text first). Only used to
@@ -3708,15 +3757,16 @@ bool Project::renameTake (TakeWindowDef& w, const juce::Uuid& takeId, const juce
         for (auto& m : moved) if (m.first == f) { f = m.second; return; }
     };
     for (auto& e : edits)
-    {
-        for (auto* rs : { &e->regions, &e->overdubs })
-            for (auto& r : *rs)
-            {
-                for (auto& rf : r.files) renamed (rf.file);
-                for (auto& wf : r.waiting.files) renamed (wf);
-            }
-        renamed (e->guide.file);
-    }
+        withVersions (*e, [&] (EditDef& ed)
+        {
+            for (auto* rs : { &ed.regions, &ed.overdubs })
+                for (auto& r : *rs)
+                {
+                    for (auto& rf : r.files) renamed (rf.file);
+                    for (auto& wf : r.waiting.files) renamed (wf);
+                }
+            renamed (ed.guide.file);
+        });
     return ok;
 }
 
@@ -3781,8 +3831,7 @@ Project::RelinkReport Project::relinkAudio (const juce::File& searchFolder, cons
             }
             for (auto& wf : r.waiting.files) want (wf);
         };
-        for (auto& r : e->regions) doRegion (r);
-        for (auto& r : e->overdubs) doRegion (r);
+        withVersions (*e, [&] (EditDef& ed) { for (auto& r : ed.regions) doRegion (r); for (auto& r : ed.overdubs) doRegion (r); });     // (3.42.0: the frozen versions' pieces too)
     }
     if (wanted.empty()) return rep;
 

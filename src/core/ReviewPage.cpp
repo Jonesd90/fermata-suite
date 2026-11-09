@@ -95,7 +95,7 @@ juce::String writeMany (const juce::File& html, const juce::String& title, const
     for (auto& s : pieces)
     {
         auto t = new juce::DynamicObject();
-        t->setProperty ("piece", s.piece); t->setProperty ("edit", s.editId);
+        t->setProperty ("piece", s.piece); t->setProperty ("edit", s.editId); if (s.version > 0) t->setProperty ("version", s.version);
         t->setProperty ("offset", s.offsetSeconds); t->setProperty ("duration", s.durationSeconds); t->setProperty ("mime", s.mime);
         juce::Array<juce::var> pk; for (int v : s.peaks) pk.add (v);
         t->setProperty ("peaks", pk);

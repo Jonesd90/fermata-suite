@@ -1090,7 +1090,7 @@ private:
     {
         if (ctx->project.findEdit (id) == nullptr) return;
         if (stayInFront == nullptr) recentEdit = id;
-        showWindow ("edit:" + id.toString(), "Edit - " + ctx->project.findEdit (id)->name, [this, id] { return new EditWindowComponent (*ctx, id); }, stayInFront);     // (3.16.0: its name, also on the taskbar when minimised)
+        showWindow ("edit:" + id.toString(), "Edit - " + ctx->project.findEdit (id)->versionTitle (ctx->project.findEdit (id)->versionNumber()), [this, id] { return new EditWindowComponent (*ctx, id); }, stayInFront);     // (3.16.0: its name, also on the taskbar when minimised; 3.42.0: with its version)
     }
     void openTrim (const juce::Uuid& editId, const juce::Uuid& regionId, bool atEnd)
     {
@@ -1222,7 +1222,7 @@ private:
             else if (key.startsWith ("edit:") || key.startsWith ("trim:"))       // (3.16.0: titled with the edit's name, kept up to date)
             {
                 if (auto* e = ctx->project.findEdit (juce::Uuid (key.fromFirstOccurrenceOf (":", false, false))))
-                    w->setName ((key.startsWith ("edit:") ? "Edit - " : "Trim - ") + e->name);
+                    w->setName ((key.startsWith ("edit:") ? "Edit - " + e->versionTitle (e->versionNumber()) : "Trim - " + e->name));     // (3.42.0: the edit window says which version: "Edit - The Lion - Edit 2 - More reverb")
                 else dead.push_back (key);
             }
             else if (key.startsWith ("scope:"))

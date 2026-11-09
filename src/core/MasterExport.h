@@ -13,7 +13,8 @@ struct MasterJobItem
     juce::String baseName;
     MasterTags   tags;               // already merged with the album tags
     int          trackNo = 0;
-    juce::String editName, projectName;   // for the listening copy
+    juce::String editName, projectName;   // for the listening copy (3.42.0: for a listening copy, the version's name - "The Lion - Edit 2 - More reverb")
+    int          editVersion = 0;         // 3.42.0: the edit's version number a listening copy was made from (goes into the page, and comes back with the comments)
     double       editOffsetSeconds = 0.0;   // where the exported file's time 0 sits on the edit's timeline
 };
 
@@ -83,7 +84,7 @@ struct MasterExportResult
 };
 
 /** Builds the list of files for the Virtual Master (or says why it cannot): included edits, in list order, named and tagged. */
-juce::String makeFilesSpec (const Project&, const MasteringDef&, MasterJobSpec& spec);
+juce::String makeFilesSpec (const Project&, const MasteringDef&, MasterJobSpec& spec, bool listeningCopies = false);     // (3.42.0: listening copies are named after the edit's version: "The Lion - Edit 2 - More reverb")
 /** The listening copies on their own (the Listening copy tab): the same pieces as the Virtual Master, at the Virtual Master's levels, with the audio
     inside each page as chosen on that tab (WAV / FLAC / MP3, its own sample rate and bit depth). No audio files are made. */
 juce::String makeFormsSpec (const Project&, const MasteringDef&, MasterJobSpec& spec);

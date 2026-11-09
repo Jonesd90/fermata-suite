@@ -2102,3 +2102,61 @@ fermata moved to a new repository that also holds its companion, fermata:Live (t
   `anchorStart`, which ripples everything, does not either); only the drag and the menu do. Test: core_test "3.41.0 the visual guide stays where it
   was put".
 
+## 3.42.0: edit versions - Edit 1, Edit 2, Edit 3 (7-8 November 2026, with Claude Fable)
+
+**The model** (`src/core/Edit.h`): `EditVersion { number, subheading, frozenAt, laneShown, shared_ptr<EditDef> edit, var mixer }` and, in `EditDef`,
+`versions` (Edit 1 first), `subheading` and `compareWith` (the changes lane's choice; 0 = closed). The live edit is version `versions.size() + 1`;
+`versionTitle (n)` is "Name - Edit n - subheading". A frozen version's edit is a whole `EditDef` copied at the freeze, with its own `versions` empty:
+that keeps the reader simple (`editFromVarIn` in `Project.cpp` reads a version's edit with the same code as any edit) and means everything that
+walks an edit's files - `forEachAudioFile`, `renameTake`, `relinkAudio` - visits the frozen pieces too (`withVersions (e, f)`), so a relink or a
+take renamed keeps them playable. `shared_ptr` because `EditDef` is copied by value all over (undo snapshots, the trim window) and the frozen
+copies are big; a copy of the live edit shares them, which is right: versions are not undone.
+
+**Not undone, but saved.** Like the comments and markers: `versions`, `subheading` and `compareWith` are in `kEditViewKeys` (stripped from the undo
+text), the undo restore copies them from the live edit, and `undoText` leaves them out (`editToVar (e, false)`) so the history is not six edits
+long per step. `saveHash` covers them (a frozen version's comments change: ticked, deleted, imported), so a freeze or an import gets the edit's
+file written.
+
+**Freezing** (`editversions::freeze`): the copy goes into `versions` with the comments that were on the live edit (they were about that version),
+the live edit's comments and subheading are cleared, and the edit window sets `compareWith` to the new number so the changes lane shows what has
+been done since. Mastering offers it in the done box of the listening copies (`MasteringComponent::showDoneBox` / `freezeExported`), only for
+pieces whose live number is still the one exported (frozen already from the edit window: left alone). `unfreezeLast` undoes the last freeze and
+brings its comments back, mapped.
+
+**Where a comment is now** (`mapSeconds (from, to, seconds)`): the piece of `from` at that time, its take and the place in it; the same piece in
+`to` (by id), else any piece of that take holding that place (the nearest to where it was); in a gap or past the end, the distance from the piece
+before is kept. Not found: the time is kept and the flag is drawn hollow (`floating`). The lanes map at paint time (cheap; the lists are short).
+
+**What changed** (`editversions::compare (a, b)` - a the older): the main track is matched piece by piece - by id, then the same take's audio
+re-cut (the biggest overlap of take positions) - and the longest run of matches in the same order is the alignment; a matched piece outside it
+"moved here from ...", one change (`Kind::Moved`, with `bWas`: where it used to be on B's timeline), whose put-back takes it out where it is
+and puts it in where it was. An aligned pair is compared (`pieceDifferences`: take in / out points, files, both fades, the volume changes, normalise) and the
+gap before it against the previous aligned pair; the unaligned are "taken out" / "new", placed on the other timeline next to their aligned
+neighbours. Changes whose spans touch on both timelines become one (a replaced passage is one flag, "cut new"). Overdubs by id; automation lanes
+by track / parameter / mixer. Nothing is reported for pieces that only moved along because something before them changed length.
+
+**Putting back** (`putBack (b, a, change)`): A's pieces inside the A span, trimmed to it (gains rebased), shifted to the B span's start; B cut at
+the span's edges and what is inside taken out; everything from the span's end moved by the difference in length (`rippleAfter`, so overdubs,
+markers, flags and fixed automation points follow, as they do when a piece is inserted - though not when one is deleted, an older asymmetry);
+the pieces put in; at the two edge joins A's own fades when the neighbours are the same pieces
+as in A, else the default crossfade; the joins inside came with the pieces. A piece whose id is still in B elsewhere comes in as a new piece.
+Overdubs: put back as A had it (or taken away again); a lane: its points as A had them. The whole-version put-back (a tab's menu) copies the
+pieces, overdubs, lanes and guide outright.
+
+**The mixer** (`compareMix (a, b, nameOf)` / `patchedMix`): the two `Project::mixSnapshot` vars (with inserts) walked by strip (track id), bus (bus
+id) and VCA (number), then every key the writers may leave out at its default (`valueOr` / `defaultFor`: inGainDb 0, pan 0, polarity off, low cut
+off at 80 Hz ...), the sends by their bus, the plug-in slots by number (a slot is one change: added, taken out, another plug-in, bypass, or the
+state blob differs - "settings changed"). A change knows its `path`; `patchedMix` clones the newer snapshot and sets that one leaf from the older,
+and `applyMix` with the matching parts (inserts only for a plug-in change) puts it on the mixer. `MixChangesPanel.h` is the list; the METERS strip's
+Changes... key opens it (an edit's own mixer only).
+
+**The windows**: `VersionStrip` (`EditWindow.cpp`, between the buttons and the timeline, sharing its `xOf` and scroll) - the tabs, the subheading
+box, Freeze, Changes..., the comments lanes and the changes lane with the compared version's pieces drawn above the flags. `AppContext::playEditVersion`
+plays a frozen version (`segmentsForEdit` takes any `EditDef`; its automation plan is not followed, so the live lanes do not take over). The playhead
+then runs on the frozen version's timeline, which may differ from the live one: said in the notice. Mastering always renders the live version;
+to master an earlier one, put everything back from it first (or keep that for a later build: a version pick in the Mastering list).
+
+**Checked**: the six checks; `tests/core_test.cpp` (freeze / save / load / undo, mapping, compare and put back on pieces, overdubs, lanes and a
+shuffle, the mixer list and patch), `tests/compat_test.cpp` (the keys, contract 3). The Windows build and the windows themselves could not be
+run here beyond the Linux build; see the delivery message.
+

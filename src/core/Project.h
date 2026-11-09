@@ -582,9 +582,9 @@ public:
     juce::var toVar (bool withWindows = true) const;
     void addWindowsToVar (juce::var& root) const;        // the "takeWindows" and "edits" arrays
     juce::var mixerToVar (const MixerState&) const;      // one mixer, as saved (levels, sends, plug-in states)
-    juce::var editToVar (const EditDef&) const;          // one edit, as saved
+    juce::var editToVar (const EditDef&, bool withVersions = true) const;          // one edit, as saved (3.42.0: withVersions false leaves its frozen versions out - the undo history)
     juce::var takeWindowToVar (const TakeWindowDef&) const;   // one take window, as saved
-    static juce::var editToVarIn (const EditDef&, const juce::File& base);              // the same, with audio paths relative to 'base' (any thread)
+    static juce::var editToVarIn (const EditDef&, const juce::File& base, bool withVersions = true);              // the same, with audio paths relative to 'base' (any thread)
     static juce::var takeWindowToVarIn (const TakeWindowDef&, const juce::File& base);
     bool fromVar (const juce::var&);
 

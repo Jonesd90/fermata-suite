@@ -5,11 +5,13 @@
 //   - the shared code uses nothing from either program's own folders (it is built into both, so it may only use itself);
 //   - fermata's look (the src/ui files listed as shared) uses only itself and src/core, and fermata:Live uses nothing else from src/ui;
 //   - a project written by the shared code - as either program writes it - says it is a "Fermata project" of the contract's version, and reads
-//     back the same, with fermata:Live's flags, replies and fix versions (contract 3), while an ordinary marker is saved exactly as before.
+//     back the same, with fermata:Live's flags, replies and fix versions (contract 3), while an ordinary marker is saved exactly as before;
+//   - an edit's frozen versions (fermata 3.42.0, still contract 3: keys only added) read back whole, and an edit without any is written as before.
 // fermata:Live's own files (the live session index, contract 2) are named here; that a live recording merges into a take fermata opens is shown
 // by tests/live_recorder_test.cpp (tools/live-check.sh), which builds the recorder's code too.
 // Usage: compat_test <the repository folder>
 #include "../src/core/Project.h"
+#include "../src/core/EditVersions.h"
 #include "../src/core/Compat.h"
 #include <iostream>
 #include <vector>
@@ -179,6 +181,21 @@ int main (int argc, char** argv)
         p.syncMixers();
         if (! p.mixers.empty())                                          // 3.31.0: the strips' polarity key (one strip inverted, the other not)
             if (auto* st = p.mixers.front()->stripFor (p.tracks[1].id)) st->polarity.set (true);
+        juce::Uuid versionedEdit, plainEdit;
+        {   // 3.42.0: an edit with a frozen version (Edit 1, with a comment on it) that is now Edit 2 with a subheading, and one without any
+            auto& e = p.addEdit ("The Lion", p.takeWindows.front()->id);
+            e.sampleRate = 96000.0;
+            EditRegion r; r.id = juce::Uuid(); r.takeId = juce::Uuid(); r.takeName = "004"; r.sampleRate = 96000.0; r.srcIn = 0; r.srcOut = 96000 * 5; r.sourceLength = 96000 * 60;
+            RegionFile rf; rf.trackId = p.tracks[0].id; rf.trackName = "Main pair"; rf.file = tmp.getChildFile ("Recorded Media/First half/004 - Main pair.wav"); rf.numChannels = 2; r.files.push_back (rf);
+            e.insertRegion (r);
+            FeedbackNote n; n.key = "c1"; n.who = "Anna"; n.text = "lovely"; n.seconds = 2.0; e.feedback.push_back (n);
+            e.subheading = "first cut";
+            juce::var mix; { auto* o = new juce::DynamicObject(); o->setProperty ("inserts", true); mix = juce::var (o); }
+            editversions::freeze (e, mix, juce::Time (1762250200000));
+            e.subheading = "More reverb";
+            versionedEdit = e.id;
+            plainEdit = p.addEdit ("Plain", p.takeWindows.front()->id).id;
+        }
         juce::String err;
         const bool saved = p.save (err);
         check (saved, "the project is saved" + (err.isEmpty() ? juce::String() : " (" + err + ")"));
@@ -230,6 +247,26 @@ int main (int argc, char** argv)
                                                                                     && ! m.hasProperty ("liveNote") && ! m.hasProperty ("by") && ! m.hasProperty ("station");
             }
             check (plainKeys, "the ordinary marker is written as before (no flag or note keys in its take window file)");
+        }
+        {   // 3.42.0: the frozen version
+            auto* e = q.findEdit (versionedEdit);
+            const bool ok = e != nullptr && e->versionNumber() == 2 && e->subheading == "More reverb" && e->versions.size() == 1 && e->versions[0].number == 1
+                            && e->versions[0].subheading == "first cut" && e->versions[0].frozenAt == juce::Time (1762250200000) && (bool) e->versions[0].mixer["inserts"]
+                            && e->versions[0].edit != nullptr && e->versions[0].edit->regions.size() == 1 && e->versions[0].edit->regions[0].takeName == "004"
+                            && e->versions[0].edit->feedback.size() == 1 && e->versions[0].edit->feedback[0].text == "lovely" && e->feedback.empty()
+                            && e->versionTitle (1) == "The Lion - Edit 1 - first cut" && e->versionTitle (2) == "The Lion - Edit 2 - More reverb";
+            check (ok, "an edit's frozen version keeps its number, subheading, time, mixer, pieces and comments (3.42.0, contract 3: keys only added)");
+            bool plainOk = false, versionedKeys = false;
+            for (auto& file : tmp.getChildFile ("Edit Windows").findChildFiles (juce::File::findFiles, false, "*.fmedit"))
+            {
+                const auto parsed = juce::JSON::parse (file);
+                const auto ev = parsed["edit"];
+                if (ev["name"].toString() == "Plain") plainOk = ! ev.hasProperty ("versions") && ! ev.hasProperty ("subheading");
+                if (ev["name"].toString() == "The Lion") versionedKeys = ev["versions"].isArray() && ev["versions"].size() == 1 && ev["versions"][0]["edit"]["regions"].isArray() && ! ev["versions"][0]["edit"].hasProperty ("versions");
+            }
+            check (plainOk, "an edit without versions is written as before (no versions or subheading key)");
+            check (versionedKeys, "the versions are inside the edit's own file, each a whole edit with no versions of its own");
+            juce::ignoreUnused (plainEdit);
         }
         tmp.deleteRecursively();
     }

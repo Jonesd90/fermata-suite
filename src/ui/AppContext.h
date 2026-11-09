@@ -313,6 +313,9 @@ public:
     /** Plays the edit, crossfades included, from fromSec to toSec (-1 = to the end), on the edit timeline. goOnAfterLoop: a loop that is let go of
         (the edit window's Loop switched off) carries straight on past toSec; without it the pass finishes and it stops (the process windows). */
     juce::String playEdit (const juce::Uuid& editId, double fromSec, double toSec = -1.0, bool loop = false, bool goOnAfterLoop = false);
+    /** 3.42.0: plays a frozen earlier version of the edit ("Edit 2": version 2) from 'fromSec' on THAT version's timeline, through the edit's mixer as it is
+        now - to hear how a passage went before it was changed. The same arguments and rules as playEdit; the live version number plays the edit itself. */
+    juce::String playEditVersion (const juce::Uuid& editId, int version, double fromSec, double toSec = -1.0);
     /** The edit window's visual guide on its own (its S button, 2.102): plays only the guide, where it stands on the edit's timeline, through the
         edit's own mixer on the guide's track - the same arguments and rules as playEdit. */
     juce::String playEditGuide (const juce::Uuid& editId, double fromSec, double toSec = -1.0, bool loop = false, bool goOnAfterLoop = false);

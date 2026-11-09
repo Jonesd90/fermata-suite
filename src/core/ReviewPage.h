@@ -19,6 +19,7 @@ struct Spec
     juce::String piece;              // name shown at the top
     juce::String project;            // optional second line
     juce::String editId;             // so the comments find their way back to the right edit
+    int          version = 0;        // 3.42.0: which version of the edit this is ("Edit 2": 2), so the comments go to that version's lane; 0 = not said
     double       offsetSeconds = 0;  // where the file's time 0 sits on the edit's timeline
     double       durationSeconds = 0;
     std::vector<int> peaks;          // min, max pairs, -100..100 (see computePeaks)

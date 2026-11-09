@@ -6,6 +6,38 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.42.0
+Built 7-8 November 2026 (the conversation for both programs), with Claude Fable.
+- **Edit versions: Edit 1, Edit 2, Edit 3 ...** Every edit is a version of itself, numbered from 1. When a version goes out to be listened to you
+  **freeze** it - Mastering asks after it has made the listening copies ("Freeze" / "Not now"), or the **Freeze as Edit N** key above the edit's
+  timeline does it any time; never by itself - and you carry on in the next number, starting from exactly what the frozen one holds. A frozen
+  version keeps its pieces, fades, levels, overdubs, automation, markers, its listeners' comments and its mixer's settings; nothing you do after
+  touches it. Each version can have a **subheading**: "The Lion - Edit 1", "The Lion - Edit 2 - More reverb", "The Lion - Edit 3 - composer's
+  notes" (the box beside the version tabs; the edit window's title shows the full name). The listening copy carries the name too, and says which
+  version it is, so the comments that come back from it go to that version.
+- **One comments lane for each earlier version.** Above the timeline: "Edit 1 comments", "Edit 2 comments" ... each with the comments made on that
+  version, shown where their music is now (a comment on a bar is still on that bar after the edit before it got shorter; one on music that is
+  gone is drawn hollow, at its old time). Each lane is shown or hidden from its version's tab; a flag's colour is its writer's (one colour a
+  person when the file gave none); click a flag to read the thread, tick it done, delete it or go there. Edit 1 has no lane (nothing has been
+  listened to yet); Edit 3 has lanes for Edit 1 and Edit 2. Feedback > Import comments puts a file's comments on the version its listening copy
+  was of; a file from before 3.42.0 (which does not say) goes to the version you are in.
+- **The changes lane.** The **Changes...** key (or a version's tab) compares this version with a frozen one: that version's pieces are drawn on a
+  line of their own, and under them a flag for every change made since - a piece trimmed ("starts 0.42 s later in the take"), a fade changed, a
+  level changed, a piece replaced by a fix, a piece taken out or put in or moved, a gap opened or closed, an overdub moved or added or taken out,
+  an automation lane changed - with a bar along the stretch it covers. Changes to pieces that touch are one flag. Click a flag: **Put back from
+  Edit k** makes just that stretch as it was (the pieces, where they lie, the join fades; what comes after moves by the difference in length, as
+  when a passage is replaced - Ctrl+Z undoes it), **Hear Edit k here** plays the frozen version from just before that spot (on its own timeline,
+  through the edit's mixer as it is now), **Hear this version here**, **Go here**. A version's tab also offers: hear it from the same music as at
+  the playhead; put back everything from it; put back its mixer settings; remove the last frozen version (its comments come back onto this one).
+- **The mixer's Changes list.** In an edit's own mixer, the **Changes...** key beside the phase scope lists every setting that differs from the
+  mixer as it was when a version was frozen - faders to 0.1 dB, input gain, pans, mutes, solos, outputs, VCA assignment, each send's level and
+  switches, the low cut, polarity, each plug-in (added, taken out, changed, bypassed, or its settings changed), VCAs - each with its own **Put
+  back** key, and one key for the whole mix. The version compared with is chosen at the top (the same choice as the changes lane).
+- Shared: `src/core/Edit.h` (the versions in an edit), `src/core/Project.cpp` (saved in the edit's file, kept across undo, their files relinked
+  and renamed with the rest), new `src/core/EditVersions.h` (freezing, comparing, putting back), `src/core/Feedback.h`, `src/core/ReviewPage.*`,
+  `src/core/MasterExport.*` (the listening copy's name and version). Keys only added, contract still 3 (COMPATIBILITY.md). fermata:Live needs a
+  rebuild and test: it carries the versions through when it saves a project and shows nothing of them.
+
 ## 3.41.0
 Built 6 November 2026 (the conversation for both programs).
 - **The ReHarmoniSer shows which take you hear at an edit point.** When the marked part crosses an edit point and the OUT STREAM and IN STREAM

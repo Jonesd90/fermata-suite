@@ -168,7 +168,7 @@ juce::String commonChecks (const Project& p, const MasteringDef& def, MasterJobS
 }
 } // namespace
 
-juce::String makeFilesSpec (const Project& p, const MasteringDef& def, MasterJobSpec& spec)
+juce::String makeFilesSpec (const Project& p, const MasteringDef& def, MasterJobSpec& spec, bool listeningCopies)
 {
     spec = MasterJobSpec();
     spec.kind = MasterJobSpec::Kind::Files; spec.out = def.vm;
@@ -201,9 +201,17 @@ juce::String makeFilesSpec (const Project& p, const MasteringDef& def, MasterJob
         MasterJobItem j; j.editId = edits[i]->id; j.trackNo = n;
         j.editName = edits[i]->name; j.projectName = p.name;
         j.editOffsetSeconds = edits[i]->sampleRate > 0.0 ? (double) edits[i]->audibleStart() / edits[i]->sampleRate : 0.0;     // (where the render starts on the edit's timeline)
-        const auto base = its[i]->fileName.trim().isNotEmpty() ? its[i]->fileName.trim() : edits[i]->name;
+        auto base = its[i]->fileName.trim().isNotEmpty() ? its[i]->fileName.trim() : edits[i]->name;
+        auto title = its[i]->tags.title.isNotEmpty() ? its[i]->tags.title : base;
+        if (listeningCopies)
+        {   // 3.42.0: a listening copy is of a version of the edit, and says which: "The Lion - Edit 2 - More reverb" (its comments come back to that version)
+            const int ver = edits[i]->versionNumber();
+            const auto versionTail = edits[i]->versionTail (ver);                                                      // " - Edit 2 - More reverb"
+            j.editVersion = ver; j.editName = edits[i]->versionTitle (ver);
+            base += versionTail; title += versionTail;
+        }
         j.baseName = def.vm.numberFiles ? juce::String (n).paddedLeft ('0', 2) + " - " + base : base;
-        j.tags = mergeTags (its[i]->tags, def.vm.album, its[i]->tags.title.isNotEmpty() ? its[i]->tags.title : base);
+        j.tags = mergeTags (its[i]->tags, def.vm.album, title);
         spec.items.push_back (j);
     }
     return {};
@@ -218,7 +226,7 @@ juce::String makeFormsSpec (const Project& p, const MasteringDef& def, MasterJob
     d.vm.folder = def.vm.formFolder.trim().isNotEmpty() ? def.vm.formFolder.trim() : p.masteredFolder().getChildFile ("Listening copies").getFullPathName();
     d.vm.normalise = def.vm.formNormalise; d.vm.loudnessMode = def.vm.formLoudnessMode; d.vm.peakDb = def.vm.formPeakDb;      // the tab's own levels
     d.vm.targetLufs = def.vm.formTargetLufs; d.vm.ceilingDbTp = def.vm.formCeilingDbTp; d.vm.peakTogether = def.vm.formTogether;
-    auto err = makeFilesSpec (p, d, spec);
+    auto err = makeFilesSpec (p, d, spec, true);
     if (err.isNotEmpty()) return err;
     if (def.vm.formAudio == 2 && findLame().isEmpty())
         return "MP3 inside the listening copy needs the free LAME encoder. Put lame.exe in the same folder as Fermata, or choose WAV or FLAC.";
@@ -692,7 +700,7 @@ MasterExportResult MasterExportJob::executeInner()
             {
                 reviewpage::Spec ps;
                 ps.audio = audioFile; ps.mime = fmtForm == MasterFormat::Mp3 ? "audio/mpeg" : fmtForm == MasterFormat::Flac ? "audio/flac" : "audio/wav";
-                ps.piece = item.tags.title.isNotEmpty() ? item.tags.title : item.editName; ps.project = item.projectName; ps.editId = item.editId.toString();
+                ps.piece = item.tags.title.isNotEmpty() ? item.tags.title : item.editName; ps.project = item.projectName; ps.editId = item.editId.toString(); ps.version = item.editVersion;
                 ps.offsetSeconds = item.editOffsetSeconds; ps.durationSeconds = (double) R.frames[(size_t) i] / juce::jmax (1.0, rates[(size_t) i]);
                 ps.peaks = reviewpage::computePeaks (proc[(size_t) i], gain, reviewpage::peakColumnsFor (ps.durationSeconds), &cancelFlag);
                 if (single) onePage.push_back (ps);                                   // written once every piece is ready (below); its audio waits till then

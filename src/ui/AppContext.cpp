@@ -1817,6 +1817,30 @@ juce::String AppContext::playEdit (const juce::Uuid& editId, double fromSec, dou
     return err;
 }
 
+juce::String AppContext::playEditVersion (const juce::Uuid& editId, int version, double fromSec, double toSec)
+{
+    auto* live = project.findEdit (editId);
+    if (live == nullptr) return "That edit no longer exists";
+    if (version == live->versionNumber()) return playEdit (editId, fromSec, toSec);
+    const EditDef* e = live->versionEdit (version);
+    if (e == nullptr) return "Edit " + juce::String (version) + " is not there any more";
+    PlayStartTimer timing (*this);
+    double rate = e->sampleRate > 0.0 ? e->sampleRate : engine.getSampleRate();
+    if (rate <= 0.0) rate = 48000.0;
+    const juce::int64 a = juce::jmax ((juce::int64) 0, (juce::int64) std::llround (fromSec * rate));
+    const juce::int64 b = toSec < 0 ? a + (juce::int64) std::llround (kOpenEndSeconds * rate) : juce::jmax (a, (juce::int64) std::llround (toSec * rate));
+    auto segs = segmentsForEdit (project, *e);
+    setAlignOwner (project.alignOwnerFor (true, editId));
+    transportFades (segs, a, b, rate, true);
+    auto err = beginSession (*this, std::move (segs), a, b, rate, automationPlanFor (project, *e), false, true, editId, -1, false);     // (not followed: the frozen version's automation plays as it was)
+    if (err.isEmpty())
+    {
+        playInfo = { PlayInfo::Kind::Edit, e->windowId, editId, (double) a / rate }; playInfo.loopLen = 0.0;
+        setNotice ("Playing " + live->versionTitle (version) + " from " + juce::String (fromSec, 1) + " s (on that version's timeline), through the edit's mixer as it is now.");
+    }
+    return err;
+}
+
 /** 3.26.0: while an edit plays, a point drawn, moved or deleted in its automation (or Ctrl+Z bringing one back) is heard at once, and the mixer's fader moves with
     it: a plan made from the lanes as they are now takes over from the one playing (AudioEngine::replaceAutomation) - before, the lanes were read once, as the
     play started, and a change was heard only after stopping and starting again. Looked at 20 times a second; the plan is only made again when the lanes changed. */

@@ -1,4 +1,5 @@
 #include "MixerWindow.h"
+#include "MixChangesPanel.h"
 #include "ColourPicker.h"
 #include "PluginManager.h"
 #include "ValueEntry.h"
@@ -2499,6 +2500,15 @@ public:
         scopeButton.setTooltip ("Open a stereo phase scope (goniometer) for any audio track, Int Bus or Ext Bus of this mixer");
         scopeButton.onClick = [this] { if (app.showScope) app.showScope (mixer); };
         addAndMakeVisible (scopeButton);
+        // 3.42.0: only in an edit's own mixer, once the edit has a frozen version: every setting that differs from the mixer as it was then, each with Put back
+        if (auto* mx = mixerState(); mx != nullptr && ! mx->editId.isNull())
+        {
+            changesButton.setButtonText ("Changes...");
+            changesButton.setTooltip ("The settings of this mixer that differ from how it was when a version of the edit was frozen (Edit 1, Edit 2 ...): every fader to 0.1 dB, pan, mute, send, low cut and plug-in, "
+                                      "each with a Put back key. Also puts the whole mix back. (Versions: the tabs above the edit's timeline.)");
+            changesButton.onClick = [this] { showMixChangesPanel (app, mixer); };
+            addAndMakeVisible (changesButton);
+        }
         monoButton.setButtonText ("Mono");
         monoButton.setClickingTogglesState (true);
         monoButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffe8a317));
@@ -2549,6 +2559,7 @@ public:
         place (modeCap, modeBox); place (riseCap, riseBox); place (fallCap, fallBox); place (holdCap, holdBox);
         r.removeFromTop (4);
         scopeButton.setBounds (r.removeFromTop (26).reduced (0, 1));
+        if (changesButton.isVisible()) changesButton.setBounds (r.removeFromTop (26).reduced (0, 1));
         monoButton.setBounds (r.removeFromTop (26).reduced (0, 1));
         r.removeFromTop (8);
         addStripButton.setBounds (r.removeFromTop (26).reduced (0, 1));
@@ -2683,6 +2694,7 @@ private:
     AppContext& app; juce::Uuid mixer; std::function<void()> onReset;
     juce::TextButton resetButton, scopeButton, monoButton, addStripButton, narrowerButton, widerButton;
     juce::TextButton matchButton, showAllButton;            // (3.20.0: an edit's own mixer only)
+    juce::TextButton changesButton;                         // (3.42.0: an edit's own mixer only: the changes since a frozen version)
     juce::Label widthCap;
     juce::ComboBox ditherBox, modeBox, riseBox, fallBox, holdBox;
     juce::Label ditherCap, modeCap, riseCap, fallCap, holdCap;

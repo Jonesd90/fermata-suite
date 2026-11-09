@@ -152,3 +152,10 @@ copies it like everything else, which is fine.
   - Still contract 3 (fermata 3.40.0): the Atmos tab. The mastering settings gained one key, `"atmos"` (the ticked buses, the LFE low-pass and its
     frequency, dither, the folder), written only once something differs from the defaults, and `"view"` can now be 3 (an older fermata clamps it
     to its own tabs). New shared file `src/core/AdmWriter.h / .cpp`, in `cmake/SharedCore.cmake`, used by fermata's Mastering window only.
+  - Still contract 3 (fermata 3.42.0): edit versions ("Edit 1", "Edit 2" ...). An edit (in its `.fmedit` file) gained keys, none changed, written
+    only when used: `"versions"` (a list of the frozen earlier versions, each `{number, subheading, frozenAt, laneShown, edit, mixer}` - `edit` a
+    whole edit in the same shape as the edit itself, with no versions of its own; `mixer` a mixer snapshot), `"subheading"` and `"compareWith"`.
+    Missing = no versions: the edit is Edit 1, as every edit was. A program from before reads such an edit as it is (the live version) and would
+    drop the frozen ones if it saved it; fermata:Live carries them through unchanged (`src/core/Project.cpp`) and shows nothing of them. The
+    listening copy's page and its notes file gained `"version"` (missing = not said: the comments go to the live version). New shared header
+    `src/core/EditVersions.h` (freezing, comparing, putting back; header only), used by fermata's windows only.

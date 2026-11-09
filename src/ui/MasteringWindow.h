@@ -238,5 +238,7 @@ private:
     juce::File lastOutput;
     bool lastWasDisc = false;
     int lastJobKind = 0;                         // 0 Virtual Master, 1 DDP, 2 listening copies
+    std::vector<std::pair<juce::Uuid, int>> lastFormVersions;     // 3.42.0: the edits the last listening copies were of, and which version of each (the done box offers to freeze them)
+    void freezeExported();                       // 3.42.0: freezes each of those edits as that version (if it is still the live one) and carries on in the next
 };
 } // namespace td

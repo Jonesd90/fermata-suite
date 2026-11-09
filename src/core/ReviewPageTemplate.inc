@@ -157,7 +157,7 @@ R"HTMLX(.tc{background:var(--flag);color:#fff;border-radius:99px;font-size:11px;
 var META=JSON.parse(document.getElementById('meta').textContent);
 function $(i){return document.getElementById(i);}
 /* the pieces: one for a listening copy of one piece, several when all the pieces are in one file */
-var T=(META.tracks&&META.tracks.length)?META.tracks:[{piece:META.piece||'',edit:META.edit||'',offset:META.offset||0,duration:META.duration||1,mime:META.mime||'audio/wav',peaks:META.peaks||[]}];
+var T=(META.tracks&&META.tracks.length)?META.tracks:[{piece:META.piece||'',edit:META.edit||'',version:META.version||0,offset:META.offset||0,duration:META.duration||1,mime:META.mime||'audio/wav',peaks:META.peaks||[]}];
 var multi=T.length>1;
 var audio=$('audio'),view=$('view'),scroller=$('scroller'),ctx=view.getContext('2d');
 var notes=[],selId=null,draft=null,editing=null,zoom=1,dirty=false,stored=true,wasPlaying=false,dpr=window.devicePixelRatio||1;
@@ -438,8 +438,8 @@ function payload(){
   var who=$('who').value.trim();
   function list(k){return sorted(k).map(function(n){return {id:n.id,t:Math.round(n.t*1000)/1000,bar:n.bar,text:n.text,who:who,at:n.at};});}
   var o={fermata:'feedback',v:2,id:META.id,name:META.name||'',title:title,who:who};
-  if(!multi){o.edit=T[0].edit;o.piece=T[0].piece;o.offset=T[0].offset;o.duration=durOf(0);o.notes=list(0);}
-  else o.pieces=T.map(function(tr,k){return {k:k,edit:tr.edit,piece:tr.piece,offset:tr.offset,duration:tr.duration,notes:list(k)};});
+  if(!multi){o.edit=T[0].edit;o.piece=T[0].piece;if(T[0].version)o.version=T[0].version;o.offset=T[0].offset;o.duration=durOf(0);o.notes=list(0);}
+  else o.pieces=T.map(function(tr,k){var e={k:k,edit:tr.edit,piece:tr.piece,offset:tr.offset,duration:tr.duration,notes:list(k)};if(tr.version)e.version=tr.version;return e;});
   return JSON.stringify(o,null,1);
 }
 function safeName(s){return String(s).replace(/[\\\/:*?"<>|]+/g,' ').replace(/\s+/g,' ').trim();}

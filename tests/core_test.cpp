@@ -31,6 +31,7 @@
 #include "../src/core/EditFix.h"
 #include "../src/core/SpectralPyramid.h"
 #include "../src/core/Feedback.h"
+#include "../src/core/EditVersions.h"
 #include "../src/core/ReviewPage.h"
 #include "../src/core/FileSync.h"
 #include "../src/core/AudioRelink.h"
@@ -8972,6 +8973,211 @@ int main()
         e.rippleAfter (0, 48000); CHECK (e.guide.start == 48000 * 4);
         e.leadIn = true; e.leadInSeconds = 2.0; e.anchorStart(); CHECK (e.guide.start == 48000 * 4);   // the edit moved to start at 2 s: the guide did not
         CHECK (e.regions.front().fadeInBegin() == 48000 * 2);
+    }
+
+    SECTION ("3.42.0 edit versions: freezing, the names, saving and reading back, and undo leaving the frozen versions alone");
+    {
+        using namespace editversions;
+        const auto dir = tmp.getChildFile ("versions"); dir.deleteRecursively(); dir.createDirectory();
+        Project q; q.setInputCount (2); q.setOutputCount (2);
+        q.projectFile = dir.getChildFile ("Lion.fermata"); q.name = "Lion";
+        auto& tw = q.addTakeWindow ("Takes");
+        auto& e = q.addEdit ("The Lion", tw.id);
+        e.sampleRate = 48000.0;
+        const auto takeA = juce::Uuid(), takeB = juce::Uuid(), trackId = q.tracks.empty() ? juce::Uuid() : q.tracks.front().id;
+        auto piece = [&] (const juce::Uuid& take, const juce::String& nm, juce::int64 in, juce::int64 len)
+        {
+            EditRegion r; r.id = juce::Uuid(); r.takeId = take; r.takeName = nm; r.sampleRate = 48000.0; r.srcIn = in; r.srcOut = in + len; r.sourceLength = 48000 * 120;
+            RegionFile f; f.trackId = trackId; f.trackName = "A"; f.file = dir.getChildFile (nm + ".wav"); r.files.push_back (f); return r;
+        };
+        e.insertRegion (piece (takeA, "001", 48000, 48000 * 10));
+        e.insertRegion (piece (takeB, "002", 48000 * 20, 48000 * 6));
+        e.insertRegion (piece (takeA, "001", 48000 * 40, 48000 * 8));
+        FeedbackNote n1; n1.key = "k1"; n1.who = "Anna"; n1.text = "too loud"; n1.seconds = 12.0; e.feedback.push_back (n1);
+        CHECK (e.versionNumber() == 1 && e.versionTitle (1) == "The Lion - Edit 1");
+        e.subheading = "first cut";
+        CHECK (e.versionTitle (1) == "The Lion - Edit 1 - first cut" && e.versionTail (1) == " - Edit 1 - first cut");
+        juce::var mix; { auto* o = new juce::DynamicObject(); o->setProperty ("inserts", true); mix = juce::var (o); }
+        const int frozen = freeze (e, mix, juce::Time (1700000000000));
+        CHECK (frozen == 1 && e.versionNumber() == 2 && e.versions.size() == 1 && e.subheading.isEmpty() && e.feedback.empty());
+        CHECK (e.versions[0].edit != nullptr && e.versions[0].edit->regions.size() == 3 && e.versions[0].edit->feedback.size() == 1 && e.versions[0].edit->versions.empty());
+        CHECK (e.versions[0].subheading == "first cut" && e.versionTitle (1) == "The Lion - Edit 1 - first cut" && e.versionTitle (2) == "The Lion - Edit 2");
+        CHECK (e.version (1) != nullptr && e.version (2) == nullptr && e.versionEdit (2) == &e && e.versionEdit (1) == e.versions[0].edit.get());
+        e.subheading = "More reverb";
+        CHECK (e.versionTitle (2) == "The Lion - Edit 2 - More reverb");
+        // saved and read back: the frozen version with everything in it; a project from before reads with no versions
+        juce::String err; CHECK (q.save (err));
+        Project q2; CHECK (q2.load (q.projectFile, err));
+        auto* e2 = q2.findEdit (e.id);
+        CHECK (e2 != nullptr && e2->versionNumber() == 2 && e2->subheading == "More reverb" && e2->versions.size() == 1);
+        if (e2 != nullptr && ! e2->versions.empty())
+        {
+            const auto& v = e2->versions[0];
+            CHECK (v.number == 1 && v.subheading == "first cut" && v.frozenAt.toMilliseconds() == 1700000000000 && (bool) v.mixer["inserts"]);
+            CHECK (v.edit != nullptr && v.edit->regions.size() == 3 && v.edit->feedback.size() == 1 && v.edit->feedback[0].text == "too loud" && v.edit->regions[1].takeName == "002");
+        }
+        {   // the edit's own file carries them ("versions"); an edit without any writes no such key (as before)
+            juce::var root; CHECK (! juce::JSON::parse (dir.getChildFile ("Edit Windows").findChildFiles (juce::File::findFiles, false, "*.fmedit")[0].loadFileAsString(), root).failed());
+            CHECK (root["edit"]["versions"].isArray() && root["edit"]["subheading"].toString() == "More reverb");
+            EditDef plain; plain.id = juce::Uuid(); plain.name = "Plain";
+            const auto pv = Project::editToVarIn (plain, dir);
+            CHECK (! pv.hasProperty ("versions") && ! pv.hasProperty ("subheading"));
+        }
+        // undo never takes a freeze away
+        q.undoReset(); q.changed(); q.undoTick (false, true);
+        e.removeRegion (1); q.changed(); q.undoTick (false, true);
+        CHECK (e.regions.size() == 2 && e.versions.size() == 1);
+        CHECK (q.undo());
+        auto* e3 = q.findEdit (e.id);
+        CHECK (e3 != nullptr && e3->regions.size() == 3 && e3->versions.size() == 1 && e3->subheading == "More reverb");
+        // the last freeze undone: the version comes off, its comments come back onto the live edit at the same music
+        CHECK (unfreezeLast (*e3) && e3->versions.empty() && e3->versionNumber() == 1 && e3->subheading == "first cut" && e3->feedback.size() == 1 && std::abs (e3->feedback[0].seconds - 12.0) < 1.0e-6);
+        CHECK (! unfreezeLast (*e3));
+    }
+
+    SECTION ("3.42.0 edit versions: a comment on an earlier version is shown where its music is now");
+    {
+        using namespace editversions;
+        EditDef a; a.id = juce::Uuid(); a.sampleRate = 48000.0;
+        const auto takeA = juce::Uuid(), takeB = juce::Uuid();
+        auto piece = [&] (const juce::Uuid& take, juce::int64 in, juce::int64 len) { EditRegion r; r.id = juce::Uuid(); r.takeId = take; r.takeName = "t"; r.sampleRate = 48000.0; r.srcIn = in; r.srcOut = in + len; r.sourceLength = 48000 * 120;
+                                                                                  RegionFile f; f.trackId = juce::Uuid(); f.file = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("t.wav"); r.files.push_back (f); return r; };
+        a.insertRegion (piece (takeA, 0, 48000 * 10)); a.insertRegion (piece (takeB, 0, 48000 * 10));
+        EditDef b = a;
+        b.insertIndex = 0; b.insertRegion (piece (takeA, 48000 * 50, 48000 * 3));        // 3 s put in at the front: everything is 3 s later
+        bool fl = true;
+        CHECK (std::abs (mapSeconds (a, b, 12.0, &fl) - 15.0) < 1.0e-6 && ! fl);          // in the second piece
+        CHECK (std::abs (mapSeconds (a, b, 2.5, &fl) - 5.5) < 1.0e-6 && ! fl);
+        CHECK (std::abs (mapSeconds (a, b, 21.0, &fl) - 24.0) < 1.0e-6 && ! fl);          // past the end: keeps its distance from the last piece
+        CHECK (std::abs (mapSeconds (b, a, 15.0, &fl) - 12.0) < 1.0e-6 && ! fl);          // and back
+        CHECK (std::abs (mapSeconds (b, a, 1.0, &fl) - 1.0) < 1.0e-6 && fl);              // the new piece's music is not in A: floating, time kept
+        EditDef c = a; c.regions[1].srcIn += 48000 * 2; c.regions[1].startSample += 48000 * 2;   // the second piece's start trimmed 2 s (the music that was there is gone)
+        CHECK (std::abs (mapSeconds (a, c, 15.0, &fl) - 15.0) < 1.0e-6 && ! fl);          // 5 s into take B is still 5 s into take B, at the same place
+        CHECK (std::abs (mapSeconds (a, c, 11.0, &fl) - 11.0) < 1.0e-6 && fl);            // 1 s into take B is gone: floating
+    }
+
+    SECTION ("3.42.0 edit versions: what changed between two versions, and each change put back");
+    {
+        using namespace editversions;
+        const double S = 48000.0;
+        EditDef a; a.id = juce::Uuid(); a.sampleRate = S;
+        const auto takeA = juce::Uuid(), takeB = juce::Uuid(), takeC = juce::Uuid();
+        auto piece = [&] (const juce::Uuid& take, const juce::String& nm, juce::int64 in, juce::int64 len) { EditRegion r; r.id = juce::Uuid(); r.takeId = take; r.takeName = nm; r.sampleRate = S; r.srcIn = in; r.srcOut = in + len; r.sourceLength = (juce::int64) S * 300;
+                                                                                                         RegionFile f; f.trackId = juce::Uuid(); f.file = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile (nm + ".wav"); r.files.push_back (f); return r; };
+        a.insertRegion (piece (takeA, "A", 0, (juce::int64) S * 10));
+        a.insertRegion (piece (takeB, "B", 0, (juce::int64) S * 10));
+        a.insertRegion (piece (takeC, "C", 0, (juce::int64) S * 10));
+        a.insertRegion (piece (takeA, "A2", (juce::int64) S * 100, (juce::int64) S * 10));
+        a.addOverdub (piece (takeB, "dub", (juce::int64) S * 200, (juce::int64) S * 2), (juce::int64) S * 5);
+        CHECK (compare (a, a).empty());
+        // B: the second piece's end trimmed 1 s earlier (everything after moves up), its level raised, the overdub moved 3 s later
+        EditDef b = a;
+        { auto& r = b.regions[1]; r.srcOut -= (juce::int64) S; for (size_t k = 2; k < b.regions.size(); ++k) b.regions[k].startSample -= (juce::int64) S; r.setPieceLevelDb (2.0f); b.regions[2].inStart = -0.05; b.regions[2].inEnd = 0.05; }
+        b.overdubs[0].startSample += (juce::int64) S * 3;
+        auto ch = compare (a, b);
+        int main = 0, dubs = 0;
+        for (auto& c : ch) { if (c.onMainTrack()) ++main; if (c.kind == Change::Kind::Overdub) ++dubs; }
+        CHECK (main == 1 && dubs == 1 && ch.size() == 2);
+        for (auto& c : ch)
+            if (c.onMainTrack())
+            {
+                CHECK (c.kind == Change::Kind::Piece && c.text.contains ("ends 1.00 s earlier in the take") && c.text.contains ("level 0.0 dB -> +2.0 dB") && c.text.contains ("fade in"));
+                CHECK (c.bFrom == (juce::int64) S * 10 && c.bTo == (juce::int64) S * 29 && c.aFrom == (juce::int64) S * 10 && c.aTo == (juce::int64) S * 30);   // (pieces B and C: C's fade in changed too, so the two are one span)
+                CHECK (c.label.contains ("trim") && c.label.contains ("level") && c.label.contains ("fade"));
+            }
+            else CHECK (c.text.contains ("moved 3.00 s later"));
+        // put back the main-track change: B is as A again (its pieces, where they lie, the fades at the joins, the level)
+        EditDef b2 = b;
+        for (auto& c : ch) if (c.onMainTrack()) CHECK (putBack (b2, a, c).isEmpty());
+        CHECK (b2.regions.size() == 4 && b2.regions[1].srcOut == a.regions[1].srcOut && b2.regions[3].startSample == a.regions[3].startSample && std::abs (b2.regions[1].pieceLevelDb()) < 0.01f);
+        CHECK (std::abs (b2.regions[2].inStart - a.regions[2].inStart) < 1.0e-9 && std::abs (b2.regions[1].outEnd - a.regions[1].outEnd) < 1.0e-9);
+        CHECK (b2.overdubs[0].startSample == b.overdubs[0].startSample);                  // (the overdub's own change is still there)
+        auto again = compare (a, b2);
+        CHECK (again.size() == 1 && again[0].kind == Change::Kind::Overdub);
+        for (auto& c : again) CHECK (putBack (b2, a, c).isEmpty());
+        CHECK (compare (a, b2).empty());
+        // a piece taken out, and a new one put in: "cut" and "new" are one span (a replaced passage), and come back as one
+        EditDef d = a;
+        d.removeRegion (2);                                                                 // C goes
+        d.insertIndex = 2; d.insertRegion (piece (takeB, "B2", (juce::int64) S * 150, (juce::int64) S * 4));    // 4 s of take B in its place
+        auto ch2 = compare (a, d);
+        CHECK (ch2.size() == 1 && ch2[0].text.contains ("C taken out") && ch2[0].text.contains ("B2 new") && ch2[0].label.contains ("cut") && ch2[0].label.contains ("new"));
+        CHECK (ch2[0].bFrom == (juce::int64) S * 20 && ch2[0].bTo == (juce::int64) S * 24 && ch2[0].aFrom == (juce::int64) S * 20 && ch2[0].aTo == (juce::int64) S * 30);
+        CHECK (putBack (d, a, ch2[0]).isEmpty());
+        CHECK (d.regions.size() == 4 && d.regions[2].takeName == "C" && d.regions[3].startSample == a.regions[3].startSample && compare (a, d).empty());
+        // the other way round: A's piece put into B's place is a change too, from B's point of view, and goes back
+        auto ch3 = compare (d, a);
+        CHECK (ch3.empty());
+        // an overdub taken out comes back; a new one goes again
+        EditDef f = a; f.overdubs.clear();
+        auto ch4 = compare (a, f);
+        CHECK (ch4.size() == 1 && ch4[0].kind == Change::Kind::OverdubRemoved);
+        CHECK (putBack (f, a, ch4[0]).isEmpty() && f.overdubs.size() == 1 && compare (a, f).empty());
+        f.addOverdub (piece (takeC, "dub2", 0, (juce::int64) S), (juce::int64) S * 7);
+        auto ch5 = compare (a, f);
+        CHECK (ch5.size() == 1 && ch5[0].kind == Change::Kind::OverdubAdded && putBack (f, a, ch5[0]).isEmpty() && f.overdubs.size() == 1);
+        // automation: a lane's points changed; put back
+        EditDef g = a;
+        { auto& lane = g.addLane (g.regions[0].files[0].trackId, autoparam::fader, juce::Uuid::null()); g.addPoint (lane, (juce::int64) S * 2, -3.0f); g.addPoint (lane, (juce::int64) S * 4, 0.0f); }
+        auto ch6 = compare (a, g);
+        CHECK (ch6.size() == 1 && ch6[0].kind == Change::Kind::Lane && ch6[0].text.contains ("new lane") && putBack (g, a, ch6[0]).isEmpty() && compare (a, g).empty());
+        // moving a piece (shuffle): one change, "moved here from", and one put-back undoes the whole move
+        EditDef h = a; h.shuffleRegion (1, 1);
+        auto ch7 = compare (a, h);
+        CHECK (ch7.size() == 1 && ch7[0].kind == Change::Kind::Moved && ch7[0].text.contains ("moved here from"));
+        CHECK (putBack (h, a, ch7[0]).isEmpty());
+        CHECK (compare (a, h).empty() && h.regions.size() == 4 && h.regions[1].takeName == "B" && h.regions[2].takeName == "C" && h.regions[3].startSample == a.regions[3].startSample);
+    }
+
+    SECTION ("3.42.0 edit versions: every mixer setting that differs is listed, and put back one at a time");
+    {
+        using namespace editversions;
+        Project q; q.setInputCount (4); q.setOutputCount (2); q.addTrack ("Violin spot", TrackFormat::Mono, 0); q.addTrack ("Main pair", TrackFormat::Stereo, 1); q.syncMixers();
+        CHECK (q.tracks.size() >= 1 && ! q.mixers.empty());
+        if (q.tracks.empty() || q.mixers.empty()) goto mixDone;
+        {
+        auto& t = q.tracks.front();
+        auto& m = *q.mixers.front();
+        const juce::Uuid busId = q.buses.empty() ? juce::Uuid::null() : q.buses.front().id;
+        const auto before = q.mixSnapshot (m, true);
+        auto* s = m.stripFor (t.id);
+        s->gainDb.set (s->gainDb.get() - 0.1f); s->pan.set (-0.5f); s->mute.set (true); s->lowCut.on.set (true);
+        if (! busId.isNull()) s->sends.get (busId)->gainDb.set (-6.0f);
+        const auto after = q.mixSnapshot (m, true);
+        auto nameOf = [&] (const juce::String& kind, const juce::String& id) { if (kind == "track") for (auto& x : q.tracks) if (x.id.toString() == id) return x.name; if (kind == "bus") for (auto& x : q.buses) if (x.id.toString() == id) return x.name; return juce::String ("?"); };
+        auto ch = compareMix (before, after, nameOf);
+        const int want = busId.isNull() ? 4 : 5;
+        CHECK ((int) ch.size() == want);
+        bool fader = false, pan = false, mute = false, lc = false, send = false;
+        for (auto& c : ch)
+        {
+            if (c.text.contains ("level") && c.text.contains ("send")) send = true;
+            else if (c.text.contains ("fader") && c.text.contains ("-> ")) fader = true;
+            if (c.text.contains ("pan C -> L50")) pan = true;
+            if (c.text.contains ("mute off -> on")) mute = true;
+            if (c.text.contains ("low cut off -> on")) lc = true;
+            CHECK (c.text.startsWith (t.name + ": "));
+        }
+        CHECK (fader && pan && mute && lc && (busId.isNull() || send));
+        // each one put back (the snapshot patched with the older value) leaves the rest as they are
+        for (auto& c : ch)
+        {
+            const auto patched = patchedMix (after, c);
+            auto rest = compareMix (before, patched, nameOf);
+            CHECK ((int) rest.size() == want - 1);
+            for (auto& r : rest) CHECK (r.text != c.text);
+        }
+        // and applied to the mixer: the fader goes back, nothing else moves
+        for (auto& c : ch)
+            if (c.path.contains ("gainDb") && ! c.path.contains ("sendList"))
+            {
+                MixParts parts; parts.inserts = false;
+                q.applyMix (m, patchedMix (after, c), 48000.0, 512, parts);
+                CHECK (std::abs (s->gainDb.get() - (float) (double) before["strips"][0]["gainDb"]) < 1.0e-4f && s->mute.get() && std::abs (s->pan.get() + 0.5f) < 1.0e-4f);
+            }
+        CHECK (compareMix (after, after, nameOf).empty());
+        }
+        mixDone:;
     }
 
     SECTION ("2.102 a window never takes a file another window has, so a save never tidies away a file it has just written");

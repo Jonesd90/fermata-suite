@@ -259,10 +259,50 @@ struct EditGuide
 };
 
 /** The edit: regions placed on a timeline. Normally butted end to end; slipping can open gaps / overlaps. */
+struct EditDef;
+
+/** 3.42.0: an earlier version of an edit - "Edit 1", "Edit 2" ... - frozen when its listening copy went out (Mastering asks) or with the Freeze
+    button in the edit window. It holds the whole edit as it was then (pieces, overdubs, fades, levels, automation, markers and the listeners'
+    comments on THAT version) and its mixer's settings (Project::mixSnapshot with the plug-ins' states). The live edit is always the newest
+    version: with two frozen ones it is Edit 3. Frozen versions are never changed by editing; only their comments move (imported, ticked, deleted).
+    Not part of undo (like the comments): an undo never takes a freeze away, and nothing frozen is put back by one. */
+struct EditVersion
+{
+    int          number = 1;            // Edit N
+    juce::String subheading;            // "More reverb" in "The Lion - Edit 2 - More reverb" (may be empty)
+    juce::Time   frozenAt;
+    std::shared_ptr<EditDef> edit;      // the edit as it was (its own 'versions' list is empty; its 'subheading' is 'subheading' above)
+    juce::var    mixer;                 // its mixer's settings at the freeze (void when the edit had no mixer of its own)
+    bool         laneShown = true;      // its comments' lane is open above the live edit's timeline (a view; saved)
+};
+
 struct EditDef
 {
     juce::Uuid   id;
     juce::String name { "Edit" };
+    // ---- 3.42.0: versions ----
+    std::vector<EditVersion> versions;  // the frozen earlier versions, Edit 1 first; this edit is Edit versions.size() + 1
+    juce::String subheading;            // this version's subheading (goes with it when it is frozen)
+    int          compareWith = 0;       // the frozen version the changes lane compares this edit with (0 = the lane is closed); a view, saved
+    int versionNumber() const noexcept { return (int) versions.size() + 1; }
+    /** "The Lion - Edit 2 - More reverb": the name of version n (n = versionNumber() for the live edit; any n without a subheading says just "- Edit n"). */
+    juce::String versionTitle (int n) const { return name + versionTail (n); }
+    /** " - Edit 2 - More reverb": what versionTitle adds to the name. */
+    juce::String versionTail (int n) const
+    {
+        juce::String sub = n == versionNumber() ? subheading : juce::String();
+        for (auto& v : versions) if (v.number == n) sub = v.subheading;
+        auto t = " - Edit " + juce::String (n);
+        if (sub.trim().isNotEmpty()) t += " - " + sub.trim();
+        return t;
+    }
+    const EditVersion* version (int n) const { for (auto& v : versions) if (v.number == n) return &v; return nullptr; }
+    EditVersion* version (int n) { for (auto& v : versions) if (v.number == n) return &v; return nullptr; }
+    /** The edit as version n reads: the frozen one, or this edit itself for the live number. Null for a number that is not there. */
+    const EditDef* versionEdit (int n) const { if (n == versionNumber()) return this; auto* v = version (n); return v != nullptr ? v->edit.get() : nullptr; }
+    EditDef* versionEdit (int n) { if (n == versionNumber()) return this; auto* v = version (n); return v != nullptr ? v->edit.get() : nullptr; }
+    /** Does something to this edit and to every frozen version's edit (for anything that walks an edit's files: relinks, renames, missing-file checks). */
+    template <typename F> friend void withVersions (EditDef& e, F&& f) { f (e); for (auto& v : e.versions) if (v.edit != nullptr) f (*v.edit); }
     juce::Uuid   windowId;                 // the take window this edit was first made from (informational)
     double       sampleRate = 0.0;         // set by the first region
     std::vector<EditRegion> regions;
