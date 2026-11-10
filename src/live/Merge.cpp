@@ -29,6 +29,11 @@ std::vector<Merge::Piece> Merge::pieces (const SessionIndex& idx, juce::int64 st
     for (auto* c : sorted)
     {
         if (cursor >= end) break;
+        // 0.7.1: a chunk that cannot be part of the span is not measured at all. One that begins at or after its end (and so does every chunk
+        // after it: they are in order) may be the chunk the drive is writing now - measuring mends a header that looks unfinished, which must
+        // never be tried on a file being written. One that ends before the span has no part in it, and a long session has thousands of those.
+        if (c->firstSample >= end) break;
+        if (c->samples >= 0 && c->firstSample + c->samples <= cursor) continue;
         const juce::int64 len = lengthOf (*c);
         if (len <= 0) continue;
         const juce::int64 cEnd = c->firstSample + len;

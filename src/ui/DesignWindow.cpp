@@ -297,11 +297,12 @@ void DesignComponent::buildBusPage (Page& page, bool external)
         page.grid.refresh();                                          // shows at the end of the list, in the order added
         page.grid.selectRow ((int) p.busIndices (external).size() - 1);
     });
-    auto move = [this, &p, &page, globalIndex] (int r, int delta)
+    auto move = [this, &p, &page, globalIndex, external] (int r, int delta)
     {
         if (locked() || r < 0) return;
         const int i = globalIndex (r);
         if (i < 0) return;
+        if (! juce::isPositiveAndBelow (r + delta, (int) p.busIndices (external).size())) return;     // (3.46.1: Up on the first row / Down on the last used to take the selection away)
         p.moveBus (i, delta);
         page.grid.selectRow (r + delta);
     };
@@ -422,7 +423,7 @@ void DesignComponent::buildMixersPage()
                           refreshAll();
                       });
     };
-    auto open = [this, &p] (int r) { if (r >= 0 && app.showMixer) app.showMixer (p.mixers[(size_t) r]->id); };
+    auto open = [this, &p] (int r) { if (juce::isPositiveAndBelow (r, (int) p.mixers.size()) && app.showMixer) app.showMixer (p.mixers[(size_t) r]->id); };   // (3.46.1: the row is checked - the list can have got shorter while the menu was up)
     g.addColumn ({ "", 80, GridEditor::Type::Button, [] (int) { return juce::String ("Delete"); }, [remove] (int r, const juce::String&) { remove (r); }, {}, {} });
     g.onDeleteKey = remove;
     mixersPage.addButton ("Delete selected", [this, remove] { remove (mixersPage.grid.getSelectedRow()); });

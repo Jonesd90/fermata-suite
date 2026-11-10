@@ -392,7 +392,7 @@ static void openRepair (AppContext& app, const juce::Uuid& eid, juce::Component*
                     const auto ti = std::find (trackIds.begin(), trackIds.end(), r.files[fi].trackId);
                     if (ti == trackIds.end()) continue;
                     TrackPart p;
-                    if (heardPart (r, fi, from, to, p)) parts[(size_t) (ti - trackIds.begin())].push_back (std::move (p));
+                    if (heardPart (r, fi, from, to, p, e)) parts[(size_t) (ti - trackIds.begin())].push_back (std::move (p));
                 }
     }
     if (trackIds.empty()) { say (nm, "None of the tracks you marked with Ctrl + Alt + drag are in the marked area."); if (pair != nullptr) pair->closeAll(); return; }

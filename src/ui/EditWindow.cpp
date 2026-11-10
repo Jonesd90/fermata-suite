@@ -861,7 +861,6 @@ public:
         // volume changes (3.45.0): a teal box round only the tracks the change moves - from where it starts to where it ends (a change between the 1/2
         // marks: to the end of its glide back), its glides shaded inside the box - and a triangle at the top of the rows where it starts and ends
         // (double-click either, or the box's edge, to change it or remove it). The level a piece starts with keeps its small mark on the lane.
-        paintLevelLines (g, *e, tracks, rate, clip);                 // 3.49.0: the level each track really plays at, wherever a piece has one of its own
         {
             const auto teal = juce::Colour (0xff1aa39a);
             auto smallMarks = [&] (const EditRegion& r)
@@ -892,6 +891,7 @@ public:
                     }
             }
         }
+        paintLevelLines (g, *e, tracks, rate, clip);                 // 3.49.0: the level each track really plays at (3.50.0: drawn over the boxes, so no edge runs through a figure)
 
         // where the next take will be placed: a flag in its own strip under the markers (drag it; it snaps to the starts and ends of the pieces)
         if (app.showInsertFlag)
@@ -2434,6 +2434,12 @@ private:
         auto yOf = [&] (int row, float db) { return (float) (top + row * rowH) + (float) rowH * 0.5f - (db <= -99.0f ? -1.0f : juce::jlimit (-1.0f, 1.0f, db / 12.0f)) * reach; };
         std::vector<int> labelRight (tracks.size(), std::numeric_limits<int>::min());      // where the last figure of each row ends (no figure is written over another)
         struct Label { int row = 0, x = 0; float y = 0.0f, db = 0.0f; };
+        // 3.50.0: what plays is the piece's own level times the edit's volume areas over it (segmentsForEdit): that is what is drawn
+        auto played = [&] (const EditRegion& r, size_t f, juce::int64 rel)
+        {
+            const float lin = r.levelAt (f, rel) * (ed.areas.empty() ? 1.0f : ed.areaGainAt (r.files[f].trackId, r.startSample + rel));
+            return juce::jmax (-100.0f, juce::Decibels::gainToDecibels (lin, -100.0f));
+        };
         auto pieces = [&] (const std::vector<EditRegion>& list, bool inARow)
         {
             std::vector<float> endOfLast (tracks.size(), 0.0f);                              // the level each row had at the end of the piece before (pieces in a row only)
@@ -2442,13 +2448,21 @@ private:
                 const int x0 = xOf ((double) r.startSample / rate), x1 = xOf ((double) r.endSample() / rate);
                 const bool seen = x1 >= clip.getX() - 160 && x0 <= clip.getRight() + 8;
                 const juce::int64 len = r.length();
-                std::vector<juce::int64> at { 0, len };                                      // where the level can turn: each change's start and the end of its glide
-                for (auto& gc : r.gains)
+                std::vector<juce::int64> at { 0, len };                                      // where the level can turn: each change's start and the end of its glide,
+                for (auto& gc : r.gains)                                                     // and where an area's fades begin and end
                 {
                     const auto rl = (juce::int64) std::llround (gc.ramp * rate);
                     if (gc.at > 0 && rl == 0) at.push_back (gc.at - 1);                     // (a change with no glide is a step)
                     at.push_back (gc.at); at.push_back (gc.at + rl);
                 }
+                bool underArea = false;
+                for (auto& a : ed.areas)
+                    if (a.to > r.startSample && a.from < r.endSample())
+                    {
+                        juce::int64 fin = 0, fout = 0; a.fades (rate, fin, fout);
+                        for (juce::int64 t : { a.from - 1, a.from, a.from + fin, a.to - fout, a.to - 1, a.to }) at.push_back (t - r.startSample);
+                        underArea = true;
+                    }
                 for (auto& a : at) a = juce::jlimit ((juce::int64) 0, len, a);
                 std::sort (at.begin(), at.end()); at.erase (std::unique (at.begin(), at.end()), at.end());
                 std::vector<Label> labels; int rowsHere = 0;
@@ -2457,12 +2471,18 @@ private:
                     const int row = rowOf (r.files[f].trackId);
                     if (row < 0) continue;
                     ++rowsHere;
-                    const float startDb = juce::jmax (-100.0f, r.levelDbAt (f, 0)), endDb = juce::jmax (-100.0f, r.levelDbAt (f, len));
+                    if (r.gains.empty() && ! underArea)                                      // (nothing of its own and nothing over it: 0 dB all the way)
+                    {
+                        if (seen && inARow && std::abs (endOfLast[(size_t) row]) >= 0.05f) labels.push_back ({ row, x0, yOf (row, 0.0f), 0.0f });
+                        if (inARow) endOfLast[(size_t) row] = 0.0f;
+                        continue;
+                    }
+                    const float startDb = played (r, f, 0), endDb = played (r, f, len);
                     if (seen)
                     {
                         if (std::abs (startDb - (inARow ? endOfLast[(size_t) row] : 0.0f)) >= 0.05f) labels.push_back ({ row, x0, yOf (row, startDb), startDb });
                         std::vector<float> db (at.size()); bool any = false;
-                        for (size_t i = 0; i < at.size(); ++i) { db[i] = juce::jmax (-100.0f, r.levelDbAt (f, at[i])); any = any || std::abs (db[i]) >= 0.05f; }
+                        for (size_t i = 0; i < at.size(); ++i) { db[i] = played (r, f, at[i]); any = any || std::abs (db[i]) >= 0.05f; }
                         if (any)
                         {
                             juce::Path line;
@@ -2473,16 +2493,13 @@ private:
                             }
                             g.setColour (juce::Colours::black.withAlpha (0.55f)); g.strokePath (line, juce::PathStrokeType (3.4f));
                             g.setColour (bright); g.strokePath (line, juce::PathStrokeType (1.5f));
-                            for (size_t k = 0; k < r.gains.size(); ++k)                     // where a change's glide arrives: the level it settles on
+                            for (size_t i = 1; i < at.size(); ++i)                          // where the level settles on a new value: it has just moved, and now holds
                             {
-                                const auto& gc = r.gains[k];
-                                const juce::int64 arrives = gc.at + (juce::int64) std::llround (gc.ramp * rate);
-                                if (arrives <= 0 || arrives > len) continue;
-                                bool cutShort = false;                                      // (a later change that starts before this one has arrived: that one's figure says where it goes)
-                                for (size_t j = k + 1; j < r.gains.size(); ++j) cutShort = cutShort || r.gains[j].at < arrives;
-                                if (cutShort) continue;
-                                const float before = juce::jmax (-100.0f, r.levelDbAt (f, juce::jmax ((juce::int64) 0, gc.at - 1))), after = juce::jmax (-100.0f, r.levelDbAt (f, arrives));
-                                if (std::abs (after - before) >= 0.05f) labels.push_back ({ row, xOf ((double) (r.startSample + arrives) / rate), yOf (row, after), after });
+                                if (std::abs (db[i] - db[i - 1]) < 0.05f) continue;
+                                size_t j = i + 1;                                           // (the next turn that is not the other half of a step: a pair of points a sample apart)
+                                while (j < at.size() && at[j] - at[i] <= 2) ++j;
+                                if (j == at.size() || std::abs (db[j] - db[i]) < 0.05f)
+                                    labels.push_back ({ row, xOf ((double) (r.startSample + at[i]) / rate), yOf (row, db[i]), db[i] });
                             }
                         }
                     }
@@ -2516,7 +2533,7 @@ private:
         pieces (ed.overdubs, false);
     }
     /** 3.18.5: a volume change, as the double-click and the right-click menu open it: the piece it is in, where, and its group. */
-    struct GainHit { juce::Uuid regionId; juce::int64 at = 0; juce::String group; };
+    struct GainHit { juce::Uuid regionId; juce::int64 at = 0; juce::String group; juce::Uuid areaId = juce::Uuid::null(); };     // (3.50.0: areaId - a volume area of the edit; the rest: a change from before, in a piece)
     /** 3.45.0: one volume change as it is drawn - a lone change, or every point of a "between the 1/2 marks" change (its group, across pieces): where it
         starts (x0) and ends (x1: a lone change - the next change in its piece that moves one of the same tracks, or the piece's end; a group - the end of
         its glide back), the boxes round the rows of the tracks it moves (a run of neighbouring rows is one box: tracks 2, 3 and 7 are two boxes), and
@@ -2599,6 +2616,19 @@ private:
             if (! groupHasEnd[grp]) out[idx].x1 = juce::jmax (out[idx].x1, groupPieceEnd[grp]);
             out[idx].boxes = boxesFor (groupRows[grp], out[idx].x0, out[idx].x1);
         }
+        for (auto& a : ed.areas)                                                          // 3.50.0: the volume areas - a box round the tracks each is on, from its start to its end
+        {                                                                                  // (its fades shaded), a triangle where it starts and where its fade out begins
+            GainUnit u; u.hit.areaId = a.id;
+            u.x0 = xOf ((double) a.from / rate); u.x1 = juce::jmax (u.x0 + 3, xOf ((double) a.to / rate));
+            juce::int64 fin = 0, fout = 0; a.fades (rate, fin, fout);
+            const int inPx = (int) ((double) fin / rate * pixelsPerSecond), outPx = (int) ((double) fout / rate * pixelsPerSecond);
+            u.points.push_back ({ u.x0, inPx, true });
+            u.points.push_back ({ u.x1 - outPx, outPx, true });
+            std::set<int> rows;
+            for (auto& d : a.db) if (a.touches (d.first)) if (const int row = rowOf (d.first); row >= 0) rows.insert (row);
+            u.boxes = boxesFor (rows, u.x0, u.x1);
+            out.push_back (u);
+        }
         return out;
     }
     /** 3.18.5 (3.45.0: the triangle, or the edge of the box round the tracks it moves): the volume change under 'p', if any. */
@@ -2635,8 +2665,9 @@ private:
     }
     void openGainChange (const GainHit& h)
     {
-        if (h.group.isNotEmpty()) showRangeVolumeChange (app, editId, h.group);      // a "between the 1/2 marks" change: amounts and both fades
-        else showVolumeChange (app, editId, h.regionId, h.at);                         // a change on its own: its faders and fade, as before
+        if (! h.areaId.isNull()) { showVolumeArea (app, editId, h.areaId); return; }  // 3.50.0: a volume area: the one box - amounts, start, end, both fades
+        if (showOldChangeAsArea (app, editId, h.regionId, h.at, h.group)) return;      // a change from before 3.50.0: read as the area it amounts to (kept as one with Done)
+        if (h.group.isEmpty()) showVolumeChange (app, editId, h.regionId, h.at);       // one that cannot be an area (a piece of the overdub layer): the piece's little mixer, as before
     }
 
     /** Right-click on a piece: volume changes (and deleting an overdub), and the other versions of the marked part (3.5.0). */
@@ -2698,7 +2729,7 @@ private:
         auto* appPtr = &app;
         juce::Component::SafePointer<juce::Component> self (this);
         juce::Component::SafePointer<EditTimeline> me (this);
-        m.showMenuAsync (juce::PopupMenu::Options(), [appPtr, eid, rid, rel, self, rangeFrom, rangeTo, redrawFiles, hit, me, snipB] (int r)
+        m.showMenuAsync (juce::PopupMenu::Options(), [appPtr, eid, rid, rel, self, rangeFrom, rangeTo, redrawFiles, hit, me, snipB, isOver] (int r)
         {
             if (r == 50)
             {
@@ -2715,10 +2746,17 @@ private:
             auto* ed2 = appPtr->project.findEdit (eid);
             auto* p2 = ed2 ? ed2->findAny (rid) : nullptr;
             if (p2 == nullptr) return;
-            if (r == 1) showVolumeChange (*appPtr, eid, rid, rel);
+            if (r == 1)
+            {
+                // 3.50.0: a volume area of the edit, from here to the end of this piece - its end, and both fades, can be changed in the box (it used to be
+                // a level written into the piece, which stopped at the join whatever was wanted). A piece of the overdub layer keeps its own little
+                // mixer: an area is of the timeline, and would change what lies under the overdub too.
+                if (isOver) showVolumeChange (*appPtr, eid, rid, rel);
+                else showNewVolumeArea (*appPtr, eid, p2->startSample + rel, p2->endSample(), false);
+            }
             else if (r == 2) showVolumeChange (*appPtr, eid, rid, 0);
             else if (r == 3) { p2->gains.clear(); p2->normaliseIn = false; appPtr->project.changed(); }
-            else if (r == 7) showRangeVolumeChange (*appPtr, eid, rangeFrom, rangeTo);
+            else if (r == 7) showNewVolumeArea (*appPtr, eid, rangeFrom, rangeTo, true);
             else if (r == 5) fixtools::relinkEdit (*appPtr, eid, rid, self.getComponent());
             else if (r == 6) { p2->waiting = WaitingPiece(); appPtr->project.changed(); }
             else if (r == 4) { if (appPtr->isPlaying()) appPtr->stopPlayback(); ed2->removeOverdub (rid); appPtr->project.changed(); }

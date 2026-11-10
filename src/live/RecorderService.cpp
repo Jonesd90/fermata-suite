@@ -930,27 +930,35 @@ void RecorderService::answerPeaks (remote::Hub::Connection& conn, const juce::va
 
 void RecorderService::timerCallback()
 {
-    const auto now = juce::Time::currentTimeMillis();
-    if (hub.takeNewConnection()) { keepRunning(); send (statusEvent()); }      // (0.3.1: a window that connects wants this recorder: no Close everything)
-    monitor.service();
-    if (deviceRunning.load() && now - lastMeterMs >= 50 && hub.connections() > 0)
+    // 0.7.1: as the commands are (handleLine) - nothing that goes wrong in the 50 ms round (it makes the messages for the windows: meters, waveform
+    // points, the status) may end the recorder; an exception that left the timer would end the program, and the take with it. The round is
+    // simply made again next time.
+    try
     {
-        lastMeterMs = now;
-        auto e = obj(); put (e, "ev", "meters");
-        juce::Array<juce::var> pk, op;
-        for (auto& p : peaks) pk.add ((double) p.exchange (0.0f));
-        for (auto& p : outPeaks) op.add ((double) p.exchange (0.0f));
-        put (e, "peak", pk); put (e, "out", op);
-        send (e);
+        const auto now = juce::Time::currentTimeMillis();
+        if (hub.takeNewConnection()) { keepRunning(); send (statusEvent()); }      // (0.3.1: a window that connects wants this recorder: no Close everything)
+        monitor.service();
+        if (deviceRunning.load() && now - lastMeterMs >= 50 && hub.connections() > 0)
+        {
+            lastMeterMs = now;
+            auto e = obj(); put (e, "ev", "meters");
+            juce::Array<juce::var> pk, op;
+            for (auto& p : peaks) pk.add ((double) p.exchange (0.0f));
+            for (auto& p : outPeaks) op.add ((double) p.exchange (0.0f));
+            put (e, "peak", pk); put (e, "out", op);
+            send (e);
+        }
+        if (now - lastPeaksMs >= 100) { lastPeaksMs = now; sendPeaks(); }
+        watchAudio (now);
+        watchClosing (now);
+        if (now - lastStatusMs >= 1000)
+        {
+            lastStatusMs = now;
+            if (hub.connections() > 0) send (statusEvent());
+        }
     }
-    if (now - lastPeaksMs >= 100) { lastPeaksMs = now; sendPeaks(); }
-    watchAudio (now);
-    watchClosing (now);
-    if (now - lastStatusMs >= 1000)
-    {
-        lastStatusMs = now;
-        if (hub.connections() > 0) send (statusEvent());
-    }
+    catch (const std::exception& e) { juce::Logger::writeToLog (juce::String ("[recorder] A round of the recorder's timer failed: ") + e.what()); }
+    catch (...)                     { juce::Logger::writeToLog ("[recorder] A round of the recorder's timer failed"); }
 }
 
 // ---- closing (0.3.1) ---------------------------------------------------------------------------------------------------------------------------

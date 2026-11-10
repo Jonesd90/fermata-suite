@@ -1030,6 +1030,7 @@ public:
         : app (a), mixer (m), srcId (src), destId (dest), destName (app.project.nodeName (dest)), destIsTrack (toTrack)
     {
         noModeSwap (knob);
+        pulse.what = &knob;
         styleCaption (label, {}, juce::Justification::centred);
         label.setFont (juce::FontOptions (9.0f, juce::Font::bold));
         addAndMakeVisible (label);
@@ -1063,10 +1064,12 @@ public:
         const double v = s != nullptr && s->active() ? (double) s->gainDb.get() : (double) kSendOffDb;
         if (std::abs (knob.getValue() - v) > 0.05) knob.setValue (v, juce::dontSendNotification);
         showValue();
-        const auto arc = (juce::int64) chan::of (app.project, destId).getARGB();
+        // 3.50.0 (asked for on 10 November 2026): the band round the dial fills with GREEN as the send is turned up. It was drawn in the colour of the
+        // channel the send goes to - a navy bus on the dial's dark ring could not be seen at all, so the band seemed never to fill.
+        const auto arc = (juce::int64) juce::Colour (0xff3ecf5e).getARGB();
         if ((juce::int64) knob.getProperties().getWithDefault ("arc", (juce::int64) 0) != arc) { knob.getProperties().set ("arc", arc); knob.repaint(); }
-        // taken before the fader: a yellow square round the dial (the name stays the name). Its own MUTE: the ring goes grey and the read-out says MUTE;
-        // silenced by the channel's MUTE (Follow mute ticked): a red outline round the read-out
+        // taken before the fader: a yellow square round the dial (the name stays the name). Its own MUTE: the whole ring pulses red (3.50.0; it went grey)
+        // and the read-out says MUTE; silenced by the channel's MUTE (Follow mute ticked): a red outline round the read-out
         const bool pre = s != nullptr && s->pre.get(), own = s != nullptr && s->mute.get();
         const bool byChannel = s != nullptr && ! own && s->followMute.get() && channelMuteOn (app, mixer, srcId);
         if ((bool) knob.getProperties().getWithDefault ("pre", false) != pre || (bool) knob.getProperties().getWithDefault ("muted", false) != own)
@@ -1074,6 +1077,7 @@ public:
             knob.getProperties().set ("pre", pre); knob.getProperties().set ("muted", own); knob.repaint();
         }
         if (own != ownMute || byChannel != channelMute) { ownMute = own; channelMute = byChannel; showValue(); }
+        if (own) pulse.startTimerHz (15); else pulse.stopTimer();                // (the pulsing ring is drawn again while the send is muted)
         if (! refused)
         {
             label.setText (destName + (s != nullptr && ! s->followMute.get() ? " *" : ""), juce::dontSendNotification);
@@ -1148,6 +1152,7 @@ private:
     AppContext& app; MixerState& mixer; juce::Uuid srcId, destId; juce::String destName; bool destIsTrack = false;
     bool refused = false, ownMute = false, channelMute = false;
     juce::Label label, value; Knob knob;
+    struct Pulse : juce::Timer { juce::Component* what = nullptr; void timerCallback() override { if (what != nullptr) what->repaint(); } ~Pulse() override { stopTimer(); } } pulse;     // 3.50.0: a muted send's ring pulses
     std::unique_ptr<valueentry::ReadoutClick> valueClick;      // 3.43.0: (after 'value': it goes first)
 public:
     /** Set by a channel strip: runs a function on every strip linked to it right now (Shift + Alt held, see StripGang). */

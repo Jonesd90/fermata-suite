@@ -13,6 +13,7 @@ namespace
 {
 using u8 = std::uint8_t;
 constexpr std::uint32_t kNoStream = 0xFFFFFFFFu;
+constexpr juce::int64 kMaxAafBytes = (juce::int64) 1024 * 1024 * 1024;      // (3.46.1: see Cfb::open)
 
 inline std::uint32_t rd32 (const u8* p) { return (std::uint32_t) p[0] | ((std::uint32_t) p[1] << 8) | ((std::uint32_t) p[2] << 16) | ((std::uint32_t) p[3] << 24); }
 inline std::uint16_t rd16 (const u8* p) { return (std::uint16_t) (p[0] | (p[1] << 8)); }
@@ -40,7 +41,14 @@ struct Cfb
     {
         juce::FileInputStream in (f);
         if (! in.openedOk()) return "The file could not be opened.";
-        in.readIntoMemoryBlock (block);
+        // 3.46.1: the whole file is read into memory (on the screen's thread). An AAF that only NAMES its audio files is small - a few megabytes for
+        // the biggest session. One with the audio inside it (embedded: Pro Tools offers it) is as big as the session's audio, several gigabytes:
+        // reading that froze the program, and with too little memory ended it - for a file whose clips could not be used anyway.
+        if (in.getTotalLength() > kMaxAafBytes)
+            return "This AAF file is " + juce::File::descriptionOfSizeInBytes (in.getTotalLength()) + ": it has the audio inside it (embedded). "
+                   "Export the AAF again with the audio linked, not embedded, and import that one.";
+        try { in.readIntoMemoryBlock (block); }
+        catch (const std::bad_alloc&) { return "There is not enough memory to read this AAF file (" + juce::File::descriptionOfSizeInBytes (in.getTotalLength()) + ")."; }
         d = (const u8*) block.getData(); size = block.getSize();
         static const u8 magic[8] = { 0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1 };
         if (size < 512 || std::memcmp (d, magic, 8) != 0) return "This is not an AAF file (it is not a structured storage file).";

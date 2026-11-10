@@ -1675,6 +1675,20 @@ var Project::editToVarIn (const EditDef& eref, const juce::File& base, bool with
     { juce::Array<var> ti; for (auto& id : e->trackIds) ti.add (id.toString()); put (o, "trackIds", ti); }
     put (o, "automationOn", e->automationOn); if (e->showLtc) put (o, "showLtc", true);
     if (! e->markers.empty()) put (o, "markers", markersToVar (e->markers));
+    if (! e->areas.empty())                                                            // 3.50.0: the volume areas (VolumeArea, Edit.h). A new key: written only when there is one
+    {
+        juce::Array<var> as;
+        for (auto& a : e->areas)
+        {
+            var ao = obj();
+            put (ao, "id", a.id.toString()); put (ao, "from", (juce::int64) a.from); put (ao, "to", (juce::int64) a.to); put (ao, "fadeIn", a.fadeIn); put (ao, "fadeOut", a.fadeOut);
+            juce::Array<var> ts;
+            for (auto& d : a.db) { var t = obj(); put (t, "track", d.first.toString()); put (t, "db", (double) d.second); ts.add (t); }
+            put (ao, "tracks", ts);
+            as.add (ao);
+        }
+        put (o, "volumeAreas", as);
+    }
     if (! e->feedback.empty()) put (o, "feedback", feedbackToVar (e->feedback));
     if (! e->showFeedback) put (o, "showFeedback", false);
     if (! e->showMarkers) put (o, "showMarkers", false);
@@ -2135,6 +2149,17 @@ static std::unique_ptr<EditDef> editFromVarIn (const var& v, const juce::File& b
     if (auto* ab = v["autoBefore"].getArray())
         for (auto& av : *ab)
             if (const auto key = av["lane"].toString(); key.isNotEmpty() && ! av["value"].isVoid()) e->autoBefore[key] = finiteFloat (av["value"], -1.0e6f, 1.0e6f);
+    if (auto* as = v["volumeAreas"].getArray())                                 // 3.50.0: the volume areas (a project from before has none)
+        for (auto& av : *as)
+        {
+            VolumeArea a;
+            a.id = juce::Uuid (av["id"].toString()); if (a.id.isNull()) a.id = juce::Uuid();
+            a.from = juce::jmax ((juce::int64) 0, samplesFromVar (av["from"])); a.to = juce::jmax ((juce::int64) 0, samplesFromVar (av["to"]));
+            a.fadeIn = juce::jmax (0.0, secondsFromVar (av["fadeIn"])); a.fadeOut = juce::jmax (0.0, secondsFromVar (av["fadeOut"]));
+            if (auto* ts = av["tracks"].getArray())
+                for (auto& tv : *ts) if (const juce::Uuid t (tv["track"].toString()); ! t.isNull()) a.setDb (t, dbFromVar (tv["db"]));
+            if (! a.isEmpty()) e->areas.push_back (a);
+        }
     e->hardenEnds();                                    // older projects: the ends of the edit get their short fades too
     e->clampAll();
     e->commitAllJoins();                                // older projects: the edit points that were moved in the trim window get their pieces' edges moved with them (the sound does not change)
@@ -2542,6 +2567,15 @@ juce::uint64 Project::undoHash (const EditDef& e)
         h.add (l.id); h.add (l.trackId); h.add (l.param); h.add (l.mixerId); h.add (l.locked);
         h.count (l.pts.size());
         for (auto& p : l.pts) { h.add (p.id); h.add (p.region); h.add (p.take); h.add (p.srcPos); h.add (p.time); h.add (p.value); h.add (p.floating); }
+    }
+    if (! e.areas.empty())                                                             // 3.50.0: the volume areas (an edit without any hashes as it did before)
+    {
+        h.count (e.areas.size());
+        for (auto& a : e.areas)
+        {
+            h.add (a.id); h.add (a.from); h.add (a.to); h.add (a.fadeIn); h.add (a.fadeOut);
+            h.count (a.db.size()); for (auto& d : a.db) { h.add (d.first); h.add (d.second); }
+        }
     }
     return h.h;
 }

@@ -152,11 +152,15 @@ std::vector<juce::File> MediaComponent::rootFolders() const
 juce::String MediaComponent::signature() const
 {
     juce::String s;
+    const auto proj = app.project.projectFile.getParentDirectory();
     for (auto& r : rootFolders())
     {
         // (the folder listing already carries every file's size: asking each file again, twice, made this slow in a project with thousands of files)
+        // 3.46.1: only the project's own folder is looked through to the bottom. The folder of a file that lives somewhere else is looked at one level
+        // deep: it may be a whole drive or a music library (a file imported from D:\ made this list all of D:\ every 3 seconds, on the screen's thread).
+        const bool own = r == proj;
         int n = 0; juce::int64 bytes = 0;
-        for (const auto& entry : juce::RangedDirectoryIterator (r, true, "*", juce::File::findFilesAndDirectories))
+        for (const auto& entry : juce::RangedDirectoryIterator (r, own, "*", juce::File::findFilesAndDirectories))
         {
             ++n;
             if (! entry.isDirectory()) bytes += entry.getFileSize();
@@ -192,15 +196,20 @@ void MediaComponent::timerCallback()
 void MediaComponent::selectFile (const juce::File& f)
 {
     if (root == nullptr || f == juce::File()) return;
-    MediaTreeItem* item = nullptr;
-    for (int i = 0; i < root->getNumSubItems(); ++i)
-        if (auto* t = dynamic_cast<MediaTreeItem*> (root->getSubItem (i)))
-            if (f == t->getFile() || f.isAChildOf (t->getFile())) { item = t; break; }
+    auto topFolderOf = [this, &f] () -> MediaTreeItem*
+    {
+        for (int i = 0; i < root->getNumSubItems(); ++i)
+            if (auto* t = dynamic_cast<MediaTreeItem*> (root->getSubItem (i)))
+                if (f == t->getFile() || f.isAChildOf (t->getFile())) return t;
+        return nullptr;
+    };
+    MediaTreeItem* item = topFolderOf();
     if (item == nullptr)                                  // lives somewhere new: give it a root of its own
     {
         extraRoots.push_back (f.getParentDirectory());
-        refresh();
-        return;
+        refresh();                                        // (makes the tree again: 'root' is a new object now)
+        item = root != nullptr ? topFolderOf() : nullptr; // (3.46.1: and the file is highlighted in it - this used to stop here, so the first click showed nothing)
+        if (item == nullptr) return;
     }
     while (item != nullptr && item->getFile() != f)
     {

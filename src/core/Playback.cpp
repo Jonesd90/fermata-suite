@@ -330,7 +330,7 @@ void PlaybackSession::renderSegments (std::vector<std::unique_ptr<juce::AudioFor
         }
 
         // fades and volume changes
-        const bool hasIn = s.fadeInLen > 0, hasOut = s.fadeOutLen > 0, hasSteps = ! s.gainSteps.empty();
+        const bool hasIn = s.fadeInLen > 0, hasOut = s.fadeOutLen > 0, hasSteps = s.hasGain();
         if (hasIn || hasOut || hasSteps)
             for (int k = 0; k < m; ++k)
             {
@@ -634,6 +634,10 @@ std::vector<PlaySegment> segmentsForEdit (const Project& p, const EditDef& e)
     std::vector<PlaySegment> v;
     for (size_t i = 0; i < e.regions.size(); ++i) addRegionSegments (p, e.regions[i], v, i + 1 < e.regions.size() ? &e.regions[i + 1] : nullptr);
     for (auto& r : e.overdubs) addRegionSegments (p, r, v, nullptr, true);      // overdubs are simply added: everything plays at the same time
+    if (! e.areas.empty())                                                     // 3.50.0: the volume areas, on top of each piece's own level (never the LTC: it is cut hard and plays as it is)
+        for (auto& s : v)
+            if (juce::isPositiveAndBelow (s.trackIndex, (int) p.tracks.size()) && ! p.tracks[(size_t) s.trackIndex].isLtc)
+                s.areaGains = e.areaGainsFor (p.tracks[(size_t) s.trackIndex].id, s.begin, s.end);
     return v;
 }
 

@@ -41,6 +41,7 @@ struct TestDisk final : Disk
     RealDisk real;
     std::mutex lock;
     std::map<juce::String, int> failWrites, failOpens, stallMs, failIndex;   // by folder path prefix (failIndex: only session.json's writes fail)
+    std::map<juce::String, int> stallIndexMs;                                // (0.7.1: a write of session.json takes this long before it answers)
     std::atomic<int> writes { 0 };
 
     int setting (std::map<juce::String, int>& m, const juce::File& f)
@@ -77,7 +78,9 @@ struct TestDisk final : Disk
     juce::int64 bytesFree (const juce::File& f) override { return real.bytesFree (f); }
     bool replaceTextSafely (const juce::File& f, const juce::String& t, juce::String* e) override
     {
-        if (setting (failWrites, f) > 0 || setting (failIndex, f) > 0) { if (e) *e = "test: the index cannot be written"; return false; }
+        const bool fails = setting (failWrites, f) > 0 || setting (failIndex, f) > 0;      // (as the drive is when the call begins)
+        if (const int ms = setting (stallIndexMs, f); ms > 0) juce::Thread::sleep (ms);
+        if (fails) { if (e) *e = "test: the index cannot be written"; return false; }
         return real.replaceTextSafely (f, t, e);
     }
     bool deleteFile (const juce::File& f) override { return real.deleteFile (f); }
@@ -1062,6 +1065,110 @@ int main()
         CHECK (std::abs (L.shownOfWindow (601.0) - (L.takes[0].start + 600.0)) < 1.0e-6);                  // (fermata's gap after take 1: just after it)
         // the player plays take 1 only up to take 2's start, so the shared stretch is not heard twice
         CHECK (L.takes[0].shownEnd() < L.takes[0].end());
+    }
+
+    SECTION ("0.7.1: a flag pinned and a take marked merged while the session closes still reach every drive's index");
+    {
+        // close() used to take the drives out of the session's list while it waited for them to finish (up to minutes on a slow drive): what was
+        // noted meanwhile - a flag, a note, a take's merge - reached no drive's index, and was never written later.
+        const auto project = tmp.getChildFile ("Concert71a"); project.deleteRecursively();
+        LiveRecorder rec (disk);
+        auto setup = baseSetup (project, "Closing");
+        setup.backupRoots = { backup };
+        CHECK (rec.prepare (setup).isEmpty());
+        const auto primarySession = rec.primaryFolder(), backupSession = rec.driveWriters()[1]->folder();
+        feed (rec, 1.0, 50);
+        CHECK (rec.startTake (1, "One").isEmpty());
+        feed (rec, 1.5, 50);
+        CHECK (rec.stopTake() == 1);
+        CHECK (waitWritten (rec, sec (2)));
+        feed (rec, 1.0);                                             // (flat out: a second of audio is still in the buffer when the close begins)
+        disk->set (disk->stallMs, primarySession, 10); disk->set (disk->stallMs, backupSession, 10);      // every write takes a moment: the close lasts a while
+        std::thread closer ([&rec] { rec.close(); });
+        for (int i = 0; i < 500 && rec.isPrepared(); ++i) juce::Thread::sleep (2);       // (the close has begun)
+        juce::Thread::sleep (40);
+        FlagRec f; f.id = juce::Uuid().toString(); f.sample = sec (2); f.note = "pinned while the session closed"; f.by = "Primary"; f.pinnedAt = juce::Time::getCurrentTime();
+        rec.putFlag (f);
+        auto t = rec.takesSoFar()[0];
+        t.merged = true; t.mergedSamples = t.end - t.start; t.mergedFiles.add ("merged-while-closing.wav");
+        rec.updateTake (t);
+        closer.join();
+        disk->set (disk->stallMs, primarySession, 0); disk->set (disk->stallMs, backupSession, 0);
+        for (auto& folder : { primarySession, backupSession })
+        {
+            SessionIndex idx; CHECK (idx.load (folder.getChildFile (kIndexFileName)));
+            CHECK (idx.state == "closed");
+            CHECK (idx.findFlag (f.id) != nullptr && idx.findFlag (f.id)->note == f.note);
+            CHECK (idx.findTake (1) != nullptr && idx.findTake (1)->end == t.end);
+        }
+        { SessionIndex idx; CHECK (idx.load (primarySession.getChildFile (kIndexFileName))); CHECK (idx.findTake (1) != nullptr && idx.findTake (1)->merged && idx.findTake (1)->mergedFiles.size() == 1); }
+        { SessionIndex idx; CHECK (idx.load (backupSession.getChildFile (kIndexFileName))); CHECK (idx.findTake (1) != nullptr && ! idx.findTake (1)->merged); }     // (a backup's merged state is its own)
+        // and after the session: an update is written at once, the newest state last (two at the same time do not cross)
+        std::thread a ([&] { for (int i = 0; i < 20; ++i) { FlagRec g = f; g.id = "a" + juce::String (i); rec.putFlag (g); } });
+        std::thread b ([&] { for (int i = 0; i < 20; ++i) { FlagRec g = f; g.id = "b" + juce::String (i); rec.putFlag (g); } });
+        a.join(); b.join();
+        for (auto& folder : { primarySession, backupSession })
+        {
+            SessionIndex idx; CHECK (idx.load (folder.getChildFile (kIndexFileName)));
+            int found = 0; for (int i = 0; i < 20; ++i) { if (idx.findFlag ("a" + juce::String (i)) != nullptr) ++found; if (idx.findFlag ("b" + juce::String (i)) != nullptr) ++found; }
+            CHECK_MSG (found == 40, juce::String (found) + " of 40 flags in " + folder.getFullPathName());
+        }
+    }
+
+    SECTION ("0.7.1: a dropped drive is not taken on again while its old writer is still inside the drive");
+    {
+        // The drive is dropped (a write failed) and its writer is still waiting for the drive to answer its last call. Taking it on again at that
+        // moment used to destroy the old writer - which waits for its thread for as long as the drive holds it, with every other call to the
+        // session waiting behind it. Now it says "not yet", at once, and works a moment later.
+        const auto project = tmp.getChildFile ("Concert71b"); project.deleteRecursively();
+        LiveRecorder rec (disk);
+        auto setup = baseSetup (project, "Again later");
+        setup.backupRoots = { backup }; setup.chunkSeconds = 1;
+        CHECK (rec.prepare (setup).isEmpty());
+        const auto backupSession = rec.driveWriters()[1]->folder();
+        feed (rec, 1.0, 50);
+        CHECK (waitWritten (rec, sec (0.5)));
+        disk->set (disk->stallIndexMs, backupSession, 5000);         // the drive answers its index write only after 5 s ...
+        disk->set (disk->failWrites, backupSession, 1);              // ... and refuses every write
+        feed (rec, 1.5, 50);
+        for (int i = 0; i < 500 && ! rec.drives()[1].dropped; ++i) juce::Thread::sleep (10);
+        CHECK (rec.drives()[1].dropped);
+        disk->set (disk->failWrites, backupSession, 0);              // (the drive is well again; the old writer is still inside its last call)
+        const auto t0 = juce::Time::getMillisecondCounter();
+        const auto notYet = rec.resumeDrive (backupSession, "backup");
+        const auto waited = juce::Time::getMillisecondCounter() - t0;
+        CHECK_MSG (notYet.contains ("not answering yet"), notYet);
+        CHECK_MSG (waited < 4000, juce::String ((int) waited) + " ms");
+        CHECK (rec.drives().size() == 2 && rec.drives()[1].dropped);                 // (nothing changed: the dropped writer is still the drive's)
+        feed (rec, 0.5, 50);                                         // (the session goes on meanwhile)
+        disk->set (disk->stallIndexMs, backupSession, 0);
+        juce::String later ("never tried");
+        for (int i = 0; i < 100 && later.isNotEmpty(); ++i) { juce::Thread::sleep (100); later = rec.resumeDrive (backupSession, "backup"); }
+        CHECK_MSG (later.isEmpty(), later);
+        feed (rec, 2.5, 50);
+        CHECK (waitWritten (rec, sec (5)));
+        rec.close();
+        CHECK (! rec.drives()[1].dropped);
+        SessionIndex bidx; CHECK (bidx.load (backupSession.getChildFile (kIndexFileName)));
+        CHECK (bidx.state == "closed" && ! bidx.gaps.empty() && bidx.lastSample >= sec (5));
+    }
+
+    SECTION ("0.7.1: the merge measures only the chunks of the take's span - never one past it (it may be the one being written)");
+    {
+        SessionIndex idx; idx.chunkSamples = 100;
+        idx.chunks = { { "c000000", 0, 100 }, { "c000001", 100, 100 }, { "c000002", 200, 100 }, { "c000003", 300, -1 } };     // (the last one is open)
+        juce::StringArray measured;
+        auto lengthOf = [&measured] (const ChunkRec& c) -> juce::int64 { measured.add (c.name); return c.samples >= 0 ? c.samples : 100; };
+        const auto parts = Merge::pieces (idx, 120, 250, lengthOf);
+        CHECK_MSG (measured == juce::StringArray ({ "c000001", "c000002" }), measured.joinIntoString (" "));
+        CHECK (parts.size() == 2 && ! parts[0].hole && parts[0].first == 120 && parts[0].inChunk == 20 && parts[0].samples == 80
+               && ! parts[1].hole && parts[1].first == 200 && parts[1].inChunk == 0 && parts[1].samples == 50);
+        // a span that ends in a hole just before the open chunk: the hole is found without the open chunk being measured
+        idx.chunks = { { "c000000", 0, 100 }, { "c000003", 300, -1 } };
+        measured.clear();
+        const auto parts2 = Merge::pieces (idx, 50, 300, lengthOf);
+        CHECK_MSG (measured == juce::StringArray ({ "c000000" }), measured.joinIntoString (" "));
+        CHECK (parts2.size() == 2 && ! parts2[0].hole && parts2[0].first == 50 && parts2[0].samples == 50 && parts2[1].hole && parts2[1].first == 100 && parts2[1].samples == 200);
     }
 
     DriveWriter::finishAbandonedForTests();

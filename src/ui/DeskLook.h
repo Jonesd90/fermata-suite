@@ -368,8 +368,8 @@ public:
         g.setColour (p.disp); g.fillRect (b);
         g.setColour (p.dispEdge); g.drawRect (b, 1);
         g.setColour (p.cyan);
-        g.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 14.0f, juce::Font::bold));
-        const int vw = juce::roundToInt (juce::GlyphArrangement::getStringWidth (juce::Font (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 14.0f, juce::Font::bold)), text));
+        g.setFont (theme::figureFont (14.0f));
+        const int vw = juce::roundToInt (juce::GlyphArrangement::getStringWidth (juce::Font (theme::figureFont (14.0f)), text));
         const int total = vw + 4 + 14;
         const int x = (b.getWidth() - total) / 2;
         g.drawText (text, x, 0, vw + 2, b.getHeight(), juce::Justification::centredLeft, false);
@@ -388,7 +388,7 @@ public:
     void paint (juce::Graphics& g) override
     {
         auto b = getLocalBounds().toFloat();
-        g.setColour (pal().cream); g.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 8.0f, juce::Font::plain));
+        g.setColour (pal().cream); g.setFont (theme::figureFont (8.0f, juce::Font::plain));
         for (int db : { 0, -9, -20, -40 })
         {
             const float y = b.getBottom() - b.getHeight() * LevelMeter::frac ((float) db);

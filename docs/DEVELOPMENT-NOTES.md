@@ -2352,6 +2352,54 @@ Trim window, old edits); the player (`addRegionSegments`, Playback.cpp, the one 
 combined. The project file gains a key (rule 4: it only grows); an older fermata would drop the areas when it saves. "From here to next
 edit" and "between the 1/2 marks" would both make an area; an old change would become one when it is opened and kept.
 
+## 3.50.0: volume areas; Inter throughout in the Fermata style UI; the send dials (10 November 2026, with Claude Fable)
+
+**Volume areas.** What a later change must not undo:
+- **Two layers, never merged.** `EditRegion::gains` is the piece's OWN level (the Trim window's level and its `autoNorm` glide, "between
+  fades", an overdub's little mixer, and every volume change made before 3.50.0). `EditDef::areas` (`VolumeArea`, Edit.h) is the edit's
+  volume changes. What plays is the product. Nothing writes an area's level into a piece, and nothing reads `gains` to learn what an area
+  does. That is the whole point: the absolute levels in the pieces were why a raise, the Trim level and the normalise glide overwrote
+  one another.
+- **The one place the product is made for sound** is `segmentsForEdit` (Playback.cpp): after the pieces' segments are built, each gets
+  `areaGains` (`EditDef::areaGainsFor`), and `PlaySegment::gainAt` multiplies them in. Everything that plays, bounces, masters or exports
+  an edit goes through `segmentsForEdit`. The noise window's own reading "as it is heard" (`heardPart`, FixToolsCommon.h) does the same
+  with `TrackPart::areas`. The LTC track gets none. A player that builds segments any other way must add the areas itself.
+- **An area is positioned on the timeline and kept over its music**: `EditDef::rippleAfter` moves its ends (an end over music taken out
+  comes to where that music was; an area left empty is erased) and `editversions::Riders` carries them when pieces are slid, shuffled or
+  re-ordered. An undo brings the areas back with the edit's copy (`EditDef` is copied whole; `Project::undoHash` counts the areas only
+  when there are some, so an edit without areas hashes as it always did). Nothing else moves an area: a join moved in the Trim window
+  leaves it where it is, as it leaves a marker.
+- **Fades are straight lines in gain** (`AreaGain::at`), as a `GainChange`'s glide is; when the two fades are longer than the area they
+  share it in proportion (`VolumeArea::fades`).
+- **Old changes** (`src/core/VolumeAreas.h`, tested in core_test.cpp on a copy of the edit that was asked about): `takeOutGroup` and
+  `takeOutLoneChange` read an old change as an area and take its points out of the pieces. The amounts of a group are read at its role 1
+  point (where the level before is the piece's own); a role 2 point holds the piece's own level and the area in one figure, so it only
+  speaks for a track the first piece did not have. A lone change is followed through the pieces that START at the same raise, and ends
+  at the change that brings its tracks back level with the others - both are read while the raise is still in the pieces. The level a
+  piece starts with is never an old "change"; an overdub's change stays in its piece.
+- **The box** (`VolumeAreaPanel`, VolumeDialog.h): the area is in the edit while the box is open (so Play plays it); Cancel puts the
+  pieces AND the areas back from the copies made when it opened. For an old change the pieces are changed the moment the box opens
+  (its points come out, the area goes in) - which is why Cancel must restore the pieces too.
+- **Drawing** (`gainUnits` gives an area a unit with `hit.areaId`; `paintLevelLines` draws piece level x areas): the level lines know
+  nothing of areas except through `EditDef::areaGainAt`.
+- Not done, on purpose, and worth doing next: the versions' changes lane (`editversions::changes`) does not compare `areas`; an area's
+  ends cannot be dragged; `Retime` leaves an area's ends where they are on the timeline when a piece under it is stretched.
+
+**Type.** The Fermata style UI's ordinary face is Inter Medium (`fontdata::interMedium`, appended to FontData.cpp from
+`assets/Inter-Medium.otf`, the same Inter 4.0 build as Regular and Semibold; `FermataLookAndFeel::getTypefaceForFont`). Regular is still
+bundled and no longer used. `theme::figureFont` (Uikit.h) is the face of the displays: Inter with the `tnum` feature in the Fermata
+style, the system's console face in the Manuscript UI. A display's font is asked for when it is drawn (or when its strip is rebuilt on a
+change of style), so a switch of UI style changes it. Lists in columns keep `Font::getDefaultMonospacedFontName()`.
+
+**Send dials.** `MixerLook::drawRotarySlider` reads the slider's properties: "arc" (the band's colour - the send dials set green; it was
+the destination channel's colour, invisible when that was dark), "muted" (the whole ring pulses red, timed from the clock so every
+muted dial pulses together; `SendDial::pulse` repaints the dial at 15 Hz only while its send is muted), "pre" (the yellow square).
+
+**Asked for on 10 November and not built** (the next build): answering the listeners' comments. After a frozen version's comments are
+imported, a note written against a comment ("this happens in every take - would you like A or B?") that goes out in the next listening
+copy, so a conversation runs across versions. `FeedbackNote` has no reply today (who, bar, text, colour, seconds, done); the listening
+page is `src/core/ReviewPage.cpp`.
+
 ## 3.46.1: the fourth sweep, areas A, B and C; the list number in "Number the files" (9 November 2026, with Claude Fable)
 
 **The sweep.** `docs/SWEEP-4-FINDINGS.md` is the record: per area the files read line by line, and every finding as FIXED (with its test), HELD

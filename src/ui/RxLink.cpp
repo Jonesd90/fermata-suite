@@ -504,15 +504,18 @@ void sendToProgram (AppContext& app, const juce::Uuid& eid, const Program& progr
 }
 
 // ======================================================================================================== bringing saves back
-/** "Vln 1 - RX 3 (saved 1).wav", "(saved 2)" ...: where a save of 'f' is copied to. Each save is a file of its own, so Ctrl+Z can go back to the one before. */
-static juce::File copyFor (const juce::File& f)
+/** "Vln 1 - RX 3 (saved 1).wav", "(saved 2)" ...: where a save of 'f' is copied to. Each save is a file of its own, so Ctrl+Z can go back to the one before.
+    3.46.1: in 'folder', the project's Fixes folder, with every other fix (it was beside 'f' in Processing Media: that folder is a hand-over place,
+    and nothing an edit plays should live in it). */
+static juce::File copyFor (const juce::File& f, const juce::File& folder)
 {
+    folder.createDirectory();
     for (int n = 1; n < 100000; ++n)
     {
-        const auto c = f.getSiblingFile (f.getFileNameWithoutExtension() + " (saved " + juce::String (n) + ").wav");
-        if (! c.exists()) return c;
+        const auto c = folder.getChildFile (f.getFileNameWithoutExtension() + " (saved " + juce::String (n) + ").wav");
+        if (! c.exists() && ! f.getSiblingFile (c.getFileName()).exists()) return c;       // (not a name an earlier version already used beside 'f': one number, one save)
     }
-    return audioops::uniqueFile (f.getSiblingFile (f.getFileNameWithoutExtension() + " (saved).wav"));
+    return audioops::uniqueFile (folder.getChildFile (f.getFileNameWithoutExtension() + " (saved).wav"));
 }
 
 static juce::String secondsText (juce::int64 frames, double rate) { return juce::String ((double) frames / (rate > 0 ? rate : 48000.0), 3) + " s"; }
@@ -580,7 +583,7 @@ static void bringIn (AppContext& app, const std::vector<juce::String>& paths, Rx
             if (bad.isNotEmpty()) { problems.add (f.getFileName() + ": " + bad + "."); dealt(); continue; }
         }
         // copy it (the program goes on owning its file: the edit plays the copy, and each save is a copy of its own)
-        const auto copy = copyFor (f);
+        const auto copy = copyFor (f, app.project.audioFolder().getChildFile ("Fixes"));
         if (! f.copyFileTo (copy)) { copy.deleteFile(); notYet (f.getFileName() + ": it could not be copied (is the drive full?), so it was not brought in."); continue; }
         // (3.27.1: the copy is checked header against bytes - a body shorter than its header says is a file still being written, and is tried again later)
         if (const auto e = audioops::checkWrittenLength (&formats(), copy, frames); e.isNotEmpty()) { copy.deleteFile(); notYet (f.getFileName() + ": it changed while it was being copied; it was not brought in."); continue; }

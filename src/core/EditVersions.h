@@ -93,6 +93,7 @@ public:
         for (auto& m : e.markers)  markers.push_back ({ m.id.toString(), m.seconds });
         for (auto& f : e.feedback) feedback.push_back ({ f.key, f.seconds });
         for (auto& l : e.lanes) for (auto& p : l.pts) if (p.region.isNull()) points[p.id] = p.time;
+        for (auto& a : e.areas) areas[a.id] = { a.from, a.to };                           // 3.50.0: the volume areas
     }
 
     /** Puts everything where its music is now. What was not there when this was made (a marker added since) is left alone. */
@@ -121,12 +122,19 @@ public:
                     if (const auto it = points.find (p.id); it != points.end()) { const auto t = smp (it->second); any = any || t != p.time; p.time = t; }
             if (any) l.sortPoints();
         }
+        for (auto& a : e.areas)                                                // 3.50.0: each end of a volume area stays over its music (an area whose music is now
+            if (const auto it = areas.find (a.id); it != areas.end())         //  the other way round - a shuffle took one end past the other - covers what lies between)
+            {
+                a.from = smp (it->second.first); a.to = smp (it->second.second);
+                if (a.to < a.from) std::swap (a.from, a.to);
+            }
     }
 
 private:
     EditDef was;                                                           // (its pieces and its sample rate: all mapSeconds reads)
     std::vector<std::pair<juce::String, double>> overdubs, markers, feedback;  // id (a comment flag's key) -> where it was
     std::map<juce::Uuid, juce::int64> points;
+    std::map<juce::Uuid, std::pair<juce::int64, juce::int64>> areas;
     double fixIn = -1.0, fixOut = -1.0, playhead = 0.0;
 };
 

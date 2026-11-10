@@ -4,6 +4,8 @@
 // take and every piece of an edit that used the two tracks uses the stereo track instead. The two mono tracks then leave the project.
 // plan() works out what to write (message thread), writeFiles() writes it (a job thread), apply() makes the change (message thread). Ctrl+Z cannot step
 // back past it (the tracks are gone), so apply() starts the undo history again.
+// 3.46.1: the frozen versions of an edit (Edit 1, Edit 2 ...: EditDef::versions, 3.42.0) are converted with it - their pieces, their lists of tracks,
+// their automation and the mixer settings kept with each - exactly as the edit itself is. (They were left on the two tracks, which are gone.)
 #include "Project.h"
 #include "AudioOps.h"
 #include "Automation.h"
@@ -26,10 +28,12 @@ struct FileJob
 
 /** A take whose two mono files become one stereo file. */
 struct TakeUse { juce::Uuid window, take; juce::File left, right; size_t job = 0; };
-/** A piece of an edit (or an overdub) that played the two tracks. */
+/** A piece of an edit (or an overdub) that played the two tracks. 'version': 0 = the edit as it is now, else the number of the frozen version
+    of that edit the piece is in (a frozen version's pieces keep the ids they had, so the edit and the piece alone do not say which). */
 struct PieceUse
 {
     juce::Uuid edit, piece;
+    int version = 0;
     bool hasLeft = false, hasRight = false;
     juce::File left, right; juce::int64 leftStart = 0, rightStart = 0;
     size_t job = 0;
@@ -92,6 +96,56 @@ inline bool waitingTouches (const WaitingPiece& w, const Files& files, const juc
     return false;
 }
 
+/** The edit a piece of the plan is in: the edit itself, or one of its frozen versions (null when it has gone). */
+inline EditDef* editOfUse (Project& p, const PieceUse& u)
+{
+    auto* e = p.findEdit (u.edit);
+    if (e == nullptr || u.version == 0) return e;
+    auto* v = e->version (u.version);
+    return v != nullptr ? v->edit.get() : nullptr;
+}
+
+/** A frozen version's mixer settings (Project::mixSnapshot) as they read once the two tracks are one: the stereo track's strip where the left
+    track's was, with what a live mixer's new strip starts with - the left track's fader, input gain, output, VCAs and sends (no plug-ins, the
+    pans at their start) - and the right track's strip gone. The snapshot itself is not touched: a changed copy comes back (the same one when it
+    names neither track). */
+inline juce::var joinedMix (const juce::var& snap, const juce::Uuid& left, const juce::Uuid& right, const juce::Uuid& stereo)
+{
+    const auto* strips = snap["strips"].getArray();
+    if (strips == nullptr) return snap;
+    const auto l = left.toString(), r = right.toString();
+    bool any = false;
+    for (auto& s : *strips) { const auto t = s["track"].toString(); any = any || t == l || t == r; }
+    if (! any) return snap;
+    juce::var root = snap.clone();
+    juce::Array<juce::var> next;
+    for (auto& s : *root["strips"].getArray())
+    {
+        const auto t = s["track"].toString();
+        if (t == r) continue;
+        if (t != l) { next.add (s); continue; }
+        auto* o = new juce::DynamicObject(); juce::var so (o);
+        o->setProperty ("track", stereo.toString());
+        for (auto* k : { "gainDb", "inGainDb", "outOn", "outDest", "vcaMask" }) if (s.hasProperty (k)) o->setProperty (k, s[k]);
+        o->setProperty ("pan", 0.0); o->setProperty ("panL", -1.0); o->setProperty ("panR", 1.0);
+        o->setProperty ("mute", false); o->setProperty ("solo", false);
+        juce::Array<juce::var> sends;
+        if (const auto* sl = s["sendList"].getArray())
+            for (auto& sd : *sl)
+            {
+                const auto d = sd["dest"].toString();
+                if (d == l || d == r) continue;
+                auto* x = new juce::DynamicObject();
+                for (auto* k : { "dest", "gainDb", "mutedGainDb", "pre", "followMute", "mute" }) if (sd.hasProperty (k)) x->setProperty (k, sd[k]);
+                sends.add (juce::var (x));
+            }
+        o->setProperty ("sendList", sends);
+        next.add (so);
+    }
+    if (auto* d = root.getDynamicObject()) d->setProperty ("strips", next);
+    return root;
+}
+
 /** Works out the change. "" when it can be done (with 'out' filled in), else the reason it cannot, in plain words. */
 inline juce::String plan (const Project& p, const juce::Uuid& leftId, const juce::Uuid& rightId, const juce::String& newName, Plan& out)
 {
@@ -144,38 +198,66 @@ inline juce::String plan (const Project& p, const juce::Uuid& leftId, const juce
         if (touched) out.takeWindows.push_back (w->id);
     }
     const auto fixes = p.audioFolder().getChildFile ("Fixes");
+    // 3.46.1: the pieces of the frozen versions too. A version's piece is nearly always a piece the edit still has, or one an earlier version has:
+    // it then plays the SAME new file (the one written for that piece, made longer if this one needs more of it), so the changes lane goes on
+    // seeing the two as the same audio. 'pieceJobs': the files planned for single pieces so far, by what they are made from.
+    struct PieceJob { juce::String from; size_t job = 0; juce::Uuid edit, piece; };
+    std::vector<PieceJob> pieceJobs;
     for (auto& e : p.edits)
     {
         bool touched = false;
-        for (auto* list : { &e->regions, &e->overdubs })
-            for (auto& r : *list)
-            {
-                const RegionFile* fl = nullptr; const RegionFile* fr = nullptr;
-                for (auto& f : r.files) { if (f.trackId == leftId) fl = &f; else if (f.trackId == rightId) fr = &f; }
-                if (fl == nullptr && fr == nullptr) continue;
-                PieceUse u;
-                u.edit = e->id; u.piece = r.id;
-                u.hasLeft = fl != nullptr; u.hasRight = fr != nullptr;
-                if (fl != nullptr) { u.left = fl->file; u.leftStart = fl->fileStart; }
-                if (fr != nullptr) { u.right = fr->file; u.rightStart = fr->fileStart; }
-                // the whole take files of a take being joined: the piece plays the take's new stereo file, from the same place
-                const auto it = (u.leftStart == 0 && u.rightStart == 0) ? wholeTake.find (key (u.left, u.right)) : wholeTake.end();
-                if (it != wholeTake.end()) u.job = it->second;
-                else
+        auto planEdit = [&] (const EditDef& ed, int version)
+        {
+            for (auto* list : { &ed.regions, &ed.overdubs })
+                for (auto& r : *list)
                 {
-                    // anything else (a corrected or repaired piece, a piece with only one of the two): a stereo file of its own, as long as the piece may need
-                    const double rate = r.sampleRate > 0 ? r.sampleRate : 48000.0;
-                    const auto h = (juce::int64) std::llround (2.0 * rate);
-                    FileJob j;
-                    j.left = u.left; j.right = u.right; j.leftStart = u.leftStart; j.rightStart = u.rightStart;
-                    j.wantFrom = r.srcIn + juce::jmin ((juce::int64) 0, (juce::int64) std::llround (r.inStart * rate)) - h;
-                    j.wantTo = r.srcOut + juce::jmax ((juce::int64) 0, (juce::int64) std::llround (r.outEnd * rate)) + h;
-                    j.dest = audioops::uniqueFile (fixes.getChildFile (sanitiseForFile (r.takeName.upToFirstOccurrenceOf (" (", false, false) + " - " + name) + " (stereo).wav"));
-                    u.job = out.jobs.size(); out.jobs.push_back (j);
+                    const RegionFile* fl = nullptr; const RegionFile* fr = nullptr;
+                    for (auto& f : r.files) { if (f.trackId == leftId) fl = &f; else if (f.trackId == rightId) fr = &f; }
+                    if (fl == nullptr && fr == nullptr) continue;
+                    PieceUse u;
+                    u.edit = e->id; u.piece = r.id; u.version = version;
+                    u.hasLeft = fl != nullptr; u.hasRight = fr != nullptr;
+                    if (fl != nullptr) { u.left = fl->file; u.leftStart = fl->fileStart; }
+                    if (fr != nullptr) { u.right = fr->file; u.rightStart = fr->fileStart; }
+                    // the whole take files of a take being joined: the piece plays the take's new stereo file, from the same place
+                    const auto it = (u.leftStart == 0 && u.rightStart == 0) ? wholeTake.find (key (u.left, u.right)) : wholeTake.end();
+                    if (it != wholeTake.end()) u.job = it->second;
+                    else
+                    {
+                        // anything else (a corrected or repaired piece, a piece with only one of the two): a stereo file of its own, as long as the piece may need
+                        const double rate = r.sampleRate > 0 ? r.sampleRate : 48000.0;
+                        const auto h = (juce::int64) std::llround (2.0 * rate);
+                        const auto wantFrom = r.srcIn + juce::jmin ((juce::int64) 0, (juce::int64) std::llround (r.inStart * rate)) - h;
+                        const auto wantTo = r.srcOut + juce::jmax ((juce::int64) 0, (juce::int64) std::llround (r.outEnd * rate)) + h;
+                        const auto from = key (u.left, u.right) + "|" + juce::String (u.leftStart) + "|" + juce::String (u.rightStart);
+                        const PieceJob* same = nullptr;
+                        if (version != 0)                                  // (the edit's own pieces: a file each, as ever)
+                        {
+                            for (auto& pj : pieceJobs) if (pj.from == from && pj.edit == e->id && pj.piece == r.id) { same = &pj; break; }      // the same piece
+                            if (same == nullptr) for (auto& pj : pieceJobs) if (pj.from == from) { same = &pj; break; }                        // the same audio
+                        }
+                        if (same != nullptr)
+                        {
+                            auto& j = out.jobs[same->job];
+                            j.wantFrom = juce::jmin (j.wantFrom, wantFrom); j.wantTo = juce::jmax (j.wantTo, wantTo);
+                            u.job = same->job;
+                        }
+                        else
+                        {
+                            FileJob j;
+                            j.left = u.left; j.right = u.right; j.leftStart = u.leftStart; j.rightStart = u.rightStart;
+                            j.wantFrom = wantFrom; j.wantTo = wantTo;
+                            j.dest = audioops::uniqueFile (fixes.getChildFile (sanitiseForFile (r.takeName.upToFirstOccurrenceOf (" (", false, false) + " - " + name) + " (stereo).wav"));
+                            u.job = out.jobs.size(); out.jobs.push_back (j);
+                            pieceJobs.push_back ({ from, u.job, e->id, r.id });
+                        }
+                    }
+                    out.pieces.push_back (u);
+                    touched = true;
                 }
-                out.pieces.push_back (u);
-                touched = true;
-            }
+        };
+        planEdit (*e, 0);
+        for (auto& v : e->versions) if (v.edit != nullptr) planEdit (*v.edit, v.number);
         if (touched) out.edits.push_back (e->id);
     }
     if (out.takes.empty() && out.pieces.empty()) return "There is no audio on " + L->name + " or " + R->name + " in any take window or edit.";
@@ -237,13 +319,14 @@ inline bool apply (Project& p, const Plan& plan, juce::String& why)
     };
     auto samePiece = [&] (const PieceUse& u, EditRegion*& rg) -> bool
     {
-        auto* e = p.findEdit (u.edit); rg = e != nullptr ? e->findAny (u.piece) : nullptr;
+        auto* e = editOfUse (p, u); rg = e != nullptr ? e->findAny (u.piece) : nullptr;
         if (rg == nullptr) return false;
         const RegionFile* fl = nullptr; const RegionFile* fr = nullptr;
         for (auto& f : rg->files) { if (f.trackId == plan.left) fl = &f; else if (f.trackId == plan.right) fr = &f; }
         if ((fl != nullptr) != u.hasLeft || (fr != nullptr) != u.hasRight) return false;
         if (fl != nullptr && (fl->file != u.left || fl->fileStart != u.leftStart)) return false;
         if (fr != nullptr && (fr->file != u.right || fr->fileStart != u.rightStart)) return false;
+        if (u.version != 0) return true;                 // (a frozen version waits for nothing: what was out being processed when it was frozen comes back to the edit)
         return ! rg->waiting.active() || ! waitingTouches (rg->waiting, rg->files, plan.left, plan.right);
     };
     for (auto& u : plan.takes)  { TakeGroup* g = nullptr; if (! sameTake (u, g))    { why = "The takes changed while the files were being written."; return false; } }
@@ -257,12 +340,21 @@ inline bool apply (Project& p, const Plan& plan, juce::String& why)
                     && std::none_of (plan.takes.begin(), plan.takes.end(), [&] (const TakeUse& u) { return u.window == w->id && u.take == g.id; }))
                 { why = "The takes changed while the files were being written."; return false; }
     for (auto& e : p.edits)
-        for (auto* list : { &e->regions, &e->overdubs })
-            for (auto& rg : *list)
-                for (auto& f : rg.files)
-                    if ((f.trackId == plan.left || f.trackId == plan.right)
-                        && std::none_of (plan.pieces.begin(), plan.pieces.end(), [&] (const PieceUse& u) { return u.edit == e->id && u.piece == rg.id; }))
-                    { why = "An edit changed while the files were being written."; return false; }
+    {
+        bool unknown = false;                            // (3.46.1: a version frozen meanwhile is found here too - its pieces are not in the plan)
+        auto look = [&] (const EditDef& ed, int version)
+        {
+            for (auto* list : { &ed.regions, &ed.overdubs })
+                for (auto& rg : *list)
+                    for (auto& f : rg.files)
+                        if ((f.trackId == plan.left || f.trackId == plan.right)
+                            && std::none_of (plan.pieces.begin(), plan.pieces.end(), [&] (const PieceUse& u) { return u.edit == e->id && u.version == version && u.piece == rg.id; }))
+                            unknown = true;
+        };
+        look (*e, 0);
+        for (auto& v : e->versions) if (v.edit != nullptr) look (*v.edit, v.number);
+        if (unknown) { why = "An edit changed while the files were being written."; return false; }
+    }
 
     // the new track, where the left one was: its colour, its spot-mic role, the inputs of both
     TrackDef S;
@@ -300,6 +392,7 @@ inline bool apply (Project& p, const Plan& plan, juce::String& why)
         RegionFile rf;
         rf.trackId = plan.stereo; rf.trackName = plan.name; rf.file = j.dest; rf.numChannels = 2; rf.fileStart = j.from;
         const int keep = il >= 0 ? il : ir, drop = il >= 0 ? ir : -1;
+        if (keep < 0) continue;                          // (cannot be: samePiece found one of the two a moment ago)
         for (auto& gc : r->gains)
         {
             auto dbOf = [&] (int i) { return juce::isPositiveAndBelow (i, (int) gc.db.size()) ? gc.db[(size_t) i] : 0.0f; };
@@ -327,18 +420,27 @@ inline bool apply (Project& p, const Plan& plan, juce::String& why)
         if (bothHidden) w->hiddenTracks.push_back (plan.stereo);
         replaceIn (w->editTracks);
     }
-    for (auto& e : p.edits)
+    auto convertLists = [&] (EditDef& e)
     {
-        replaceIn (e->trackIds);
-        replaceIn (e->fixTracks);
-        if (e->guide.trackId == plan.left || e->guide.trackId == plan.right) { e->guide.trackId = plan.stereo; e->guide.trackName = plan.name; }
+        replaceIn (e.trackIds);
+        replaceIn (e.fixTracks);
+        if (e.guide.trackId == plan.left || e.guide.trackId == plan.right) { e.guide.trackId = plan.stereo; e.guide.trackName = plan.name; }
         // automation: the left track's fader, input gain and sends carry on on the stereo track; its pan and plug-in lanes, and the right track's lanes, go
-        e->lanes.erase (std::remove_if (e->lanes.begin(), e->lanes.end(), [&] (const AutoLane& l)
+        e.lanes.erase (std::remove_if (e.lanes.begin(), e.lanes.end(), [&] (const AutoLane& l)
                         {
                             if (l.trackId == plan.right) return true;
                             return l.trackId == plan.left && ! (l.param == autoparam::fader || l.param == autoparam::gain || autoparam::isSend (l.param));
-                        }), e->lanes.end());
-        for (auto& l : e->lanes) if (l.trackId == plan.left) l.trackId = plan.stereo;
+                        }), e.lanes.end());
+        for (auto& l : e.lanes) if (l.trackId == plan.left) l.trackId = plan.stereo;
+    };
+    for (auto& e : p.edits)
+    {
+        convertLists (*e);
+        for (auto& v : e->versions)                      // 3.46.1: each frozen version as the edit itself, and the mixer settings kept with it
+        {
+            if (v.edit != nullptr) convertLists (*v.edit);
+            if (v.mixer.isObject()) v.mixer = joinedMix (v.mixer, plan.left, plan.right, plan.stereo);
+        }
     }
 
     // the mixers: the stereo track's strip starts with the left track's fader, input gain, output, sends and VCAs (no plug-ins); hidden only if both were

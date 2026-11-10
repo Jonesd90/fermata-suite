@@ -384,11 +384,17 @@ juce::String LiveRecorder::resumeDrive (const juce::File& sessionFolder, const j
     if (sessionFolder == juce::File() || ! juce::File::isAbsolutePath (sessionFolder.getFullPathName())) return "Not a full path: " + sessionFolder.getFullPathName();
     if (sessionFolder.getFileName() != sessionName) return "That folder is not this session's (" + sessionName + ")";
     const std::lock_guard<std::mutex> l (writersLock);
+    if (! prepared.load()) return "The session is not prepared";         // (0.7.1: asked again under the lock - close() may have begun meanwhile, and it waits for these very writers)
     for (auto& w : writers)
         if (w->folder() == sessionFolder)
         {
             if (! w->isDropped()) return "That drive is being written to";
-            w->requestClose(); w->waitForClose (2000);                   // (a dropped writer's thread ends at once)
+            // a dropped writer's thread ends at once - unless it is still inside a call to the drive (the write that failed, its last index). 0.7.1:
+            // then the drive is not taken on yet. (It used to be: the old writer was destroyed, which waits for its thread for as long as the
+            // drive holds it - with every other call to the session waiting behind it - and that thread could then write its "dropped" index
+            // over the new writer's.) The person tries again in a moment.
+            w->requestClose();
+            if (! w->waitForClose (2000)) return "That drive is not answering yet (its last write has not come back): try again in a moment";
             auto fresh = makeWriter (sessionFolder, w == writers.front() ? "primary" : "backup", true);
             fresh->start (ring.position());
             w = std::move (fresh);
@@ -405,25 +411,34 @@ juce::String LiveRecorder::resumeDrive (const juce::File& sessionFolder, const j
 void LiveRecorder::close()
 {
     if (! prepared.exchange (false)) return;
-    std::vector<std::unique_ptr<DriveWriter>> mine;
-    { const std::lock_guard<std::mutex> l (writersLock); for (auto& w : writers) w->requestClose(); mine.swap (writers); }
+    // 0.7.1: the writers stay in the list while they drain. (They used to be taken out of it for the length of the wait - up to minutes on a slow
+    // drive - so a take marked merged, a flag or a note that arrived meanwhile reached no drive's index at all, and was never written later.)
+    // Nothing else changes the list meanwhile: resumeDrive refuses once 'prepared' is false.
+    std::vector<DriveWriter*> mine;
+    { const std::lock_guard<std::mutex> l (writersLock); for (auto& w : writers) { w->requestClose(); mine.push_back (w.get()); } }
     // every drive drains at once; a writer that is still inside a disk call after a long wait is left alive for good rather than killed. 0.3.0: the
     // list is never destroyed (not even when the program ends: a stuck thread's writer deleted at exit would wait for it for ever), and this object
     // must outlive it too - the writer still uses the ring and the callbacks - so its owner keeps it (leftWritersBehind)
     static auto* stuck = new std::vector<std::unique_ptr<DriveWriter>>();
     static std::mutex stuckLock;
-    for (auto& w : mine)
+    for (auto* w : mine)
     {
         if (! w->waitForClose (180000))
         {
             if (callbacks.log) callbacks.log ("Drive " + w->folder().getFullPathName() + ": its writer is stuck in a disk call and is left behind");
-            const std::lock_guard<std::mutex> l (stuckLock);
-            stuck->push_back (std::move (w));
-            stuckWriters.fetch_add (1);
+            const std::lock_guard<std::mutex> l (writersLock);
+            for (auto it = writers.begin(); it != writers.end(); ++it)
+                if (it->get() == w)
+                {
+                    const std::lock_guard<std::mutex> sl (stuckLock);
+                    stuck->push_back (std::move (*it));
+                    writers.erase (it);
+                    stuckWriters.fetch_add (1);
+                    break;
+                }
         }
     }
-    const std::lock_guard<std::mutex> l (writersLock);
-    for (auto& w : mine) if (w != nullptr) writers.push_back (std::move (w));     // (closed writers stay: a merge that ends later still writes their indexes)
+    // (closed writers stay in the list: a merge that ends later still writes their indexes)
 }
 
 void LiveRecorder::abandonForTests()

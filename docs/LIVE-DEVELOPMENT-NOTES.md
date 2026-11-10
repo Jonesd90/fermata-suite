@@ -730,3 +730,13 @@ Two reviewers read the recorder core and found 6 serious things, all fixed, and 
   `src/core/BackupCopier.h` (the second drive), all already used by fermata.
 - **No name of the program in a file or folder name.** Use `kFileName` ("fermata-Live") or a name without a colon. JUCE's
   `getApplicationName()` returns "fermata:Live".
+
+## 0.10.0: the Fermata style UI's type (10 November 2026, with Claude Fable)
+
+- The displays and clocks of fermata:Live's own windows ask `theme::figureFont` (Uikit.h, shared) for their font, where they named the
+  system's console face: `LiveDesk.h` (the main window's displays), `LiveMainWindow.cpp` (the drivers' names on the strips),
+  `PrimaryTakeWindow.cpp` and `FixerWindow.cpp` (the take length and playhead clocks). In the Fermata style UI that is Inter with figures
+  of one width; in the Manuscript UI the console face, as before. The log (`PrimaryWindows.cpp`) keeps the console face: it lines up in
+  columns.
+- Nothing of the recorder changed. The shared changes that reach this program are listed in `LIVE-CHANGELOG.md` (the ReTouch window's
+  tab keys from fermata 3.49.0; volume areas are carried through a save by the shared code and never looked at).

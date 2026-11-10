@@ -176,12 +176,14 @@ juce::String makeFilesSpec (const Project& p, const MasteringDef& def, MasterJob
     spec.destFolder = juce::File (def.vm.folder.trim());
     spec.workFolder = spec.destFolder.getChildFile ("_fermata_work");
     std::vector<EditDef*> edits; std::vector<const MasterItem*> its;
-    for (auto& it : def.items)
+    std::vector<int> listNo;                                               // 3.46.1: each exported piece's number in the Mastering window's list (1 = the first row)
+    for (size_t k = 0; k < def.items.size(); ++k)
     {
+        auto& it = def.items[k];
         if (! it.include) continue;
         auto* e = const_cast<Project&> (p).findEdit (it.editId);
         if (e == nullptr || e->isEmpty()) continue;
-        edits.push_back (e); its.push_back (&it);
+        edits.push_back (e); its.push_back (&it); listNo.push_back ((int) k + 1);
     }
     auto err = commonChecks (p, def, spec, edits, needSource);
     if (err.isNotEmpty()) return err;
@@ -194,10 +196,11 @@ juce::String makeFilesSpec (const Project& p, const MasteringDef& def, MasterJob
     for (auto& b : p.buses)                                                // 3.26.0: the stems, in the project's order of buses (gone ones and the master's own source left out)
         if (b.id != spec.sourceId && std::find (def.stemIds.begin(), def.stemIds.end(), b.id) != def.stemIds.end())
         { spec.stemIds.push_back (b.id); spec.stemNames.push_back (b.name.trim().isNotEmpty() ? b.name.trim() : juce::String ("Bus")); }
-    int n = 0;
     for (size_t i = 0; i < edits.size(); ++i)
     {
-        ++n;
+        // 3.46.1: a piece keeps the number it has in the list, whichever pieces are ticked - pieces 11 and 12 exported on their own are "11 - ..." and
+        // "12 - ...", with track numbers 11 and 12 in their tags. (They used to be counted afresh from 1 among the ticked ones: asked for on 9 November 2026.)
+        const int n = listNo[i];
         MasterJobItem j; j.editId = edits[i]->id; j.trackNo = n;
         j.editName = edits[i]->name; j.projectName = p.name;
         j.editOffsetSeconds = edits[i]->sampleRate > 0.0 ? (double) edits[i]->audibleStart() / edits[i]->sampleRate : 0.0;     // (where the render starts on the edit's timeline)

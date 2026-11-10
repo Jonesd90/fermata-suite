@@ -6,6 +6,64 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.50.0
+Built 10 November 2026 (the conversation for both programs), with Claude Fable. A volume change is now an area of the edit, with one box
+that says what it does and changes all of it; the Fermata style UI is in Inter throughout; the mixer's send dials fill with green.
+- **Shared: a volume change is an area of the edit** (decided on 10 November 2026, after looking at the file of the edit that was asked
+  about). An area is so many dB for each track it is on, from a start to an end, with a fade in and a fade out. It belongs to the edit,
+  not to a piece:
+  - **it crosses joins by itself** - no copy of it has to be carried into the next piece;
+  - **it is added on top of each piece's own level** (the Trim window's level, with its "normalise" glide): neither overwrites the other.
+    Until now every level was written into a piece as an absolute figure for every track, so a raise, the Trim window's level and the
+    normalise glide overwrote one another - in the edit that was asked about, a +4 dB raise on one track was being melted away by the
+    next piece's normalise glide, and the "fade back" had been stored as a level for all eleven tracks;
+  - **it stays with the music**: put a piece in, take one out, slide, shuffle or re-order pieces, and each end of the area stays over
+    the music it was over (as the markers do). An area whose music is deleted goes with it. Undo and redo bring it back as it was.
+  What plays is the piece's level times the areas over it - when playing, bouncing, mastering, exporting for video, and in the pictures
+  of the noise window. The LTC track is never touched.
+- **One box for it** (it replaces the little mixer of "from here to next edit" and the box of "between the 1/2 marks"). It says in words
+  what the change does - which tracks, how many dB, from when to when, over how many pieces, with what fades - and everything can be
+  changed there: a fader for each track (0 = that track is left alone), **From**, **To**, **Fade in** and **Fade out** (type a time such
+  as 1:33.27; the fades in seconds, any length - they were limited to 1 second). Play plays it from 2 seconds before to 2 seconds after.
+  **Done** (on the left) keeps it as one undo step, **Cancel** leaves no trace, **Remove this change** takes it away.
+- **One click on a teal triangle opens that box.** A triangle stands where an area starts and where its fade out begins; the box is
+  drawn round the tracks it is on, its fades shaded, and each track's level line (3.49.0) shows the area and the piece's own level
+  together, with the figures.
+- **"Change volume from here to next edit..."** makes an area from where you clicked to the end of that piece - and its end can now be
+  changed in the box, so it can run on over as many joins as wanted, with a fade out. **"Change volume between the 1/2 marks..."** makes
+  one between the marks, on the marked tracks. A piece of the overdub layer keeps its own little mixer (an area is of the timeline: it
+  would change what lies under the overdub too), and "between fades (this take only)" is still the piece's own level.
+- **The volume changes made before this build stay as they are and sound as they did.** When one is opened (click its triangle) it is
+  shown as the area it amounts to, and Done keeps it as an area. A change on its own is read with what was meant: where the next pieces
+  start at the same raise (a loose copy the program made when a piece was cut or replaced) the area runs on through them, and where a
+  later change brought the level back, that change's glide is the area's fade out. For the edit that was asked about that gives: Spot2
+  +4.0 dB, from 1:33.27 to 2:10.63, fade in 1 s, fade out 1 s, over three pieces. **Keeping it changes what plays in two places, both on
+  purpose**: the raise now holds until its fade out (it had been sinking since 2:07.5 under the normalise glide), and the third piece's
+  tracks now reach 0 dB at its end (they had been left at +0.6 dB).
+- **Not in this build**: the versions' changes lane does not yet list a volume area that was added or changed since a frozen version;
+  an area's ends are changed in the box, not by dragging them; an older fermata opening a project from this one plays it without the
+  areas and drops them when it saves (the project file gained a key, "volumeAreas", written only when there is an area).
+- **Shared: the Fermata style UI is in Inter throughout** (decided on 10 November 2026, from the typeface boards). Its ordinary weight
+  is Inter Medium, a step heavier than the Regular it was (bundled: `assets/Inter-Medium.otf`); bold text is Semibold, as before. The
+  displays - the project's name, the rate, the disk, the drivers' names, the dB read-outs on the desk - are in Inter too, with figures
+  that are all one width so a running number does not shiver; they were in the system's console typeface. The Manuscript UI is as it
+  was (its serif, and the console typeface in its displays). Lists that line up in columns (the recording monitor, the logs) keep the
+  console typeface in both.
+- **Shared: the mixer's send dials** (`src/ui/MixerLook.h`). The band round a send dial fills with **green** as the send is turned up.
+  It was drawn in the colour of the channel the send goes to: a send to a dark bus drew a dark band on the dial's dark ring, which could
+  not be seen - the band seemed never to fill. A send that is **muted** (its own MUTE) has its whole ring **pulsing red**; it went grey.
+  (A send silenced by its channel's MUTE keeps the red outline round its read-out.)
+- The Click window's Tap key says what it does: from the third tap the tempo follows the taps - the average of the last eight, to the
+  nearest half a beat a minute; a pause of more than 2.5 seconds starts a new count. (It said "four taps or more".)
+
+Checked here: the shared core's tests (all pass, with new ones for the areas - playing, saving, undo, staying with the music - and for
+turning old changes into areas, on a copy of the edit that was asked about); the compatibility check, the Windows-code check, both
+programs' window code and fermata:Live's recorder tests. Seen running (both programs built for Linux, a four-track test edit with that
+edit's pattern of old changes): an old change opened as an area and kept; its end and fade out typed; a new area from the right-click
+menu, lengthened over a join; a piece deleted under two areas and the undo; the type in the Fermata style UI in fermata and
+fermata:Live; a send dial's green band and a muted send's red pulse. Not seen: the areas being heard (no audio device here - the
+tests check the gain the player works out, sample by sample); anything on Windows.
+
 ## 3.49.0
 Built 10 November 2026 (the conversation for both programs), with Claude Fable. What an edit's volume changes do is drawn; the tab keys of
 the noise and ReTouch windows open their tab first. Nothing changes how an edit sounds.

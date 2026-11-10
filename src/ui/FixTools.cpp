@@ -1657,7 +1657,7 @@ static juce::String checkWaitingFiles (const WaitingPiece& wp, const std::vector
     return problems;
 }
 
-void relinkEdit (AppContext& app, const juce::Uuid& eid, const juce::Uuid& rid, juce::Component*)
+void relinkEdit (AppContext& app, const juce::Uuid& eid, const juce::Uuid& rid, juce::Component* parent)
 {
     const juce::String title = "Re-link corrected audio";
     auto* e = editOf (app, eid); if (e == nullptr) return;
@@ -1680,15 +1680,49 @@ void relinkEdit (AppContext& app, const juce::Uuid& eid, const juce::Uuid& rid, 
     std::vector<int> ch; for (auto fi : where) ch.push_back (r.files[fi].numChannels);
     const auto problems = checkWaitingFiles (r.waiting, ch, r.sampleRate);
     if (problems.isNotEmpty()) { say (title, problems + "\nNothing was changed. Fix the files in your other software (same length, sample rate and channels) and try again."); return; }
-    const auto old = e->regions;
-    auto& m = e->regions[(size_t) i];
-    for (size_t k = 0; k < where.size(); ++k) { m.files[where[k]].file = m.waiting.files[k]; m.files[where[k]].fileStart = m.waiting.from; m.files[where[k]].rxFrom = juce::File(); }   // (3.27.1: a hand re-link ends any linked-program watch on that track)
-    m.takeName = m.takeName.upToFirstOccurrenceOf (" (", false, false) + " (" + m.waiting.name + ")";
-    const auto wf = m.waiting.from, wt = m.waiting.to;
-    m.waiting = WaitingPiece();
-    e->keepFixFadesInside (i, wf, wt);          // the crossfade must not start before the corrected audio does
-    setUndoForEdit (app, eid, old, "re-link corrected audio");
-    app.project.changed();
+    // 3.46.1 (decided on 9 November 2026): the piece plays COPIES of the corrected files, in the project's Fixes folder with every other fix. It
+    // used to play the very files in Processing Media - so a job's folder could never be cleared, and saving one of them again from the other
+    // program (with another length, say) changed or broke the edit, with no undo step. Processing Media is a hand-over place and nothing more.
+    struct Copy { std::vector<juce::File> src, dest; std::vector<size_t> where; juce::int64 from = 0, to = 0; juce::String name; juce::File folder; };
+    auto cp = std::make_shared<Copy>();
+    cp->src = r.waiting.files; cp->where = where; cp->from = r.waiting.from; cp->to = r.waiting.to; cp->name = r.waiting.name;
+    cp->folder = app.project.audioFolder().getChildFile ("Fixes");
+    for (auto& f : cp->src)
+        cp->dest.push_back (audioops::uniqueFile (cp->folder.getChildFile (f.getFileNameWithoutExtension() + " (re-linked)" + (f.getFileExtension().isNotEmpty() ? f.getFileExtension() : juce::String (".wav")))));
+    auto work = [cp] (AudioJob& job) -> juce::String
+    {
+        auto fail = [cp] (const juce::String& why) { for (auto& d : cp->dest) d.deleteFile(); return why; };
+        if (! cp->folder.isDirectory() && ! cp->folder.createDirectory().wasOk()) return fail ("Could not make the folder " + cp->folder.getFullPathName() + ".");
+        for (size_t k = 0; k < cp->src.size(); ++k)
+        {
+            if (job.cancelled()) return fail ("Cancelled.");
+            job.setProgress ((float) k / (float) juce::jmax ((size_t) 1, cp->src.size()));
+            if (! cp->src[k].copyFileTo (cp->dest[k])) return fail ("Could not copy " + cp->src[k].getFileName() + " into the project (is the drive full?). Nothing was changed.");
+            // (the copy is checked header against bytes, as a save from a linked program is: a file the other program is still writing is not taken)
+            if (const auto bad = audioops::checkWrittenLength (&formats(), cp->dest[k], cp->to - cp->from); bad.isNotEmpty())
+                return fail (cp->src[k].getFileName() + " changed while it was being copied (is the other program still saving it?). Nothing was changed: try again in a moment.");
+        }
+        return {};
+    };
+    auto onSuccess = [&app, eid, rid, cp, title]
+    {
+        auto drop = [cp] { for (auto& d : cp->dest) d.deleteFile(); };
+        auto* e2 = app.project.findEdit (eid);
+        const int i2 = e2 != nullptr ? e2->indexOf (rid) : -1;
+        if (i2 < 0) { drop(); return; }
+        auto& m = e2->regions[(size_t) i2];
+        bool same = m.waiting.active() && ! m.waiting.rx && m.waiting.files == cp->src && m.waiting.from == cp->from && m.waiting.to == cp->to;
+        for (auto fi : cp->where) if (fi >= m.files.size()) same = false;
+        if (! same) { drop(); say (title, "The piece changed while the corrected audio was being copied, so nothing was changed. Please try again."); return; }
+        const auto old = e2->regions;
+        for (size_t k = 0; k < cp->where.size(); ++k) { auto& f = m.files[cp->where[k]]; f.file = cp->dest[k]; f.fileStart = cp->from; f.rxFrom = juce::File(); }   // (3.27.1: a hand re-link ends any linked-program watch on that track)
+        m.takeName = m.takeName.upToFirstOccurrenceOf (" (", false, false) + " (" + cp->name + ")";
+        m.waiting = WaitingPiece();
+        e2->keepFixFadesInside (i2, cp->from, cp->to);          // the crossfade must not start before the corrected audio does
+        setUndoForEdit (app, eid, old, "re-link corrected audio");
+        app.project.changed();
+    };
+    launchDialog (std::make_unique<SimpleJobDialog> ("Copying the corrected audio into the project...", work, onSuccess, nullptr), title, parent);
 }
 
 void relinkTake (AppContext& app, const juce::Uuid& wid, const juce::Uuid& gid, juce::int64 waitingFrom, juce::Component* parent)

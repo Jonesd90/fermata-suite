@@ -555,6 +555,8 @@ void OrganiserComponent::paintListBoxItem (int row, juce::Graphics& g, int w, in
         if (r.index != -2) { g.setColour (theme::border); g.fillRect (6, h - 1, w - 12, 1); }
         return;
     }
+    // (3.46.1: the project's list of layouts can have got shorter - an undo - a moment before this list is made again: such a row is left blank)
+    if (! juce::isPositiveAndBelow (r.index, (int) (r.builtIn ? builtIns.size() : app.project.layouts.size()))) return;
     if (selected) { g.setColour (theme::accent.withAlpha (0.35f)); g.fillRect (2, 1, w - 4, h - 2); }
     else if ((row & 1) != 0) { g.setColour (theme::text.withAlpha (0.03f)); g.fillRect (0, 0, w, h); }
     const auto& def = r.builtIn ? builtIns[(size_t) r.index] : app.project.layouts[(size_t) r.index];
@@ -576,7 +578,8 @@ void OrganiserComponent::listBoxItemClicked (int row, const juce::MouseEvent&)
 {
     if (! juce::isPositiveAndBelow (row, (int) rows.size()) || rows[(size_t) row].header) { layoutList.deselectAllRows(); return; }
     const auto& r = rows[(size_t) row];
-    const auto& def = r.builtIn ? builtIns[(size_t) r.index] : app.project.layouts[(size_t) r.index];
+    if (! juce::isPositiveAndBelow (r.index, (int) (r.builtIn ? builtIns.size() : app.project.layouts.size()))) { rebuildRows(); return; }   // (3.46.1: see paintListBoxItem)
+    const auto def = r.builtIn ? builtIns[(size_t) r.index] : app.project.layouts[(size_t) r.index];
     loadLayout (def);
     setStatus (r.builtIn ? "The picture shows \"" + def.name + "\". Press Arrange to use it, or change it and Save as..." : "The picture shows \"" + def.name + "\". Press Arrange to use it.");
 }

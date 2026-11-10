@@ -1,5 +1,7 @@
 #pragma once
 #include "AppContext.h"
+#include "../core/VolumeAreas.h"
+#include "../core/Feedback.h"
 #include <limits>
 
 namespace td
@@ -193,82 +195,75 @@ inline void showVolumeChange (AppContext& app, const juce::Uuid& editId, const j
     holder->w = o.launchAsync();
 }
 
-/** A volume change over a stretch of time (the area between marks 1 and 2) for the tracks that are marked (all of them, or just those chosen with Ctrl + Alt + drag).
-    Each track has a fader from +36 dB (top; 3.43.0, was +30) through 0 (no change, middle) down to -inf (bottom). The level glides to the new value over the fade-in time at the start of
-    the area and glides back to where it was over the fade-out time at the end of it.
-    3.18.5: the change is heard at once (Play in the box plays it), and it can be opened again later (double-click or right-click its teal line in the edit window) to
-    change the amounts and the fade times: its points share a group (GainChange::group / role). While the box is open the undo history waits, so Done is one
-    undo step and Cancel leaves no trace. */
-class RangeVolumePanel : public juce::Component, private juce::Timer
+/** 3.50.0 (asked for on 10 November 2026): the one box for a volume change - a volume AREA of the edit (VolumeArea, Edit.h): so many dB for each
+    track it is on, from a start to an end, with a fade in and a fade out. It says what the change does, and everything about it can be changed
+    here: the amounts (a fader for each track: 0 = that track is left alone), where it starts and ends, and both fades. It is heard as it is
+    changed (Play plays it, from 2 s before to 2 s after). While the box is open the undo history waits: Done is one undo step, Cancel leaves no
+    trace.
+
+    It is opened three ways (Start): for a new area ("from here to next edit", "between the 1/2 marks"); for an area that is there (one click on
+    its teal triangle); and for a volume change made before 3.50.0, which was written into the pieces - that one is read as the area it amounts
+    to (core/VolumeAreas.h), its old points are taken out of the pieces, and with Done it is an area from then on (Cancel puts it back as it was).
+
+    It replaces the two boxes there were: the little mixer of "from here to next edit" (one glide, no end of its own, stopped at the join) and the
+    box of "between the 1/2 marks" (two fades, but neither its start nor its end could be changed). */
+class VolumeAreaPanel : public juce::Component, private juce::Timer
 {
 public:
-    /** A new change over [from, to) of the edit's timeline. */
-    RangeVolumePanel (AppContext& a, const juce::Uuid& edit, juce::int64 from, juce::int64 to, std::function<void()> close)
-        : app (a), editId (edit), t0 (from), t1 (to), closeFn (std::move (close))
+    struct Start
+    {
+        juce::int64 from = 0, to = 0;            // a new area: where
+        bool markedOnly = false;                 //   only the tracks marked with Ctrl + Alt + drag (between the 1/2 marks)
+        juce::Uuid areaId = juce::Uuid::null();  // an area that is there
+        bool old = false;                        // a change from before 3.50.0: by its group, or the piece and the place of a change on its own
+        juce::String oldGroup; juce::Uuid oldRegion = juce::Uuid::null(); juce::int64 oldAt = 0;
+    };
+
+    VolumeAreaPanel (AppContext& a, const juce::Uuid& edit, const Start& st, std::function<void()> close) : app (a), editId (edit), closeFn (std::move (close))
     {
         auto* e = app.project.findEdit (editId);
         if (e == nullptr) { setSize (10, 10); return; }
-        begin (*e);
-        for (auto& t : app.project.tracks)                       // the tracks that have audio in the area and are marked
+        rate = juce::jmax (1.0, e->sampleRate);
+        beforeRegions = e->regions; beforeAreas = e->areas;       // (Cancel puts these back)
+        app.undoHold += 1;                                         // (one undo step for whatever is done in the box)
+        begun = true;
+        juce::String note;
+        if (st.old)
         {
-            bool has = false;
-            if (e->fixUses (t.id))
-                for (auto& r : e->regions) if (r.endSample() > t0 && r.startSample < t1) for (auto& f : r.files) if (f.trackId == t.id) has = true;
-            if (has) { tracksUsed.push_back (t.id); startDb.push_back (0.0); }
-        }
-        build (6, 6);
-        info.setText ("0 = no change. The level glides to the new value over the fade-in time, and back over the fade-out time. You hear each change at once: "
-                      "press Play to listen. Earlier volume changes inside this area are replaced.", juce::dontSendNotification);
-    }
-
-    /** 3.18.5: a change made before, opened again by its group. */
-    RangeVolumePanel (AppContext& a, const juce::Uuid& edit, const juce::String& groupId, std::function<void()> close)
-        : app (a), editId (edit), group (groupId), closeFn (std::move (close))
-    {
-        auto* e = app.project.findEdit (editId);
-        if (e == nullptr) { setSize (10, 10); return; }
-        begin (*e);
-        double fin = 0.3, fout = 0.3; bool haveStart = false, haveEnd = false;
-        t0 = std::numeric_limits<juce::int64>::max(); t1 = 0;
-        juce::int64 pieceEnd = 0;                                    // (3.45.0: the end of the last piece it is in - its end only when it has no glide back; it used to be
-                                                                     //  taken before the glide back was seen, so the title said the change ran to the end of its piece)
-        for (auto& r : e->regions)
-            for (size_t i = 0; i < r.gains.size(); ++i)
+            volumeareas::LoneFound found;
+            const bool ok = st.oldGroup.isNotEmpty() ? volumeareas::takeOutGroup (*e, st.oldGroup, area) : volumeareas::takeOutLoneChange (*e, st.oldRegion, st.oldAt, area, &found);
+            if (ok && ! area.isEmpty())
             {
-                const auto& g = r.gains[i];
-                if (g.group != group) continue;
-                const auto rampS = (juce::int64) std::llround (g.ramp * rate);
-                if (g.role == 3) { t1 = juce::jmax (t1, r.startSample + g.at + rampS); if (! haveEnd) { fout = g.ramp; haveEnd = true; } continue; }
-                t0 = juce::jmin (t0, r.startSample + g.at);
-                if (g.role == 1 && ! haveStart) { fin = g.ramp; haveStart = true; }
-                pieceEnd = juce::jmax (pieceEnd, r.endSample());
-                for (size_t k = 0; k < r.files.size() && k < g.db.size(); ++k)          // what this change does to each track: its level less the one before it
-                {
-                    const auto tid = r.files[k].trackId;
-                    if (std::find (tracksUsed.begin(), tracksUsed.end(), tid) != tracksUsed.end()) continue;
-                    const float before = juce::Decibels::gainToDecibels (r.levelAfter (k, i, g.at), -100.0f);
-                    const double d = g.db[k] <= -99.9f ? -100.0 : (double) (g.db[k] - before);
-                    if (std::abs (d) > 0.05) { tracksUsed.push_back (tid); startDb.push_back (d); }
-                }
+                e->areas.push_back (area); existing = true; app.project.changed();
+                note = "This change was made before volume areas: it was written into the pieces. It is shown here as the area it amounts to";
+                if (found.carriedInto > 0) note << " - the " << (found.carriedInto == 1 ? juce::String ("next piece") : "next " + juce::String (found.carriedInto) + " pieces") << " started at the same raise, so it runs on through " << (found.carriedInto == 1 ? "it" : "them");
+                if (found.broughtBack) note << (found.carriedInto > 0 ? ", " : " - ") << "and a later change brought the level back: that is its fade out";
+                note << ". Done keeps it as an area (its level now stays on top of each piece's own level, whatever that does); Cancel leaves the old change as it was.";
             }
-        if (t0 == std::numeric_limits<juce::int64>::max()) t0 = 0;
-        if (! haveEnd) t1 = juce::jmax (t1, pieceEnd);
-        const auto toId = [] (double sec) { return juce::jlimit (1, 20, (int) std::lround (sec * 20.0)); };
-        build (toId (fin), toId (fout));
-        info.setText ("Change the amounts or the fade times: you hear each change at once (press Play to listen). Done keeps it; Cancel puts it back as it was.",
-                      juce::dontSendNotification);
-        remove.setButtonText ("Remove this change"); addAndMakeVisible (remove);
-        remove.onClick = [this] { removeAll(); };
-        resized();                                               // (the Remove button has a place now)
+            else area = VolumeArea();
+        }
+        else if (const auto* live = e->findArea (st.areaId)) { area = *live; existing = true; }
+        else { area.id = juce::Uuid(); area.from = juce::jmax ((juce::int64) 0, st.from); area.to = juce::jmax (area.from, st.to); area.fadeIn = 0.3; area.fadeOut = st.markedOnly ? 0.3 : 0.0; }
+        if (area.id.isNull()) area.id = juce::Uuid();
+        // the tracks offered: every track with audio under the area (a new area between the marks: of those, the marked ones), and any the area is on already
+        for (auto& t : app.project.tracks)
+        {
+            if (t.isLtc) continue;
+            bool has = area.touches (t.id);
+            if (! has && (! st.markedOnly || e->fixUses (t.id)))
+                for (auto* rs : { &e->regions, &e->overdubs }) for (auto& r : *rs) if (r.endSample() > area.from && r.startSample < area.to) for (auto& f : r.files) if (f.trackId == t.id) has = true;
+            if (has) tracks.push_back (t.id);
+        }
+        build (note);
     }
 
-    ~RangeVolumePanel() override
+    ~VolumeAreaPanel() override
     {
         stopTimer();
         if (begun)
         {
             if (! done)                                            // Cancel, Escape or the window's close button: as it was before the box opened
-                if (auto* e = app.project.findEdit (editId)) { e->regions = before; app.project.changed(); }
+                if (auto* e = app.project.findEdit (editId)) { e->regions = beforeRegions; e->areas = beforeAreas; app.project.changed(); }
             if (playing) app.stopPlayback();
             app.undoHold -= 1;
         }
@@ -278,16 +273,16 @@ public:
     {
         auto r = getLocalBounds().reduced (10);
         title.setBounds (r.removeFromTop (20));
-        info.setBounds (r.removeFromTop (34));
-        auto bottom = r.removeFromBottom (32);
-        done_.setBounds (bottom.removeFromRight (100).reduced (2)); cancel.setBounds (bottom.removeFromRight (100).reduced (2));
-        if (remove.isVisible()) remove.setBounds (bottom.removeFromRight (150).reduced (2));
-        play.setBounds (bottom.removeFromLeft (90).reduced (2));
-        r.removeFromBottom (4);
-        auto fades = r.removeFromBottom (28);
-        fadeInCap.setBounds (fades.removeFromLeft (60)); fadeIn.setBounds (fades.removeFromLeft (90).reduced (0, 3));
-        fades.removeFromLeft (16);
-        fadeOutCap.setBounds (fades.removeFromLeft (66)); fadeOut.setBounds (fades.removeFromLeft (90).reduced (0, 3));
+        summary.setBounds (r.removeFromTop (36));
+        if (info.getText().isNotEmpty()) info.setBounds (r.removeFromTop (58));
+        auto bottom = r.removeFromBottom (32);                    // Done first, then Cancel (the "yes" on the left); Play and Remove at the other end
+        done_.setBounds (bottom.removeFromLeft (100).reduced (2)); cancel.setBounds (bottom.removeFromLeft (100).reduced (2));
+        play.setBounds (bottom.removeFromRight (90).reduced (2));
+        if (remove.isVisible()) remove.setBounds (bottom.removeFromRight (160).reduced (2));
+        r.removeFromBottom (6);
+        auto times = r.removeFromBottom (26);
+        auto field = [&times] (juce::Label& cap, int capW, juce::TextEditor& ed, int edW) { cap.setBounds (times.removeFromLeft (capW)); ed.setBounds (times.removeFromLeft (edW).reduced (0, 2)); times.removeFromLeft (12); };
+        field (fromCap, 40, fromEd, 86); field (toCap, 24, toEd, 86); field (fadeInCap, 56, fadeInEd, 54); field (fadeOutCap, 62, fadeOutEd, 54);
         r.removeFromBottom (6);
         auto allCol = r.removeFromRight (kColW);
         allLabel.setBounds (allCol.removeFromTop (18)); allFader->setBounds (allCol.reduced (6, 0).withTrimmedBottom (14));
@@ -302,13 +297,15 @@ public:
     }
     void paint (juce::Graphics& g) override { g.fillAll (theme::panel); }
 
+    /** Seconds as the box writes and reads them: "1:33.27", "93.27", "0:01:33.27". */
+    static bool parseTimeText (const juce::String& text, double& seconds) { return feedback::parseTime (text.trim(), 25.0, seconds) && seconds >= 0.0; }
+
 private:
     static constexpr int kColW = 74;
-    static constexpr float kMostKept = 60.0f;                   // 3.43.0: the most a level can be after the change (what a project file keeps: Project.cpp, dbFromVar), so +36 is added in full
     static void setupFader (juce::Slider& s)
     {
         s.setRange (-100.0, (double) kVolumeChangeMaxDb, 0.1);
-        s.setSkewFactorFromMidPoint (0.0);                      // 0 dB (no change) is in the middle of the fader: +36 at the top, -inf at the bottom
+        s.setSkewFactorFromMidPoint (0.0);                      // 0 dB (the track is left alone) is in the middle of the fader: +36 at the top, -inf at the bottom
         s.setDoubleClickReturnValue (true, 0.0);
         s.setValue (0.0, juce::dontSendNotification);
         s.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 62, 20);
@@ -317,28 +314,22 @@ private:
         s.valueFromTextFunction = [] (const juce::String& t) { return t.containsIgnoreCase ("inf") ? -100.0 : t.getDoubleValue(); };
     }
 
-    void begin (EditDef& e)
+    void build (const juce::String& note)
     {
-        rate = juce::jmax (1.0, e.sampleRate);
-        before = e.regions;                                      // (Cancel puts this back)
-        app.undoHold += 1;                                       // (one undo step for whatever is done in the box)
-        begun = true;
-    }
-
-    void build (int fadeInId, int fadeOutId)
-    {
-        const int n = (int) tracksUsed.size();
+        const int n = (int) tracks.size();
         for (int i = 0; i < n; ++i)
         {
             auto s = std::make_unique<juce::Slider> (juce::Slider::LinearVertical, juce::Slider::TextBoxBelow);
             setupFader (*s);
-            s->setValue (startDb[(size_t) i], juce::dontSendNotification);
+            s->setTooltip ("How much this track is raised or lowered inside the area: 0 = it is left alone. Double-click: 0. You can type a number in the box under it.");
+            const float d = area.dbOf (tracks[(size_t) i]);
+            s->setValue (d <= VolumeArea::kOff ? -100.0 : (double) d, juce::dontSendNotification);
             s->onValueChange = [this] { pending = true; };
             content.addAndMakeVisible (*s);
             auto l = std::make_unique<juce::Label>();
-            l->setText (app.project.nodeName (tracksUsed[(size_t) i]), juce::dontSendNotification);
+            l->setText (app.project.nodeName (tracks[(size_t) i]), juce::dontSendNotification);
             l->setJustificationType (juce::Justification::centred);
-            l->setColour (juce::Label::textColourId, chan::of (app.project, tracksUsed[(size_t) i]));
+            l->setColour (juce::Label::textColourId, chan::of (app.project, tracks[(size_t) i]));
             l->setFont (juce::FontOptions (12.0f, juce::Font::bold));
             content.addAndMakeVisible (*l);
             faders.push_back (std::move (s)); labels.push_back (std::move (l));
@@ -358,29 +349,35 @@ private:
         viewport.setViewedComponent (&content, false); viewport.setScrollBarsShown (false, true);
         addAndMakeVisible (viewport);
 
-        title.setText ("Volume change from " + formatTimeShort ((double) t0 / rate, 2) + " to " + formatTimeShort ((double) t1 / rate, 2)
-                           + "  -  " + juce::String (n) + " track(s)", juce::dontSendNotification);
+        title.setText ("Volume change", juce::dontSendNotification);
         title.setFont (juce::FontOptions (13.0f, juce::Font::bold)); addAndMakeVisible (title);
-        info.setFont (juce::FontOptions (11.5f)); info.setColour (juce::Label::textColourId, theme::dimText); addAndMakeVisible (info);
-        fadeInCap.setText ("Fade in", juce::dontSendNotification); addAndMakeVisible (fadeInCap);
-        fadeOutCap.setText ("Fade out", juce::dontSendNotification); addAndMakeVisible (fadeOutCap);
-        for (auto* c : { &fadeIn, &fadeOut })
+        summary.setFont (juce::FontOptions (12.5f)); summary.setJustificationType (juce::Justification::topLeft); summary.setMinimumHorizontalScale (1.0f); addAndMakeVisible (summary);
+        info.setFont (juce::FontOptions (11.5f)); info.setColour (juce::Label::textColourId, theme::dimText); info.setJustificationType (juce::Justification::topLeft);
+        info.setMinimumHorizontalScale (1.0f); info.setText (note, juce::dontSendNotification); addAndMakeVisible (info);
+        auto cap = [this] (juce::Label& l, const char* text) { l.setText (text, juce::dontSendNotification); addAndMakeVisible (l); };
+        cap (fromCap, "From"); cap (toCap, "To"); cap (fadeInCap, "Fade in"); cap (fadeOutCap, "Fade out");
+        auto edit = [this] (juce::TextEditor& ed, const juce::String& text, const char* tip)
         {
-            for (int i = 1; i <= 20; ++i) c->addItem (juce::String (i / 20.0, 2) + " s", i);
-            c->onChange = [this] { pending = true; };
-            addAndMakeVisible (*c);
-        }
-        fadeIn.setSelectedId (fadeInId, juce::dontSendNotification); fadeOut.setSelectedId (fadeOutId, juce::dontSendNotification);
+            ed.setText (text, false); ed.setTooltip (tip); ed.setSelectAllWhenFocused (true);
+            ed.onReturnKey = [this] { pending = true; }; ed.onFocusLost = [this] { pending = true; };
+            addAndMakeVisible (ed);
+        };
+        edit (fromEd, formatTimeShort ((double) area.from / rate, 2), "Where the change begins on the edit's timeline (its fade in starts here). Type a time: 1:33.27");
+        edit (toEd, formatTimeShort ((double) area.to / rate, 2), "Where the change ends (its fade out ends here). Type a time: 2:10.63");
+        edit (fadeInEd, juce::String (area.fadeIn, 2), "Seconds the level takes to glide to the new value at the start (0: it jumps)");
+        edit (fadeOutEd, juce::String (area.fadeOut, 2), "Seconds the level takes to glide back at the end (0: it jumps back)");
         play.setButtonText ("Play"); play.setTooltip ("Plays the change, from 2 seconds before it to 2 seconds after it (press again to stop)");
         play.onClick = [this] { togglePlay(); };
-        done_.setButtonText ("Done"); cancel.setButtonText ("Cancel");
+        done_.setButtonText ("Done"); cancel.setButtonText ("Cancel"); remove.setButtonText ("Remove this change");
         done_.onClick = [this] { applyNow(); done = true; if (closeFn) closeFn(); };
         cancel.onClick = [this] { if (closeFn) closeFn(); };
+        remove.onClick = [this] { removeIt(); };
         done_.setColour (juce::TextButton::buttonColourId, theme::accent);
         for (auto* b : { &play, &done_, &cancel }) addAndMakeVisible (b);
-        remove.setVisible (false);
+        addChildComponent (remove); remove.setVisible (existing);
         content.setSize (juce::jmax (1, n) * kColW, 330);
-        setSize (juce::jlimit (520, 1000, (n + 1) * kColW + 30), 500);
+        setSize (juce::jlimit (560, 1000, (n + 1) * kColW + 30), note.isNotEmpty() ? 600 : 540);
+        describe();
         startTimerHz (10);                                       // (a fader being dragged is heard as it moves, ten times a second)
     }
 
@@ -394,138 +391,139 @@ private:
     {
         if (app.isPlaying()) { app.stopPlayback(); playing = false; play.setButtonText ("Play"); return; }
         applyNow();
-        const auto err = app.playEdit (editId, juce::jmax (0.0, (double) t0 / rate - 2.0), (double) t1 / rate + 2.0);
+        const auto err = app.playEdit (editId, juce::jmax (0.0, (double) area.from / rate - 2.0), (double) area.to / rate + 2.0);
         if (err.isNotEmpty()) { showError ("Play", err); return; }
         playing = true; play.setButtonText ("Stop");
     }
 
-    double deltaFor (const juce::Uuid& tid, bool& used) const
+    /** A field that cannot be read is written again as it stood (and says so in the summary line until the next change). */
+    void readFields()
     {
-        const auto it = std::find (tracksUsed.begin(), tracksUsed.end(), tid);
-        used = it != tracksUsed.end();
-        return used ? faders[(size_t) (it - tracksUsed.begin())]->getValue() : 0.0;
+        badField.clear();
+        double s = 0.0;
+        juce::int64 from = area.from, to = area.to;
+        if (parseTimeText (fromEd.getText(), s)) from = (juce::int64) std::llround (s * rate); else badField = "From";
+        if (parseTimeText (toEd.getText(), s))   to = (juce::int64) std::llround (s * rate);   else badField = "To";
+        if (to <= from + (juce::int64) (0.01 * rate)) { badField = "To (it must come after From)"; from = area.from; to = area.to; }
+        area.from = from; area.to = to;
+        auto secs = [this] (juce::TextEditor& ed, double& v, const char* name)
+        {
+            const auto t = ed.getText().trim().replaceCharacter (',', '.').upToFirstOccurrenceOf ("s", false, true).trim();
+            if (t.isNotEmpty() && t.containsOnly ("0123456789.")) v = juce::jlimit (0.0, 600.0, t.getDoubleValue()); else badField = name;
+        };
+        secs (fadeInEd, area.fadeIn, "Fade in"); secs (fadeOutEd, area.fadeOut, "Fade out");
+        if (! fromEd.hasKeyboardFocus (true)) fromEd.setText (formatTimeShort ((double) area.from / rate, 2), false);
+        if (! toEd.hasKeyboardFocus (true))   toEd.setText (formatTimeShort ((double) area.to / rate, 2), false);
+        if (! fadeInEd.hasKeyboardFocus (true))  fadeInEd.setText (juce::String (area.fadeIn, 2), false);
+        if (! fadeOutEd.hasKeyboardFocus (true)) fadeOutEd.setText (juce::String (area.fadeOut, 2), false);
     }
 
-    /** Makes the change (the first time) or brings its points up to date with the faders and the fade times. */
+    /** Brings the edit's area up to date with the faders, the times and the fades (making it the first time; an area with every fader at 0 is none). */
     void applyNow()
     {
         pending = false;
         auto* e = app.project.findEdit (editId);
         if (e == nullptr) return;
-        const double fin = fadeIn.getSelectedId() / 20.0, fout = fadeOut.getSelectedId() / 20.0;
-        if (group.isEmpty()) create (*e, fin, fout);
-        else
-            for (auto& r : e->regions)
-            {
-                int iStart = -1, iEnd = -1;
-                for (size_t i = 0; i < r.gains.size(); ++i)
-                    if (r.gains[i].group == group) { if (r.gains[i].role == 3) iEnd = (int) i; else if (iStart < 0) iStart = (int) i; }
-                if (iStart < 0 && iEnd < 0) continue;
-                const juce::int64 aRel = iStart >= 0 ? r.gains[(size_t) iStart].at : 0;
-                const juce::int64 bEnd = iEnd >= 0 ? r.gains[(size_t) iEnd].at + (juce::int64) std::llround (r.gains[(size_t) iEnd].ramp * rate) : r.length();
-                const juce::int64 half = juce::jmax ((juce::int64) 0, (bEnd - aRel) / 2);
-                if (iStart >= 0)
-                {
-                    auto& g = r.gains[(size_t) iStart];
-                    for (size_t k = 0; k < r.files.size() && k < g.db.size(); ++k)
-                    {
-                        bool used = false; const double d = deltaFor (r.files[k].trackId, used);
-                        if (! used) continue;
-                        const float base = juce::Decibels::gainToDecibels (r.levelAfter (k, (size_t) iStart, g.at), -100.0f);
-                        g.db[k] = d <= -99.9 ? -100.0f : juce::jlimit (-100.0f, kMostKept, base + (float) d);
-                    }
-                    if (g.role == 1) g.ramp = (double) juce::jmin ((juce::int64) std::llround (fin * rate), half) / rate;
-                }
-                if (iEnd >= 0)
-                {
-                    auto& g = r.gains[(size_t) iEnd];
-                    const auto rampS = juce::jmin ((juce::int64) std::llround (fout * rate), half);
-                    g.at = bEnd - rampS; g.ramp = (double) rampS / rate;           // (it still arrives exactly at the end of the area)
-                }
-                std::stable_sort (r.gains.begin(), r.gains.end(), [] (const GainChange& x, const GainChange& y) { return x.at < y.at; });
-            }
+        readFields();
+        for (size_t i = 0; i < faders.size(); ++i) area.setDb (tracks[i], faders[i]->getValue() <= -99.9 ? VolumeArea::kOff : (float) faders[i]->getValue());
+        auto* live = e->findArea (area.id);
+        if (area.isEmpty()) { if (live != nullptr) e->areas.erase (e->areas.begin() + (live - e->areas.data())); }
+        else if (live != nullptr) *live = area;
+        else e->areas.push_back (area);
         app.project.changed();
+        describe();
     }
 
-    void create (EditDef& e, double fin, double fout)
+    /** What the change does, in words: the line under the title. */
+    void describe()
     {
-        group = juce::Uuid().toString();
-        for (auto& r : e.regions)
+        juce::StringArray what;
+        for (auto& t : tracks)
+            if (area.touches (t))
+            {
+                const float d = area.dbOf (t);
+                what.add (app.project.nodeName (t) + " " + (d <= VolumeArea::kOff ? juce::String ("off") : (d > 0.0f ? "+" : "") + juce::String (d, 1) + " dB"));
+            }
+        juce::String text;
+        if (what.isEmpty()) text = "No track is changed yet: move a fader (0 = that track is left alone).";
+        else
         {
-            if (r.endSample() <= t0 || r.startSample >= t1) continue;
-            const bool startsHere = t0 > r.startSample, endsHere = t1 < r.endSample();
-            const juce::int64 aRel = startsHere ? t0 - r.startSample : 0, bRel = endsHere ? t1 - r.startSample : r.length();
-            const juce::int64 half = (bRel - aRel) / 2;
-            const juce::int64 rampIn = juce::jmin ((juce::int64) std::llround (fin * rate), half), rampOut = juce::jmin ((juce::int64) std::llround (fout * rate), half);
-            // the level of every file now, at the start and at the end of the area (before anything is changed)
-            std::vector<float> atA, atB;
-            for (size_t k = 0; k < r.files.size(); ++k) { atA.push_back (r.levelDbAt (k, aRel)); atB.push_back (r.levelDbAt (k, juce::jmin (bRel, r.length() - 1))); }
-            std::vector<float> inDb = atA;
-            for (size_t k = 0; k < r.files.size(); ++k)
-            {
-                bool used = false; const double d = deltaFor (r.files[k].trackId, used);
-                if (used) inDb[k] = d <= -99.9 ? -100.0f : juce::jlimit (-100.0f, kMostKept, atA[k] + (float) d);
-            }
-            // earlier changes inside the area are replaced
-            r.gains.erase (std::remove_if (r.gains.begin(), r.gains.end(), [&] (const GainChange& g) { return g.at > aRel && g.at < bRel; }), r.gains.end());
-            auto& s = r.setGainChange (aRel, startsHere ? (double) rampIn / rate : 0.0, inDb);
-            s.group = group; s.role = startsHere ? 1 : 2;
-            if (endsHere)                                        // glides back to where it was, arriving exactly at the end of the area
-            {
-                auto& b = r.setGainChange (bRel - rampOut, (double) rampOut / rate, atB);
-                b.group = group; b.role = 3;
-            }
+            if (what.size() > 5) { const int more = what.size() - 4; what.removeRange (4, more); what.add ("and " + juce::String (more) + " more"); }
+            text = what.joinIntoString (",  ") + ".";
         }
+        int pieces = 0;
+        if (auto* e = app.project.findEdit (editId)) for (auto& r : e->regions) if (r.endSample() > area.from && r.startSample < area.to) ++pieces;
+        juce::int64 in = 0, out = 0; area.fades (rate, in, out);
+        text << "\nFrom " << formatTimeShort ((double) area.from / rate, 2) << " to " << formatTimeShort ((double) area.to / rate, 2)
+             << " (" << juce::String ((double) (area.to - area.from) / rate, 2) << " s), over " << pieces << (pieces == 1 ? " piece" : " pieces")
+             << ".  Fade in " << juce::String ((double) in / rate, 2) << " s, fade out " << juce::String ((double) out / rate, 2) << " s.";
+        if (badField.isNotEmpty()) text << "   (" << badField << " could not be read: it is as it was.)";
+        summary.setText (text, juce::dontSendNotification);
     }
 
-    void removeAll()
+    void removeIt()
     {
         if (auto* e = app.project.findEdit (editId))
         {
-            for (auto& r : e->regions)
-                r.gains.erase (std::remove_if (r.gains.begin(), r.gains.end(), [this] (const GainChange& g) { return g.group == group; }), r.gains.end());
+            e->areas.erase (std::remove_if (e->areas.begin(), e->areas.end(), [this] (const VolumeArea& a) { return a.id == area.id; }), e->areas.end());
             app.project.changed();
         }
         done = true;
         if (closeFn) closeFn();
     }
 
-    AppContext& app; juce::Uuid editId; juce::String group; juce::int64 t0 = 0, t1 = 0; double rate = 48000.0; std::function<void()> closeFn;
-    std::vector<EditRegion> before; bool begun = false, done = false, pending = false, playing = false;
-    std::vector<juce::Uuid> tracksUsed; std::vector<double> startDb;
+    AppContext& app; juce::Uuid editId; double rate = 48000.0; std::function<void()> closeFn;
+    VolumeArea area;                                           // the area as the box has it
+    std::vector<EditRegion> beforeRegions; std::vector<VolumeArea> beforeAreas;
+    bool begun = false, done = false, pending = false, playing = false, existing = false;
+    juce::String badField;
+    std::vector<juce::Uuid> tracks;
     std::vector<std::unique_ptr<juce::Slider>> faders; std::vector<std::unique_ptr<juce::Label>> labels;
-    std::unique_ptr<juce::Slider> allFader; juce::Label allLabel, title, info, fadeInCap, fadeOutCap; double lastAll = 0.0;
+    std::unique_ptr<juce::Slider> allFader; juce::Label allLabel, title, summary, info, fromCap, toCap, fadeInCap, fadeOutCap; double lastAll = 0.0;
     juce::Component content; juce::Viewport viewport;
-    juce::ComboBox fadeIn, fadeOut; juce::TextButton play, done_, cancel, remove;
+    juce::TextEditor fromEd, toEd, fadeInEd, fadeOutEd; juce::TextButton play, done_, cancel, remove;
 };
 
-inline void launchRangeVolume (std::unique_ptr<RangeVolumePanel> panel, const juce::String& title)
+inline void launchVolumeArea (AppContext& app, const juce::Uuid& editId, const VolumeAreaPanel::Start& st, const juce::String& title)
 {
-    struct Holder { juce::DialogWindow* w = nullptr; };
-    auto holder = std::make_shared<Holder>();
+    auto closer = std::make_shared<juce::Component::SafePointer<juce::Component>>();
+    auto panel = std::make_unique<VolumeAreaPanel> (app, editId, st, [closer] { if (auto* c = closer->getComponent()) if (auto* w = c->findParentComponentOfClass<juce::DialogWindow>()) w->exitModalState (0); });
+    *closer = panel.get();
     juce::DialogWindow::LaunchOptions o;
     o.dialogTitle = title;
     o.content.setOwned (panel.release());
     o.componentToCentreAround = nullptr;
     o.dialogBackgroundColour = theme::panel;
     o.escapeKeyTriggersCloseButton = true; o.useNativeTitleBar = true; o.resizable = false; o.useBottomRightCornerResizer = false;
-    holder->w = o.launchAsync();
+    o.launchAsync();
 }
 
-inline void showRangeVolumeChange (AppContext& app, const juce::Uuid& editId, juce::int64 from, juce::int64 to)
+/** A new volume area over [from, to) of the edit's timeline ("from here to next edit"; markedOnly: "between the 1/2 marks", the marked tracks). */
+inline void showNewVolumeArea (AppContext& app, const juce::Uuid& editId, juce::int64 from, juce::int64 to, bool markedOnly)
 {
-    auto closer = std::make_shared<juce::Component::SafePointer<juce::Component>>();
-    auto panel = std::make_unique<RangeVolumePanel> (app, editId, from, to, [closer] { if (auto* c = closer->getComponent()) if (auto* w = c->findParentComponentOfClass<juce::DialogWindow>()) w->exitModalState (0); });
-    *closer = panel.get();
-    launchRangeVolume (std::move (panel), "Change volume between the 1/2 marks");
+    VolumeAreaPanel::Start st; st.from = from; st.to = to; st.markedOnly = markedOnly;
+    launchVolumeArea (app, editId, st, "Change volume");
 }
-
-/** 3.18.5: a "between the 1/2 marks" change made before, opened again by its group (double-click or right-click its teal line). */
-inline void showRangeVolumeChange (AppContext& app, const juce::Uuid& editId, const juce::String& group)
+/** An area that is there, opened to be changed (one click on its triangle). */
+inline void showVolumeArea (AppContext& app, const juce::Uuid& editId, const juce::Uuid& areaId)
 {
-    auto closer = std::make_shared<juce::Component::SafePointer<juce::Component>>();
-    auto panel = std::make_unique<RangeVolumePanel> (app, editId, group, [closer] { if (auto* c = closer->getComponent()) if (auto* w = c->findParentComponentOfClass<juce::DialogWindow>()) w->exitModalState (0); });
-    *closer = panel.get();
-    launchRangeVolume (std::move (panel), "Change the volume change");
+    VolumeAreaPanel::Start st; st.areaId = areaId;
+    launchVolumeArea (app, editId, st, "Volume change");
+}
+/** A volume change made before 3.50.0 (its group; or, for a change on its own, the piece and the place), opened as the area it amounts to. False -
+    nothing opened - when it cannot be an area (a piece of the overdub layer, the level a piece starts with, a change that moves nothing):
+    the caller opens the piece's little mixer for it, as before. */
+inline bool showOldChangeAsArea (AppContext& app, const juce::Uuid& editId, const juce::Uuid& regionId, juce::int64 at, const juce::String& group)
+{
+    auto* e = app.project.findEdit (editId);
+    if (e == nullptr) return false;
+    {
+        EditDef probe = *e; VolumeArea a;                        // (tried on a copy: the box takes it out of the real edit when it opens)
+        const bool ok = group.isNotEmpty() ? volumeareas::takeOutGroup (probe, group, a) : volumeareas::takeOutLoneChange (probe, regionId, at, a);
+        if (! ok || a.isEmpty()) return false;
+    }
+    VolumeAreaPanel::Start st; st.old = true; st.oldGroup = group; st.oldRegion = regionId; st.oldAt = at;
+    launchVolumeArea (app, editId, st, "Volume change");
+    return true;
 }
 } // namespace td

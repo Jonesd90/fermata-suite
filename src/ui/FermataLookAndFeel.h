@@ -1,7 +1,7 @@
 #pragma once
 #include "Uikit.h"
 
-namespace td { namespace fontdata { extern const unsigned char interRegular[]; extern const unsigned long interRegularSize; extern const unsigned char interSemiBold[]; extern const unsigned long interSemiBoldSize;
+namespace td { namespace fontdata { extern const unsigned char interRegular[]; extern const unsigned long interRegularSize; extern const unsigned char interSemiBold[]; extern const unsigned long interSemiBoldSize; extern const unsigned char interMedium[]; extern const unsigned long interMediumSize;
                                      extern const unsigned char pagellaRegular[]; extern const unsigned long pagellaRegularSize; extern const unsigned char pagellaBold[]; extern const unsigned long pagellaBoldSize;
                                      extern const unsigned char pagellaItalic[]; extern const unsigned long pagellaItalicSize; } }
 
@@ -68,13 +68,14 @@ public:
         theme::applyDefaultFontName();
         regular  = juce::Typeface::createSystemTypefaceFor (fontdata::interRegular,  (size_t) fontdata::interRegularSize);
         semibold = juce::Typeface::createSystemTypefaceFor (fontdata::interSemiBold, (size_t) fontdata::interSemiBoldSize);
+        medium   = juce::Typeface::createSystemTypefaceFor (fontdata::interMedium,   (size_t) fontdata::interMediumSize);
         serif       = juce::Typeface::createSystemTypefaceFor (fontdata::pagellaRegular, (size_t) fontdata::pagellaRegularSize);
         serifBold   = juce::Typeface::createSystemTypefaceFor (fontdata::pagellaBold,    (size_t) fontdata::pagellaBoldSize);
         serifItalic = juce::Typeface::createSystemTypefaceFor (fontdata::pagellaItalic,  (size_t) fontdata::pagellaItalicSize);
         applyTheme();
     }
 
-    /** Everything that does not name a font uses Inter (regular, and semibold for bold text), bundled inside the program. The Manuscript UI writes
+    /** Everything that does not name a font uses Inter (medium - regular until 3.50.0 - and semibold for bold text), bundled inside the program. The Manuscript UI writes
         in TeX Gyre Pagella instead (a Palatino: the Renaissance hand), with its own bold and italic. */
     juce::Typeface::Ptr getTypefaceForFont (const juce::Font& font) override
     {
@@ -82,8 +83,10 @@ public:
         if (n == "<Sans-Serif-Manuscript>" && serif != nullptr)                  // the Manuscript UI's own name for its face (see theme::sansName)
             return font.isItalic() && serifItalic != nullptr ? serifItalic : font.isBold() && serifBold != nullptr ? serifBold : serif;
         if (n == "<Manuscript-Italic>" && serifItalic != nullptr) return serifItalic;
+        // 3.50.0 (decided on 10 November 2026, from the typeface boards: "Inter throughout"): the ordinary weight of the Fermata style UI is Inter Medium -
+        // a step heavier than Regular, which it was - and the displays and clocks are in Inter too (theme::figureFont), not the system's console face.
         if ((n == "<Sans-Serif>" || n.isEmpty()) && regular != nullptr)
-            return font.isBold() && semibold != nullptr ? semibold : regular;
+            return font.isBold() && semibold != nullptr ? semibold : (medium != nullptr ? medium : regular);
         return juce::LookAndFeel_V4::getTypefaceForFont (font);
     }
     /** The Manuscript UI's display face (italic Pagella) for a title, a wordmark or a heading; the ordinary bold face in the Fermata style. */
@@ -282,6 +285,6 @@ public:
     }
     int getTabButtonBestWidth (juce::TabBarButton& b, int) override { return juce::jmax (110, b.getButtonText().length() * 9 + 28); }
 private:
-    juce::Typeface::Ptr regular, semibold, serif, serifBold, serifItalic;
+    juce::Typeface::Ptr regular, medium, semibold, serif, serifBold, serifItalic;
 };
 } // namespace td

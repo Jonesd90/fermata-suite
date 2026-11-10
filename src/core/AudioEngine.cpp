@@ -886,16 +886,29 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
     // session mode: keep the last seconds of every patched input
     auto* pr = preRollPtr.load (std::memory_order_acquire);
     const juce::int64 wp = pr != nullptr ? pr->writePos.load (std::memory_order_relaxed) : 0;
-    if (pr != nullptr && numSamples <= (int) zeros.size())
+    // (3.46.1: a block of ANY size is written. A block bigger than the engine was prepared for used to be left out while the ring's position still
+    // moved on by it - so a take being recorded from the ring was handed whatever the ring held there, sound from some seconds before, in place of
+    // that block. An input that is missing is written as silence; of a block longer than the ring itself, the last part is kept.)
+    if (pr != nullptr && pr->cap > 0)
         for (size_t s = 0; s < pr->inputs.size(); ++s)
         {
             const int idx = pr->inputs[s];
-            const float* src = (idx < numIn && in[idx] != nullptr) ? in[idx] : zeros.data();
+            const float* src = (idx >= 0 && idx < numIn && in[idx] != nullptr) ? in[idx] : nullptr;      // (nullptr: silence)
             float* dst = pr->data.data() + s * (size_t) pr->cap;
-            const int o = (int) (wp % pr->cap);
-            const int first = juce::jmin (numSamples, pr->cap - o);
-            std::memcpy (dst + o, src, sizeof (float) * (size_t) first);
-            if (first < numSamples) std::memcpy (dst, src + first, sizeof (float) * (size_t) (numSamples - first));
+            int n = numSamples; juce::int64 at = wp;
+            if (n > pr->cap) { const int skip = n - pr->cap; at += skip; if (src != nullptr) src += skip; n = pr->cap; }
+            const int o = (int) (at % pr->cap);
+            const int first = juce::jmin (n, pr->cap - o);
+            if (src != nullptr)
+            {
+                std::memcpy (dst + o, src, sizeof (float) * (size_t) first);
+                if (first < n) std::memcpy (dst, src + first, sizeof (float) * (size_t) (n - first));
+            }
+            else
+            {
+                std::memset (dst + o, 0, sizeof (float) * (size_t) first);
+                if (first < n) std::memset (dst, 0, sizeof (float) * (size_t) (n - first));
+            }
         }
 
     // recording
@@ -973,7 +986,7 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
             const MixerState* eng = pl->mixers.empty() ? nullptr : pl->mixers.front()->mixer;
             bool audActive = false;
             int monitorOut = -1;
-            if (aud != nullptr && aud != eng)
+            if (aud != nullptr && aud != eng && ! pl->mixers.empty())      // (3.46.1: never with a plan that has no mixers - mixers.front() below)
             {
                 for (auto& mp : pl->mixers) audActive = audActive || mp->mixer == aud;
                 for (auto& nd : pl->mixers.front()->order)

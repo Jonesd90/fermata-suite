@@ -14,7 +14,7 @@ public:
         using desk::Ic;
         colour = desk::stripColour (idx);
         driver.setJustificationType (juce::Justification::centredLeft);
-        driver.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 9.0f, juce::Font::plain));
+        driver.setFont (theme::figureFont (9.0f, juce::Font::plain));
         driver.setColour (juce::Label::textColourId, colour);
         driver.setMinimumHorizontalScale (0.6f);
         driver.setInterceptsMouseClicks (true, false);
@@ -257,7 +257,7 @@ public:
     OutputStrip (PrimaryApp& a, int index) : app (a), idx (index)
     {
         colour = desk::stripColour (idx + 3);
-        driver.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 9.5f, juce::Font::plain));
+        driver.setFont (theme::figureFont (9.5f, juce::Font::plain));
         driver.setColour (juce::Label::textColourId, desk::pal().cream);
         driver.setMinimumHorizontalScale (0.7f);
         driver.setInterceptsMouseClicks (false, false);

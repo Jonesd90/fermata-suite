@@ -265,7 +265,12 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources, ImportNaming nami
                     if (inst.isEmpty()) inst = h.inst;
                     p.trackName = inst;                                    // every piece shares the same tracks (the same instrument / mic names)
                     p.trackKey = p.trackName.toLowerCase();
-                    if (used.count (p.trackKey)) continue;
+                    if (used.count (p.trackKey))
+                    {   // (3.46.1: said - the file used to be left out of the import without a word)
+                        plan.notes.add (src.file.getFileName() + " was left out: take " + juce::String (kv.first.second) + (t.piece.isNotEmpty() ? " of " + t.piece : juce::String())
+                                        + " already has a file for " + inst + ". Rename one of the two and import it again if both are wanted.");
+                        continue;
+                    }
                     used.insert (p.trackKey);
                     p.trackChannels = src.channels >= 2 ? 2 : 1;
                     t.length = juce::jmax (t.length, src.length);

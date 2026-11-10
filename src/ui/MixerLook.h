@@ -160,13 +160,20 @@ public:
         const float r = size * 0.5f;
         const float a = startA + pos * (endA - startA);
         juce::Colour arc = juce::Colour ((juce::uint32) (juce::int64) s.getProperties().getWithDefault ("arc", (juce::int64) theme::accent.getARGB()));
-        if ((bool) s.getProperties().getWithDefault ("muted", false)) arc = t.dim.withAlpha (0.55f);      // a muted send: the ring goes grey
+        const bool muted = (bool) s.getProperties().getWithDefault ("muted", false);
         juce::Path track, value;
         track.addCentredArc (cx, cy, r - 0.5f, r - 0.5f, 0.0f, startA, endA, true);
         value.addCentredArc (cx, cy, r - 0.5f, r - 0.5f, 0.0f, startA, a, true);
         // the ring: a dark groove (as dark in the light look as in the dark look) with the coloured part over it, a little thicker so it shows
         g.setColour (t.ringTrack); g.strokePath (track, juce::PathStrokeType (3.0f));
-        g.setColour (t.dark ? arc : arc.withMultipliedBrightness (0.85f).withMultipliedSaturation (1.15f)); g.strokePath (value, juce::PathStrokeType (2.5f));
+        if (muted)
+        {
+            // 3.50.0 (asked for on 10 November 2026): a muted send's whole ring pulses red, about once a second (it went grey: easy to miss). The
+            // dial's owner redraws it while it is muted (SendDial); the beat comes from the clock, so every muted dial pulses together.
+            const float beat = 0.5f + 0.5f * std::sin ((float) (juce::Time::getMillisecondCounter() % 1100u) / 1100.0f * juce::MathConstants<float>::twoPi);
+            g.setColour (juce::Colour (0xffff3b30).withAlpha (0.22f + 0.78f * beat)); g.strokePath (track, juce::PathStrokeType (2.5f));
+        }
+        else { g.setColour (t.dark ? arc : arc.withMultipliedBrightness (0.85f).withMultipliedSaturation (1.15f)); g.strokePath (value, juce::PathStrokeType (2.5f)); }
         const float br = r * 0.66f;
         g.setColour (t.ground ? juce::Colour (0xff3d424b) : juce::Colours::white); g.fillEllipse (cx - br, cy - br, br * 2.0f, br * 2.0f);
         g.setColour (t.line);                                                    g.drawEllipse (cx - br, cy - br, br * 2.0f, br * 2.0f, 1.0f);

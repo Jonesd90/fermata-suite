@@ -59,9 +59,11 @@ struct PlaySegment
     juce::int64  fadeInStart = 0,  fadeInLen = 0;     // len 0 = no fade
     juce::int64  fadeOutStart = 0, fadeOutLen = 0;
     FadeCurve    inCurve = FadeCurve::EqualPower, outCurve = FadeCurve::EqualPower;
-    std::vector<GainStep> gainSteps;                  // volume changes, sorted by 'at' (none = unity)
+    std::vector<GainStep> gainSteps;                  // the piece's own volume changes, sorted by 'at' (none = unity)
+    std::vector<AreaGain> areaGains;                  // 3.50.0: the edit's volume areas over this stretch of this track (VolumeArea): each multiplies what the steps give
+    bool hasGain() const noexcept { return ! gainSteps.empty() || ! areaGains.empty(); }
 
-    /** The gain these steps give at timeline sample t. */
+    /** The gain the piece's steps and the edit's areas give at timeline sample t. */
     float gainAt (juce::int64 t) const noexcept
     {
         float g = 1.0f;
@@ -70,6 +72,7 @@ struct PlaySegment
             if (t < st.at) break;
             g = (st.ramp > 0 && t < st.at + st.ramp) ? st.from + (st.to - st.from) * (float) (t - st.at) / (float) st.ramp : st.to;
         }
+        for (auto& a : areaGains) g *= a.at (t);
         return g;
     }
 };

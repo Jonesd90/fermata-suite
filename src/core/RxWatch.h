@@ -26,7 +26,16 @@ struct RxSaveWatch
         for (auto& l : now)
         {
             present.insert (l.path);
-            if (! l.exists) { if (seen.count (l.path) != 0) busy = true; pending.erase (l.path); continue; }   // (while RX puts the new file in place the old one can be missing for a moment)
+            if (! l.exists)
+            {
+                // while RX puts the new file in place the old one can be missing for a moment: the others wait for it. 3.46.1: for a moment only
+                // (kMissingLooks). A file that STAYS away - deleted by hand once its work was done, while its track still follows it for later
+                // saves - used to count as "being replaced" for ever, so every later save of any other file came back maxHold looks (half a
+                // minute) late instead of at once.
+                if (seen.count (l.path) != 0 && ++missing[l.path] <= kMissingLooks) busy = true;
+                pending.erase (l.path); continue;
+            }
+            missing.erase (l.path);
             const auto it = seen.find (l.path);
             if (it == seen.end()) { seen[l.path] = l.modified; pending.erase (l.path); continue; }
             if (it->second == l.modified) { pending.erase (l.path); tries.erase (l.path); continue; }
@@ -40,6 +49,7 @@ struct RxSaveWatch
             out.push_back (l.path);
         }
         for (auto it = pending.begin(); it != pending.end();) it = present.count (it->first) != 0 ? std::next (it) : pending.erase (it);
+        for (auto it = missing.begin(); it != missing.end();) it = present.count (it->first) != 0 ? std::next (it) : missing.erase (it);
         if (! out.empty() && busy && held < maxHold) { ++held; return {}; }      // the others first (they stay ready: asked again next time)
         held = 0;
         return out;
@@ -61,6 +71,8 @@ struct RxSaveWatch
 
     std::map<juce::String, std::pair<juce::int64, juce::int64>> pending;      // changed files waiting to be the same twice running: (time, size)
     std::map<juce::String, int> tries;                                         // failed reads of a saved file
+    std::map<juce::String, int> missing;                                       // looks in a row a watched file has not been there (3.46.1)
+    static constexpr int kMissingLooks = 5;                                    // a file being replaced is back within this many looks; after that it is simply gone
     int held = 0;                                                              // looks the ready files have waited for others being written
 };
 } // namespace td

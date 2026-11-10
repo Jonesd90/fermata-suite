@@ -71,6 +71,15 @@ inline juce::Colour parchment()  { return juce::Colour (0xffe9dcc0); }
 inline const char* sansName (bool manuscriptStyle) { return manuscriptStyle ? "<Sans-Serif-Manuscript>" : "<Sans-Serif>"; }
 inline const char* wordmarkFontName()              { return manuscript() ? "<Manuscript-Italic>" : "Georgia"; }
 inline bool isSansName (const juce::String& n)     { return n.isEmpty() || n == "<Sans-Serif>" || n == "<Sans-Serif-Manuscript>"; }
+/** 3.50.0: the face of the displays and clocks - the figures that count and the names in the dark displays. In the Fermata style UI: Inter, as
+    everything else, with its figures all one width (the font's 'tnum' feature) so that a running clock does not shiver. In the Manuscript UI: the
+    system's console face, as it has always been there. (Until 3.50.0 both styles used the console face.) Lists that line up in columns - the
+    recording monitor's events, the logs - keep the console face in both: they need every character the same width, not only the figures. */
+inline juce::FontOptions figureFont (float height, int styleFlags = juce::Font::bold)
+{
+    if (manuscript()) return juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), height, styleFlags);
+    return juce::FontOptions (height, styleFlags).withFeatureEnabled (juce::FontFeatureTag ("tnum"));
+}
 /** Makes new fonts use the style's default name (JUCE hands out the name by reference to a static, which is set here). */
 inline void applyDefaultFontName() { const_cast<juce::String&> (juce::Font::getDefaultSansSerifFontName()) = sansName (manuscript()); }
 /** True for the Manuscript UI's own dark navy keys (any shade of them): their writing is gilt. A key given a colour of its own (a red Record) is not one. */

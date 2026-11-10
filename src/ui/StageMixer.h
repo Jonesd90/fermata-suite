@@ -170,7 +170,7 @@ private:
                 if (peakOn) { g.setColour (juce::Colour (0x66ff3030)); g.drawEllipse (led.expanded (1.5f), 1.5f); }
             }
             const double db = fader.getValue();
-            g.setColour (p.cream); g.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 10.0f, juce::Font::plain));
+            g.setColour (p.cream); g.setFont (theme::figureFont (10.0f, juce::Font::plain));
             g.drawText (db <= -59.9 ? "off" : juce::String (db, 1), dbArea, juce::Justification::centred);
             if (withPan)
             {

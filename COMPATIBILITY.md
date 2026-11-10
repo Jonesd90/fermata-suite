@@ -162,3 +162,9 @@ copies it like everything else, which is fine.
     drop the frozen ones if it saved it; fermata:Live carries them through unchanged (`src/core/Project.cpp`) and shows nothing of them. The
     listening copy's page and its notes file gained `"version"` (missing = not said: the comments go to the live version). New shared header
     `src/core/EditVersions.h` (freezing, comparing, putting back; header only), used by fermata's windows only.
+  - Still contract 3 (fermata 3.50.0, fermata:Live 0.10.0): volume areas (`VolumeArea`, `src/core/Edit.h`; `src/core/VolumeAreas.h`). The project
+    file gained a key, none changed: an edit's `"volumeAreas"` (missing = none), written only when the edit has one. fermata:Live reads and
+    writes it through the shared code and never looks at it. The shared player multiplies an edit's areas into what it plays
+    (`segmentsForEdit`); an edit without areas plays exactly as before. An older fermata does not read the key: it plays such an edit
+    without its areas and drops them when it saves. Also shared from here on: Inter Medium in `src/ui/FontData.cpp` and
+    `theme::figureFont` in `src/ui/Uikit.h` (the Fermata style UI's type, in both programs).

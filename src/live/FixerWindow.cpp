@@ -37,7 +37,7 @@ public:
         g.setColour (theme::border); g.drawRoundedRectangle (r.reduced (0.5f), 4.0f, 1.0f);
         g.setColour (theme::dimText); g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
         g.drawText (caption, getLocalBounds().reduced (8, 3).removeFromTop (12), juce::Justification::centredLeft, false);
-        g.setColour (colour); g.setFont (juce::Font (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), fontSize, juce::Font::bold)));
+        g.setColour (colour); g.setFont (juce::Font (theme::figureFont (fontSize)));
         g.drawFittedText (text, getLocalBounds().reduced (8, 2).withTrimmedTop (12), juce::Justification::centred, 1, 0.6f);
     }
 private:

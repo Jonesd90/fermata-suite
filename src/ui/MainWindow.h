@@ -276,7 +276,7 @@ public:
         g.drawFittedText (text, r.reduced (8, 0), juce::Justification::centredLeft, 1, 0.75f);
     }
 private:
-    juce::Font font() const { return juce::Font (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), fontH, juce::Font::bold)); }
+    juce::Font font() const { return juce::Font (theme::figureFont (fontH)); }
     int captionWidth() const { return caption.isEmpty() ? 0 : juce::roundToInt (juce::GlyphArrangement::getStringWidth (juce::Font (juce::FontOptions (11.0f, juce::Font::bold)), caption)) + 8; }
     int textWidth() const { return juce::roundToInt (juce::GlyphArrangement::getStringWidth (font(), text)); }
     juce::String caption, text;

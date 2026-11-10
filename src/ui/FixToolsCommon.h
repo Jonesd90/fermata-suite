@@ -446,8 +446,9 @@ struct TrackPart
     bool shaped = false;
     juce::int64 inStart = 0, inLen = 0, outStart = 0, outLen = 0;         // the fades (length 0 = none)
     FadeCurve inCurve = FadeCurve::EqualPower, outCurve = FadeCurve::EqualPower;
-    std::vector<GainStep> steps;                                          // the volume changes
-    bool flat() const noexcept { return ! shaped || (inLen == 0 && outLen == 0 && steps.empty()); }
+    std::vector<GainStep> steps;                                          // the piece's own volume changes
+    std::vector<AreaGain> areas;                                          // 3.50.0: the edit's volume areas over it (times in samples of the stretch)
+    bool flat() const noexcept { return ! shaped || (inLen == 0 && outLen == 0 && steps.empty() && areas.empty()); }
     /** The gain at stretch sample d: the fades and the volume changes, worked out as PlaybackSession::renderSegments does. */
     float gainAt (juce::int64 d) const noexcept
     {
@@ -461,12 +462,13 @@ struct TrackPart
             for (auto& st : steps) { if (d < st.at) break; s = (st.ramp > 0 && d < st.at + st.ramp) ? st.from + (st.to - st.from) * (float) (d - st.at) / (float) st.ramp : st.to; }
             g *= s;
         }
+        for (auto& a : areas) g *= a.at (d);
         return g;
     }
 };
 /** File 'fi' of piece r over [from, to) of the timeline, as it is heard (see TrackPart); false when the piece is not heard there. The fades and the volume
     changes follow the same rules as playback (core/Playback.cpp, addRegionSegments) - the level given to the piece as a whole holds from its first sound. */
-inline bool heardPart (const EditRegion& r, size_t fi, juce::int64 from, juce::int64 to, TrackPart& p)
+inline bool heardPart (const EditRegion& r, size_t fi, juce::int64 from, juce::int64 to, TrackPart& p, const EditDef* edit = nullptr)
 {
     const auto a = juce::jmax (from, r.fadeInBegin()), b = juce::jmin (to, r.fadeOutFinish());
     if (b <= a || fi >= r.files.size()) return false;
@@ -486,6 +488,8 @@ inline bool heardPart (const EditRegion& r, size_t fi, juce::int64 from, juce::i
         if (k == 0 && ! g.autoNorm && g.at <= (juce::int64) (0.001 * r.sampleRate)) { st.at = juce::jmin (st.at, r.fadeInBegin() - from); st.ramp = 0; st.from = st.to; }
         p.steps.push_back (st);
     }
+    if (edit != nullptr)                                                  // 3.50.0: the edit's volume areas, as segmentsForEdit gives them to the player
+        for (auto g : edit->areaGainsFor (f.trackId, a, b)) { g.from -= from; g.to -= from; p.areas.push_back (g); }
     return true;
 }
 /** The tracks of an edit between 'from' and 'to' and, for each, the pieces heard along that stretch (see TrackPart: with their fades, so a cross-fade has both).
@@ -513,7 +517,7 @@ inline TrackParts buildTrackParts (const EditDef& e, juce::int64 from, juce::int
             const auto ti = std::find (tp.ids.begin(), tp.ids.end(), r.files[fi].trackId);
             if (ti == tp.ids.end()) continue;
             TrackPart p;
-            if (heardPart (r, fi, from, to, p)) tp.parts[(size_t) (ti - tp.ids.begin())].push_back (std::move (p));
+            if (heardPart (r, fi, from, to, p, &e)) tp.parts[(size_t) (ti - tp.ids.begin())].push_back (std::move (p));
         }
     return tp;
 }

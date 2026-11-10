@@ -75,8 +75,8 @@ public:
         r.removeFromTop (8);
         device.setBounds (r.removeFromTop (20));
         auto bottom = r.removeFromBottom (34);
+        if (cancel.isVisible()) { cancel.setBounds (bottom.removeFromRight (110)); bottom.removeFromRight (10); }      // (3.46.1: the action on the left, Cancel on the right - the rule for every box)
         ok.setBounds (bottom.removeFromRight (170));
-        if (cancel.isVisible()) { bottom.removeFromRight (10); cancel.setBounds (bottom.removeFromRight (110)); }
     }
     bool keyPressed (const juce::KeyPress& k) override
     {

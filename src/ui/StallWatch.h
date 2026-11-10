@@ -76,6 +76,10 @@ public:
         signalThreadShouldExit(); notify(); stopThread (2000);
     }
 
+    /** 3.46.1: the message thread is in a wait it means to be in (closing: the last take's files being finished on the disk) and says so every few
+        tens of milliseconds, as its timer would - so that wait is not written up as a freeze. Message thread. */
+    void touch() noexcept { beat.store (juce::Time::getMillisecondCounterHiRes()); }
+
     static constexpr double kPeriodMs = 50.0, kReportMs = 150.0, kStacksMs = 5000.0, kFreezeReportMs = 15000.0;
     static constexpr double kPluginStacksMs = 60000.0, kPluginFreezeReportMs = 120000.0;      // (3.45.1: while a plug-in is starting)
 

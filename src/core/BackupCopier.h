@@ -34,6 +34,7 @@ public:
         // copier thread only:
         juce::int64 copied = 0;
         bool opened = false, done = false;
+        bool mine = false;                          // 3.46.1: the file at 'dst' was made by this copy (only then may it be deleted when the copy is thrown away)
         std::unique_ptr<juce::FileInputStream> in;
         std::unique_ptr<juce::FileOutputStream> out;
     };
@@ -97,7 +98,7 @@ private:
     void bin (Job& j, const juce::String& why)
     {
         j.out.reset(); j.in.reset();
-        j.dst.deleteFile();
+        if (j.mine) j.dst.deleteFile();                         // (3.46.1: only a file this copy made - never one that was there before it)
         j.done = true;
         if (j.cancelled.load()) return;                         // (a take that never started: its main file is going too, and nobody needs telling)
         const std::lock_guard<std::mutex> l (lock);
@@ -118,13 +119,32 @@ private:
     /** One step of one copy (at most kChunk bytes, so the files of a take are copied side by side). True if anything was copied. */
     bool service (Job& j, std::vector<char>& buffer)
     {
-        if (j.cancelled.load()) { j.out.reset(); j.in.reset(); j.dst.deleteFile(); j.done = true; return false; }
+        if (j.cancelled.load()) { j.out.reset(); j.in.reset(); if (j.mine) j.dst.deleteFile(); j.done = true; return false; }
         if (! j.opened)
         {
+            // 3.46.1: the second drive's folder is the folder the project's folder is in, so the "copy" would be the recording's own file: there is
+            // no copy to make, and the person is told (the lamp, the notice). Nothing is touched.
+            if (j.dst == j.src) { bin (j, "the second drive's folder is where the project itself is, so there is no second copy (choose another folder: Project menu)"); return false; }
             if (! j.dst.getParentDirectory().createDirectory()) { bin (j, "the folder on the second drive could not be made"); return false; }
-            j.dst.deleteFile();
+            // 3.46.1: a file of this name already on the second drive is the copy of ANOTHER recording - a project of the same name that was on
+            // another drive, or one started again after its main drive failed (then it may be the only copy there is). It used to be deleted here
+            // (and by a take that never started). Now it is never deleted or written over: it is moved aside under a name that says what it is,
+            // and if that cannot be done, this take's copy takes another name.
+            if (j.dst.existsAsFile())
+            {
+                const auto aside = j.dst.getSiblingFile (j.dst.getFileNameWithoutExtension() + " (earlier copy)" + j.dst.getFileExtension()).getNonexistentSibling (true);
+                if (j.dst.moveFileTo (aside))
+                    juce::Logger::writeToLog ("Second recording drive: " + j.dst.getFullPathName() + " was there already (the copy of another recording): it is kept as " + aside.getFileName());
+                else
+                {
+                    const auto other = j.dst.getNonexistentSibling (true);
+                    juce::Logger::writeToLog ("Second recording drive: " + j.dst.getFullPathName() + " was there already and could not be moved aside: it is left as it is, and this take's copy is written as " + other.getFileName());
+                    j.dst = other;
+                }
+            }
             j.out = std::make_unique<juce::FileOutputStream> (j.dst);
             if (j.out->failedToOpen()) { bin (j, "the second drive could not be written"); return false; }
+            j.mine = true;
             j.in = std::make_unique<juce::FileInputStream> (j.src);
             if (j.in->failedToOpen()) { bin (j, "the recording could not be read back"); return false; }
             j.opened = true;

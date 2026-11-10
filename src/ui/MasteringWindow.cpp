@@ -676,6 +676,8 @@ MasteringComponent::MasteringComponent (AppContext& a)
     stemsButton.onClick = [this] { chooseStems(); };
     vmHolder.addChildComponent (folderEditor); vmHolder.addChildComponent (chooseButton);
     numberToggle.onClick = [this] { def().vm.numberFiles = numberToggle.getToggleState(); touched(); };
+    numberToggle.setTooltip ("Each file's name begins with its piece's number in the list on the left: the 11th piece is \"11 - name\", whichever pieces are ticked. "
+                             "The same number is the file's track number in its tags.");     // (3.46.1: the list's number, not a count of the ticked pieces)
     folderEditor.onTextChange = [this] { def().vm.folder = folderEditor.getText(); touched(); };
     chooseButton.onClick = [this] { chooseFolder (false); };
     auto album = [this] (const char* c, std::function<juce::String*()> r) { addField (vmHolder, albumFields, c, std::move (r)); };

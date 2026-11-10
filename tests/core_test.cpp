@@ -32,6 +32,7 @@
 #include "../src/core/SpectralPyramid.h"
 #include "../src/core/Feedback.h"
 #include "../src/core/EditVersions.h"
+#include "../src/core/VolumeAreas.h"
 #include "../src/core/ReviewPage.h"
 #include "../src/core/FileSync.h"
 #include "../src/core/AudioRelink.h"
@@ -14655,6 +14656,145 @@ int main()
         {
             auto level = [] (double hz) { LfeLowPass f; f.design (120.0, 48000.0); double pk = 0.0; for (int i = 0; i < 96000; ++i) { const double y = f.run (std::sin (2.0 * 3.14159265358979323846 * hz * i / 48000.0)); if (i > 48000) pk = juce::jmax (pk, std::abs (y)); } return 20.0 * std::log10 (pk); };
             CHECK (level (30.0) > -0.2 && level (120.0) > -3.5 && level (120.0) < -2.5 && level (1000.0) < -70.0);
+        }
+    }
+
+    SECTION ("3.50.0 volume areas: on top of the pieces' own levels, across joins, with the music; old changes turned into areas");
+    {
+        const juce::int64 S = 48000;
+        Project q; q.setInputCount (3); q.setOutputCount (2); q.tracks.clear(); q.buses.clear();
+        const juce::Uuid tA = q.addTrack ("A", TrackFormat::Mono, 0).id, tB = q.addTrack ("B", TrackFormat::Mono, 1).id, tS = q.addTrack ("Spot", TrackFormat::Mono, 2).id;     // two tracks and a spot
+        auto piece = [&] (juce::int64 len)
+        {
+            EditRegion r; r.id = juce::Uuid(); r.takeId = juce::Uuid(); r.takeName = "t"; r.sampleRate = 48000.0; r.srcIn = S * 30; r.srcOut = S * 30 + len; r.sourceLength = S * 600;
+            for (auto* t : { &tA, &tB, &tS }) { RegionFile f; f.trackId = *t; f.file = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("t.wav"); r.files.push_back (f); }
+            return r;
+        };
+        auto dbNear = [] (float lin, float db) { return std::abs (juce::Decibels::gainToDecibels (lin, -100.0f) - db) < 0.02f; };
+        // ---- the area's own shape
+        {
+            VolumeArea a; a.from = S * 10; a.to = S * 20; a.fadeIn = 1.0; a.fadeOut = 2.0; a.setDb (tS, 6.0f); a.setDb (tA, 0.0f);
+            CHECK (a.db.size() == 1 && a.touches (tS) && ! a.touches (tA) && ! a.isEmpty());
+            AreaGain g; CHECK (a.gainFor (tS, 48000.0, g) && ! a.gainFor (tA, 48000.0, g));
+            const float top = dbToLinear (6.0f);
+            CHECK (g.at (S * 10 - 1) == 1.0f && g.at (S * 10) == 1.0f && std::abs (g.at (S * 10 + S / 2) - (1.0f + (top - 1.0f) * 0.5f)) < 1.0e-4f);     // half way up the fade in
+            CHECK (g.at (S * 11) == top && g.at (S * 15) == top && g.at (S * 18) == top && std::abs (g.at (S * 19) - (1.0f + (top - 1.0f) * 0.5f)) < 1.0e-4f && g.at (S * 20) == 1.0f);
+            a.fadeIn = 30.0; a.fadeOut = 10.0;                                           // longer than the area: they share it, 3 to 1
+            juce::int64 in = 0, out = 0; a.fades (48000.0, in, out);
+            CHECK (in + out == S * 10 && std::abs (in - S * 15 / 2) <= 1);
+            a.setDb (tS, 0.0f); CHECK (a.isEmpty());
+        }
+        auto& tw = q.addTakeWindow ("W");
+        const auto eid = q.addEdit ("E", tw.id).id;
+        auto E = [&] () -> EditDef& { return *q.findEdit (eid); };
+        E().insertRegion (piece (S * 10)); E().insertRegion (piece (S * 4)); E().insertRegion (piece (S * 10));      // 0 - 10 s, 10 - 14 s, 14 - 24 s
+        // ---- it plays: on top of a piece's own level, on its tracks only, and across the join
+        {
+            E().regions[1].setGainChange (0, 0.0, { 2.0f, 2.0f, 2.0f });               // the middle piece has a level of its own (the Trim window's): +2 dB on every track
+            VolumeArea a; a.id = juce::Uuid(); a.from = S * 8; a.to = S * 16; a.fadeIn = 1.0; a.fadeOut = 1.0; a.setDb (tS, 4.0f);
+            E().areas.push_back (a);
+            const auto segs = segmentsForEdit (q, E());
+            int spot = 0, others = 0;
+            for (auto& sg : segs)
+            {
+                const bool isSpot = q.tracks[(size_t) sg.trackIndex].id == tS;
+                if (! isSpot) { CHECK (sg.areaGains.empty()); ++others; continue; }
+                ++spot;
+                if (sg.end <= S * 8 + 100) { CHECK (sg.areaGains.size() == 1); continue; }     // (the first piece ends at 10 s: the area is over its last 2 s)
+            }
+            CHECK (spot == 3 && others == 6);
+            auto heard = [&] (const juce::Uuid& track, juce::int64 t)                    // what one track plays at t: the piece there, its steps and the areas
+            {
+                for (auto& sg : segs) if (q.tracks[(size_t) sg.trackIndex].id == track && t >= sg.begin + S / 2 && t < sg.end - S / 2) return sg.gainAt (t);
+                return -1.0f;
+            };
+            CHECK (dbNear (heard (tS, S * 5), 0.0f) && dbNear (heard (tS, S * 9 + S / 2), 4.0f) && dbNear (heard (tA, S * 9 + S / 2), 0.0f));
+            CHECK (dbNear (heard (tS, S * 12), 6.0f) && dbNear (heard (tA, S * 12), 2.0f));                 // +2 of the piece and +4 of the area: they add, neither overwrites the other
+            CHECK (dbNear (heard (tS, S * 15 - S / 4), 4.0f) && dbNear (heard (tS, S * 20), 0.0f));          // on into the third piece, and back to nothing after its end
+            CHECK (std::abs (E().areaGainAt (tS, S * 12) - dbToLinear (4.0f)) < 1.0e-5f && E().areaGainAt (tA, S * 12) == 1.0f);
+            // saved and read back; part of undo
+            Project back; CHECK (back.fromVar (q.toVar()));
+            auto* be = back.findEdit (eid);
+            CHECK (be != nullptr && be->areas.size() == 1 && be->areas[0].id == a.id && be->areas[0].from == S * 8 && be->areas[0].to == S * 16
+                   && be->areas[0].fadeIn == 1.0 && be->areas[0].fadeOut == 1.0 && be->areas[0].db.size() == 1 && be->areas[0].dbOf (tS) == 4.0f);
+            const auto h0 = Project::undoHash (E());
+            E().areas[0].setDb (tS, 5.0f); const auto h1 = Project::undoHash (E());
+            E().areas.clear(); const auto h2 = Project::undoHash (E());
+            CHECK (h0 != h1 && h1 != h2 && h0 != h2);
+            E().areas.push_back (a);
+        }
+        // ---- it stays with the music
+        {
+            const auto first = E().regions[0].id;
+            E().insertIndex = 0; E().insertRegion (piece (S * 3));                       // 3 s of music put in at the front: everything is 3 s later
+            CHECK (E().areas.size() == 1 && E().areas[0].from == S * 11 && E().areas[0].to == S * 19);
+            E().removeRegion (0, true);                                                  // and taken out again
+            CHECK (E().areas.size() == 1 && E().areas[0].from == S * 8 && E().areas[0].to == S * 16 && E().regions[0].id == first);
+            {
+                const editversions::Riders riders (E());
+                const auto moved = E().slideRegion (2, S * 2, false, false);             // the third piece slid later: the area's end is over it and goes too
+                riders.carry (E());
+                CHECK (moved > 0 && E().areas[0].from == S * 8 && E().areas[0].to == S * 16 + moved);
+                E().slideRegion (2, -moved, false, false); riders.carry (E());
+                CHECK (E().areas[0].from == S * 8 && E().areas[0].to == S * 16);
+            }
+            E().removeRegion (1, true);                                                  // the middle piece (10 - 14 s) deleted: the area is over 8 - 10 s and what was 14 - 16 s
+            CHECK (E().areas.size() == 1 && E().areas[0].from == S * 8 && E().areas[0].to == S * 12);
+            VolumeArea in; in.id = juce::Uuid(); in.from = S * 2; in.to = S * 4; in.setDb (tA, -3.0f); E().areas.push_back (in);
+            E().removeRegion (0, true);                                                  // the first piece (0 - 10 s) deleted: the area that was wholly over it is gone with it
+            CHECK (E().areas.size() == 1 && E().areas[0].from == 0 && E().areas[0].to == S * 2);
+        }
+        // ---- an old change on its own, carried by hand through two more pieces and brought back by a second change (the edit that was asked about)
+        {
+            using namespace volumeareas;
+            E().regions.clear(); E().areas.clear(); E().insertIndex = -1;
+            E().insertRegion (piece (S * 26)); E().insertRegion (piece (S * 8)); E().insertRegion (piece (S * 5));       // 0 - 26 s, 26 - 34 s, 34 - 39 s
+            auto& p0 = E().regions[0]; auto& p1 = E().regions[1]; auto& p2 = E().regions[2];
+            p0.setGainChange (S * 82 / 100, 1.0, { 0.0f, 0.0f, 4.0f });                 // "from here to next edit": the spot +4 dB over 1 s
+            p1.setGainChange (0, 0.0, { 0.0f, 0.0f, 4.0f });                             // the next piece starts at the same raise (a loose copy)
+            p2.setGainChange (0, 0.0, { 2.0f, 2.0f, 6.0f });                             // the third: +2 on everything (the Trim window, normalise ticked) and the raise
+            p2.normaliseIn = true; E().refreshNormalised();
+            const juce::int64 backAt = S * 239 / 100;
+            const float there = p2.levelDbAt (0, backAt + S);                            // where the normalise glide has the other tracks when the way back arrives
+            p2.setGainChange (backAt, 1.0, { there, there, there });                     // the way back: written for every track, as the old box wrote it
+            CHECK (there > 0.3f && there < 1.9f && std::abs (p2.levelDbAt (2, backAt - 1) - 6.0f) > 1.0f);        // (the raise was already melting under the normalise glide)
+            const auto wasSpotP0 = p0.levelAt (2, S * 5), wasSpotP1 = p1.levelAt (2, S * 3), wasAP1 = p1.levelAt (0, S * 3), wasSpotP2 = p2.levelAt (2, 0), wasMid = p0.levelAt (2, S * 82 / 100 + S / 2);
+            VolumeArea a; LoneFound f;
+            CHECK (! takeOutLoneChange (E(), p1.id, 0, a));                               // (the level a piece starts with is the piece's own: not a change to turn into an area)
+            CHECK (takeOutLoneChange (E(), p0.id, S * 82 / 100, a, &f));
+            CHECK (f.carriedInto == 2 && f.broughtBack);
+            CHECK (a.from == S * 82 / 100 && a.to == S * 34 + backAt + S && a.fadeIn == 1.0 && a.fadeOut == 1.0 && a.db.size() == 1 && std::abs (a.dbOf (tS) - 4.0f) < 0.01f);
+            CHECK (p0.gains.empty() && p1.gains.empty());                                 // the change and its loose copy are out of the pieces
+            E().refreshNormalised();
+            CHECK (p2.gains.size() == 2 && p2.gains[0].at == 0 && std::abs (p2.gains[0].db[2] - 2.0f) < 0.01f && std::abs (p2.gains[0].db[0] - 2.0f) < 0.01f && p2.gains[1].autoNorm);     // the piece's own +2 and its glide: nothing else
+            E().areas.push_back (a);
+            auto plays = [&] (const EditRegion& r, size_t k, juce::int64 rel) { return r.levelAt (k, rel) * E().areaGainAt (r.files[k].trackId, r.startSample + rel); };
+            auto same = [] (float x, float y) { return std::abs (juce::Decibels::gainToDecibels (x, -100.0f) - juce::Decibels::gainToDecibels (y, -100.0f)) < 0.02f; };
+            CHECK (same (plays (p0, 2, S * 5), wasSpotP0) && same (plays (p0, 2, S * 82 / 100 + S / 2), wasMid) && same (plays (p1, 2, S * 3), wasSpotP1) && same (plays (p1, 0, S * 3), wasAP1) && same (plays (p2, 2, 0), wasSpotP2));
+            CHECK (std::abs (juce::Decibels::gainToDecibels (plays (p2, 2, backAt - 1)) - juce::Decibels::gainToDecibels (p2.levelAt (0, backAt - 1)) - 4.0f) < 0.02f);       // the raise now holds against the normalise glide ...
+            CHECK (same (plays (p2, 2, backAt + S + 10), p2.levelAt (0, backAt + S + 10)) && p2.levelDbAt (0, p2.length() + p2.samples (p2.outStart)) < 0.02f);                  // ... is back when its fade out ends, and the glide reaches 0 dB
+        }
+        // ---- an old change that the next piece does not carry: it ends at the join; one brought back inside its own piece; one that only stops
+        {
+            using namespace volumeareas;
+            E().regions.clear(); E().areas.clear(); E().insertIndex = -1;
+            E().insertRegion (piece (S * 10)); E().insertRegion (piece (S * 10));
+            auto& p0 = E().regions[0]; auto& p1 = E().regions[1];
+            p0.setGainChange (S * 2, 0.5, { -3.0f, 0.0f, 0.0f });
+            VolumeArea a; LoneFound f;
+            CHECK (takeOutLoneChange (E(), p0.id, S * 2, a, &f) && f.carriedInto == 0 && ! f.broughtBack && a.from == S * 2 && a.to == S * 10 && a.fadeIn == 0.5 && a.fadeOut == 0.0 && std::abs (a.dbOf (tA) + 3.0f) < 0.01f && p0.gains.empty());
+            p0.setGainChange (S * 2, 0.5, { -3.0f, 0.0f, 0.0f }); p0.setGainChange (S * 6, 0.25, { 0.0f, 0.0f, 0.0f });
+            CHECK (takeOutLoneChange (E(), p0.id, S * 2, a, &f) && f.broughtBack && a.to == S * 6 + S / 4 && a.fadeOut == 0.25 && p0.gains.empty());
+            p0.setGainChange (S * 2, 0.5, { -3.0f, 0.0f, 0.0f }); p0.setGainChange (S * 6, 0.25, { -9.0f, 1.0f, 0.0f });       // not the way back: something else begins
+            CHECK (takeOutLoneChange (E(), p0.id, S * 2, a, &f) && ! f.broughtBack && a.to == S * 6 && a.fadeOut == 0.0 && p0.gains.size() == 1 && p0.gains[0].at == S * 6);
+            p0.gains.clear(); p1.gains.clear();
+            // a "between the 1/2 marks" change (a group): the same, by its group
+            p0.setGainChange (S * 8, 0.5, { 0.0f, 0.0f, 3.0f }).group = "g"; p0.gains.back().role = 1;
+            { auto& s2 = p1.setGainChange (0, 0.0, { 1.0f, 1.0f, 4.0f }); s2.group = "g"; s2.role = 2; }                       // (the second piece has +1 of its own on everything)
+            { auto& s3 = p1.setGainChange (S * 3 - S / 2, 0.5, { 1.0f, 1.0f, 1.0f }); s3.group = "g"; s3.role = 3; }
+            CHECK (! takeOutGroup (E(), "nothing", a));
+            CHECK (takeOutGroup (E(), "g", a) && a.from == S * 8 && a.to == S * 13 && a.fadeIn == 0.5 && a.fadeOut == 0.5 && a.db.size() == 1 && std::abs (a.dbOf (tS) - 3.0f) < 0.01f);
+            CHECK (p0.gains.empty() && p1.gains.size() == 1 && p1.gains[0].group.isEmpty() && p1.gains[0].role == 0 && std::abs (p1.gains[0].db[2] - 1.0f) < 0.01f && std::abs (p1.gains[0].db[0] - 1.0f) < 0.01f);
         }
     }
 

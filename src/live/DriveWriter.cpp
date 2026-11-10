@@ -138,14 +138,19 @@ void DriveWriter::updateIndex (const std::function<void (SessionIndex&)>& change
 {
     { const std::lock_guard<std::mutex> l (indexLock); change (index); }
     indexDirty.store (true);
-    if (! isThreadRunning() && (closedFlag.load() || droppedFlag.load()))
-    {   // the drive thread is gone: this caller writes the index (nobody else will touch the file)
-        juce::String text;
-        { const std::lock_guard<std::mutex> l (indexLock); text = juce::JSON::toString (index.toVar()); }
-        juce::String err;
-        if (disk->replaceTextSafely (indexFile(), text, &err)) indexDirty.store (false);
-        else if (cb.log) cb.log ("Drive " + settings.sessionFolder.getFullPathName() + ": the session index could not be written after the session: " + err);
-        return;
+    {
+        // (0.7.1: see handoverLock. The flag is set first and the lock taken after, and the thread looks at the flag one last time under the same
+        // lock before it hands over: so this change is written either by the thread or here, never by nobody.)
+        const std::lock_guard<std::mutex> h (handoverLock);
+        if (threadDone)
+        {   // the drive thread is gone: this caller writes the index (one caller at a time: the lock is held until the file is written)
+            juce::String text;
+            { const std::lock_guard<std::mutex> l (indexLock); text = juce::JSON::toString (index.toVar()); }
+            juce::String err;
+            if (disk->replaceTextSafely (indexFile(), text, &err)) indexDirty.store (false);
+            else if (cb.log) cb.log ("Drive " + settings.sessionFolder.getFullPathName() + ": the session index could not be written after the session: " + err);
+            return;
+        }
     }
     notify();
 }
@@ -169,6 +174,37 @@ juce::String DriveWriter::uniqueChunkName (juce::int64 at) const
 void DriveWriter::run()
 {
     crashreport::nameThisThread (getThreadName());
+    // 0.7.1: nothing that goes wrong in one drive's writer may end the recorder (an exception that leaves a thread ends the whole program - and
+    // with it the other drives and the take). The drive is dropped, as for any other failure of it, and the rest goes on.
+    try { writeLoop(); }
+    catch (const std::exception& e) { try { drop (juce::String ("its writer failed (") + e.what() + ")"); } catch (...) {} }
+    catch (...)                     { try { drop ("its writer failed"); } catch (...) {} }
+    if (abandoned.load()) return;                                    // (tests: as a program that died leaves it - the index is not written again)
+    // a writer that failed above stays until the session closes, as a dropped drive's does
+    while (droppedFlag.load() && ! closing.load() && ! threadShouldExit()) wait (200);
+    // the index is handed over (see handoverLock): what is still unwritten is written first - a few tries for a drive that is there (a scanner may
+    // hold session.json for a moment; this is the write that says the session ended), one for a dropped drive (it may be gone)
+    try
+    {
+        const int maxTries = droppedFlag.load() ? 1 : 10;
+        for (int tries = 0;; ++tries)
+        {
+            if (indexDirty.load() && tries < maxTries && ! threadShouldExit())
+            {
+                if (! writeIndex (true)) wait (300);
+                continue;
+            }
+            const std::lock_guard<std::mutex> h (handoverLock);
+            if (indexDirty.load() && tries < maxTries && ! threadShouldExit()) continue;       // (an update came in at this very moment: written above, next time round)
+            threadDone = true;
+            break;
+        }
+    }
+    catch (...) { const std::lock_guard<std::mutex> h (handoverLock); threadDone = true; }
+}
+
+void DriveWriter::writeLoop()
+{
     if (! disk->createFolder (settings.sessionFolder)) drop ("cannot make the folder " + settings.sessionFolder.getFullPathName());
     else writeIndex (true);
     const int minWrite = juce::jmax (1, juce::jmin (kPiece, settings.minWriteSamples));

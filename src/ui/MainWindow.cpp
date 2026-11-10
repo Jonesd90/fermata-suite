@@ -27,7 +27,7 @@ public:
         using desk::Ic;
         colour = desk::stripColour (idx);
         driver.setJustificationType (juce::Justification::centredLeft);
-        driver.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 9.0f, juce::Font::plain));
+        driver.setFont (theme::figureFont (9.0f, juce::Font::plain));
         driver.setColour (juce::Label::textColourId, colour);
         driver.setMinimumHorizontalScale (0.6f);
         driver.setInterceptsMouseClicks (true, false);           // (so its tooltip - the device and the full driver name - shows)
@@ -317,7 +317,7 @@ public:
     OutputRow (AppContext& a, int index) : app (a), idx (index)
     {
         colour = desk::stripColour (idx + 3);
-        driver.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 9.5f, juce::Font::plain));
+        driver.setFont (theme::figureFont (9.5f, juce::Font::plain));
         driver.setColour (juce::Label::textColourId, desk::pal().cream);
         driver.setMinimumHorizontalScale (0.7f);
         driver.setInterceptsMouseClicks (false, false);
@@ -1199,6 +1199,8 @@ void MainComponent::newProjectDialog()
         if (f == juce::File()) return;
         const auto name = f.getFileNameWithoutExtension();
         auto folder = f.getParentDirectory().getChildFile (name);
+        // 3.46.1: a project of this name is already there: said now, before the sample rate is asked for (see AppContext::newProjectProblem)
+        if (const auto problem = AppContext::newProjectProblem (folder.getChildFile (name + ".fermata")); problem.isNotEmpty()) { showError ("New project", problem); return; }
         // 3.9.0: the sample rate is chosen on purpose, nothing picked to begin with (a 48 kHz project made by accident instead of a 96 kHz one)
         juce::Component::SafePointer<MainComponent> safe (this);
         chooseProjectRate (app, "Sample rate for \"" + name + "\"", "Choose the sample rate this project records and plays at. Every take in it is recorded at this "
@@ -1443,7 +1445,7 @@ void MainComponent::showMixersMenu()
     }
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&mixersButton), [this] (int r)
     {
-        if (r > 2000 && (size_t) (r - 2000) < app.project.mixers.size())
+        if (r > 2000 && r - 2000 < app.project.cueEnd() && (size_t) (r - 2000) < app.project.mixers.size())      // (3.46.1: only ever a cue mixer - the list is looked at again, now that the menu has closed)
         {
             const auto id = app.project.mixers[(size_t) (r - 2000)]->id;
             confirmAsync ("Delete cue mixer", "Delete the cue mixer '" + app.project.mixers[(size_t) (r - 2000)]->name + "'?\n\nIts levels, sends and plug-ins are lost. Nothing else is touched.", "Delete", [this, id] { app.deleteMixer (id); });

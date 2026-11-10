@@ -8,6 +8,24 @@ fermata:Live is the live-concert recorder that goes with fermata (see `docs/LIVE
 
 A line that starts with **Shared:** is a change to the code fermata shares (see `COMPATIBILITY.md`), so fermata's next build mentions it too.
 
+## 0.10.0
+Built 10 November 2026 (the conversation for both programs), with Claude Fable. No change to the recorder. The type of the Fermata style
+UI, and what the shared code brings.
+- **The Fermata style UI is in Inter throughout** (decided on 10 November 2026, from the typeface boards, which were drawn on this
+  program's take window). Ordinary text is Inter Medium - a step heavier than it was - and the displays are in Inter too: the project,
+  rate, disk and recorder displays of the main window, the take length and playhead clocks of the take window and the Fixer, the
+  drivers' names. Their figures are all one width, so a running clock does not shiver. They were in the system's console typeface. The
+  Manuscript UI is as it was. The log and the report keep the console typeface (they line up in columns).
+- **Shared (fermata 3.49.0): the ReTouch window's tab keys.** In the Fixer's ReTouch window R, G, D, N and H did their work the moment
+  they were pressed, whichever tab was open. Now a key pressed from another tab only opens its tab; pressed with its tab already open it
+  does the tab's work.
+- **Shared (fermata 3.50.0): volume areas.** A project fermata has given volume areas keeps them when fermata:Live saves it (the shared
+  code reads and writes them); fermata:Live does not show or play edits, so nothing else changes here.
+- **Shared (fermata 3.50.0): a muted send's ring pulses red and a send's band is green** in the mixer's look (`src/ui/MixerLook.h`);
+  fermata:Live's own mixer has no send dials, so there is nothing to see of it here.
+- Looked at here: fermata:Live built for Linux and run on a virtual screen in the Fermata style UI - the main window's displays and
+  the take window's clocks in Inter. The recorder's tests and the compatibility check pass. Not run on Windows.
+
 ## 0.9.0
 Built 10 November 2026 (the conversation for both programs), with Claude Fable. Asked for on 10 November 2026: "give the same 'fermata' style UI
 option to fermata:Live".

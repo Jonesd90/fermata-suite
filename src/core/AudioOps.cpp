@@ -249,7 +249,8 @@ bool spliceFile (juce::AudioFormatManager& fm, const juce::File& src, const juce
         if (! readRange (*rs, pos, n, a)) { error = "Could not read the audio."; w.reset(); dest.deleteFile(); return false; }
         if (pos + n > s0 && pos < s1)
         {
-            readRange (*rr, pos - s0, n, b);
+            // (3.46.1: a corrected file that cannot be read here is an error - it used to be passed over, and silence went into the new file in its place)
+            if (! readRange (*rr, pos - s0, n, b)) { error = "Could not read the corrected file " + repl.getFileName() + "."; w.reset(); dest.deleteFile(); return false; }
             for (juce::int64 i = 0; i < n; ++i)
             {
                 const auto t = pos + i;
@@ -539,7 +540,9 @@ juce::File fixWholeFile (juce::AudioFormatManager& fm, const juce::File& source,
     for (juce::int64 pos = 0; pos < len; pos += block)
     {
         const auto cnt = juce::jmin (block, len - pos);
-        readRange (*reader, pos, cnt, blk);
+        // (3.46.1: a block of the take's file that cannot be read stops the fix with an error - it used to be passed over, and the new file had
+        // silence there while the fix was reported as made)
+        if (! readRange (*reader, pos, cnt, blk)) { error = "Cannot read " + source.getFileName(); w.reset(); dest.deleteFile(); return {}; }
         for (juce::int64 n = juce::jmax (pos, lo); n < juce::jmin (pos + cnt, hi); ++n)
             for (int c = 0; c < nc; ++c) blk[(size_t) c][(size_t) (n - pos)] = seg[(size_t) c][(size_t) (n - r0)];
         std::vector<const float*> ptrs; for (auto& c : blk) ptrs.push_back (c.data());

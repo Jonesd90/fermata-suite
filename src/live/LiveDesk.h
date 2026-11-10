@@ -106,7 +106,7 @@ public:
         g.setColour (p.disp); g.fillRect (r);
         g.setColour (p.dispEdge); g.drawRect (r, 1);
         g.setColour (colour.isTransparent() ? p.cyan : colour);
-        g.setFont (juce::Font (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 13.0f, juce::Font::bold)));
+        g.setFont (juce::Font (theme::figureFont (13.0f)));
         g.drawFittedText (text, r.reduced (8, 0), juce::Justification::centredLeft, 1, 0.75f);
     }
     int captionWidth() const { return caption.isEmpty() ? 0 : juce::GlyphArrangement::getStringWidthInt (juce::Font (juce::FontOptions (11.0f, juce::Font::bold)), caption) + 8; }

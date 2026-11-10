@@ -126,6 +126,7 @@ public:
 
 private:
     void run() override;
+    void writeLoop();                                                // (run()'s work: everything until the drive is closed, dropped at the close, or abandoned)
     bool openChunk (juce::int64 at);
     bool closeChunk();
     bool writePiece (int n);                                         // ints[] hold n converted frames of every ring channel
@@ -138,6 +139,12 @@ private:
     SessionIndex index;                                              // this drive's copy (indexLock)
     mutable std::mutex indexLock;
     std::atomic<bool> indexDirty { false };
+    // 0.7.1: who writes the index. While the drive's thread runs, it does; as its very last step it hands the index over (threadDone, under
+    // handoverLock, with nothing left unwritten), and from then on updateIndex writes it itself - one caller at a time, so the newest state is what
+    // ends up on the disk. (Before, an update that arrived while the thread was writing its last index was never written, and two updates after
+    // the session could cross and leave the older one on the disk.)
+    std::mutex handoverLock;
+    bool threadDone = false;                                         // (handoverLock)
     const Settings settings;
     std::shared_ptr<Disk> disk;
     Callbacks cb;

@@ -107,18 +107,25 @@ private:
         auto keep = session;                                               // (the ring lives as long as the session object)
         if (keep == nullptr) return;
         const auto& ring = keep->ringForReaders();
-        while (! threadShouldExit())
+        // 0.7.1: the waveform must never be what ends the recorder. Its memory grows with the session (the fine level up to kMaxFineBytes, the coarse
+        // one without end); if the machine cannot give it more, the waveform stops here - the stations draw what they have - and the recording,
+        // in the same process, goes on. (An exception that leaves a thread ends the whole program.)
+        try
         {
-            if (ring.available (reader) <= 0) { wait (15); continue; }
-            const auto before = reader.pos;
-            const int got = ring.take (reader, ptrs.data(), kRead);
-            if (got <= 0)
+            while (! threadShouldExit())
             {
-                if (reader.gapAt >= 0) consumeGap (reader.pos);              // (fell behind the ring: the points it missed are flat)
-                continue;
+                if (ring.available (reader) <= 0) { wait (15); continue; }
+                const auto before = reader.pos;
+                const int got = ring.take (reader, ptrs.data(), kRead);
+                if (got <= 0)
+                {
+                    if (reader.gapAt >= 0) consumeGap (reader.pos);          // (fell behind the ring: the points it missed are flat)
+                    continue;
+                }
+                consume (before, got);
             }
-            consume (before, got);
         }
+        catch (...) { juce::Logger::writeToLog ("[recorder] The waveform for the stations has stopped (no memory for more of it); the recording is not affected"); }
     }
 
     /** Samples [at, at + n) of every channel (in ptrs). */

@@ -41,7 +41,7 @@ public:
         tempo.onValueChange = [this] { def().bpm = tempo.getValue(); changed(); };
         tempo.setTooltip ("Beats per minute (of the beat below the bar's line: a quarter note in 4/4, an eighth in 6/8). Drag, or click the number and type.");
         addAndMakeVisible (tempo);
-        tapButton.setTooltip ("Tap it in time (four taps or more): the tempo follows your taps");
+        tapButton.setTooltip ("Tap it in time: from the third tap the tempo follows your taps (the average of the last eight; a pause of more than 2.5 seconds starts again)");
         tapButton.onClick = [this] { tap(); };
         tapButton.setWantsKeyboardFocus (false);
         addAndMakeVisible (tapButton);

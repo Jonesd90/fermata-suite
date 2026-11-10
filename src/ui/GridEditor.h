@@ -62,6 +62,7 @@ private:
         }
         void mouseDown (const juce::MouseEvent& e) override
         {
+            if (! juce::isPositiveAndBelow (row, owner.getNumRows())) return;     // (3.46.1: see commit)
             owner.table.selectRow (row);
             if (e.mods.isPopupMenu() && owner.addContextItems)
             {
@@ -97,6 +98,9 @@ private:
     private:
         void commit (const juce::String& v)
         {
+            // 3.46.1: the list behind the table can have got shorter (the audio device changed, an undo) a moment before the table is told: a value
+            // typed into a row that is no longer there is dropped - the setters write straight into the project's lists by the row's number.
+            if (! juce::isPositiveAndBelow (row, owner.getNumRows())) return;
             auto& cd = owner.cols[(size_t) col];
             if (cd.set) cd.set (row, v);
         }

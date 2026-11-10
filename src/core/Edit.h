@@ -265,6 +265,69 @@ struct EditGuide
 /** The edit: regions placed on a timeline. Normally butted end to end; slipping can open gaps / overlaps. */
 struct EditDef;
 
+/** 3.50.0: what one volume area gives one track along the timeline, ready for a player (no ids to look up on the audio thread): 1 outside
+    [from, to), 'gain' inside, a straight line in gain over each fade (as a volume change's glide is). */
+struct AreaGain
+{
+    juce::int64 from = 0, to = 0, in = 0, out = 0;      // timeline samples; 'in' and 'out' are the lengths of the fades
+    float gain = 1.0f;
+    float at (juce::int64 t) const noexcept
+    {
+        if (t < from || t >= to) return 1.0f;
+        if (in > 0 && t < from + in)  return 1.0f + (gain - 1.0f) * (float) (t - from) / (float) in;
+        if (out > 0 && t >= to - out) return 1.0f + (gain - 1.0f) * (float) (to - t) / (float) out;
+        return gain;
+    }
+};
+
+/** 3.50.0 (asked for on 10 November 2026): a volume change of an edit, as an AREA of the edit's timeline - so many dB for each track it is on, from
+    'from' to 'to', gliding in over 'fadeIn' and back over 'fadeOut'. It belongs to the edit, not to a piece: it crosses joins by itself, and it is
+    ADDED ON TOP of whatever level each piece has of its own (EditRegion::gains: the Trim window's level and its "normalise" glide, and the volume
+    changes made before 3.50.0, which stay as they are). The two never overwrite each other: what plays is the piece's level times the areas over it
+    (segmentsForEdit, Playback.cpp). Until 3.50.0 every change was a level written into a piece, absolute, for every file - a raise, the Trim
+    window's level and the normalise glide overwrote one another, and a change ended at the join unless a copy of it was put into the next piece.
+    Part of undo; saved with the edit ("volumeAreas": an older fermata does not read it, plays without it, and drops it when it saves).
+    Like the markers, an area keeps its place over the music when the music moves along (EditDef::rippleAfter, editversions::Riders). */
+struct VolumeArea
+{
+    juce::Uuid id;
+    juce::int64 from = 0, to = 0;                       // samples on the edit's timeline: the fade in begins at 'from', the fade out ends at 'to'
+    double fadeIn = 0.0, fadeOut = 0.0;                 // seconds
+    std::vector<std::pair<juce::Uuid, float>> db;       // track -> dB (kOff and below: silent). A track that is not listed is left alone.
+    static constexpr float kOff = -100.0f;
+
+    float dbOf (const juce::Uuid& track) const noexcept { for (auto& d : db) if (d.first == track) return d.second; return 0.0f; }
+    bool touches (const juce::Uuid& track) const noexcept { return std::abs (dbOf (track)) >= 0.005f; }
+    /** Sets a track's amount; 0 takes the track off the list. */
+    void setDb (const juce::Uuid& track, float v)
+    {
+        v = v <= kOff ? kOff : juce::jlimit (kOff, kVolumeChangeMaxDb, v);
+        for (size_t i = 0; i < db.size(); ++i)
+            if (db[i].first == track) { if (std::abs (v) < 0.005f) db.erase (db.begin() + (long) i); else db[i].second = v; return; }
+        if (std::abs (v) >= 0.005f) db.push_back ({ track, v });
+    }
+    bool isEmpty() const noexcept { return to <= from || db.empty(); }
+    /** The two fades in samples. When they are longer than the area between them they share it in proportion. */
+    void fades (double rate, juce::int64& in, juce::int64& out) const noexcept
+    {
+        const juce::int64 len = juce::jmax ((juce::int64) 0, to - from);
+        in  = juce::jmax ((juce::int64) 0, (juce::int64) std::llround (fadeIn * rate));
+        out = juce::jmax ((juce::int64) 0, (juce::int64) std::llround (fadeOut * rate));
+        if (in + out > len)
+        {
+            in = in + out > 0 ? (juce::int64) ((double) len * (double) in / (double) (in + out)) : 0;
+            out = len - in;
+        }
+    }
+    /** What it gives 'track' along the timeline; false when it does not touch the track. */
+    bool gainFor (const juce::Uuid& track, double rate, AreaGain& g) const noexcept
+    {
+        if (to <= from || ! touches (track)) return false;
+        g.from = from; g.to = to; fades (rate, g.in, g.out); g.gain = dbToLinear (dbOf (track));
+        return true;
+    }
+};
+
 /** 3.42.0: an earlier version of an edit - "Edit 1", "Edit 2" ... - frozen when its listening copy went out (Mastering asks) or with the Freeze
     button in the edit window. It holds the whole edit as it was then (pieces, overdubs, fades, levels, automation, markers and the listeners'
     comments on THAT version) and its mixer's settings (Project::mixSnapshot with the plug-ins' states). The live edit is always the newest
@@ -316,6 +379,27 @@ struct EditDef
     int          insertIndex = -1;         // where the next region goes: -1 = at the end, else before regions[insertIndex]
     double       fixIn = -1.0, fixOut = -1.0;     // keys 1 / 2: the part to pitch-correct or repair (seconds on the edit timeline, -1 = not set)
     std::vector<juce::Uuid> fixTracks;            // Alt + drag: only these tracks are marked (empty = every track)
+
+    // ---- 3.50.0: volume areas (see VolumeArea) ----
+    std::vector<VolumeArea> areas;
+    VolumeArea* findArea (const juce::Uuid& areaId) noexcept { for (auto& a : areas) if (a.id == areaId) return &a; return nullptr; }
+    const VolumeArea* findArea (const juce::Uuid& areaId) const noexcept { for (auto& a : areas) if (a.id == areaId) return &a; return nullptr; }
+    /** What the areas give 'track' between 'begin' and 'end' of the timeline, for a player (empty: nothing touches it there). */
+    std::vector<AreaGain> areaGainsFor (const juce::Uuid& track, juce::int64 begin, juce::int64 end) const
+    {
+        std::vector<AreaGain> v;
+        for (auto& a : areas)
+            if (a.to > begin && a.from < end) { AreaGain g; if (a.gainFor (track, sampleRate, g)) v.push_back (g); }
+        return v;
+    }
+    /** All the areas together for 'track' at timeline sample t (1: none there). */
+    float areaGainAt (const juce::Uuid& track, juce::int64 t) const noexcept
+    {
+        float g = 1.0f;
+        for (auto& a : areas)
+            if (t >= a.from && t < a.to) { AreaGain x; if (a.gainFor (track, sampleRate, x)) g *= x.at (t); }
+        return g;
+    }
     bool fixUses (const juce::Uuid& track) const { return fixTracks.empty() || std::find (fixTracks.begin(), fixTracks.end(), track) != fixTracks.end(); }
 
     // ---- where the edit begins (3.16.0) ----
@@ -963,6 +1047,12 @@ struct EditDef
             lane.sortPoints();
         }
         if (fixIn >= 0.0 && fixOut >= 0.0 && fixOut <= fixIn) fixIn = fixOut = -1.0;     // (3.47.0: music taken out from between the marks, mark 1 over it: nothing is marked any more)
+        // 3.50.0: the volume areas go with the music too. An end of an area that lay over music taken out (delta < 0: the stretch from + delta .. from
+        // is gone) comes to where that music was; an area left with nothing under it is gone with it.
+        const juce::int64 gone = delta < 0 ? from + delta : from;
+        auto moved = [&] (juce::int64 t) { return t >= from ? t + delta : (t > gone ? gone : t); };
+        for (auto& a : areas) { a.from = juce::jmax ((juce::int64) 0, moved (a.from)); a.to = juce::jmax ((juce::int64) 0, moved (a.to)); }
+        areas.erase (std::remove_if (areas.begin(), areas.end(), [] (const VolumeArea& a) { return a.to <= a.from; }), areas.end());
     }
 
     /** Takes the audio between 'from' and 'to' off the main track and puts 'r' in its place, moving everything after 'to' by the difference in length
