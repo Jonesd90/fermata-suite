@@ -1443,6 +1443,39 @@ void Project::applyMix (MixerState& to, const var& snap, double sampleRate, int 
     markDirty();
 }
 
+juce::StringArray Project::pluginsMissingFromSnapshot (const MixerState& m, const var& snap) const
+{
+    juce::StringArray out;
+    if (! (bool) snap.getProperty ("inserts", false)) return out;
+    const bool composer = hasAtmosComposer();
+    auto leftOut = [composer] (const juce::String& d) { const auto k = atmosLinkOf (d); return k == AtmosLink::Composer || k == AtmosLink::Beam || (k == AtmosLink::Spacelab && composer); };
+    auto look = [&] (const var& slotsVar, const InsertSlot* slots, int first, int count, const juce::String& where)
+    {
+        if (! slotsVar.isArray()) return;
+        for (int i = 0; i < count && i < slotsVar.size(); ++i)
+        {
+            const auto desc = slotsVar[i].getProperty ("desc", {}).toString();
+            if (desc.isEmpty() || (bool) slotsVar[i].getProperty ("bypass", false) || leftOut (desc)) continue;
+            if (! slots[first + i].isLoaded()) out.add (desc.upToFirstOccurrenceOf ("\n", false, false).substring (0, 80) + " on " + where);
+        }
+    };
+    if (auto* ss = snap["strips"].getArray())
+        for (auto& sv : *ss)
+        {
+            const juce::Uuid id (sv["track"].toString());
+            juce::String nm = "a track"; for (auto& t : tracks) if (t.id == id) nm = t.name;
+            for (auto& p : m.stripPool) if (p->trackId == id) { look (sv["slots"], p->slots, 0, kNumSlots, nm); if (postFaderSlots) look (sv["postSlot"], p->slots, kPostSlot, 1, nm); }
+        }
+    if (auto* bs = snap["buses"].getArray())
+        for (auto& bv : *bs)
+        {
+            const juce::Uuid id (bv["bus"].toString());
+            juce::String nm = "a bus"; for (auto& b : buses) if (b.id == id) nm = b.name;
+            for (auto& p : m.busPool) if (p->busId == id) { look (bv["slots"], p->slots, 0, kNumSlots, nm); if (postFaderSlots) look (bv["postSlot"], p->slots, kPostSlot, 1, nm); }
+        }
+    return out;
+}
+
 juce::File Project::audioFolder() const
 {
     auto base = projectFile != juce::File() ? projectFile.getParentDirectory()
@@ -1472,11 +1505,39 @@ void Project::saveCommentsCopy (const EditDef& e, const std::vector<juce::File>&
     juce::String err;
     if (! filesync::writeTextChecked (json, juce::JSON::toString (feedbackToVar (e.feedback)), &err)) juce::Logger::writeToLog ("Comments copy: " + err);     // (3.1.3: checked; the comments themselves are in the edit)
 }
+void Project::refreshCommentsCopy (const EditDef& e) const
+{
+    const auto json = commentsFolderFor (e).getChildFile ("comments.json");
+    if (! json.existsAsFile()) return;                                    // (no copy was ever kept for this edit: none is started here)
+    if (e.feedback.empty()) { json.deleteFile(); return; }
+    juce::String err;
+    if (! filesync::writeTextChecked (json, juce::JSON::toString (feedbackToVar (e.feedback)), &err)) juce::Logger::writeToLog ("Comments copy: " + err);
+}
 void Project::restoreSavedComments()
 {
     for (auto& e : edits)
     {
-        if (e == nullptr || ! e->feedback.empty()) continue;
+        if (e == nullptr) continue;
+        // 3.52.0 (found on 10 November 2026, from a listening copy that showed Edit 1's comments again under Edit 3): the copy is the comments as
+        // they were IMPORTED - and after a freeze the edit has no comments on purpose (they went to the frozen version's lane with it), so at the
+        // next opening of the project the copy was "given back" to the edit: the comments about Edit 1 stood on Edit 2 or 3 as well, and went
+        // out twice in the next listening copy. An edit that has frozen versions never gets the copy back; and the doubles a project already
+        // has are taken off the edit here - a comment that also stands, with the same key, on one of its frozen versions (the editor's own
+        // notes are never touched, and a reply to such a comment still finds it: on the version).
+        if (! e->versions.empty())
+        {
+            const auto before = e->feedback.size();
+            e->feedback.erase (std::remove_if (e->feedback.begin(), e->feedback.end(), [&e] (const FeedbackNote& n)
+            {
+                if (n.editor) return false;
+                for (auto& v : e->versions) if (v.edit != nullptr) for (auto& f : v.edit->feedback) if (f.key == n.key && ! f.editor) return true;
+                return false;
+            }), e->feedback.end());
+            if (e->feedback.size() != before)
+                juce::Logger::writeToLog ("Comments: " + String ((int) (before - e->feedback.size())) + " taken off \"" + e->name + "\" - they are the comments of one of its frozen versions, put onto the edit a second time by an earlier build");
+            continue;
+        }
+        if (! e->feedback.empty()) continue;
         auto json = commentsFolderFor (*e).getChildFile ("comments.json");
         juce::var v;
         if (json.existsAsFile() && ! juce::JSON::parse (json.loadFileAsString(), v).failed()) { feedbackFromVar (v, e->feedback); e->showFeedback = true; }

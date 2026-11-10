@@ -6,6 +6,61 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.52.0
+Built 10 November 2026 (the conversation for both programs), with Claude Fable. The comments workflow as the user set it out: the next
+edit starts when the comments on this one come in; the listening copy shows each round's comments with the editor's replies under them.
+A listening copy of any version; a frozen version can be removed; the noise picture's stutter.
+- **Importing comments starts the next edit** (the workflow asked for on 10 November 2026: "it's on the import that it creates the new
+  edit"). The comments file says which version it is about, and fermata does what follows from that:
+  - comments on **the version you are working on** (say Edit 1): fermata asks **"Start Edit 2 and show them above it?"**. *Start Edit 2*
+    keeps Edit 1 exactly as it is (frozen, with its mixer), starts Edit 2 the same, and puts the comments in the Edit 1 lane above the
+    timeline, where you click each one to read it and to write your reply while you make the changes. *Keep on Edit 1* puts them on the
+    version you are in, as before. Cancel imports nothing;
+  - comments on **a version that is already frozen** - a second listener's file about Edit 1, when Edit 2 has been started - go straight
+    to that version's lane, with the others. No question.
+  A file that does not say which version (a review website's list, an old copy) is taken as about the version you are working on.
+- **Comments are only ever added.** The first file of an import used to REPLACE the listeners' comments the version already had, so a
+  second listener's file threw the first listener's away. Now every file adds to what is there; a comment that is already there (the
+  same file imported twice, or sent again with a change) is updated, not doubled.
+- **An export freezes nothing.** The "Freeze this version now?" offer in the Export complete box is gone ("let's just make it so that
+  you don't even get the option to freeze an edit when you export it"). The Freeze key in the Edit window is still there for a version
+  you want to keep without waiting for comments.
+- **Shared: the listening copy shows each round on two lines** (the same request). Above the picture of the sound, for each version:
+  **Edit 1 comments** - what the listeners said, each where that music is in THIS recording, not at its old time - and under it
+  **Edit 1 editor** - your replies, in gold, each at the comment it answers. The last line, **Edit 2: yours**, is where the listener's
+  new comments go. At the side, "The conversation so far" has a **tab for each version**: click its name to open or close it (the tick
+  boxes above the picture do the same, and the browser remembers). The round this version answers and this version's own notes start
+  **open; older rounds start closed**. So a copy of Edit 3 opens with Edit 2's comments and your replies to them, and Edit 1's a click
+  away. (3.51.0 showed your replies in a lane of their own called "Replies on this version", away from the comments they answer.)
+- **Shared: a listening copy of any version** (asked for on 10 November 2026: "how do I make sure that the edit version I am exporting
+  is Edit 3?"). On the Listening copy tab every piece has a key - **Edit 3** - that says which version its copy is made of. It shows the
+  newest unless you choose an older, frozen one from its menu. An older version is rendered as it was frozen: its own pieces, fades,
+  levels and automation, through its mixer as it was then (settings and plug-ins), with the conversation as it stood for that version.
+  Nothing in the project is changed by it. The file's name and the page say which Edit it is. With "all pieces through one mixer"
+  chosen an older version goes through that mixer as it is now, and the Export complete box says so.
+- **Remove any frozen version** (asked for on 10 November 2026: "How can I delete an edit?"). Right-click a frozen version's key -
+  **Remove this frozen version...** used to be offered only for the newest. Now any one can go: the later versions are renumbered, its
+  comments (and your replies) move to the version before it, placed by their music, and the listening-copy choices are reset. The
+  version's pieces are not put back anywhere: the edit you are working in is untouched.
+- **Fixed: comments doubled after a freeze.** fermata keeps a safety copy of imported comments in the project's folder, and on opening
+  the project it gave that copy back to an edit whose comments had moved to a frozen version - so Edit 1's comments were on Edit 1 and
+  again on Edit 3, and in the listening copy twice. The copy now follows a freeze, and a project that already has the doubles is put
+  right when it is opened (the log says how many were taken off; your replies stay).
+- **Write Reply: Enter adds it.** In the reply box (and the box for a note of your own) **Enter** is Add and **Shift + Enter** starts a
+  new line.
+- **Shared: the noise picture no longer stutters behind the other windows' drawing** (reported on 10 November 2026 with a log: the
+  picture's playhead jerked while the sound was fine; the computer was at 5 to 15%). All of fermata's windows are drawn by one thread,
+  and during play the Edit window and the take windows behind were redrawing themselves ten or more times a second, 150 to 470 ms at a
+  time on that project. Four changes:
+  - while Noise mode, ReTouch or another process window is in use and the music plays, **the Edit window and the take windows hold
+    their picture** (a kept image, shown in a fraction of a millisecond) and draw themselves again when the play stops or you go back
+    to them;
+  - the noise picture **redraws only the strip the playhead is in**, at the screen's own rate, instead of the whole picture 30 times a
+    second;
+  - after a fix the Edit window draws once, and the waveform pictures refresh once a second, while a process window is in use;
+  - the log names the noise picture when it is the one that takes long, and after each play writes how many screen refreshes came late.
+- For developers: `FERMATA_TEST_HOLD=1` holds the pictures whenever a process window is in use (no sound card needed to try it).
+
 ## 3.51.0
 Built 10 November 2026 (the conversation for both programs), with Claude Fable. Replies to the listeners' comments, which go out in the
 next listening copy with the whole conversation; an edit's score (a PDF) in a window of its own; any number of pinned windows, plug-ins'

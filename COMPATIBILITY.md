@@ -51,6 +51,7 @@ Everything listed here is built into BOTH programs, so a change to any of it cha
 - **fermata's ReTouch window** (fermata 3.35.0; shared from fermata:Live 0.4.0, whose Fixer opens it - the Primary has none): `src/ui/SpectralWindow.h`.
   The spectral picture with its selection tools (Rectangle, Time, Brush, feathering) and harmonics, and the window round it (ReTouch, Gain,
   De-click, Denoise, Consonants). It stays in fermata's folder under the same rules as the look files above (it includes only them and `src/core`).
+  From fermata 3.52.0 it includes `src/ui/BusyLabel.h` (the stall watch's label, header only), which is shared with it under the same rules.
   It knows neither program: each hands it a `RepairContext` - how to read the audio, make the fixes, play them and keep them (fermata: new files
   in the take or edit; the Fixer: a fix version). A change to it changes both programs' ReTouch: build and try both.
 
@@ -179,3 +180,13 @@ copies it like everything else, which is fine.
     saves - the replies then become ordinary comments, and the edit loses its score (the PDF stays in the folder). The page's source,
     `tools/review_page.html`, is the truth for `src/core/ReviewPageTemplate.inc` again (three lines of 3.42.0 had been made in the
     template only). Also shared from here on: `Pins` in `src/ui/Uikit.h` - any number of windows pinned, in both programs.
+  - Still contract 3 (fermata 3.52.0, fermata:Live 0.10.2): the comments workflow and a listening copy of any version. The project file
+    gained one key, written only when it is set: `"formVersion"` on a Mastering piece (the frozen version its listening copy is made of;
+    absent = the newest). An older fermata ignores it and drops it when it saves. Nothing else in the file changed: `"madeIn"` is still
+    written, but the listening copy now shows a reply in the lane of the comment it answers (`reviewpage::historyFor`). The comments'
+    safety copy (`comments.json` in the project's comments folder) now follows a freeze (`Project::refreshCommentsCopy`), and on opening
+    a project a listener's comment that is on a frozen version AND on the live edit is taken off the live edit (the repair for projects
+    saved by fermata 3.51.0; fermata:Live opens such a project the same way). New in the shared code: `BounceSettings::overrides` (a
+    frozen version rendered in the render's own copy of the project), `editversions::removeVersion`, `src/ui/BusyLabel.h`,
+    `ProcessWindows` in `src/ui/Uikit.h`. The listening copy's page changed (two lines for each version, tabs); its `"history"` and the
+    notes file that comes back did not.

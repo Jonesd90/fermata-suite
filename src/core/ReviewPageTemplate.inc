@@ -34,7 +34,7 @@ main{display:grid;grid-template-columns:minmax(0,1fr) 370px;gap:16px;align-items
 #lanepick label{display:flex;align-items:center;gap:5px;color:var(--ink);cursor:pointer}
 #lanepick input{accent-color:var(--accent)}
 #wavewrap{display:flex;gap:6px}
-#gutter{display:none;flex:0 0 auto;width:58px;padding-top:1px;font-size:11px;color:var(--dim);font-weight:600}
+#gutter{display:none;flex:0 0 auto;width:104px;padding-top:1px;font-size:11px;color:var(--dim);font-weight:600}
 #gutter.on{display:block}
 #gutter div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #scroller{flex:1 1 auto;min-width:0;overflow-x:auto;overflow-y:hidden;border-radius:8px;background:var(--bg);border:1px solid var(--line)}
@@ -113,6 +113,11 @@ dialog textarea{width:100%;height:170px;font:12px/1.35 Consolas,monospace}
 #nowtitle.on{display:block}
 .grp{font-size:13px;font-weight:600;color:var(--dim);margin:12px 4px 2px}
 .grp:first-child{margin-top:2px}
+.grp.tab{display:flex;align-items:center;gap:7px;margin:10px 0 4px;padding:6px 9px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);cursor:pointer;user-select:none}
+.grp.tab:hover{border-color:var(--accent)}
+.grp.tab .tw{flex:0 0 auto;width:12px;color:var(--dim)}
+.grp.tab .tn{color:var(--dim);font-weight:400;margin-left:auto;text-align:right}
+@media (max-width:900px){#gutter{width:82px;font-size:10px}}
 #export{width:100%;white-space:normal}
 #openlink{color:var(--accent);margin-left:auto;cursor:pointer}
 </style>
@@ -166,16 +171,16 @@ dialog textarea{width:100%;height:170px;font:12px/1.35 Consolas,monospace}
     <div class="card panel" id="histcard">
       <h2><span id="htitle">The conversation so far</span> <span class="count" id="hcount">0</span></h2>
       <div id="hist"></div>
-      <p class="hint">What was said about each version, placed where that music is in this recording: tick the versions you want to see above the picture. Everyone has a colour of their own; a gold ring marks the editor's replies. Press <b>Reply</b> to answer one.</p>
+      <p class="hint">What was said about each version, placed where that music is in this recording. Above the picture each version has a line for the listeners' comments and, under it, a gold line for the editor's replies. Click a version's name here to open or close it; older versions start closed. Press <b>Reply</b> to answer a comment.</p>
     </div>
     <div class="card panel">
       <h2>Your comments <span class="count" id="count">0</span></h2>
       <div id="list"></div>
-      <div class="acts"><button id="save">Save my comments</button><span class="hint" id="savehint"></span></div>
+)HTMLX",
+R"HTMLX(      <div class="acts"><button id="save">Save my comments</button><span class="hint" id="savehint"></span></div>
       <p class="hint">Your comments are saved in this browser as you go, so you can close this page and come back to it later on this computer.</p>
       <div class="acts"><button class="pri" id="export">Export comments for sending back to the sender</button></div>
-)HTMLX",
-R"HTMLX(      <div class="acts"><span class="hint" id="exphint"></span><a class="hint" id="openlink" href="#" title="Carry on from comments you exported earlier (on another computer, say)">Open exported comments&hellip;</a></div>
+      <div class="acts"><span class="hint" id="exphint"></span><a class="hint" id="openlink" href="#" title="Carry on from comments you exported earlier (on another computer, say)">Open exported comments&hellip;</a></div>
       <p class="hint">When you have finished, press <b>Export comments for sending back to the sender</b> and send the file it makes (its name ends in .fmnotes) back to whoever sent you this recording.</p>
       <input type="file" id="openfile" accept=".fmnotes,.json" style="display:none">
     </div>
@@ -218,27 +223,44 @@ function myColour(){var w=$('who').value.trim();return w?personColour(w):css('--
 var HT=[],HN={};
 (function(){
   for(var k=0;k<T.length;k++){
-    var lanes=T[k].history||[],out=[];
+    var lanes=T[k].history||[],out=[],marks=[],rows=[];
     for(var i=0;i<lanes.length;i++){
-      var L=lanes[i]||{},ns=(L.notes||[]).filter(function(n){return n&&n.text;}),th=null;
+      var L=lanes[i]||{},ns=(L.notes||[]).filter(function(n){return n&&n.text;}),th=null,mc=null,me=null;
+      lanes[i]=L;L.nc=0;L.ne=0;
       for(var j=0;j<ns.length;j++){
         var n=ns[j];n.t=Number(n.t)||0;n.lane=i;n.k=k;n.label=L.label||('Edit '+L.version);n.colour=n.colour||personColour(n.who);HN[n.id]=n;
         if(th&&Math.abs(n.t-th.t)<=0.05)th.notes.push(n);
-        else{th={lane:i,t:n.t,notes:[n]};out.push(th);}
+        else{th={lane:i,t:n.t,notes:[n]};out.push(th);mc=me=null;}
+        /* in the picture a moment's notes are two flags: the listeners' on the version's own line, the editor's on the line under it */
+        if(n.editor){L.ne++;if(!me){me={lane:i,ed:true,t:th.t,notes:[]};marks.push(me);}me.notes.push(n);}
+        else{L.nc++;if(!mc){mc={lane:i,ed:false,t:th.t,notes:[]};marks.push(mc);}mc.notes.push(n);}
       }
+      if(L.nc)rows.push({lane:i,ed:false});
+      if(L.ne)rows.push({lane:i,ed:true});
     }
-    HT.push({lanes:lanes,threads:out});
+    HT.push({lanes:lanes,threads:out,marks:marks,rows:rows});
   }
 })();
-/* the listener ticks each version's lane on or off (kept in this browser); a lane's row in the picture is its place among the ticked ones */
+/* each version is open or closed (the listener's choice is kept in this browser: 1 closed, 0 open). Not chosen yet: the version before this one -
+   the comments this version answers - and this version's own are open, the older ones closed. A line's row in the picture is its place among the open ones */
 var hid={};
 try{var hs=JSON.parse(lsGet(STORE+'-lanes')||'{}');if(hs&&typeof hs==='object')hid=hs;}catch(e){hid={};}
-function laneOn(i){var L=HT[cur].lanes[i];return !!L&&!hid['v'+L.version];}
-function rowOf(i){var r=0;for(var j=0;j<i;j++)if(laneOn(j))r++;return laneOn(i)?r:-1;}
-function hLanes(){var c=0,n=HT[cur].lanes.length;for(var i=0;i<n;i++)if(laneOn(i))c++;return c;}
+function laneDefault(i){var ls=HT[cur].lanes,last=-1;for(var j=0;j<ls.length;j++)if(!ls[j].current)last=j;return !!ls[i].current||i===last;}
+function laneOn(i){var L=HT[cur].lanes[i];if(!L)return false;var c=hid['v'+L.version];return c===1?false:(c===0?true:laneDefault(i));}
+function setLane(v,on){
+)HTMLX",
+R"HTMLX(  hid['v'+v]=on?0:1;lsSet(STORE+'-lanes',JSON.stringify(hid));
+  if(selH&&HN[selH]&&!laneOn(HN[selH].lane))selH=null;
+  layout();renderHist();
+}
+function hRows(){return HT[cur].rows.filter(function(r){return laneOn(r.lane);});}
+function rowOf(m){var rs=HT[cur].rows,r=0;for(var j=0;j<rs.length;j++){if(!laneOn(rs[j].lane))continue;if(rs[j].lane===m.lane&&rs[j].ed===!!m.ed)return r;r++;}return -1;}
+function hLanes(){return hRows().length;}
 function hThreads(){return HT[cur].threads.filter(function(th){return laneOn(th.lane);});}
-function hCount(){var c=0,t=hThreads();for(var i=0;i<t.length;i++)c+=t[i].notes.length;return c;}
-function laneName(L){return L.current?'Replies on this version (Edit '+L.version+')':'Edit '+L.version;}
+function hMarks(){return HT[cur].marks.filter(function(m){return laneOn(m.lane);});}
+function hCount(){var c=0,ls=HT[cur].lanes;for(var i=0;i<ls.length;i++)c+=ls[i].nc+ls[i].ne;return c;}
+function laneName(L){return 'Edit '+L.version+(L.current?' (this version)':'');}
+function plural(n,one,many){return n+' '+(n===1?one:many);}
 function hTime(n){return Math.max(0,Math.min(dur,n.t));}
 function loadedHere(){return audio.getAttribute('data-k')===String(cur)&&audio.readyState>=1;}
 function now(){return loadedHere()?(audio.currentTime||0):(pendingSeek||0);}
@@ -251,8 +273,7 @@ document.title=title+' - listening copy';
 if(multi){$('tracks').classList.add('on');$('nowtitle').classList.add('on');$('prevt').style.display='';$('nextt').style.display='';}
 
 /* ---------- audio: each piece is decoded from the page when it is first needed (the first one straight away, the others in the background) ---------- */
-)HTMLX",
-R"HTMLX(function setStatus(t,err){var s=$('status');s.textContent=t||'';s.className=err?'err':'';}
+function setStatus(t,err){var s=$('status');s.textContent=t||'';s.className=err?'err':'';}
 var url=[],parts=[],pos=[],chunks=[],waiters=[],wantNow=-1,decoding=false;
 for(var k0=0;k0<T.length;k0++){url.push(null);parts.push([]);pos.push(0);waiters.push([]);chunks.push([]);}
 function findChunks(){    /* (only once the whole page has been read: the audio comes after this script) */
@@ -332,7 +353,8 @@ $('vol').oninput=function(){audio.volume=parseFloat(this.value);};
 
 /* ---------- the list of pieces ---------- */
 function renderTracks(){
-  if(!multi)return;
+)HTMLX",
+R"HTMLX(  if(!multi)return;
   var counts=[],k,h='';for(k=0;k<T.length;k++)counts.push(0);
   for(var i=0;i<notes.length;i++)if(notes[i].k>=0&&notes[i].k<T.length)counts[notes[i].k]++;
   for(k=0;k<T.length;k++)
@@ -358,8 +380,7 @@ function layout(){
   renderPeaks();draw();
 }
 function renderPeaks(){
-)HTMLX",
-R"HTMLX(  var P=T[cur].peaks||[],cols=P.length/2,w=view.width,h=view.height;
+  var P=T[cur].peaks||[],cols=P.length/2,w=view.width,h=view.height;
   function make(col){
     var c=document.createElement('canvas');c.width=w;c.height=h;var g=c.getContext('2d');g.fillStyle=col;
     var top=(TOP+FLAGH)*dpr,bot=h-RULER*dpr,mid=(top+bot)/2,half=(bot-top)/2-2*dpr;
@@ -381,22 +402,24 @@ function hRect(th){
   ctx.font='bold 11px system-ui,sans-serif';
   var w=Math.ceil(ctx.measureText(hText(th)).width)+12,x=hTime(th)*pps;
   if(x+w>W)x=Math.max(0,W-w);
-  return {x:x,w:w,y:rowOf(th.lane)*LANEH+2,h:LANEH-5};
+  return {x:x,w:w,y:rowOf(th)*LANEH+2,h:LANEH-5};
 }
 function rrect(r,rad){ctx.beginPath();ctx.moveTo(r.x+rad,r.y);ctx.lineTo(r.x+r.w-rad,r.y);ctx.quadraticCurveTo(r.x+r.w,r.y,r.x+r.w,r.y+rad);ctx.lineTo(r.x+r.w,r.y+r.h-rad);ctx.quadraticCurveTo(r.x+r.w,r.y+r.h,r.x+r.w-rad,r.y+r.h);ctx.lineTo(r.x+rad,r.y+r.h);ctx.quadraticCurveTo(r.x,r.y+r.h,r.x,r.y+r.h-rad);ctx.lineTo(r.x,r.y+rad);ctx.quadraticCurveTo(r.x,r.y,r.x+rad,r.y);ctx.closePath();}
 function drawHistory(){
-  var n=hLanes();if(!n)return;
-  var i,ths=hThreads();
+  var rows=hRows(),n=rows.length;if(!n)return;
+  var i,ms=hMarks();
   for(i=0;i<n;i++){
-    ctx.fillStyle=css('--line');ctx.globalAlpha=(i%2)?.22:.42;ctx.fillRect(0,i*LANEH,W,LANEH);ctx.globalAlpha=1;
+    ctx.fillStyle=css('--line');ctx.globalAlpha=rows[i].ed?.2:.42;ctx.fillRect(0,i*LANEH,W,LANEH);
+    if(rows[i].ed){ctx.fillStyle=GOLD;ctx.globalAlpha=.13;ctx.fillRect(0,i*LANEH,W,LANEH);}
+    ctx.globalAlpha=1;
+    if(i&&rows[i].lane!==rows[i-1].lane){ctx.fillStyle=css('--bg');ctx.fillRect(0,i*LANEH-1,W,2);}      /* (a gap between one version and the next) */
   }
   ctx.strokeStyle=css('--line');ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(0,TOP-.5);ctx.lineTo(W,TOP-.5);ctx.stroke();
-  for(i=0;i<ths.length;i++){
-    var th=ths[i],f=th.notes[0],r=hRect(th),sel=false,ed=false,done=true,j;
-    for(j=0;j<th.notes.length;j++){if(th.notes[j].id===selH)sel=true;if(th.notes[j].editor)ed=true;if(!th.notes[j].done)done=false;}
-    if(sel){ctx.fillStyle=f.colour;ctx.globalAlpha=.8;ctx.fillRect(Math.round(hTime(th)*pps),r.y+r.h,1.5,H-RULER-r.y-r.h);ctx.globalAlpha=1;}
-    rrect(r,4);ctx.fillStyle=f.colour;ctx.globalAlpha=done?.4:1;ctx.fill();ctx.globalAlpha=1;
-    if(ed){rrect({x:r.x+1,y:r.y+1,w:r.w-2,h:r.h-2},3);ctx.strokeStyle=GOLD;ctx.lineWidth=2.5;ctx.stroke();}
+  for(i=0;i<ms.length;i++){
+    var th=ms[i],f=th.notes[0],r=hRect(th),sel=false,done=true,j,col=th.ed?GOLD:f.colour;
+    for(j=0;j<th.notes.length;j++){if(th.notes[j].id===selH)sel=true;if(!th.notes[j].done)done=false;}
+    if(sel){ctx.fillStyle=col;ctx.globalAlpha=.8;ctx.fillRect(Math.round(hTime(th)*pps),r.y+r.h,1.5,H-RULER-r.y-r.h);ctx.globalAlpha=1;}
+    rrect(r,4);ctx.fillStyle=col;ctx.globalAlpha=(done&&!th.ed)?.4:1;ctx.fill();ctx.globalAlpha=1;
     if(f.adrift){rrect(r,4);ctx.setLineDash([3,2]);ctx.strokeStyle=css('--ink');ctx.lineWidth=1;ctx.stroke();ctx.setLineDash([]);}
     if(sel){rrect({x:r.x-1.5,y:r.y-1.5,w:r.w+3,h:r.h+3},5);ctx.strokeStyle=css('--ink');ctx.lineWidth=1.5;ctx.stroke();}
     ctx.fillStyle=INK;ctx.font='bold 11px system-ui,sans-serif';ctx.textBaseline='middle';ctx.fillText(hText(th),r.x+6,r.y+r.h/2+.5);
@@ -404,8 +427,8 @@ function drawHistory(){
 }
 function hAt(p){
   if(p.y<0||p.y>=TOP)return null;
-  var ths=hThreads();
-  for(var i=ths.length-1;i>=0;i--){var r=hRect(ths[i]);if(Math.floor(p.y/LANEH)===rowOf(ths[i].lane)&&p.x>=r.x-3&&p.x<=r.x+r.w+2)return ths[i];}
+  var ms=hMarks();
+  for(var i=ms.length-1;i>=0;i--){var r=hRect(ms[i]);if(Math.floor(p.y/LANEH)===rowOf(ms[i])&&p.x>=r.x-3&&p.x<=r.x+r.w+2)return ms[i];}
   return null;
 }
 function draw(){
@@ -426,7 +449,8 @@ function draw(){
   // flags (this piece's comments)
   var list=sorted(cur),flag=myColour();
   for(var j=0;j<list.length;j++){
-    var n=list[j],r=flagRect(n,j+1),sel=n.id===selId;
+)HTMLX",
+R"HTMLX(    var n=list[j],r=flagRect(n,j+1),sel=n.id===selId;
     ctx.fillStyle=flag;ctx.globalAlpha=sel?1:.55;ctx.fillRect(Math.round(r.x),TOP+FLAGH-2,1.5,H-RULER-TOP-FLAGH+2);ctx.globalAlpha=1;
     ctx.beginPath();ctx.moveTo(r.x,r.y);ctx.lineTo(r.x+r.w,r.y);ctx.lineTo(r.x+r.w-5,r.y+r.h/2);ctx.lineTo(r.x+r.w,r.y+r.h);ctx.lineTo(r.x,r.y+r.h);ctx.closePath();
     ctx.fillStyle=flag;ctx.fill();if(sel){ctx.strokeStyle=css('--ink');ctx.lineWidth=2;ctx.stroke();}
@@ -447,8 +471,7 @@ function setZoom(z,aroundT){
 $('zin').onclick=function(){setZoom(zoom*1.6);};
 $('zout').onclick=function(){setZoom(zoom/1.6);};
 scroller.addEventListener('wheel',function(e){if(e.ctrlKey||e.metaKey){e.preventDefault();var r=view.getBoundingClientRect();var t=(e.clientX-r.left)/pps;setZoom(zoom*(e.deltaY<0?1.25:.8),t);}},{passive:false});
-)HTMLX",
-R"HTMLX(window.addEventListener('resize',function(){if(offA)layout();});
+window.addEventListener('resize',function(){if(offA)layout();});
 
 /* pointer: click = move; flag = select (drag moves it, mouse only) */
 var drag=null;
@@ -500,41 +523,46 @@ function renderList(){
 /* the list of the conversation so far (this piece's): a group for each version, a thread for each moment */
 function quote(t){t=String(t||'').replace(/\s+/g,' ').trim();return t.length>90?t.slice(0,88)+'...':t;}
 function renderHist(){
-  var lanes=HT[cur].lanes,ths=hThreads(),el=$('hist'),g=$('gutter'),pk=$('lanepick'),h='',gh='',ph='',i,j,lastLane=-1;
-  for(i=0;i<lanes.length;i++){
-    ph+='<label title="'+esc(lanes[i].current?'What the editor wrote about this version: replies to the comments on the version before, and notes':'What was said about '+(lanes[i].label||('Edit '+lanes[i].version)))+'"><input type="checkbox" data-v="'+esc(lanes[i].version)+'"'+(laneOn(i)?' checked':'')+'> '+esc(laneName(lanes[i]))+'</label>';
-    if(laneOn(i))gh+='<div style="height:'+LANEH+'px;line-height:'+LANEH+'px" title="'+esc(lanes[i].label||'')+'">Edit '+esc(lanes[i].version)+'</div>';
-  }
-  gh+='<div style="height:'+FLAGH+'px;line-height:'+FLAGH+'px" title="The comments you add now">Yours</div>';
-  g.innerHTML=gh;pk.innerHTML=lanes.length?'<span>Show:</span>'+ph:'';
-  var any=false;for(i=0;i<T.length;i++)if(HT[i].lanes.length)any=true;
-  g.classList.toggle('on',hLanes()>0);pk.classList.toggle('on',lanes.length>0);$('histcard').classList.toggle('on',any);document.body.classList.toggle('hashist',any);
-  $('hcount').textContent=hCount();$('htitle').textContent='The conversation so far'+(multi?' (this piece)':'');
-  for(i=0;i<ths.length;i++){
-    var th=ths[i],L=lanes[th.lane];
-    if(th.lane!==lastLane){lastLane=th.lane;h+='<div class="grp">'+esc(L.label||('Edit '+L.version))+(L.current?' &middot; this version: the editor\'s replies':'')+'</div>';}
-    h+='<div class="th">';
-    for(j=0;j<th.notes.length;j++){
-      var n=th.notes[j],o=n.re?HN[n.re]:null;
-      h+='<div class="hn'+(j?' rep':'')+(n.editor?' ed':'')+(n.done?' done':'')+(n.id===selH?' sel':'')+'" data-hid="'+esc(n.id)+'" style="--pc:'+esc(n.colour)+'">'+
-         '<div class="meta"><span class="dot"></span><span class="who">'+esc(n.who||'Someone')+'</span>'+(n.editor?'<span class="edtag">editor</span>':'')+
-         '<a data-hgo="'+esc(n.id)+'">'+fmt(hTime(n),true)+'</a>'+(n.bar?'<span class="bartag">'+esc(n.bar)+'</span>':'')+
-         (n.done?'<span class="donetag">&#10003; done</span>':'')+(n.adrift?'<span class="donetag" title="The music this was about is not in this version any more">not in this version</span>':'')+
-         '<span class="nact"><button class="ghost" data-reply="'+esc(n.id)+'">Reply</button></span></div>'+
-         ((o&&(o.lane!==n.lane||th.notes.indexOf(o)<0))?'<div class="re">&#8627; Reply to '+esc(o.who||'a comment')+' ('+esc('Edit '+lanes[o.lane].version)+'): &ldquo;'+esc(quote(o.text))+'&rdquo;</div>':'')+
-         '<div class="txt">'+esc(n.text)+'</div></div>';
-    }
-    h+='</div>';
+  var lanes=HT[cur].lanes,ths=hThreads(),rows=hRows(),el=$('hist'),g=$('gutter'),pk=$('lanepick'),h='',gh='',ph='',i,j,k;
+  for(i=0;i<lanes.length;i++)
+    ph+='<label title="'+esc('The comments on '+(lanes[i].label||('Edit '+lanes[i].version))+' and the editor\'s replies to them')+'"><input type="checkbox" data-v="'+esc(lanes[i].version)+'"'+(laneOn(i)?' checked':'')+'> '+esc(laneName(lanes[i]))+'</label>';
+  for(i=0;i<rows.length;i++){
+    var RL=lanes[rows[i].lane];
+    gh+='<div style="height:'+LANEH+'px;line-height:'+LANEH+'px'+(rows[i].ed?';color:#a8842f':'')+'" title="'+esc(rows[i].ed?'What the editor wrote back about the comments on Edit '+RL.version:'The comments made on '+(RL.label||('Edit '+RL.version)))+'">Edit '+esc(RL.version)+(rows[i].ed?' editor':' comments')+'</div>';
   }
 )HTMLX",
-R"HTMLX(  el.innerHTML=h||('<div class="empty">'+(lanes.length?'Nothing is ticked: tick a version above the picture to see what was said about it.':'No comments on this piece yet.')+'</div>');
+R"HTMLX(  gh+='<div style="height:'+FLAGH+'px;line-height:'+FLAGH+'px;color:var(--ink)" title="The comments you add now, on this version">'+(T[cur].version?'Edit '+esc(T[cur].version)+': yours':'Your comments')+'</div>';
+  g.innerHTML=gh;pk.innerHTML=lanes.length?'<span>Show:</span>'+ph:'';
+  var any=false;for(i=0;i<T.length;i++)if(HT[i].lanes.length)any=true;
+  g.classList.toggle('on',rows.length>0);pk.classList.toggle('on',lanes.length>0);$('histcard').classList.toggle('on',any);document.body.classList.toggle('hashist',any);
+  $('hcount').textContent=hCount();$('htitle').textContent='The conversation so far'+(multi?' (this piece)':'');
+  /* a tab for each version: its name opens and closes it (the same choice as its tick above the picture) */
+  for(k=0;k<lanes.length;k++){
+    var L=lanes[k],on=laneOn(k);
+    h+='<div class="grp tab" data-tab="'+esc(L.version)+'" title="'+(on?'Close':'Open')+' this version\'s comments"><span class="tw">'+(on?'&#9662;':'&#9656;')+'</span><span>'+esc(L.label||('Edit '+L.version))+(L.current?' &middot; this version':'')+'</span>'+
+       '<span class="tn">'+plural(L.nc,'comment','comments')+(L.ne?' &middot; '+plural(L.ne,'reply','replies'):'')+(on?'':' &middot; closed')+'</span></div>';
+    if(!on)continue;
+    for(i=0;i<ths.length;i++){
+      var th=ths[i];if(th.lane!==k)continue;
+      h+='<div class="th">';
+      for(j=0;j<th.notes.length;j++){
+        var n=th.notes[j],o=n.re?HN[n.re]:null;
+        h+='<div class="hn'+(j?' rep':'')+(n.editor?' ed':'')+(n.done?' done':'')+(n.id===selH?' sel':'')+'" data-hid="'+esc(n.id)+'" style="--pc:'+esc(n.colour)+'">'+
+           '<div class="meta"><span class="dot"></span><span class="who">'+esc(n.who||'Someone')+'</span>'+(n.editor?'<span class="edtag">editor</span>':'')+
+           '<a data-hgo="'+esc(n.id)+'">'+fmt(hTime(n),true)+'</a>'+(n.bar?'<span class="bartag">'+esc(n.bar)+'</span>':'')+
+           (n.done?'<span class="donetag">&#10003; done</span>':'')+(n.adrift?'<span class="donetag" title="The music this was about is not in this version any more">not in this version</span>':'')+
+           '<span class="nact"><button class="ghost" data-reply="'+esc(n.id)+'">Reply</button></span></div>'+
+           ((o&&(o.lane!==n.lane||th.notes.indexOf(o)<0))?'<div class="re">&#8627; Reply to '+esc(o.who||'a comment')+' ('+esc('Edit '+lanes[o.lane].version)+'): &ldquo;'+esc(quote(o.text))+'&rdquo;</div>':'')+
+           '<div class="txt">'+esc(n.text)+'</div></div>';
+      }
+      h+='</div>';
+    }
+  }
+  el.innerHTML=h||'<div class="empty">No comments on this piece yet.</div>';
 }
 $('lanepick').addEventListener('change',function(e){
   var v=e.target&&e.target.getAttribute&&e.target.getAttribute('data-v');if(!v)return;
-  if(e.target.checked)delete hid['v'+v];else hid['v'+v]=1;
-  lsSet(STORE+'-lanes',JSON.stringify(hid));
-  if(selH&&HN[selH]&&!laneOn(HN[selH].lane))selH=null;
-  layout();renderHist();
+  setLane(v,e.target.checked);
 });
 function selectHist(n,scroll){
   selH=n.id;seek(Math.max(0,hTime(n)-2));renderHist();draw();
@@ -543,6 +571,8 @@ function selectHist(n,scroll){
 }
 $('hist').addEventListener('click',function(e){
   var t=e.target,id=t.getAttribute('data-hgo')||t.getAttribute('data-reply');
+  var tab=t.closest&&t.closest('[data-tab]');
+  if(tab){var tv=tab.getAttribute('data-tab'),ls=HT[cur].lanes;for(var q=0;q<ls.length;q++)if(String(ls[q].version)===tv){setLane(tv,!laneOn(q));break;}return;}
   if(!id){var c=t.closest&&t.closest('.hn');if(c){selH=c.getAttribute('data-hid');renderHist();draw();}return;}
   var n=HN[id];if(!n)return;
   if(t.getAttribute('data-reply')){selH=n.id;renderHist();openComposer(null,n);}
@@ -574,7 +604,8 @@ function openComposer(existing,reply){
 }
 function closeComposer(resume){
   $('composer').classList.remove('on');draft=null;editing=null;draw();
-  if(resume&&wasPlaying&&$('pausetype').checked){var p=audio.play();if(p&&p.catch)p.catch(function(){});}
+)HTMLX",
+R"HTMLX(  if(resume&&wasPlaying&&$('pausetype').checked){var p=audio.play();if(p&&p.catch)p.catch(function(){});}
   wasPlaying=false;
 }
 $('addbtn').onclick=function(){openComposer(null);};
@@ -606,8 +637,7 @@ function payload(){
 function safeName(s){return String(s).replace(/[\\\/:*?"<>|]+/g,' ').replace(/\s+/g,' ').trim();}
 function notesName(){
   var base=safeName(META.name||(title+' - listening copy'));
-)HTMLX",
-R"HTMLX(  base=/listening copy$/i.test(base)?base.replace(/listening copy$/i,'listening notes'):base+' - listening notes';
+  base=/listening copy$/i.test(base)?base.replace(/listening copy$/i,'listening notes'):base+' - listening notes';
   return base+'.fmnotes';
 }
 $('export').onclick=function(){
@@ -663,7 +693,8 @@ document.addEventListener('keydown',function(e){
   if(e.key===' '){e.preventDefault();toggle();}
   else if(e.key==='ArrowLeft'){e.preventDefault();seek(now()-5);}
   else if(e.key==='ArrowRight'){e.preventDefault();seek(now()+5);}
-  else if(e.key==='c'||e.key==='C'){e.preventDefault();if(!$('composer').classList.contains('on'))openComposer(null);}
+)HTMLX",
+R"HTMLX(  else if(e.key==='c'||e.key==='C'){e.preventDefault();if(!$('composer').classList.contains('on'))openComposer(null);}
   else if(e.key==='Escape'&&$('composer').classList.contains('on'))closeComposer(true);
 });
 $('ctext').addEventListener('keydown',function(e){if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){$('csave').click();}});

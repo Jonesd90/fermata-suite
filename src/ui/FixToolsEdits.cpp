@@ -690,6 +690,8 @@ public:
         finishBtn.setTooltip ("Keeps everything done so far in the edit (the Undo fix command of the edit window brings the audio back to how it was when this window opened, or when you last wrote back) and carries on: the window stays open.");
         doneBtn.setTooltip ("Closes the window. Fixes made since the last Write back are thrown away.");
         ticker.owner = this; ticker.startTimerHz (30);
+        // 3.52.0: the playhead moves with the screen (as in the Edit window), between the audio blocks too, and only the strip under it is redrawn
+        view.livePlayhead = [this] { return isPlayingNow() ? juce::jmax (0.0, app.playheadSecondsSmooth()) : -1.0; };
         app.undoHold += 1;
         setupTabs();
         setupConsonants();                                                       // 3.36.0
@@ -997,7 +999,7 @@ private:
     {
         const bool playing = isPlayingNow();
         const double pos = playing ? juce::jmax (0.0, app.playheadSeconds()) : -1.0;
-        view.setPlayhead (pos);
+        // (3.52.0: the picture moves its own playhead now, at every refresh of the screen - view.livePlayhead, set in the constructor)
         playBtn.setButtonText (playing ? "Stop" : "Play");                     // (the picture on the button turns into a stop square)
         // the page turns with the playhead: when it reaches the right edge of the page it was on, the next page comes (until the end of the edit)
         if (playing && ! loopBtn.getToggleState() && lastTickPos >= view.visT0() && lastTickPos < view.visT1()

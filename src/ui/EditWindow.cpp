@@ -13,6 +13,7 @@
 #include "VolumeDialog.h"
 #include "MarkerStrip.h"
 #include "FeedbackUi.h"
+#include "HeldPicture.h"
 #include "../core/EditVersions.h"
 #include "../core/AudioFormats.h"
 #include "../core/TextBytes.h"
@@ -384,7 +385,24 @@ public:
     void paint (juce::Graphics& g) override
     {
         BusyLabel busyLabel ("drawing the edit window");
+        // 3.52.0: while a process window (noise mode, ReTouch ...) plays, this window holds the picture it has: see HeldPicture.h
+        const auto visible = viewport.getViewArea();
         const auto tPaint0 = juce::Time::getMillisecondCounterHiRes();          // (always timed: one call, to tell a slow redraw from a late clock in the hitch report)
+        if (held.show (g, visible, app.isPlaying()))
+        {
+            if (hitch.active) ++hitch.heldBack;
+            if (paintprof::enabled()) paintprof::paintDone ("edit window (held picture)", juce::Time::getMillisecondCounterHiRes() - tPaint0, g.getClipBounds().getWidth(), g.getClipBounds().getHeight());
+            return;
+        }
+        paintNow (g);
+        const double paintMs = juce::Time::getMillisecondCounterHiRes() - tPaint0;
+        if (hitch.active) hitch.painted (paintMs);
+        if (paintprof::enabled()) paintprof::paintDone ("edit window", paintMs, g.getClipBounds().getWidth(), g.getClipBounds().getHeight());
+        held.keep (g, visible, [this] (juce::Graphics& ig) { paintNow (ig); });       // (only while a process window is in use)
+    }
+    HeldPicture held;
+    void paintNow (juce::Graphics& g)
+    {
         headerPass = false;
         paintAll (g);
         const int sy = viewport.getViewPositionY();
@@ -403,9 +421,6 @@ public:
             g.setColour (theme::accent.withAlpha (0.13f)); g.fillRect (lr);
             g.setColour (theme::accent.withAlpha (0.9f));  g.drawRect (lr, 1);
         }
-        const double paintMs = juce::Time::getMillisecondCounterHiRes() - tPaint0;
-        if (hitch.active) hitch.painted (paintMs);
-        if (paintprof::enabled()) paintprof::paintDone ("edit window", paintMs, g.getClipBounds().getWidth(), g.getClipBounds().getHeight());
     }
     // ---- Alt + drag: a lasso; every piece it touches is selected (whole pieces, overdubs too)
     bool lassoActive = false, lassoMoved = false; juce::Point<int> lassoFrom, lassoTo;
@@ -1123,7 +1138,7 @@ public:
                 const auto area = localAreaToGlobal (juce::Rectangle<int> (fx, markerui::kStripH + hdrShift, feedbackui::flagWidth (feedbackui::flagText (ed->feedback, th)), kFbH));
                 juce::Component::SafePointer<EditTimeline> safe (this);
                 feedbackui::showThread ([safe] () -> EditDef* { return safe != nullptr ? safe->edit() : nullptr; }, th, area,      // (the box can outlive the window)
-                                        [this, safe] { if (safe == nullptr) return; app.project.markDirty(); repaint(); },
+                                        [this, safe] { if (safe == nullptr) return; if (auto* le = edit()) app.project.refreshCommentsCopy (*le); app.project.markDirty(); repaint(); },
                                         [this, safe] (double s) { if (safe == nullptr) return; if (auto* w = findParentComponentOfClass<EditWindowComponent>()) w->goToSeconds (s); },
                                         editorHand (app, getTopLevelComponent(), ed->versionNumber()),
                                         [safe] (const juce::String& key) { auto* le = safe != nullptr ? safe->edit() : nullptr; return le != nullptr ? commentWriter (*le, key) : juce::String(); });
@@ -2871,16 +2886,24 @@ private:
     }
     void timerCallback() override
     {
-        if (const int held = modhint::heldFor (*this); held != shownMods)      // the corner box: what the keys being held do here
+        // 3.52.0: held behind a process window that is playing (HeldPicture.h) - nothing here asks for a redraw, turns the page or moves the
+        // meters until the play is over; then the window is drawn once, as it is by then
+        held.notePlaying (app.isPlaying());
+        if (held.frozen (app.isPlaying())) { if (HeldPicture::testing()) repaint(); return; }      // (the test: see HeldPicture::testing)
+        if (held.stale) { held.stale = false; repaint(); }
+        else if (held.wanted (viewport.getViewArea(), app.isPlaying())) repaint();      // (the picture to hold, made while nothing plays)
+        if (const int keysHeld = modhint::heldFor (*this); keysHeld != shownMods)      // the corner box: what the keys being held do here
         {
-            shownMods = held;
+            shownMods = keysHeld;
             repaint (viewport.getViewPositionX(), viewport.getViewPositionY(), kNameW, bandH());
         }
         if (auto* ed = edit())                      // the playhead moved by itself (Stop leaves it where playback got to): the cursor follows
             if (std::abs (ed->playheadSeconds - lastHead) > 1.0e-9) { lastHead = ed->playheadSeconds; cursorSeconds = ed->playheadSeconds; repaint(); }
         // Waveforms being read (after an import, or the first time a project is shown) report every little step. Redrawing the whole window for each
         // one kept the program busy; now it is redrawn at most about 6 times a second while they come in.
-        if (thumbsChanged && juce::Time::getMillisecondCounter() - lastThumbRefresh >= 150)
+        // (3.52.0: once a second while a process window is in use - after a fix its new files' waveforms come in over a few seconds, and each
+        //  whole redraw here is time the process window cannot draw in)
+        if (thumbsChanged && juce::Time::getMillisecondCounter() - lastThumbRefresh >= (ProcessWindows::get().inUse() ? 1000u : 150u))
         {
             thumbsChanged = false; lastThumbRefresh = juce::Time::getMillisecondCounter();
             if (hitch.active) ++hitch.fullRedraws;
@@ -2913,6 +2936,7 @@ private:
         double ph = -1.0;
         if (app.isPlaying() && app.playInfo.kind == AppContext::PlayInfo::Kind::Edit && app.playInfo.id == editId) ph = app.playheadSecondsSmooth();
         noteHitches (ph);
+        if (held.frozen (app.isPlaying())) { shownPhX = kNoLine; return; }      // (3.52.0: held behind a process window - no line moves here)
         const int x = ph >= 0.0 ? xOf (ph) : kNoLine;
         if (x == shownPhX) return;
         const int h = juce::jmax (1, getHeight() - kRulerH);
@@ -2928,7 +2952,7 @@ private:
     {
         static constexpr int kKeep = 8;
         bool active = false; double t0 = 0.0, lastT = 0.0, firstPh = 0.0, lastPh = 0.0; int baseUnderruns = 0, baseReads = 0;
-        int frames = 0, late = 0, stalls = 0, jumps = 0, stallRun = 0, slowPaints = 0, fullRedraws = 0;
+        int frames = 0, late = 0, stalls = 0, jumps = 0, stallRun = 0, slowPaints = 0, fullRedraws = 0, heldBack = 0;
         double worstGap = 0.0, worstGapAt = 0.0, worstPaint = 0.0, worstPaintAt = 0.0;
         std::vector<double> lateAt, stallAt, jumpAt, paintAt;
         static void keep (std::vector<double>& v, double at) { if ((int) v.size() < kKeep) v.push_back (at); }
@@ -2977,6 +3001,7 @@ private:
                  << "playhead jumped: " << h.jumps << HitchLog::list (h.jumpAt) << "; "
                  << "redraws over 12 ms: " << h.slowPaints << (h.slowPaints > 0 ? ", worst " + juce::String (h.worstPaint, 0) + " ms at " + juce::String (h.worstPaintAt, 1) + " s" : juce::String()) << HitchLog::list (h.paintAt) << "; "
                  << "whole-window redraws: " << h.fullRedraws << "; "
+                 << (h.heldBack > 0 ? "redraws held back behind a process window: " + juce::String (h.heldBack) + "; " : juce::String())
                  << "waveform file reads: " << juce::jmax (0, DirectWaveCache::readCounter().load() - h.baseReads) << "; "
                  << "playback underruns: " << juce::jmax (0, app.engine.playbackUnderruns() - h.baseUnderruns);
             juce::Logger::writeToLog (line);
@@ -3040,6 +3065,18 @@ struct EditViewport : public juce::Viewport
 {
     void visibleAreaChanged (const juce::Rectangle<int>&) override { if (auto* c = getViewedComponent()) c->repaint(); }
 };
+
+/** 3.52.0: freezes the live version of an edit with its mixer as it is now, and returns the number it was frozen as. One place for the Freeze key and
+    for comments that come in on the live version (EditWindowComponent::importFeedbackFiles). The caller tells the project and the windows. */
+static int freezeLiveVersion (AppContext& app, EditDef& e)
+{
+    juce::var mix;
+    if (auto* m = app.project.mixerOfEdit (e.id)) mix = app.project.mixSnapshot (*m, true);
+    const int frozen = editversions::freeze (e, mix);
+    app.project.refreshCommentsCopy (e);                  // (its comments went to the frozen version - the copy kept at their import must not bring them back onto this edit)
+    e.compareWith = frozen;
+    return frozen;
+}
 
 /** 3.42.0: the versions strip, between the buttons and the timeline. A row of tabs - "Edit 1", "Edit 2" ... the live one last, with its subheading box and
     the Freeze button - then one lane for each frozen version's listeners' comments (shown where their music is now; each lane can be closed from its
@@ -3319,10 +3356,7 @@ private:
     void freezeNow()
     {
         auto* e = edit(); if (e == nullptr) return;
-        juce::var mix;
-        if (auto* m = app.project.mixerOfEdit (editId)) mix = app.project.mixSnapshot (*m, true);
-        const int frozen = editversions::freeze (*e, mix);
-        e->compareWith = frozen;
+        const int frozen = freezeLiveVersion (app, *e);
         app.project.markDirty(); app.project.changed();
         if (app.refreshTitles) app.refreshTitles();
         rebuildTabs(); if (layoutChanged) layoutChanged();
@@ -3349,7 +3383,8 @@ private:
             m.addItem (13, "Put back everything from Edit " + juce::String (n) + "...  (the pieces, fades, levels and automation)");
             m.addItem (14, "Put back its mixer settings...", ! v->mixer.isVoid() && app.project.mixerOfEdit (editId) != nullptr);
             m.addSeparator();
-            m.addItem (15, "Remove this frozen version...  (its comments come back onto this edit)", n == (int) e->versions.size());
+            m.addItem (15, n == (int) e->versions.size() ? "Remove this frozen version...  (the freeze undone: its comments come back onto this edit)"
+                                                         : "Remove this frozen version...  (the later ones move down a number)");      // 3.52.0: any of them, not only the newest
         }
         juce::Component::SafePointer<VersionStrip> safe (this);
         m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (n - 1 < tabs.size() ? tabs[n - 1] : nullptr), [safe, n] (int r)
@@ -3390,15 +3425,31 @@ private:
             else if (r == 14) self.putBackMixer (n);
             else if (r == 15)
             {
+                const bool newest = n == (int) ed->versions.size();
+                const int liveNo = ed->versionNumber();
+                juce::String msg = "Take the frozen version \"" + ed->versionTitle (n) + "\" away?\n\n";
+                if (newest) msg << "This edit becomes Edit " << n << " again, with that version's subheading, and its comments come back onto this edit's own feedback line.";
+                else msg << "The versions after it move down a number: Edit " << (n + 1) << " becomes Edit " << n << (liveNo > n + 1 ? ", and so on" : "") << " - this edit, Edit " << liveNo << " now, becomes Edit " << (liveNo - 1)
+                         << ". Its comments are kept: they go to " << (n > 1 ? "Edit " + juce::String (n - 1) + "'s lane" : juce::String ("the version that becomes Edit 1")) << ", where their music is there.\n\n"
+                         << "A listening copy already sent of a version whose number changes still says the old number: comments that come back from it go to the version that has that number then.";
+                msg << "\n\nThe frozen pieces are lost (not the audio). This cannot be undone.";
                 juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::QuestionIcon)
-                    .withTitle ("Remove Edit " + juce::String (n))
-                    .withMessage ("Take the frozen version \"" + ed->versionTitle (n) + "\" away? This edit becomes Edit " + juce::String (n) + " again, with its subheading, and its comments come back onto this edit's own feedback line. The frozen pieces are lost (not the audio).")
+                    .withTitle ("Remove Edit " + juce::String (n)).withMessage (msg)
                     .withButton ("Remove").withButton ("Cancel").withAssociatedComponent (&self),
-                    [safe] (int res)
+                    [safe, n] (int res)
                     {
                         if (safe == nullptr || res != 1) return;
                         auto* ed2 = safe->edit(); if (ed2 == nullptr) return;
-                        if (editversions::unfreezeLast (*ed2)) { if (ed2->compareWith > (int) ed2->versions.size()) ed2->compareWith = 0; ed2->showFeedback = true; safe->app.project.markDirty(); safe->app.project.changed(); if (safe->app.refreshTitles) safe->app.refreshTitles(); safe->rebuildTabs(); if (safe->layoutChanged) safe->layoutChanged(); }
+                        if (! editversions::removeVersion (*ed2, n)) return;
+                        if (ed2->compareWith > (int) ed2->versions.size()) ed2->compareWith = 0;
+                        ed2->showFeedback = true;
+                        auto& app2 = safe->app;
+                        app2.project.refreshCommentsCopy (*ed2);
+                        for (auto& it : app2.project.mastering.items)                 // (a listening copy chosen for a version that has gone, or moved: the newest again)
+                            if (it.editId == ed2->id && it.formVersion >= n) it.formVersion = 0;
+                        app2.project.markDirty(); app2.project.changed();
+                        if (app2.refreshTitles) app2.refreshTitles();
+                        safe->rebuildTabs(); if (safe->layoutChanged) safe->layoutChanged();
                     });
             }
         });
@@ -3970,10 +4021,11 @@ void EditWindowComponent::showFeedbackMenu()
                                            if (auto* ed2 = safe->edit()) { feedbackui::addEditorNote (*ed2, at, who, text, {}, ed2->versionNumber()); ed2->showFeedback = true; safe->feedbackToggle.setToggleState (true, juce::dontSendNotification); safe->app.project.markDirty(); safe->timeline->repaint(); }
                                        });
         }
-        else if (r == 3) { for (auto& n : ed->feedback) if (! n.editor) n.done = true; app.project.markDirty(); safe->timeline->repaint(); }
+        else if (r == 3) { for (auto& n : ed->feedback) if (! n.editor) n.done = true; app.project.refreshCommentsCopy (*ed); app.project.markDirty(); safe->timeline->repaint(); }
         else if (r == 4)
         {
             ed->feedback.erase (std::remove_if (ed->feedback.begin(), ed->feedback.end(), [] (const FeedbackNote& n) { return n.done && ! n.editor; }), ed->feedback.end());
+            app.project.refreshCommentsCopy (*ed);             // (3.52.0: what is taken away stays away - the copy kept at the import used to bring it back at the next opening, once none were left)
             app.project.markDirty(); safe->timeline->repaint();
         }
         else if (r == 5)
@@ -3984,7 +4036,7 @@ void EditWindowComponent::showFeedbackMenu()
                 [safe] (int result)
                 {
                     if (safe == nullptr || result != 1) return;
-                    if (auto* ed2 = safe->edit()) { ed2->feedback.clear(); safe->app.project.markDirty(); safe->timeline->repaint(); }
+                    if (auto* ed2 = safe->edit()) { ed2->feedback.clear(); safe->app.project.refreshCommentsCopy (*ed2); safe->app.project.markDirty(); safe->timeline->repaint(); }
                 });
         }
     });
@@ -4031,11 +4083,30 @@ void EditWindowComponent::importFeedback()
     });
 }
 
+namespace
+{
+/** One file's comments (or one piece's, from a listening copy that held several pieces), read and matched to its edit, waiting to be put in. */
+struct IncomingComments
+{
+    juce::File file;
+    juce::String label, where;
+    feedback::Parsed p;
+    juce::Uuid editId;
+    bool several = false;
+};
+}
+
+/** 3.52.0, the user's workflow (10 November 2026): the comments say which version they are on, and the import does what follows from that.
+    - On a frozen version: into that version's lane, added to what is there. No question.
+    - On the version being worked on: one question - start the next edit and show them above it (the version is frozen as it is now, the next
+      starts out the same, the comments go to the frozen version's lane, where each can be answered), or keep them on this version.
+    So the first file of Edit 1's comments starts Edit 2, and a second listener's file of Edit 1 comments just joins the first in the lane.
+    Comments are only ever ADDED (a comment already there, by its key, is updated): until 3.51.0 the first file of an import replaced the
+    listeners' comments the version had, which threw away one listener's when the next one's file came in. */
 void EditWindowComponent::importFeedbackFiles (juce::Array<juce::File> files, double frameRate)
 {
-    juce::String report; int total = 0; bool toOthers = false;
-    std::vector<juce::String> replaced;                       // edits (and versions: "id|n") whose old comments have been superseded by this import (the first file of a batch replaces, the rest add)
-    std::map<juce::String, std::vector<juce::File>> kept;     // the files read for each edit, saved in the project's comments folder
+    auto items = std::make_shared<std::vector<IncomingComments>>();
+    juce::String report;
     for (auto& f : files)
     {
         juce::MemoryBlock data;
@@ -4061,46 +4132,121 @@ void EditWindowComponent::importFeedbackFiles (juce::Array<juce::File> files, do
                 if (several) report += label + ": " + juce::String ((int) p.notes.size()) + " comment" + (p.notes.size() == 1 ? "" : "s") + " not imported: the edit they were made on is no longer in this project.\n";
                 continue;
             }
-            // 3.42.0: the comments were made on a version of the edit (the listening copy says which): they go to that version - the live one, or a frozen one's lane
+            IncomingComments in;
+            in.file = f; in.label = label; in.where = where; in.p = p; in.editId = target->id; in.several = several;
+            items->push_back (std::move (in));
+        }
+    }
+
+    // the edits whose comments are on the version being worked on (a file that does not say which version - an old copy, a review website's list - is taken as on it)
+    std::vector<juce::Uuid> liveOnes;
+    juce::StringArray liveNames;
+    for (auto& in : *items)
+    {
+        auto* te = app.project.findEdit (in.editId);
+        if (te == nullptr || te->isEmpty() || in.p.notes.empty()) continue;
+        if (in.p.version != 0 && in.p.version != te->versionNumber()) continue;
+        if (std::find (liveOnes.begin(), liveOnes.end(), te->id) != liveOnes.end()) continue;
+        liveOnes.push_back (te->id);
+        liveNames.add ("\"" + te->name + "\" (Edit " + juce::String (te->versionNumber()) + ")");
+    }
+
+    juce::Component::SafePointer<EditWindowComponent> safe (this);
+    auto putIn = [safe, items, report, frameRate] (std::vector<juce::Uuid> startNext) mutable
+    {
+        if (safe == nullptr) return;
+        auto& self = *safe;
+        auto& app = self.app;
+        std::map<juce::String, int> frozenAs;                    // edit id -> the number its live version was frozen as, just now
+        juce::StringArray started;
+        for (auto& id : startNext)
+            if (auto* te = app.project.findEdit (id))
+                if (! te->isEmpty())
+                {
+                    const int n = freezeLiveVersion (app, *te);
+                    frozenAs[id.toString()] = n;
+                    started.add ("\"" + te->name + "\": Edit " + juce::String (n) + " is kept as it was, and you are now in Edit " + juce::String (te->versionNumber()));
+                }
+        int total = 0; bool toOthers = false, toLanes = false;
+        std::map<juce::String, std::vector<juce::File>> kept;     // the files read for each edit's live version, saved in the project's comments folder
+        for (auto& in : *items)
+        {
+            auto& p = in.p;
+            auto* target = app.project.findEdit (in.editId);
+            if (target == nullptr) continue;
+            int version = p.version;
+            const auto fz = frozenAs.find (target->id.toString());
+            const bool justFrozen = fz != frozenAs.end() && (version == 0 || version == fz->second);
+            if (justFrozen) version = fz->second;
+            // the comments were made on a version of the edit (the listening copy says which): they go to that version - the live one, or a frozen one's lane
             EditDef* versionEdit = target;
             juce::String versionNote;
-            if (p.version > 0 && p.version != target->versionNumber())
+            if (version > 0 && version != target->versionNumber())
             {
-                if (auto* ve = target->versionEdit (p.version)) { versionEdit = ve; versionNote = " (on Edit " + juce::String (p.version) + ": its lane above the timeline)"; }
-                else versionNote = " (made on Edit " + juce::String (p.version) + ", which this project does not have: put on this version)";
+                if (auto* ve = target->versionEdit (version)) { versionEdit = ve; versionNote = " (on Edit " + juce::String (version) + ": its lane above the timeline)"; }
+                else versionNote = " (made on Edit " + juce::String (version) + ", which this project does not have: put on this version)";
             }
-            else if (p.version == 0 && ! target->versions.empty()) versionNote = " (the listening copy did not say which version: put on this one)";
+            else if (version == 0 && ! target->versions.empty()) versionNote = " (the file does not say which version: put on this one)";
             const double offset = p.hasOffset ? p.offset : (versionEdit->sampleRate > 0.0 ? (double) versionEdit->firstSample() / versionEdit->sampleRate : 0.0);
             const double len = versionEdit->lengthSeconds();
             int late = 0;
             for (auto& n : p.notes) { n.seconds += offset; if (len > 0.0 && n.seconds > len + 2.0) ++late; }
             int updated = 0;
-            const juce::String replacedKey = target->id.toString() + (versionEdit == target ? juce::String() : "|" + juce::String (p.version));
-            if (std::find (replaced.begin(), replaced.end(), replacedKey) == replaced.end())
-            {   // a new set of comments supersedes the old one; a tick ("done") on a comment that is still in the new set is kept
-                replaced.push_back (replacedKey);
-                auto oldNotes = versionEdit->feedback; versionEdit->feedback.clear();
-                for (auto& n : p.notes) for (auto& o : oldNotes) if (o.key == n.key && o.done) n.done = true;
-                for (auto& o : oldNotes) if (o.editor) versionEdit->feedback.push_back (o);      // 3.51.0: the editor's own notes and answers are not the listeners' to replace
-            }
-            if (versionEdit == target) kept[target->id.toString()].push_back (f);
-            const int added = feedback::merge (versionEdit->feedback, p.notes, &updated);
-            if (versionEdit == target) target->showFeedback = true;
-            else if (auto* v = target->version (p.version)) v->laneShown = true;
+            const int added = feedback::merge (versionEdit->feedback, p.notes, &updated);     // added to what is there: another listener's comments are never replaced
+            if (versionEdit == target) { kept[target->id.toString()].push_back (in.file); target->showFeedback = true; }
+            else { toLanes = true; if (auto* v = target->version (version)) v->laneShown = true; }
             total += added;
-            if (target != edit()) toOthers = true;
-            report += label + ": " + juce::String (added) + " new comment" + (added == 1 ? "" : "s") + " from " + juce::String ((int) p.notes.size()) + " in the file" + where + versionNote + (several ? " (on the edit '" + target->name + "')" : juce::String())
+            if (target != self.edit()) toOthers = true;
+            report += in.label + ": " + juce::String (added) + " new comment" + (added == 1 ? "" : "s") + " from " + juce::String ((int) p.notes.size()) + " in the file" + in.where + versionNote + (in.several ? " (on the edit '" + target->name + "')" : juce::String())
                     + (updated > 0 ? ", " + juce::String (updated) + " already there and updated" : juce::String())
                     + (p.format == "marker list" ? ". Timecode read at " + juce::String (frameRate) + " frames a second" : juce::String())
                     + (late > 0 ? ". " + juce::String (late) + " fall after the end of the edit" : juce::String()) + ".\n";
         }
-    }
-    for (auto& id : replaced) if (! id.containsChar ('|')) if (auto* te = app.project.findEdit (juce::Uuid (id))) app.project.saveCommentsCopy (*te, kept[id]);
-    app.project.markDirty();
-    if (timeline != nullptr) timeline->repaint();
-    if (versionStrip != nullptr) { versionStrip->refreshFromEdit(); resized(); }
-    juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (total > 0 ? juce::MessageBoxIconType::InfoIcon : juce::MessageBoxIconType::WarningIcon)
-        .withTitle ("Comments").withMessage (report.trim() + (total > 0 ? "\n\nThe flags are along the top of the timeline. Click one to read it." + juce::String (toOthers ? " Comments on other pieces are on their own edits: open those edits to see them." : "") : juce::String())).withButton ("OK").withAssociatedComponent (this), nullptr);
+        for (auto& kv : kept) if (auto* te = app.project.findEdit (juce::Uuid (kv.first))) app.project.saveCommentsCopy (*te, kv.second);
+        app.project.markDirty();
+        if (! started.isEmpty()) { app.project.changed(); if (app.refreshTitles) app.refreshTitles(); }
+        if (safe == nullptr) return;                              // (changed() can rebuild windows)
+        if (self.timeline != nullptr) self.timeline->repaint();
+        if (self.versionStrip != nullptr) { self.versionStrip->refreshFromEdit(); self.resized(); }
+        juce::String tail;
+        if (! started.isEmpty()) tail << "\n\n" << started.joinIntoString ("\n") << ".";
+        if (total > 0)
+            tail << "\n\n" << (toLanes ? "The comments are in the version's lane above the timeline. Click one to read it and to write your reply."
+                                       : "The flags are along the top of the timeline. Click one to read it.")
+                 << (toOthers ? " Comments on other pieces are on their own edits: open those edits to see them." : "");
+        juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (total > 0 ? juce::MessageBoxIconType::InfoIcon : juce::MessageBoxIconType::WarningIcon)
+            .withTitle ("Comments").withMessage ((report.trim() + tail).trim()).withButton ("OK").withAssociatedComponent (safe.getComponent()),
+            nullptr);
+    };
+
+    if (liveOnes.empty()) { putIn ({}); return; }
+    const bool one = liveOnes.size() == 1;
+    auto* first = app.project.findEdit (liveOnes[0]);
+    const int n = first != nullptr ? first->versionNumber() : 1;
+    juce::String msg;
+    if (one)
+        msg << "These comments are on Edit " << n << " of \"" << (first != nullptr ? first->name : juce::String()) << "\" - the version you are working on.\n\n"
+            << "Start Edit " << (n + 1) << " and show them above it?\n\n"
+            << "Edit " << n << " is then kept exactly as it is now, Edit " << (n + 1) << " starts out the same, and the comments sit in the Edit " << n
+            << " lane above the timeline. Click one to read it and write your reply as you make the changes.\n\n"
+            << "Or keep them on Edit " << n << " and carry on working in it.";
+    else
+        msg << "These comments are on the version you are working on of:\n   " << liveNames.joinIntoString ("\n   ") << "\n\n"
+            << "Start the next edit of each and show the comments above it?\n\n"
+            << "Each version is then kept exactly as it is now, the next starts out the same, and the comments sit in the kept version's lane above the timeline. "
+            << "Click one to read it and write your reply as you make the changes.\n\n"
+            << "Or keep them on these versions and carry on working in them.";
+    juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::QuestionIcon)
+        .withTitle (one ? "Comments on Edit " + juce::String (n) : juce::String ("Comments on the versions you are working on"))
+        .withMessage (msg)
+        .withButton (one ? "Start Edit " + juce::String (n + 1) : juce::String ("Start the next edits"))
+        .withButton (one ? "Keep on Edit " + juce::String (n) : juce::String ("Keep on these versions"))
+        .withButton ("Cancel").withAssociatedComponent (this),
+        [putIn, liveOnes] (int r) mutable
+        {
+            if (r == 1) putIn (liveOnes);
+            else if (r == 2) putIn ({});
+        });
 }
 
 void EditWindowComponent::showTracksMenu()

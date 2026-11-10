@@ -14843,22 +14843,19 @@ int main()
             if (lanes.size() == 2)
             {
                 const auto& l1 = lanes[0]; const auto& l2 = lanes[1];
-                // Edit 1's lane: what the listeners said about Edit 1. Edit 2's lane (this version): what the editor wrote while making it - the reply to
-                // the comment on Edit 1, at that comment's place, and the note of his own
-                CHECK (l1.version == 1 && l1.label == "Edit 1 - first cut" && ! l1.current && l1.notes.size() == 3 && l2.version == 2 && l2.label == "Edit 2" && l2.current && l2.notes.size() == 2);
-                if (l1.notes.size() == 3)
+                // Edit 1's lane: what the listeners said about Edit 1 and, with the comment it answers, the editor's reply (3.52.0: whichever version was
+                // being made when it was written). Edit 2's lane (this version): the editor's note of his own on it
+                CHECK (l1.version == 1 && l1.label == "Edit 1 - first cut" && ! l1.current && l1.notes.size() == 4 && l2.version == 2 && l2.label == "Edit 2" && l2.current && l2.notes.size() == 1);
+                if (l1.notes.size() == 4)
                 {
                     CHECK (l1.notes[0].id == "c2" && std::abs (l1.notes[0].seconds - 5.5) < 1.0e-6 && l1.notes[0].done && ! l1.notes[0].adrift && l1.notes[0].argb == 0xff9a6ae0u);     // 3 s later, less the half second
                     CHECK (l1.notes[1].id == "c3" && std::abs (l1.notes[1].seconds - 10.5) < 1.0e-6 && l1.notes[1].adrift);                                                         // its music is gone: where it was
                     CHECK (l1.notes[2].id == "c1" && std::abs (l1.notes[2].seconds - 17.5) < 1.0e-6 && ! l1.notes[2].adrift && ! l1.notes[2].editor && l1.notes[2].bar == "Bar 50");
                 }
-                if (l2.notes.size() == 2)
-                {
-                    CHECK (l2.notes[0].id == "o1" && l2.notes[0].editor && std::abs (l2.notes[0].seconds - 0.5) < 1.0e-6);
-                    CHECK (l2.notes[1].id == "r1" && std::abs (l2.notes[1].seconds - 17.5) < 1.0e-6 && l2.notes[1].editor && l2.notes[1].replyTo == "c1" && l2.notes[1].argb == 0xff3cc75au);
-                }
+                if (l1.notes.size() == 4) CHECK (l1.notes[3].id == "r1" && std::abs (l1.notes[3].seconds - 17.5) < 1.0e-6 && l1.notes[3].editor && l1.notes[3].replyTo == "c1" && l1.notes[3].argb == 0xff3cc75au);
+                if (l2.notes.size() == 1) CHECK (l2.notes[0].id == "o1" && l2.notes[0].editor && std::abs (l2.notes[0].seconds - 0.5) < 1.0e-6);
             }
-            {   // a reply that does not say when it was written stays in the lane of the comments it is kept with
+            {   // a reply that does not say when it was written: the same
                 EditDef e0 = e; e0.versions[0].edit = std::make_shared<EditDef> (*e.versions[0].edit);
                 for (auto& f : e0.versions[0].edit->feedback) f.madeIn = 0;
                 const auto l0 = reviewpage::historyFor (e0, 0.5);
@@ -14876,10 +14873,10 @@ int main()
             const auto mp = metaOf (plain), mt = metaOf (talk);
             CHECK (mp["tracks"][0]["edit"].toString() == e.id.toString() && ! mp["tracks"][0].hasProperty ("history"));
             const auto h = mt["tracks"][0]["history"];
-            CHECK (h.isArray() && h.size() == 2 && (int) h[0]["version"] == 1 && h[0]["label"].toString() == "Edit 1 - first cut" && h[0]["notes"].size() == 3 && ! h[0].hasProperty ("current"));
-            if (h.isArray() && h.size() == 2 && h[0]["notes"].size() == 3 && h[1]["notes"].size() == 2)
+            CHECK (h.isArray() && h.size() == 2 && (int) h[0]["version"] == 1 && h[0]["label"].toString() == "Edit 1 - first cut" && h[0]["notes"].size() == 4 && ! h[0].hasProperty ("current"));
+            if (h.isArray() && h.size() == 2 && h[0]["notes"].size() == 4 && h[1]["notes"].size() == 1)
             {
-                const auto n3 = h[1]["notes"][1];
+                const auto n3 = h[0]["notes"][3];
                 CHECK ((bool) h[1]["current"] && (int) h[1]["version"] == 2);
                 CHECK (n3["id"].toString() == "r1" && (bool) n3["editor"] && n3["re"].toString() == "c1" && n3["colour"].toString() == "#3cc75a" && std::abs ((double) n3["t"] - 17.5) < 1.0e-6 && n3["who"].toString() == "David Jones");
                 CHECK ((bool) h[0]["notes"][0]["done"] && (bool) h[0]["notes"][1]["adrift"] && ! h[0]["notes"][2].hasProperty ("editor") && h[0]["notes"][2]["bar"].toString() == "Bar 50");
@@ -14933,6 +14930,192 @@ int main()
         CHECK (q.undo());
         auto* e3 = q.findEdit (e.id);
         CHECK (e3 != nullptr && e3->regions.size() == 3 && e3->score == "Lion full score.pdf" && e3->scoreTop == 4.0 && e3->feedback.size() == 1);
+    }
+
+    SECTION ("3.52.0 a listening copy of a frozen version: its own pieces and its own mixer settings, rendered in the render's copy of the project; the edit as it is now is not touched");
+    {
+        const auto dir = tmp.getChildFile ("frozencopy"); dir.deleteRecursively(); dir.createDirectory();
+        Project mp; mp.projectFile = dir.getChildFile ("Frozen.fermata");
+        mp.setInputCount (2); mp.setOutputCount (2); mp.tracks.clear();
+        const auto tid = mp.addTrack ("violin", TrackFormat::Mono, 0).id;
+        mp.retireAllMixers();
+        const auto bus = mp.addBus ("Out", true).id;
+        auto& mx = mp.addMixer ("Processing");
+        mp.setSendLevel (mx, tid, bus, 0.0f);
+        for (auto& t : mp.tracks) { t.setArmed (false); t.setMonitor (Monitor::Session); }
+        const auto src = makeConstWav (dir.getChildFile ("src.wav"), 0.5, 4);
+        auto& ed = mp.addEdit ("The Lion", juce::Uuid::null());
+        EditRegion r; r.windowId = juce::Uuid::null(); r.takeId = juce::Uuid(); r.srcIn = 100; r.srcOut = 48100; r.sampleRate = 48000.0; r.takeName = "001"; r.sourceLength = 192000;
+        RegionFile rf; rf.trackId = tid; rf.trackName = "violin"; rf.file = src; r.files.push_back (rf);
+        ed.insertRegion (r);
+        auto* em = mp.mixerOfEdit (ed.id);
+        CHECK (em != nullptr);
+        if (em != nullptr)
+        {
+            mp.setSendLevel (*em, tid, bus, 0.0f);
+            auto* strip = em->stripFor (tid);
+            CHECK (strip != nullptr);
+            // Edit 1: one second of sound, the fader at 0 dB - frozen with its mixer
+            ed.subheading = "first cut";
+            editversions::freeze (ed, mp.mixSnapshot (*em, true));
+            CHECK (ed.versionNumber() == 2 && ! ed.versions[0].mixer.isVoid());
+            // Edit 2, as the edit is now: another piece after it (longer), and the fader 6 dB down
+            const auto len1 = ed.lengthSeconds();
+            r.id = juce::Uuid(); r.srcIn = 60000; r.srcOut = 108000; ed.insertRegion (r);
+            if (strip != nullptr) strip->gainDb.set (-6.0f);
+            CHECK (ed.lengthSeconds() > len1 + 0.5);
+            mp.mastering.sync (mp.edits);
+            auto& vm = mp.mastering.vm;
+            vm.formFolder = dir.getChildFile ("copies").getFullPathName(); vm.formAudio = 0; vm.formRate = 0.0; vm.formBits = 24; vm.formNormalise = false; vm.formLoudnessMode = 0;
+            auto* item = mp.mastering.findItem (ed.id);
+            CHECK (item != nullptr);
+            // the audio inside a listening copy, and what the page says about it
+            auto audioOf = [&] (const juce::File& html, double& seconds, float& peak, juce::var& meta)
+            {
+                const auto text = html.loadFileAsString();
+                const int m0 = text.indexOf ("id=\"meta\">") + 10; juce::JSON::parse (text.substring (m0, text.indexOf (m0, "</script>")), meta);
+                juce::MemoryBlock all; int at = 0;
+                for (;;)
+                {
+                    const int s0 = text.indexOf (at, "class=\"ch\">"); if (s0 < 0) break;
+                    const int s1 = s0 + 11, e1 = text.indexOf (s1, "</script>");
+                    juce::MemoryOutputStream mo (all, true); juce::Base64::convertFromBase64 (mo, text.substring (s1, e1)); at = e1;
+                }
+                juce::AudioFormatManager fm; fm.registerBasicFormats();
+                std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (std::make_unique<juce::MemoryInputStream> (all, false)));
+                if (rd == nullptr) return false;
+                juce::AudioBuffer<float> b ((int) rd->numChannels, (int) rd->lengthInSamples); rd->read (&b, 0, (int) rd->lengthInSamples, 0, true, true);
+                seconds = (double) rd->lengthInSamples / rd->sampleRate;
+                // (the level inside the first piece, 0.2 to 0.6 s - not the file's peak: where two pieces of this made-up steady sound cross, the join is louder)
+                const int from = juce::jmin ((int) rd->lengthInSamples, (int) (0.2 * rd->sampleRate)), count = juce::jmin ((int) rd->lengthInSamples - from, (int) (0.4 * rd->sampleRate));
+                peak = count > 0 ? b.getMagnitude (from, count) : 0.0f;
+                return true;
+            };
+            double secNew = 0, secOld = 0; float pkNew = 0, pkOld = 0; juce::var metaNew, metaOld;
+            MasterJobSpec spec;
+            if (item != nullptr)
+            {
+                // the newest (the choice left alone): the edit as it is now
+                CHECK (item->formVersion == 0 && makeFormsSpec (mp, mp.mastering, spec).isEmpty() && spec.items.size() == 1 && ! spec.items[0].frozenVersion && spec.items[0].editVersion == 2);
+                {   MasterExportJob job (mp, spec, nullptr, false); auto res = job.execute();
+                    CHECK (res.error.isEmpty() && res.files.size() == 1 && juce::File (res.files[0]).getFileName().contains ("Edit 2") && res.versionNotes.isEmpty());
+                    CHECK (res.files.size() == 1 && audioOf (juce::File (res.files[0]), secNew, pkNew, metaNew)); }
+                // Edit 1 chosen: its one piece, through the mixer as it was frozen (the fader at 0 dB)
+                item->formVersion = 1;
+                CHECK (makeFormsSpec (mp, mp.mastering, spec).isEmpty() && spec.items.size() == 1 && spec.items[0].frozenVersion && spec.items[0].editVersion == 1);
+                CHECK (spec.items.size() == 1 && spec.items[0].editName == "The Lion - Edit 1 - first cut" && spec.items[0].baseName.contains ("Edit 1 - first cut"));
+                {   MasterExportJob job (mp, spec, nullptr, false); auto res = job.execute();
+                    CHECK (res.error.isEmpty() && res.files.size() == 1 && juce::File (res.files[0]).getFileName().contains ("Edit 1 - first cut") && res.versionNotes.isEmpty());
+                    CHECK (res.files.size() == 1 && audioOf (juce::File (res.files[0]), secOld, pkOld, metaOld)); }
+                CHECK (std::abs (secOld - len1) < 0.02 && secNew > secOld + 0.5);                                   // the version's own length, not the edit's as it is now
+                std::printf ("  (levels inside the first piece: Edit 1 %.4f, the edit as it is now %.4f)\n", (double) pkOld, (double) pkNew);
+                CHECK (pkNew > 0.01f && std::abs (pkOld / pkNew - 1.9953f) < 0.03f);                                // 6 dB: the fader as it was frozen, not as it is now
+                CHECK ((int) metaOld["tracks"][0]["version"] == 1 && (int) metaNew["tracks"][0]["version"] == 2 && metaOld["tracks"][0]["piece"].toString().contains ("Edit 1"));
+                // the project itself was not touched by it: the edit is still Edit 2 with two pieces, and its fader is where it was put
+                CHECK (ed.versionNumber() == 2 && ed.regions.size() == 2 && strip != nullptr && std::abs (strip->gainDb.get() + 6.0f) < 1.0e-4f);
+                // the Mastering renders are of the edit as it is now: the version's render was not kept among them
+                {   MasterJobSpec again; item->formVersion = 0; CHECK (makeFormsSpec (mp, mp.mastering, again).isEmpty());
+                    MasterExportJob job (mp, again, nullptr, false); auto res = job.execute(); double s2 = 0; float p2 = 0; juce::var m2;
+                    CHECK (res.error.isEmpty() && res.files.size() == 1 && audioOf (juce::File (res.files[0]), s2, p2, m2) && std::abs (s2 - secNew) < 0.001 && std::abs (p2 - pkNew) < 1.0e-4f); }
+                // "all pieces through one mixer": the version's pieces through that mixer as it is now - and the result says so
+                item->formVersion = 1; mp.mastering.mixerId = mx.id;
+                CHECK (makeFormsSpec (mp, mp.mastering, spec).isEmpty() && spec.items[0].frozenVersion && ! spec.ownMixers);
+                {   MasterExportJob job (mp, spec, nullptr, false); auto res = job.execute(); double s3 = 0; float p3 = 0; juce::var m3;
+                    CHECK (res.error.isEmpty() && res.versionNotes.size() == 1 && res.files.size() == 1 && audioOf (juce::File (res.files[0]), s3, p3, m3) && std::abs (s3 - len1) < 0.02); }
+                mp.mastering.mixerId = juce::Uuid::null();
+                // a version that is not there: said, not guessed; one that is the newest's own number is the newest
+                item->formVersion = 7; CHECK (makeFormsSpec (mp, mp.mastering, spec).isEmpty() && ! spec.items[0].frozenVersion && spec.items[0].editVersion == 2);
+                item->formVersion = 2; CHECK (makeFormsSpec (mp, mp.mastering, spec).isEmpty() && ! spec.items[0].frozenVersion);
+                // the choice is saved with the project, and only when one is made
+                item->formVersion = 1;
+                const auto mv = mp.mastering.toVar();
+                MasteringDef back; back.fromVar (mv);
+                CHECK (back.findItem (ed.id) != nullptr && back.findItem (ed.id)->formVersion == 1);
+                item->formVersion = 0;
+                CHECK (! juce::JSON::toString (mp.mastering.toVar(), true).contains ("formVersion"));
+            }
+        }
+        // any frozen version can be taken away: the later ones move down a number, its comments go to the one before it, nothing is doubled
+        {
+            using namespace editversions;
+            EditDef e; e.id = juce::Uuid(); e.name = "P"; e.sampleRate = 48000.0;
+            const auto takeA = juce::Uuid();
+            auto piece = [&] (juce::int64 in, juce::int64 len) { EditRegion q; q.id = juce::Uuid(); q.takeId = takeA; q.takeName = "t"; q.sampleRate = 48000.0; q.srcIn = in; q.srcOut = in + len; q.sourceLength = 48000 * 120;
+                                                              RegionFile f; f.trackId = juce::Uuid(); f.file = dir.getChildFile ("t.wav"); q.files.push_back (f); return q; };
+            e.insertRegion (piece (0, 48000 * 10));
+            auto note = [] (const char* key, double sec, bool editor = false, int madeIn = 0) { FeedbackNote n; n.key = key; n.who = editor ? "Ed" : "Sarah"; n.text = key; n.seconds = sec; n.editor = editor; n.madeIn = madeIn; return n; };
+            e.feedback = { note ("a", 4.0) }; e.subheading = "one"; freeze (e, juce::var());              // Edit 1
+            e.feedback = { note ("a", 4.0), note ("b", 6.0) }; e.subheading = "two"; freeze (e, juce::var());      // Edit 2: frozen by mistake, with "a" on it a second time
+            e.insertIndex = 0; e.insertRegion (piece (48000 * 50, 48000 * 3));
+            e.feedback = { note ("c", 8.0), note ("r", 8.0, true, 3) }; e.subheading = "three"; freeze (e, juce::var());   // Edit 3
+            e.feedback = { note ("o", 1.0, true, 4) }; e.compareWith = 3;                                   // the live edit: Edit 4
+            CHECK (e.versionNumber() == 4 && ! removeVersion (e, 9) && ! removeVersion (e, 0));
+            CHECK (removeVersion (e, 2));                                                                  // a middle one
+            CHECK (e.versionNumber() == 3 && e.versions.size() == 2 && e.versions[0].number == 1 && e.versions[1].number == 2 && e.versions[1].subheading == "three" && e.compareWith == 2);
+            CHECK (e.versions[0].edit->feedback.size() == 2 && e.versions[0].edit->feedback[0].key == "a" && e.versions[0].edit->feedback[1].key == "b");      // "a" once, "b" moved to Edit 1's lane
+            CHECK (e.versions[1].edit->feedback.size() == 2 && e.versions[1].edit->feedback[1].madeIn == 2 && e.feedback.size() == 1 && e.feedback[0].madeIn == 3);   // the editor's notes follow the numbers
+            CHECK (e.versionTitle (2) == "P - Edit 2 - three");
+            CHECK (removeVersion (e, 1));                                                                  // the first: its comments go to the version that is Edit 1 now, where their music is there
+            CHECK (e.versionNumber() == 2 && e.versions.size() == 1 && e.versions[0].number == 1 && e.versions[0].edit->feedback.size() == 4);
+            if (e.versions[0].edit->feedback.size() == 4) CHECK (e.versions[0].edit->feedback[0].key == "a" && std::abs (e.versions[0].edit->feedback[0].seconds - 7.0) < 1.0e-6 && e.versions[0].edit->feedback[2].key == "r" && e.versions[0].edit->feedback[2].madeIn == 1 && e.versions[0].edit->feedback[3].key == "b");
+            CHECK (removeVersion (e, 1) && e.versions.empty() && e.versionNumber() == 1 && e.subheading == "three" && e.feedback.size() == 5);     // the newest: the freeze undone
+        }
+        // comments that an earlier build put onto an edit a second time (the copy kept at their import, "given back" after a freeze) are taken off
+        // when the project is opened; an edit with frozen versions never gets the copy back; and what is taken away stays away
+        {
+            using namespace editversions;
+            const auto d2 = dir.getChildFile ("doubles"); d2.createDirectory();
+            Project q; q.setInputCount (2); q.setOutputCount (2);
+            q.projectFile = d2.getChildFile ("D.fermata"); q.name = "D";
+            auto& tw = q.addTakeWindow ("Takes");
+            auto& e = q.addEdit ("Song", tw.id); e.sampleRate = 48000.0;
+            EditRegion q1; q1.id = juce::Uuid(); q1.takeId = juce::Uuid(); q1.takeName = "t"; q1.sampleRate = 48000.0; q1.srcIn = 0; q1.srcOut = 48000 * 10; q1.sourceLength = 48000 * 120;
+            RegionFile f1; f1.trackId = q.tracks.empty() ? juce::Uuid() : q.tracks.front().id; f1.file = d2.getChildFile ("t.wav"); q1.files.push_back (f1);
+            e.insertRegion (q1);
+            FeedbackNote n1; n1.key = "k1"; n1.who = "Sarah"; n1.text = "late"; n1.seconds = 3.0; e.feedback = { n1 };
+            q.saveCommentsCopy (e, {});                                                                    // (as the import does)
+            CHECK (q.commentsFolderFor (e).getChildFile ("comments.json").existsAsFile());
+            freeze (e, juce::var());
+            juce::String err; CHECK (q.save (err));
+            { Project q2; CHECK (q2.load (q.projectFile, err)); auto* e2 = q2.findEdit (e.id);
+              CHECK (e2 != nullptr && e2->versions.size() == 1 && e2->feedback.empty() && e2->versions[0].edit->feedback.size() == 1); }      // not given back to Edit 2
+            // a project that already has the double (and the editor's reply to it): the double goes, the reply stays and still finds its comment
+            FeedbackNote dbl = n1; FeedbackNote rep; rep.key = "r1"; rep.who = "Ed"; rep.text = "fixed"; rep.seconds = 3.0; rep.editor = true; rep.replyTo = "k1"; rep.madeIn = 2;
+            e.feedback = { dbl, rep };
+            CHECK (q.save (err));
+            { Project q3; CHECK (q3.load (q.projectFile, err)); auto* e3 = q3.findEdit (e.id);
+              CHECK (e3 != nullptr && e3->feedback.size() == 1 && e3->feedback[0].key == "r1" && e3->versions[0].edit->feedback.size() == 1);
+              if (e3 != nullptr) { const auto lanes = reviewpage::historyFor (*e3, 0.0); CHECK (lanes.size() == 2 && lanes[0].notes.size() == 1 && lanes[1].notes.size() == 1 && lanes[1].notes[0].replyTo == lanes[0].notes[0].id); } }
+            // refreshCommentsCopy: gone when the edit has none, rewritten otherwise, never started where there was none
+            e.feedback.clear(); q.refreshCommentsCopy (e);
+            CHECK (! q.commentsFolderFor (e).getChildFile ("comments.json").existsAsFile());
+            e.feedback = { n1 }; q.refreshCommentsCopy (e);
+            CHECK (! q.commentsFolderFor (e).getChildFile ("comments.json").existsAsFile());
+        }
+        // the conversation as it stood for an older version: later lanes and what the editor wrote later are left out, and places are on that version's timeline
+        {
+            using namespace editversions;
+            EditDef e; e.id = juce::Uuid(); e.name = "P"; e.sampleRate = 48000.0;
+            const auto takeA = juce::Uuid();
+            auto piece = [&] (juce::int64 in, juce::int64 len) { EditRegion q; q.id = juce::Uuid(); q.takeId = takeA; q.takeName = "t"; q.sampleRate = 48000.0; q.srcIn = in; q.srcOut = in + len; q.sourceLength = 48000 * 120;
+                                                              RegionFile f; f.trackId = juce::Uuid(); f.file = dir.getChildFile ("t.wav"); q.files.push_back (f); return q; };
+            e.insertRegion (piece (0, 48000 * 10));
+            FeedbackNote c1; c1.key = "c1"; c1.who = "Sarah"; c1.text = "one"; c1.seconds = 4.0; e.feedback = { c1 };
+            freeze (e, juce::var());                                                              // Edit 1 (c1 on it)
+            FeedbackNote r1; r1.key = "r1"; r1.who = "Ed"; r1.text = "done"; r1.seconds = 4.0; r1.editor = true; r1.replyTo = "c1"; r1.madeIn = 2;
+            e.versions[0].edit->feedback.push_back (r1);                                          // answered while making Edit 2
+            e.insertIndex = 0; e.insertRegion (piece (48000 * 50, 48000 * 3));                    // Edit 2: 3 s put in at the front
+            FeedbackNote c2; c2.key = "c2"; c2.who = "Sarah"; c2.text = "two"; c2.seconds = 9.0; e.feedback = { c2 };
+            freeze (e, juce::var());                                                              // Edit 2 (c2 on it)
+            FeedbackNote r2; r2.key = "r2"; r2.who = "Ed"; r2.text = "ok"; r2.seconds = 9.0; r2.editor = true; r2.replyTo = "c2"; r2.madeIn = 3;
+            e.versions[1].edit->feedback.push_back (r2);                                          // answered while making Edit 3
+            const auto now = reviewpage::historyFor (e, 0.0), two = reviewpage::historyFor (e, 2, 0.0), one = reviewpage::historyFor (e, 1, 0.0);
+            // (each reply with the comment it answers: Edit 3 has nothing of its own yet, so no lane)
+            CHECK (now.size() == 2 && now[0].version == 1 && ! now[0].current && now[0].notes.size() == 2 && now[1].version == 2 && ! now[1].current && now[1].notes.size() == 2 && now[1].notes[1].id == "r2");
+            CHECK (two.size() == 2 && two[0].version == 1 && two[0].notes.size() == 2 && two[1].version == 2 && two[1].current && two[1].notes.size() == 1);      // c1 and r1; c2 - r2 came later
+            if (two.size() == 2 && two[0].notes.size() == 2 && two[1].notes.size() == 1) CHECK (two[0].notes[1].id == "r1" && std::abs (two[0].notes[1].seconds - 7.0) < 1.0e-6 && two[1].notes[0].id == "c2" && std::abs (two[1].notes[0].seconds - 9.0) < 1.0e-6);
+            CHECK (one.size() == 1 && one[0].version == 1 && one[0].current && one[0].notes.size() == 1 && one[0].notes[0].id == "c1" && std::abs (one[0].notes[0].seconds - 4.0) < 1.0e-6);
+        }
     }
 
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);

@@ -5,6 +5,7 @@
 // which each program fills in its own way.
 #include "Uikit.h"
 #include "TimeReadout.h"
+#include "BusyLabel.h"
 #include "../core/AudioOps.h"
 #include "../core/SpectralRepair.h"
 #include "../core/SpectralPicture.h"
@@ -82,8 +83,9 @@ public:
         getProperties().set (ownsRKeyProperty(), true);     // R here runs the window's own job (audition / do the fix): it does not start a recording
         addChildComponent (bar); addAndMakeVisible (status);
         status.setColour (juce::Label::textColourId, theme::warn); status.setMinimumHorizontalScale (1.0f);
+        ProcessWindows::get().add (this);                   // 3.52.0: while this window is worked in and plays, the windows behind it hold their picture (Uikit.h)
     }
-    ~JobDialogBase() override { stopTimer(); job.release(); }          // (asks the work to stop and never waits for it: see AudioJob::release)
+    ~JobDialogBase() override { ProcessWindows::get().remove (this); stopTimer(); job.release(); }          // (asks the work to stop and never waits for it: see AudioJob::release)
 protected:
     void timerCallback() override { progressValue = (double) job.progress(); }
     /** 'ifGone' (optional) runs instead of 'done' when the window has been closed before the job ended: it tidies away what the job made (its files). */
@@ -377,8 +379,24 @@ public:
         return n;
     }
     std::function<void()> onHarmonics;                             // the harmonics came or went (a new box drawn on its own takes them away): for the controls
-    /** Seconds from the start of the area; < 0 hides the playhead. */
-    void setPlayhead (double t) { if (std::abs (t - playT) > 1.0e-6) { playT = t; repaint(); } }
+    /** Seconds from the start of the area; < 0 hides the playhead.
+        3.52.0: only the thin strip the line leaves and the one it moves to are redrawn. It was the whole picture, 30 times a second, for a
+        line two pixels wide - on a big window that alone kept the drawing thread busy. (When a play begins or ends everything is redrawn
+        once: the playhead you placed goes or comes back.) */
+    void setPlayhead (double t)
+    {
+        if (std::abs (t - playT) <= 1.0e-6) return;
+        const double was = playT; playT = t;
+        if ((was < 0.0) != (t < 0.0)) { repaint(); return; }
+        const auto pl = plotArea();
+        const int x0 = tToX (was, pl), x1 = tToX (t, pl);
+        if (x0 == x1) return;
+        auto strip = [&] (double at, int x) { if (at >= vt0 && at <= vt1) repaint (x - 4, pl.getY(), 8, pl.getHeight()); };
+        strip (was, x0); strip (t, x1);
+    }
+    /** 3.52.0: where the music is now (seconds from the start of the area; < 0: nothing plays), asked at every refresh of the screen. A window
+        that sets it gets a playhead that moves at the screen's own rate; without it the window moves the line itself (setPlayhead). */
+    std::function<double()> livePlayhead;
     /** The playhead you place by clicking the time ruler: where Play starts, and the point the zoom keys keep still. */
     double playFrom() const { return cueT >= vt0 && cueT < vt1 ? cueT : vt0; }
     /** The transport: put the placed playhead at t (seconds; < 0 takes it away), and the width of the page shown. */
@@ -455,6 +473,13 @@ public:
     SpectrogramView() { ss.load (gSpecPrefs); debounce.owner = this; buildLut(); setMouseCursor (juce::MouseCursor::CrosshairCursor); }
 
     void paint (juce::Graphics& g) override
+    {
+        BusyLabel busyLabel ("drawing the noise / ReTouch picture");             // 3.52.0: named in the log's stall lines (it was "nothing labelled")
+        const double t0 = juce::Time::getMillisecondCounterHiRes();
+        paintPicture (g);
+        playLog.painted (juce::Time::getMillisecondCounterHiRes() - t0);
+    }
+    void paintPicture (juce::Graphics& g)
     {
         g.fillAll (theme::wellDark);
         auto plot = plotArea();
@@ -1478,6 +1503,39 @@ private:
     juce::int64 detailGen = 0, reqGen = -1;                             // 3.38.0: bumped at every change of the sound or the view; a picture asked for before is not taken
     bool hasSel = false; juce::Point<double> a, b; double playT = -1.0, cueT = -1.0;
     bool showSurround = false; double surroundPct = 100.0; int surroundDir = 0; double surroundAfter = 0.5;
+    /** 3.52.0: how steadily this picture's playhead moved during a play, as ONE line in the log when the play ends (a play of two seconds or
+        more, in a window that sets livePlayhead): the screen refreshes that came late, and the redraws that took long. With the Edit window's
+        own line ("Edit window playhead: ...") it says which window held the drawing up. */
+    struct PlayLog
+    {
+        bool active = false; double t0 = 0.0, lastT = 0.0; int frames = 0, late = 0, slowPaints = 0; double worstGap = 0.0, worstPaint = 0.0;
+        void painted (double ms) { if (active && ms >= 12.0) { ++slowPaints; worstPaint = juce::jmax (worstPaint, ms); } }
+    } playLog;
+    void notePlay (double t)
+    {
+        auto& l = playLog;
+        const double now = juce::Time::getMillisecondCounterHiRes();
+        if (t < 0.0)
+        {
+            if (l.active && l.frames >= 120)
+                juce::Logger::writeToLog ("Noise / ReTouch picture playhead: " + juce::String ((now - l.t0) / 1000.0, 1) + " s played, " + juce::String (l.frames) + " screen refreshes; refreshes late (over 25 ms): "
+                                          + juce::String (l.late) + (l.late > 0 ? ", worst " + juce::String (l.worstGap, 0) + " ms" : juce::String()) + "; redraws over 12 ms: "
+                                          + juce::String (l.slowPaints) + (l.slowPaints > 0 ? ", worst " + juce::String (l.worstPaint, 0) + " ms" : juce::String()));
+            l = PlayLog();
+            return;
+        }
+        if (! l.active) { l = PlayLog(); l.active = true; l.t0 = l.lastT = now; return; }
+        const double dt = now - l.lastT; l.lastT = now; ++l.frames;
+        if (dt > 25.0) { ++l.late; l.worstGap = juce::jmax (l.worstGap, dt); }
+    }
+    void screenRefresh()
+    {
+        if (! livePlayhead) return;
+        const double t = livePlayhead();
+        notePlay (t);
+        setPlayhead (t);
+    }
+    juce::VBlankAttachment vblank { this, [this] { screenRefresh(); } };      // (last: everything it uses exists first)
 };
 
 /** 3.33.0: the harmonics of ReTouch, in the ReTouch window and in Noise mode: they give the box you drew boxes on the other harmonics of its sound (see

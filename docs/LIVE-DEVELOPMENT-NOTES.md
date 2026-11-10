@@ -748,3 +748,14 @@ Two reviewers read the recorder core and found 6 serious things, all fixed, and 
 - The shared project code carries the new keys of fermata 3.51.0 through a save (a comment's `editor`, `replyTo`, `madeIn`; an edit's
   `score`, `scoreTop`, `scoreZoom`); nothing here reads them.
 
+## 0.10.2: what fermata 3.52.0's shared code brings (10 November 2026, with Claude Fable)
+
+No change to fermata:Live's own code. From the shared files:
+- `src/ui/SpectralWindow.h`: the picture's `setPlayhead` repaints two strips, not the whole picture; `paint` carries a `BusyLabel`
+  (new shared header `src/ui/BusyLabel.h`); every `JobDialogBase` registers with `ProcessWindows` (Uikit.h). fermata:Live has no window
+  that holds its picture, so the registration changes nothing here. The Fixer's ReTouch window does not set `livePlayhead`: it moves
+  the line itself, as before.
+- `src/core`: `BounceSettings::overrides` (empty unless a frozen version is rendered: fermata's listening copies only),
+  `MasterItem::formVersion`, `editversions::removeVersion`, `Project::refreshCommentsCopy` and the repair in `restoreSavedComments`,
+  `reviewpage::historyFor`'s lanes, the page template.
+Checked here: the recorder core's tests (`tools/live-check.sh`) and a build of the program on Linux.

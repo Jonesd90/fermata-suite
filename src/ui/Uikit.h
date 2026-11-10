@@ -803,6 +803,33 @@ private:
     std::vector<juce::Component::SafePointer<juce::Component>> list;
 };
 
+/** 3.52.0 (10 November 2026, from a log: the picture of the noise window stuttered while it played, with the whole PC at a tenth of its power):
+    the process windows that are open - noise mode, ReTouch, Pitch and the others built on JobDialogBase, which puts itself on this list.
+    Every window is drawn by the one message thread, so while a process window plays, a redraw of the Edit window or a take window behind it
+    (a quarter to half a second each, with many tracks) stops the process window's own moving picture for that long. inUse() is what those
+    windows ask before they draw: while a process window is the one being worked in they hold the picture they have (HeldPicture.h). */
+class ProcessWindows
+{
+public:
+    static ProcessWindows& get() { static ProcessWindows p; return p; }
+    void add (juce::Component* c) { list.push_back (c); }
+    void remove (juce::Component* c) { list.erase (std::remove (list.begin(), list.end(), c), list.end()); if (list.empty()) stamped = false; }
+    /** A process window is the window being worked in - or was, within the last two seconds (a menu or a message box of its own is in front
+        for a moment; the hold must not come and go with it). */
+    bool inUse()
+    {
+        if (list.empty()) return false;
+        const auto now = juce::Time::getMillisecondCounter();
+        if (auto* active = juce::TopLevelWindow::getActiveTopLevelWindow())
+            for (auto* c : list)
+                if (c->isShowing() && c->getTopLevelComponent() == active) { last = now; stamped = true; return true; }
+        return stamped && now - last < 2000;
+    }
+private:
+    std::vector<juce::Component*> list;
+    juce::uint32 last = 0; bool stamped = false;
+};
+
 /** The little drawing-pin button next to the sun / moon: a pinned window stays in front of the other windows (see Pins: any number can be pinned). */
 class PinButton : public juce::Button
 {

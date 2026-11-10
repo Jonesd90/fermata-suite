@@ -68,6 +68,7 @@ var MasteringDef::toVar() const
     {
         var o = newObj();
         put (o, "edit", i.editId.toString()); put (o, "include", i.include); put (o, "fileName", i.fileName); put (o, "tags", tagsToVar (i.tags));
+        if (i.formVersion > 0) put (o, "formVersion", i.formVersion);       // (3.52.0: written only when an older version is chosen)
         its.add (o);
     }
     put (root, "items", its);
@@ -135,6 +136,7 @@ void MasteringDef::fromVar (const var& root)
         {
             MasterItem i; i.editId = idOf (v["edit"]); i.include = v["include"].isVoid() ? true : (bool) v["include"];
             i.fileName = v["fileName"].toString(); i.tags = tagsFromVar (v["tags"]);
+            i.formVersion = juce::jlimit (0, 100000, (int) v["formVersion"]);
             if (! i.editId.isNull()) items.push_back (i);
         }
     if (const auto a = root["atmos"]; a.isObject())                             // 3.40.0

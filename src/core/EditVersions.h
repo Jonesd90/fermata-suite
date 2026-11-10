@@ -154,6 +154,38 @@ inline bool unfreezeLast (EditDef& live)
     return true;
 }
 
+/** 3.52.0 (asked for on 10 November 2026: "I have accidentally frozen one too many ... I want to be able to delete a whole edit"): frozen version
+    n taken away, whichever it is. The versions after it move down one number - Edit 3 becomes Edit 2, and the live edit one less too - and so do
+    the 'madeIn' numbers of the editor's notes. Its comments are not lost: they go, by the music, to the version before it (its lane), or - when
+    it was Edit 1 - to the version that takes its number (the next frozen one, or the live edit); a comment that is there already (the same
+    key) is not doubled. When n is the newest frozen version this is "the freeze undone" (unfreezeLast): its subheading and its comments come
+    back onto the live edit. False when there is no such version.
+    What cannot be put right: a listening copy that was made of a version whose number changes still says the old number, and its comments,
+    when they come back, go to the version that has that number now. */
+inline bool removeVersion (EditDef& live, int n)
+{
+    if (n == (int) live.versions.size() && live.version (n) != nullptr && live.versions.back().number == n) return unfreezeLast (live);
+    size_t at = live.versions.size();
+    for (size_t i = 0; i < live.versions.size(); ++i) if (live.versions[i].number == n) at = i;
+    if (at >= live.versions.size()) return false;
+    auto gone = live.versions[at];
+    live.versions.erase (live.versions.begin() + (std::ptrdiff_t) at);
+    for (auto& v : live.versions) if (v.number > n) --v.number;
+    auto renumber = [n] (std::vector<FeedbackNote>& list) { for (auto& f : list) if (f.madeIn > n) --f.madeIn; };
+    renumber (live.feedback);
+    for (auto& v : live.versions) if (v.edit != nullptr) renumber (v.edit->feedback);
+    if (gone.edit != nullptr && ! gone.edit->feedback.empty())
+    {
+        auto notes = gone.edit->feedback; renumber (notes);
+        EditDef* to = n > 1 ? live.versionEdit (n - 1) : live.versionEdit (n);          // (the one before it; for Edit 1, the one that is Edit 1 now)
+        if (to == nullptr) to = &live;
+        for (auto& f : notes) f.seconds = mapSeconds (*gone.edit, *to, f.seconds);
+        feedback::merge (to->feedback, notes);
+    }
+    if (live.compareWith == n) live.compareWith = 0; else if (live.compareWith > n) --live.compareWith;
+    return true;
+}
+
 // ----------------------------------------------------------------------------- what changed
 /** One change the newer version (B) made to the older (A): a span of the main track (one piece, or a run of pieces changed together), an overdub, or
     an automation lane. 'label' is the word on the flag, 'text' the full account. The spans are samples on each version's timeline; an empty span

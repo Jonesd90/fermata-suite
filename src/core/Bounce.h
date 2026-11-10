@@ -14,9 +14,22 @@ struct BounceItem
     juce::String alignOwner;                          // whose spot-mic alignment it plays with (Project::alignOwnerFor; empty = BounceSettings::alignOwner)
 };
 
+/** 3.52.0: a frozen version of an edit to render in place of the edit as it is now (a listening copy of "Edit 2" made when the work is at Edit 4).
+    The render goes through a private copy of the project (see Bouncer), so the version is put into THAT copy and the project itself is never
+    touched: the copy's edit becomes 'edit' (its pieces, fades, levels, volume areas and automation as frozen), and the copy's mixer 'mixerId'
+    is given the settings and plug-ins of 'mixer' (Project::mixSnapshot with inserts, as the version kept it: EditVersion::mixer; void = the
+    mixer stays as it is now). The items of that edit must be given the version's own segments (segmentsForEdit (project, *edit)). */
+struct BounceEditOverride
+{
+    std::shared_ptr<const EditDef> edit;
+    juce::var  mixer;
+    juce::Uuid mixerId = juce::Uuid::null();
+};
+
 /** What to bounce out and how. */
 struct BounceSettings
 {
+    std::vector<BounceEditOverride> overrides;   // 3.52.0: frozen versions rendered in place of their edits (see BounceEditOverride)
     std::vector<PlaySegment> segments;       // the audio on the timeline (a take, or an edit with its crossfades) used by every item that has none of its own
     double sampleRate = 48000.0;
     std::vector<BounceItem> items;           // one file each

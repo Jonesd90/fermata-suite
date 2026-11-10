@@ -16,6 +16,7 @@ struct MasterJobItem
     int          trackNo = 0;
     juce::String editName, projectName;   // for the listening copy (3.42.0: for a listening copy, the version's name - "The Lion - Edit 2 - More reverb")
     int          editVersion = 0;         // 3.42.0: the edit's version number a listening copy was made from (goes into the page, and comes back with the comments)
+    bool         frozenVersion = false;   // 3.52.0: that version is a frozen one (MasterItem::formVersion): rendered from its own pieces, automation and mixer settings
     double       editOffsetSeconds = 0.0;   // where the exported file's time 0 sits on the edit's timeline
     std::vector<reviewpage::PastLane> history;   // 3.51.0: a listening copy's conversation so far (reviewpage::historyFor): every version's comments
 };
@@ -83,6 +84,7 @@ struct MasterExportResult
     LoudnessCheck loudness;          // what was measured (a loudness target only)
     int stemFiles = 0;               // 3.26.0: how many of 'files' are stems
     juce::StringArray clippedStems;  // stems whose level went over 0 dBFS at the master's gain ("01 - Kyrie - Strings  +0.8 dB")
+    juce::StringArray versionNotes;   // 3.52.0: about listening copies of frozen versions - one that went through the mixer as it is NOW (and why)
     juce::StringArray previousPieces; // 3.46.0: the pieces written from their PREVIOUS render ("Use previous render" is on for them), by name: what was
                                       // changed in them since is not in the files, and the export used to say nothing of it
 };
@@ -135,6 +137,11 @@ private:
 
     MasterJobSpec spec;
     std::unique_ptr<MasterRenderBatch> batch;       // the renders to export (up to date ones are reused, the others are made first)
+    /** 3.52.0: the items that are frozen versions. Each has a Bouncer of its own (the version put into the render copy: BounceEditOverride) and is
+        rendered afresh into the work folder at every export - never kept with the Mastering renders, which are of the edits as they are now. */
+    struct VersionRender { int item = 0; std::unique_ptr<Bouncer> bouncer; juce::String name, note; };
+    std::vector<VersionRender> versionRenders;
+    std::vector<int> itemBatch;                     // for each item: its place in 'batch', or -1 (a frozen version)
     std::function<void (MasterExportResult)> onDone;
     std::atomic<float> sub { 0.0f };
     std::atomic<int> stage { 0 };

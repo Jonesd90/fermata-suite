@@ -27,12 +27,32 @@ Bouncer::Bouncer (const Project& live, const BounceSettings& s) : settings (s)
         use (own ? it.mixerId : s.mixerId);
     }
     shadow = live.cloneForRender (s.sampleRate, kBlock, mixersUsed);
+    // 3.52.0: frozen versions - each put into the copy in place of its edit, its mixer given the settings (and plug-ins) the version was frozen
+    // with. The plug-ins it needs are checked against its own snapshot, not against the mixer as it is now.
+    juce::StringArray missing;
+    std::vector<juce::Uuid> overridden;
+    for (auto& o : s.overrides)
+    {
+        if (o.edit == nullptr) continue;
+        auto* se = shadow->findEdit (o.edit->id);
+        if (se == nullptr) { prepareError = "The edit of a frozen version no longer exists."; return; }
+        { EditDef asFrozen (*o.edit); asFrozen.versions.clear(); *se = std::move (asFrozen); }
+        if (o.mixer.isVoid() || o.mixerId.isNull()) continue;
+        for (auto& m : shadow->mixers)
+            if (m->id == o.mixerId && std::find (mixersUsed.begin(), mixersUsed.end(), m->id) != mixersUsed.end())
+            {
+                MixParts all; all.clearEmptySlots = true;
+                shadow->applyMix (*m, o.mixer, s.sampleRate, kBlock, all);
+                missing.addArray (shadow->pluginsMissingFromSnapshot (*m, o.mixer));
+                overridden.push_back (m->id);
+            }
+    }
     // A plug-in that would not start in the render copy used to be left out of the bounce without a word, so the file did not sound like the mix.
     // Now the bounce is refused and says which (the log says why it would not start). Every mixer the render goes through is checked (3.27.1: with
     // "each piece through its own mixer" only the processing mixer was looked at, which the master render does not even use, so a plug-in on an
     // edit's mixer that failed to start was left out without a word).
-    juce::StringArray missing;
-    for (auto& mid : mixersUsed) missing.addArray (live.pluginsMissingFrom (*shadow, mid));
+    for (auto& mid : mixersUsed)
+        if (std::find (overridden.begin(), overridden.end(), mid) == overridden.end()) missing.addArray (live.pluginsMissingFrom (*shadow, mid));
     missing.removeDuplicates (false);
     if (! missing.isEmpty())
     {

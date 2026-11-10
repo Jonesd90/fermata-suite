@@ -8,6 +8,16 @@ fermata:Live is the live-concert recorder that goes with fermata (see `docs/LIVE
 
 A line that starts with **Shared:** is a change to the code fermata shares (see `COMPATIBILITY.md`), so fermata's next build mentions it too.
 
+## 0.10.2
+Built 10 November 2026 (the conversation for both programs), with Claude Fable. No change to the recorder and none to fermata:Live's own
+code: what the shared code brings.
+- **Shared (fermata 3.52.0): the ReTouch picture's playhead.** In the Fixer's ReTouch window the picture redraws only the strip the
+  playhead is in when the line moves (it redrew the whole picture), and the log names the picture when its drawing takes long.
+- **Shared (fermata 3.52.0): comments and versions.** The listening copy's page shows each round of comments on two lines (the
+  listeners', the editor's replies) with a tab for each version; a listening copy can be made of an older, frozen version of an edit
+  (the project file may carry `"formVersion"` on a Mastering piece); any frozen version can be removed; the safety copy of imported
+  comments follows a freeze. fermata:Live reads and writes these through the shared code and never looks at them.
+
 ## 0.10.1
 Built 10 November 2026 (the conversation for both programs), with Claude Fable. No change to the recorder and none to fermata:Live's own
 code: what the shared code brings.

@@ -2406,7 +2406,7 @@ muted dial pulses together; `SendDial::pulse` repaints the dial at 15 Hz only wh
   in that comment's thread (`feedback::threads`: notes within 0.05 s) and travels with it through every operation that moves comments
   (rippleAfter, `editversions::Riders`, the undo's carry, freeze / unfreeze). `feedback::sortNotes` keeps a reply after its comment
   whichever was put in first; `feedback::merge` ends with it.
-- **Where a note is KEPT and where it is SHOWN are different on purpose.** Kept: under the comment (so fermata's lanes show comment and
+- *(Changed in 3.52.0: a note is now shown in the lane it is kept in - see 3.52.0.)* **Where a note is KEPT and where it is SHOWN are different on purpose.** Kept: under the comment (so fermata's lanes show comment and
   reply together). Shown in the listening copy: in the lane of the round it was made in - a listener's comment in the lane of the
   version it was made on, an editor's note in the lane of `madeIn` (`reviewpage::historyFor`, ReviewHistory.h). So the live version's
   lane is "the editor's replies on this version", which is what was asked for (10 November: "They should be able to 'see replies on
@@ -2419,7 +2419,7 @@ muted dial pulses together; `SendDial::pulse` repaints the dial at 15 Hz only wh
 - **One colour a person**: `feedback::personArgb` (Feedback.h) and `personColour` in `tools/review_page.html` are the same function,
   written out by hand in both (multiply by 31, add the character, modulo 8 into the same palette). The core test holds the values the
   page's script gives for six names; change one and the test fails.
-- **The import replaces the listeners' comments of a version, never the editor's notes** (`importFeedbackFiles`: the notes with `editor`
+- *(Changed in 3.52.0: the import only adds - see 3.52.0.)* **The import replaces the listeners' comments of a version, never the editor's notes** (`importFeedbackFiles`: the notes with `editor`
   are put back before the merge). "Mark every comment as done" and "Take away the comments marked done" leave the editor's notes alone;
   `feedbackui::allDone` does not count them.
 - **`tools/review_page.html` is the page; `src/core/ReviewPageTemplate.inc` is made from it** (`tools/make_review_template.py`). In 3.42.0
@@ -2461,12 +2461,81 @@ same reading.
 (`Component::grabKeyboardFocusInternal`): for the version strip that was the subheading box. The strip has
 `setMouseClickGrabsKeyboardFocus (false)` and gives the keyboard to the timeline in `mouseDown`.
 
-**Asked for on 10 November and not built**: a listening copy of an older, frozen version, chosen per piece on the Listening copy tab
+*(Built in 3.52.0.)* **Asked for on 10 November and not built**: a listening copy of an older, frozen version, chosen per piece on the Listening copy tab
 (default: the newest). The export renders an edit by its id through `MasterRenderBatch` / `Bouncer`, with the live edit's automation
 (`bi.automationEdit`) and the edit's mixer as it is now; a frozen version needs its own pieces (`segmentsForEdit (live, *v.edit)` is
 enough for those), its own automation lanes and the mixer snapshot it was frozen with (`EditVersion::mixer`, with plug-ins' states),
 and the render store keeps one render per edit id. "Hear Edit N" (`AppContext::playEditVersion`) plays the pieces through the mixer as
 it is now and says so; an export must not do that silently.
+
+## 3.52.0: the comments workflow; a listening copy of any version; removing a frozen version; held pictures behind a process window (10 November 2026, with Claude Fable)
+
+**The workflow, as the user set it out on 10 November 2026** (it replaces parts of 3.42.0 and 3.51.0 - do not bring those back):
+1. Edit 1 is made; listening copies go out. **An export freezes nothing** and offers nothing (the "Freeze now?" in the Export complete
+   box, 3.42.0, is gone with `MasteringComponent::freezeExported` and `lastFormVersions`).
+2. A .fmnotes file comes back. **The import is where the next edit starts** (`EditWindowComponent::importFeedbackFiles`): comments on
+   the live version ask once - "Start Edit N+1 and show them above it?" (freeze through `freezeLiveVersion`, the Freeze key's own code;
+   the comments then go to the frozen version's list, its lane shown) or "Keep on Edit N". Comments on an already frozen version go to
+   its list with no question: that is how a second listener's Edit 1 file joins the first when Edit 2 exists. A file that names no
+   version counts as the live one. Several pieces in one file: one question for all of them.
+3. **The import only adds** (`feedback::merge`: a known key is updated, its tick kept). The old "the first file of a batch replaces the
+   version's comments" lost one listener's comments to the next one's file - it must not come back in any form.
+4. The editor answers by clicking the comments in the lane (3.51.0's Write Reply). A reply is kept in the list of the comment it
+   answers, with the same `seconds`.
+5. **The listening copy shows a round as two lines**: `reviewpage::historyFor` now puts every note in the lane of the list it is kept in
+   (the `madeIn` lane rule of 3.51.0 is gone; `madeIn` is still written, and still decides what is left out of a copy of an OLDER
+   version: a note written while a later one was being made). The page (`tools/review_page.html`) splits a lane into rows - "Edit k
+   comments" and "Edit k editor" (gold) - and a moment's notes into two flags (`HT[k].marks`, `rows`); the list at the side keeps the
+   thread together under a tab for the version. One open / closed choice per version (`hid['v'+n]`: 1 closed, 0 open, absent = the
+   default) drives the tick, the tab and the rows. Default: the newest lane that is not the copy's own version, and the copy's own
+   version, are open; older ones closed. The listener's row is "Edit N: yours".
+Tried in a browser by script (Chromium): the default for a copy of Edit 3 and of Edit 2, opening and closing by tab and by tick, the
+choice kept over a reload, a click on a flag of each line, a reply and a new comment and the notes file they make, dark, a phone's width.
+The import was driven in the Linux build under Xvfb with the test project (Edit 1 frozen, working in Edit 2): a file on Edit 2 asked the
+question, "Start Edit 3" froze Edit 2 and put its three comments in the Edit 2 lane; then two files together, one on Edit 1 and one on
+Edit 2, went into those lanes with no question and nothing replaced; a reply written with Enter (and Shift + Enter for a second line) was
+saved under its comment with `madeIn` 3; listening copies of Edit 3 and of Edit 2 (chosen on the key) were made and opened in a browser.
+No sound here: the renders were silent.
+
+**A listening copy of a frozen version** (`MasterItem::formVersion`, 0 = the newest; saved as `"formVersion"` only when set).
+- `makeFilesSpec` marks the item (`MasterJobItem::frozenVersion`), takes the offset and the conversation from the version
+  (`historyFor (live, version, offset)`), and the names say "Edit N".
+- **Rendered in the Bouncer's private copy of the project, never in the project** (`BounceSettings::overrides`, `BounceEditOverride`):
+  after `cloneForRender` the frozen `EditDef` is put in place of the edit in the shadow, and - with "each piece through its own mixer" -
+  the edit's mixer in the shadow is given the snapshot the version was frozen with (`applyMix` with `clearEmptySlots`; its plug-ins are
+  checked against the snapshot, `Project::pluginsMissingFromSnapshot`). With "all pieces through one mixer" the mixer is as it is now
+  and `MasterExportResult::versionNotes` says so in the Export complete box.
+- A frozen item is **not** rendered through `MasterRenderBatch` (the store keeps one render per edit id, the live edit's): the job
+  has a Bouncer of its own per frozen item (`MasterExportJob::versionRenders`), written into the work folder's `versions`.
+- The core test renders both and compares length and level; it measures the level INSIDE the first piece, because two pieces of a
+  steady made-up sound are louder where they cross.
+
+**Removing a frozen version** (`editversions::removeVersion`): the newest is `unfreezeLast`; any other is erased, the later ones and
+every `madeIn` renumbered, its comments merged into the version before it by their music (`mapSeconds`), `compareWith` moved. The
+window resets `formVersion` of the edit's Mastering piece.
+
+**The comments' safety copy and a freeze** (the doubled comments of 10 November). `Project::saveCommentsCopy` writes `comments.json` at
+an import; `restoreSavedComments` gives it back to an edit that has lost its comments. A freeze empties the live edit's list on
+purpose, so the copy came back as a second set. Now: every freeze / unfreeze / thread-box delete calls `refreshCommentsCopy` (which
+rewrites or removes an existing copy and never starts one); `restoreSavedComments` never restores to an edit that has frozen versions,
+and takes off the live edit any listener's note whose key is on one of its frozen versions (the repair for projects saved by 3.51.0).
+
+**Held pictures** (`HeldPicture.h`, fermata only; `ProcessWindows` in Uikit.h, shared). The log of 10 November: 12 cores at 5 to 15%,
+the message thread held ~290 times for 150 to 470 ms by "drawing the edit window / a take window" while the noise picture played.
+- `JobDialogBase` (SpectralWindow.h) registers every process window with `ProcessWindows`; `inUse()` = one of them is, or was within
+  2 s, the active window.
+- While `inUse()` and the transport plays (or did within 1.5 s) `EditTimeline` and the take window show a kept image
+  (`HeldPicture::show`) instead of painting, skip their timers' repaints and `movePlayhead`; `keep` makes the image at the end of a
+  normal paint whenever a process window is in use, so the first held frame costs nothing. `stale` brings one real repaint when the
+  hold ends. **Never while recording** (the take window's picture is the recording).
+- `SpectrogramView`: `setPlayhead` repaints two 8-pixel strips; `livePlayhead` + a `VBlankAttachment` move the line at the screen's
+  rate (Noise mode sets it; a window that does not still calls `setPlayhead` itself); `BusyLabel ("drawing the noise / ReTouch
+  picture")` for the stall watch; `PlayLog` writes one line per play. `BusyLabel` moved to its own shared header (`BusyLabel.h`).
+- `FERMATA_TEST_HOLD=1`: holds whenever a process window is in use and makes the Edit window ask for a redraw every tick - measured
+  here with `FERMATA_PAINT_PROFILE=1`: 0.3 ms a held redraw against 16 to 33 ms a real one. **Not heard or seen with sound** (no audio
+  device here): the user's next log is the check ("Noise / ReTouch picture playhead: ..." and "redraws held back ...").
+
+**The reply box.** `feedbackui::ReplyEditor`: Return = Add (`onEnter`), Shift + Return inserts a line break.
 
 ## 3.46.1: the fourth sweep, areas A, B and C; the list number in "Number the files" (9 November 2026, with Claude Fable)
 

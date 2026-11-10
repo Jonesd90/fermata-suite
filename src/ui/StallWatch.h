@@ -4,20 +4,10 @@
 #include <vector>
 #include "../core/CoreReservation.h"
 #include "../core/CrashReport.h"
+#include "BusyLabel.h"                  // (messageThreadLabel and BusyLabel: in a file of their own since 3.52.0)
 
 namespace td
 {
-/** What the message thread is busy with just now, in a few words (a string literal), for the stall watch's log lines. Set by BusyLabel. */
-inline std::atomic<const char*>& messageThreadLabel() noexcept { static std::atomic<const char*> l { nullptr }; return l; }
-
-/** Labels a stretch of message-thread work for the stall watch: "starting playback", "drawing the edit window" ... (nested: the inner one shows). */
-struct BusyLabel
-{
-    explicit BusyLabel (const char* what) noexcept : previous (messageThreadLabel().exchange (what)) {}
-    ~BusyLabel() { messageThreadLabel().store (previous); }
-    const char* previous;
-    JUCE_DECLARE_NON_COPYABLE (BusyLabel)
-};
 
 /** 3.45.1: the plug-in the message thread is starting just now, for the stall watch. Some plug-ins take many seconds to start (a big reverb checking its
     own installation and starting its threads: Seventh Heaven Professional took 19 s on 9 November 2026), and Fermata can only wait for them - a VST3

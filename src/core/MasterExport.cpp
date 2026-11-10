@@ -209,10 +209,20 @@ juce::String makeFilesSpec (const Project& p, const MasteringDef& def, MasterJob
         auto title = its[i]->tags.title.isNotEmpty() ? its[i]->tags.title : base;
         if (listeningCopies)
         {   // 3.42.0: a listening copy is of a version of the edit, and says which: "The Lion - Edit 2 - More reverb" (its comments come back to that version)
-            const int ver = edits[i]->versionNumber();
+            // 3.52.0: the newest version - the edit as it is now - unless an older, frozen one is chosen for this piece (MasterItem::formVersion)
+            int ver = edits[i]->versionNumber();
+            if (const int want = its[i]->formVersion; want > 0 && want < ver)
+            {
+                const auto* ve = edits[i]->versionEdit (want);
+                if (ve == nullptr) return "\"" + edits[i]->name + "\": Edit " + juce::String (want) + " is not there any more. Choose another version for its listening copy.";
+                if (ve->isEmpty()) return "\"" + edits[i]->versionTitle (want) + "\" has no audio in it.";
+                if (std::abs (ve->sampleRate - edits[i]->sampleRate) > 0.5) return "\"" + edits[i]->versionTitle (want) + "\" is at another sample rate than the edit is now: its listening copy cannot be made.";
+                ver = want; j.frozenVersion = true;
+                j.editOffsetSeconds = ve->sampleRate > 0.0 ? (double) ve->audibleStart() / ve->sampleRate : 0.0;         // (the version's own start)
+            }
             const auto versionTail = edits[i]->versionTail (ver);                                                      // " - Edit 2 - More reverb"
             j.editVersion = ver; j.editName = edits[i]->versionTitle (ver);
-            j.history = reviewpage::historyFor (*edits[i], j.editOffsetSeconds);                                       // 3.51.0: the comments so far go into the copy
+            j.history = reviewpage::historyFor (*edits[i], ver, j.editOffsetSeconds);                                  // 3.51.0: the comments so far go into the copy (3.52.0: as they stood for that version)
             base += versionTail; title += versionTail;
         }
         j.baseName = def.vm.numberFiles ? juce::String (n).paddedLeft ('0', 2) + " - " + base : base;
@@ -277,18 +287,61 @@ MasterExportJob::MasterExportJob (const Project& live, const MasterJobSpec& s, s
     : juce::Thread ("Mastering export"), spec (s), onDone (std::move (done))
 {
     std::vector<juce::Uuid> ids;
+    itemBatch.assign (spec.items.size(), -1);
     for (size_t i = 0; i < spec.items.size(); ++i)
     {
         auto* e = const_cast<Project&> (live).findEdit (spec.items[i].editId);
         if (e == nullptr || e->isEmpty()) { earlyError = "An edit no longer exists or is empty."; break; }
-        ids.push_back (e->id);
+        if (spec.items[i].frozenVersion && spec.formsOnly) continue;      // (3.52.0: a frozen version has its own render, below)
+        itemBatch[i] = (int) ids.size(); ids.push_back (e->id);
     }
     if (earlyError.isEmpty())
     {
         RenderParams rp; rp.sourceId = spec.sourceId; rp.mixerId = spec.mixerId; rp.ownMixers = spec.ownMixers; rp.tailSeconds = spec.tailSeconds;
         const bool stems = spec.kind == MasterJobSpec::Kind::Files && ! spec.formsOnly && ! spec.stemIds.empty();
-        batch = std::make_unique<MasterRenderBatch> (live, ids, rp, false, stems ? spec.stemIds : std::vector<juce::Uuid>(), spec.workFolder.getChildFile ("stems"));
-        if (batch->getPrepareError().isNotEmpty()) earlyError = batch->getPrepareError();
+        if (! ids.empty())
+        {
+            batch = std::make_unique<MasterRenderBatch> (live, ids, rp, false, stems ? spec.stemIds : std::vector<juce::Uuid>(), spec.workFolder.getChildFile ("stems"));
+            if (batch->getPrepareError().isNotEmpty()) earlyError = batch->getPrepareError();
+        }
+        // 3.52.0: the frozen versions. Each is rendered like a piece of the batch - 32-bit float, its own rate, the tail - but from the version:
+        // its pieces, fades, levels, volume areas and automation as they were frozen, through its edit's mixer set as it was frozen (plug-ins and
+        // all), in the render's private copy of the project. With "all pieces through one mixer" chosen, or a version frozen before its edit
+        // had a mixer of its own, the mixer is as it is now, and the result says so.
+        for (size_t i = 0; i < spec.items.size() && earlyError.isEmpty(); ++i)
+        {
+            if (itemBatch[i] >= 0) continue;
+            auto* e = const_cast<Project&> (live).findEdit (spec.items[i].editId);
+            const auto* v = e->version (spec.items[i].editVersion);
+            if (v == nullptr || v->edit == nullptr || v->edit->isEmpty()) { earlyError = "\"" + spec.items[i].editName + "\" is not there any more."; break; }
+            const auto& ve = *v->edit;
+            VersionRender vr; vr.item = (int) i; vr.name = spec.items[i].editName;
+            BounceSettings bs;
+            bs.folder = spec.workFolder.getChildFile ("versions"); bs.mixerId = rp.mixerId; bs.sources.push_back (rp.sourceId);
+            bs.addOutputName = false; bs.floatFiles = true; bs.normalise = false; bs.tailSeconds = rp.tailSeconds; bs.sampleRate = ve.sampleRate;
+            BounceItem bi;
+            bi.name = "version-" + juce::String ((int) i + 1);
+            bi.start = ve.audibleStart(); bi.end = ve.audibleEnd();
+            bi.segments = segmentsForEdit (live, ve);
+            bi.automationEdit = ve.hasAutomation() ? ve.id : juce::Uuid::null();
+            bi.alignOwner = live.alignOwnerFor (true, e->id);
+            BounceEditOverride ov; ov.edit = v->edit;
+            if (rp.ownMixers)
+            {
+                if (auto* em = live.mixerOfEdit (e->id))
+                {
+                    bi.mixerId = em->id;
+                    if (! v->mixer.isVoid()) { ov.mixer = v->mixer; ov.mixerId = em->id; }
+                    else vr.note = "\"" + vr.name + "\": this version kept no mixer settings of its own, so it went through the edit's mixer as it is now.";
+                }
+            }
+            else vr.note = "\"" + vr.name + "\": \"all pieces through one mixer\" is chosen, so it went through that mixer as it is now (its pieces and automation are the version's).";
+            bs.overrides.push_back (std::move (ov));
+            bs.items.push_back (std::move (bi));
+            vr.bouncer = std::make_unique<Bouncer> (live, bs);
+            if (vr.bouncer->getPrepareError().isNotEmpty()) earlyError = "\"" + vr.name + "\": " + vr.bouncer->getPrepareError();
+            versionRenders.push_back (std::move (vr));
+        }
     }
     if (startNow) startThread (juce::Thread::Priority::normal);
 }
@@ -489,21 +542,38 @@ MasterExportResult MasterExportJob::executeInner()
     auto setStatus = [&] (const juce::String& s) { const juce::ScopedLock sl (lock); status = s; };
     if (earlyError.isNotEmpty()) { R.error = earlyError; return R; }
     const int n = (int) spec.items.size();
-    if (n == 0 || batch == nullptr) { R.error = "Nothing to export."; return R; }
+    if (n == 0 || (batch == nullptr && versionRenders.empty())) { R.error = "Nothing to export."; return R; }
     if (! spec.destFolder.createDirectory()) { R.error = "Cannot create " + spec.destFolder.getFullPathName(); return R; }
 
     // ---- 1. every edit through its mixer (32-bit float, nothing clipped, native sample rate). Renders that are up to date are reused; the others are made now and kept.
     stage = 0; sub = 0.0f; setStatus ("Rendering through the mixer...");
-    const auto rerr = batch->run (&sub, &cancelFlag);
-    if (rerr == "Cancelled.") { R.cancelled = true; return R; }
-    if (rerr.isNotEmpty()) { R.error = rerr; return R; }
-    if (batch->total() != n) { R.error = "The renderer made a different number of files than expected."; return R; }
-    std::vector<juce::File> rendered;
-    for (int i = 0; i < n; ++i) rendered.push_back (batch->fileFor (i));
-    for (int i = 0; i < n; ++i) if (batch->isPrevious (i)) R.previousPieces.add (batch->nameFor (i));      // (3.46.0: said in the box at the end)
-    const int nStems = batch->numStems();                                 // 3.26.0: each piece's stems (their renders are in the work folder)
+    std::vector<juce::File> rendered ((size_t) n);
+    if (batch != nullptr)
+    {
+        const auto rerr = batch->run (&sub, &cancelFlag);
+        if (rerr == "Cancelled.") { R.cancelled = true; return R; }
+        if (rerr.isNotEmpty()) { R.error = rerr; return R; }
+        if (batch->total() != n - (int) versionRenders.size()) { R.error = "The renderer made a different number of files than expected."; return R; }
+    }
+    for (int i = 0; i < n; ++i)
+        if (const int b = itemBatch[(size_t) i]; b >= 0)
+        {
+            rendered[(size_t) i] = batch->fileFor (b);
+            if (batch->isPrevious (b)) R.previousPieces.add (batch->nameFor (b));      // (3.46.0: said in the box at the end)
+        }
+    for (auto& vr : versionRenders)                                       // 3.52.0: the frozen versions, each from its own render copy
+    {
+        setStatus ("Rendering " + vr.name + " through the mixer as it was frozen...");
+        const auto br = vr.bouncer->render (&sub, &cancelFlag);
+        if (br.cancelled) { R.cancelled = true; return R; }
+        if (br.error.isNotEmpty()) { R.error = "\"" + vr.name + "\": " + br.error; return R; }
+        if (br.files.size() != 1) { R.error = "The renderer made a different number of files than expected."; return R; }
+        rendered[(size_t) vr.item] = juce::File (br.files[0]);
+        if (vr.note.isNotEmpty()) R.versionNotes.add (vr.note);
+    }
+    const int nStems = batch != nullptr ? batch->numStems() : 0;          // 3.26.0: each piece's stems (their renders are in the work folder)
     std::vector<std::vector<juce::File>> stemProc ((size_t) n);
-    for (int i = 0; i < n; ++i) for (int st = 0; st < nStems; ++st) stemProc[(size_t) i].push_back (batch->stemFileFor (i, st));
+    for (int i = 0; i < n; ++i) if (const int b = itemBatch[(size_t) i]; b >= 0) for (int st = 0; st < nStems; ++st) stemProc[(size_t) i].push_back (batch->stemFileFor (b, st));
     // (the batch - and the render copies' plug-in instances inside its Bouncers - is kept until the job is destroyed on the message thread: plug-ins
     // expect to be released on the thread that made them - 3.27.1)
 

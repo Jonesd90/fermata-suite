@@ -31,7 +31,13 @@ const int kRowH = 30;
 } // namespace
 
 // ============================================================================= the list of edits (order, tick, name)
-struct MasterListEntry { juce::Uuid id; bool include = true; juce::String name, detail, status; bool bad = false; };
+struct MasterListEntry
+{
+    juce::Uuid id; bool include = true; juce::String name, detail, status; bool bad = false;
+    // 3.52.0: the versions of the piece, for the Listening copy tab's choice - what each is called (the newest first: the edit as it is now) and
+    // which is chosen (0 = the newest)
+    juce::StringArray versionNames; std::vector<int> versionNumbers; int version = 0;
+};
 
 class MasterListPanel : public juce::Component
 {
@@ -40,6 +46,12 @@ public:
     std::function<void (const juce::Uuid&, bool)> onInclude;
     std::function<void (const juce::Uuid&, const juce::String&)> onRename;
     std::function<void (int, int)> onMove;
+    /** 3.52.0 (asked for on 10 November 2026: "each track in the listening copy window should have an option where the user selects the edit
+        version for listening - it will default to the last one"): on the Listening copy tab every row has a key that says which version its
+        copy will be of ("Edit 3"); a click lists the piece's versions. 0 = the newest. */
+    std::function<void (const juce::Uuid&, int version)> onVersion;
+    void setShowVersions (bool on) { if (showVersions != on) { showVersions = on; for (auto* r : rows) { r->resized(); r->repaint(); } } }
+    bool showVersions = false;
 
     explicit MasterListPanel (bool namesEditable) : editable (namesEditable)
     {
@@ -91,6 +103,24 @@ private:
                 nameLabel.setInterceptsMouseClicks (false, false);
                 addAndMakeVisible (nameLabel);
             }
+            addChildComponent (versionKey);
+            versionKey.setWantsKeyboardFocus (false);
+            versionKey.setTooltip ("The version of this piece the listening copy is made of. The newest - the edit as its window has it now - unless you choose an older, frozen one: "
+                                   "that one is made from its own pieces, fades, levels and automation, through its mixer as it was when it was frozen.");
+            versionKey.onClick = [this]
+            {
+                juce::PopupMenu m;
+                for (int k = 0; k < entry.versionNames.size(); ++k)
+                    m.addItem (k + 1, entry.versionNames[k], true, (k == 0 && entry.version == 0) || (k > 0 && entry.versionNumbers[(size_t) k] == entry.version));
+                juce::Component::SafePointer<Row> safe (this);
+                m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&versionKey), [safe] (int r)
+                {
+                    if (safe == nullptr || r <= 0 || r > safe->entry.versionNames.size()) return;
+                    const int v = r == 1 ? 0 : safe->entry.versionNumbers[(size_t) (r - 1)];
+                    auto fn = safe->owner.onVersion; const auto id = safe->entry.id;
+                    if (fn) fn (id, v);                                                          // (the list is made again: this row may be gone when it returns)
+                });
+            };
         }
         void resized() override
         {
@@ -100,6 +130,14 @@ private:
             r.removeFromLeft (28);                                                       // the number
             detailWidth = 84;
             r.removeFromRight (detailWidth + 6 + statusWidth + 4);
+            const bool keyShown = owner.showVersions && ! entry.versionNames.isEmpty();
+            versionKey.setVisible (keyShown);
+            if (keyShown)
+            {
+                int k = 0; for (size_t q = 1; q < entry.versionNumbers.size(); ++q) if (entry.versionNumbers[q] == entry.version) k = (int) q;
+                versionKey.setButtonText ("Edit " + juce::String (entry.versionNumbers[(size_t) k]));
+                versionKey.setBounds (r.removeFromRight (64).reduced (0, 4)); r.removeFromRight (6);
+            }
             nameEd.setBounds (r.reduced (0, 3)); nameLabel.setBounds (r);
         }
         void paint (juce::Graphics& g) override
@@ -150,6 +188,7 @@ private:
         juce::ToggleButton box;
         juce::TextEditor nameEd;
         juce::Label nameLabel;
+        juce::TextButton versionKey;
     };
 
     bool editable;
@@ -580,6 +619,12 @@ MasteringComponent::MasteringComponent (AppContext& a)
     vmList->onInclude = [this] (const juce::Uuid& id, bool on) { if (auto* it = def().findItem (id)) { it->include = on; touched(); scheduleRecheck(); } };
     vmList->onRename = [this] (const juce::Uuid& id, const juce::String& t) { if (auto* it = def().findItem (id)) { it->fileName = t; touched(); } };
     vmList->onMove = [this] (int from, int to) { moveItem (from, to, false); };
+    vmList->onVersion = [this] (const juce::Uuid& id, int version)        // 3.52.0: the version this piece's listening copy is made of
+    {
+        if (auto* it = def().findItem (id)) { it->formVersion = version; touched(); }
+        juce::Component::SafePointer<MasteringComponent> safe (this);
+        juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->refreshVm(); });      // (the row that called this is made again)
+    };
     for (auto* b : { &vmAll, &vmNone, &vmUp, &vmDown }) addChildComponent (*b);
     vmAll.onClick  = [this] { for (auto& it : def().items) if (auto* e = editOf (it.editId)) it.include = ! e->isEmpty(); touched(); refreshVm(); scheduleRecheck(); };
     vmNone.onClick = [this] { for (auto& it : def().items) it.include = false; touched(); refreshVm(); };
@@ -1009,6 +1054,16 @@ void MasteringComponent::refreshVm()
         en.name = it.fileName.isNotEmpty() ? it.fileName : (e != nullptr ? e->name : juce::String ("(deleted)"));
         en.detail = e != nullptr ? lengthText (masterLengthSamples (*e, def().tailSeconds), e->sampleRate) : juce::String();
         if (auto r = renders.find (it.editId.toString()); r != renders.end() && en.include) { en.status = r->second.text; en.bad = r->second.bad; }
+        if (e != nullptr)
+        {   // 3.52.0: the versions its listening copy can be made of - the newest first (a choice that is not there any more is the newest again)
+            const int now = e->versionNumber();
+            if (it.formVersion >= now || (it.formVersion > 0 && e->versionEdit (it.formVersion) == nullptr)) it.formVersion = 0;
+            en.version = it.formVersion;
+            en.versionNames.add (e->versionTitle (now) + "   -   the newest: the edit as it is now"); en.versionNumbers.push_back (now);
+            for (int n = now - 1; n >= 1; --n)
+                if (auto* v = e->version (n); v != nullptr && v->edit != nullptr)
+                { en.versionNames.add (e->versionTitle (n) + "   -   frozen " + v->frozenAt.toString (true, true, false)); en.versionNumbers.push_back (n); }
+        }
         es.push_back (en);
     }
     vmList->setEntries (es, def().selectedItem);
@@ -1097,13 +1152,18 @@ void MasteringComponent::refreshFormatControls()
         {   // 3.51.0 (asked on 10 November 2026: "how do I make sure that the edit version I am exporting is edit 3?"): the tab says which version each
             // copy will be of. It is always the piece as its Edit window has it now - its newest version; the name is in the file's name, on the
             // page and in the notes that come back.
+            // 3.52.0: ... unless an older, frozen version is chosen with the key beside the piece in the list.
             juce::StringArray names; int more = 0;
             for (auto& it : def().items)
                 if (it.include)
-                    if (auto* e = app.project.findEdit (it.editId)) { if (names.size() < 4) names.add (e->versionTitle (e->versionNumber())); else ++more; }
+                    if (auto* e = app.project.findEdit (it.editId))
+                    {
+                        const int now = e->versionNumber(), v = it.formVersion > 0 && it.formVersion < now && e->versionEdit (it.formVersion) != nullptr ? it.formVersion : now;
+                        if (names.size() < 4) names.add (e->versionTitle (v) + (v != now ? " (frozen)" : "")); else ++more;
+                    }
             if (! names.isEmpty())
-                t = "Each copy is of the piece as its Edit window has it now - its newest version, named in the file's name and on the page:  " + names.joinIntoString (";  ")
-                  + (more > 0 ? ";  and " + juce::String (more) + " more" : juce::String()) + ".\n" + t;
+                t = "Each copy is of the version on the key beside its piece - the newest, the edit as it is now, unless you choose an older one. Its name is in the file's name and on the page:  "
+                  + names.joinIntoString (";  ") + (more > 0 ? ";  and " + juce::String (more) + " more" : juce::String()) + ".\n" + t;
         }
         if (formInfo.getText() != t) { formInfo.setText (t, juce::dontSendNotification); resized(); }
     }
@@ -1406,8 +1466,6 @@ void MasteringComponent::startFormExport()
     MasterJobSpec spec;
     const auto err = makeFormsSpec (app.project, def(), spec);
     if (err.isNotEmpty()) { formStatus.setColour (juce::Label::textColourId, theme::warn); formStatus.setText (err, juce::dontSendNotification); return; }
-    lastFormVersions.clear();
-    for (auto& it : spec.items) lastFormVersions.push_back ({ it.editId, it.editVersion });     // 3.42.0: which version of each piece the copies are of
     startJob (spec, 2);
 }
 
@@ -1551,51 +1609,23 @@ void MasteringComponent::showDoneBox (const MasterExportResult& r, int kind)
         if (r.previousPieces.size() > 8) text << "\n   ... and " << (r.previousPieces.size() - 8) << " more";
         text << "\nAnything changed in " << (r.previousPieces.size() == 1 ? "it" : "them") << " since that render is not in the files.";
     }
-    // 3.42.0: listening copies are of a version of each piece: offer to freeze those versions now (never done by itself), so the comments that come back
-    // go to each version's own lane and the editing carries on in the next number
-    juce::StringArray toFreeze;
-    if (kind == 2 && ! stopped)
-        for (auto& [id, ver] : lastFormVersions)
-            if (auto* e = app.project.findEdit (id)) if (ver > 0 && ver == e->versionNumber() && ! e->isEmpty()) toFreeze.add (e->versionTitle (ver));
-    if (! toFreeze.isEmpty())
+    if (! stopped && ! r.versionNotes.isEmpty())                           // 3.52.0: a frozen version that could not go through its own frozen mixer
     {
-        text << "\n\nThe cop" << (toFreeze.size() == 1 ? "y is" : "ies are") << " of:  " << toFreeze.joinIntoString (",  ")
-             << "\nFreeze " << (toFreeze.size() == 1 ? "this version" : "these versions") << " now and carry on editing in the next number? Each stays as it is - pieces, fades, levels, automation, markers, comments and its mixer - "
-             << "and the comments that come back from the listening cop" << (toFreeze.size() == 1 ? "y go" : "ies go") << " to its own lane above the timeline.";
+        text << "\n\nNOTE:";
+        for (auto& n : r.versionNotes) text << "\n   " << n;
     }
+    // (3.42.0 - 3.51.0 offered here to freeze the versions the listening copies were of. Gone in 3.52.0, the user's workflow: an export freezes nothing;
+    // the next edit is started when the comments on this one are imported - EditWindowComponent::importFeedbackFiles.)
     const bool warn = stopped || r.clipped || ! r.clippedStems.isEmpty() || ! r.previousPieces.isEmpty();
     auto* aw = new juce::AlertWindow (stopped ? "Export stopped" : "Export complete", text, warn ? juce::MessageBoxIconType::WarningIcon : juce::MessageBoxIconType::InfoIcon, this);
     const auto out = lastOutput;
-    if (! toFreeze.isEmpty()) aw->addButton ("Freeze", 2);
     if (! stopped && out.exists()) aw->addButton ("Show the files", 1);
-    aw->addButton (toFreeze.isEmpty() ? "OK" : "Not now", 0, juce::KeyPress (juce::KeyPress::returnKey), juce::KeyPress (juce::KeyPress::escapeKey));
-    juce::Component::SafePointer<MasteringComponent> safe (this);
-    aw->enterModalState (true, juce::ModalCallbackFunction::create ([aw, out, safe] (int res)
+    aw->addButton ("OK", 0, juce::KeyPress (juce::KeyPress::returnKey), juce::KeyPress (juce::KeyPress::escapeKey));
+    aw->enterModalState (true, juce::ModalCallbackFunction::create ([aw, out] (int res)
     {
         if (res == 1 && out.exists()) out.revealToUser();
-        if (res == 2 && safe != nullptr) safe->freezeExported();
         delete aw;
     }));
-}
-
-void MasteringComponent::freezeExported()
-{
-    juce::StringArray done;
-    for (auto& [id, ver] : lastFormVersions)
-    {
-        auto* e = app.project.findEdit (id);
-        if (e == nullptr || ver <= 0 || ver != e->versionNumber() || e->isEmpty()) continue;       // (frozen already from the edit window, or changed since: left alone)
-        juce::var mix;
-        if (auto* m = app.project.mixerOfEdit (id)) mix = app.project.mixSnapshot (*m, true);
-        const int frozen = editversions::freeze (*e, mix);
-        e->compareWith = frozen;
-        done.add (e->versionTitle (frozen));
-    }
-    lastFormVersions.clear();
-    if (done.isEmpty()) return;
-    app.project.markDirty(); app.project.changed();
-    if (app.refreshTitles) app.refreshTitles();
-    app.setNotice ("Frozen: " + done.joinIntoString (",  ") + ". The editing carries on in the next number of each.");
 }
 
 namespace
@@ -1951,6 +1981,7 @@ void MasteringComponent::layoutAtmos (juce::Rectangle<int> area)
     auto btns = left.removeFromBottom (32);
     left.removeFromBottom (6);
     vmList->setBounds (left);
+    vmList->setShowVersions (false);                                       // (3.52.0: the version keys are the Listening copy tab's)
     for (auto* b : { &vmAll, &vmNone, &vmUp, &vmDown }) b->setBounds (btns.removeFromLeft (grid::btnW).withSizeKeepingCentre (grid::btnW - 4, grid::btnH + 2));
     auto bottom = area.removeFromBottom (74);
     area.removeFromBottom (6);
@@ -1982,6 +2013,7 @@ void MasteringComponent::layoutForms (juce::Rectangle<int> area)
     auto btns = left.removeFromBottom (32);
     left.removeFromBottom (6);
     vmList->setBounds (left);
+    vmList->setShowVersions (true);                                        // 3.52.0: each piece's version key (only on this tab)
     for (auto* b : { &vmAll, &vmNone, &vmUp, &vmDown }) b->setBounds (btns.removeFromLeft (grid::btnW).withSizeKeepingCentre (grid::btnW - 4, grid::btnH + 2));
 
     auto bottom = area.removeFromBottom (74);
@@ -2036,6 +2068,7 @@ void MasteringComponent::layoutVm (juce::Rectangle<int> area)
     auto btns = left.removeFromBottom (32);
     left.removeFromBottom (6);
     vmList->setBounds (left);
+    vmList->setShowVersions (false);                                       // (3.52.0: the version keys are the Listening copy tab's)
     for (auto* b : { &vmAll, &vmNone, &vmUp, &vmDown }) b->setBounds (btns.removeFromLeft (grid::btnW).withSizeKeepingCentre (grid::btnW - 4, grid::btnH + 2));
 
     // the export controls at the bottom: the progress bar and the buttons share one row

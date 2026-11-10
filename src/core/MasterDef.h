@@ -24,6 +24,8 @@ struct MasterItem
     bool         include = true;
     juce::String fileName;            // empty = the edit's name
     MasterTags   tags;                // per-file tags (empty fields fall back to the album tags)
+    int          formVersion = 0;     // 3.52.0: the version of the edit its LISTENING COPY is made of ("Edit 2": 2). 0 = the newest, which is the edit as
+                                      //         its window has it now. A frozen version is made from its own pieces, automation and mixer settings.
 };
 
 struct MasterExportSettings

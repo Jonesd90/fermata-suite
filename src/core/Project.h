@@ -415,6 +415,10 @@ public:
     juce::var mixSnapshot (const MixerState&, bool withInserts) const;
     /** Puts such a balance onto a mixer (its master level and output pair are left alone). */
     void applyMix (MixerState& to, const juce::var& snapshot, double sampleRate, int maxBlock, const MixParts& parts = {});
+    /** 3.52.0: the plug-ins a snapshot (mixSnapshot with inserts) names, not bypassed, that 'm' - a mixer the snapshot was applied to - does not
+        have running: the ones that would not start. For a render of a frozen version, which goes through the mixer as it was frozen. The
+        channels' and buses' own slots are looked at (the post-fader slot too), not the slots of their sends. */
+    juce::StringArray pluginsMissingFromSnapshot (const MixerState& m, const juce::var& snapshot) const;
 
     /** Makes sure every mixer has a strip per track and a return per effects channel. */
     void syncMixers();
@@ -456,7 +460,10 @@ public:
         A new import REPLACES the copy. Folders of edits that are gone are left alone. */
     juce::File commentsFolderFor (const EditDef& e) const;
     void saveCommentsCopy (const EditDef& e, const std::vector<juce::File>& importedFiles) const;
-    void restoreSavedComments();                    // after a project is opened: an edit with no comments of its own gets its saved copy back
+    void restoreSavedComments();                    // after a project is opened: an edit with no comments of its own gets its saved copy back (3.52.0: never one that has frozen versions)
+    /** 3.52.0: the copy made to match the edit's comments as they are now - after they were taken away, or went to a frozen version: gone when
+        the edit has none (so they are not "given back" at the next opening), rewritten otherwise. Nothing is done when no copy was ever kept. */
+    void refreshCommentsCopy (const EditDef& e) const;
     juce::File processingFolder() const;            // Processing Media: audio sent out with "Export for Processing"
     juce::File bouncedFolder() const;                // Bounced Media
     /** 3.51.0: the scores. Each edit can have one PDF (EditDef::score); the file is COPIED into the project's "PDFs" folder when it is chosen, so

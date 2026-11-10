@@ -3,6 +3,7 @@
 #include "WaveDraw.h"
 #include "TakeWindow.h"
 #include "PaintProfile.h"
+#include "HeldPicture.h"
 #include "FixTools.h"
 #include "ColourPicker.h"
 #include "MarkerStrip.h"
@@ -316,7 +317,21 @@ public:
     void paint (juce::Graphics& g) override
     {
         BusyLabel busyLabel ("drawing a take window");
+        // 3.52.0: while a process window (noise mode, ReTouch ...) plays, this window holds the picture it has: see HeldPicture.h
+        const auto visible = viewport.getViewArea();
         const auto tPaint0 = paintprof::enabled() ? juce::Time::getMillisecondCounterHiRes() : 0.0;
+        if (! app.engine.isRecording() && held.show (g, visible, app.isPlaying()))        // (never while recording: a recording is always drawn)
+        {
+            if (paintprof::enabled()) paintprof::paintDone ("take window (held picture)", juce::Time::getMillisecondCounterHiRes() - tPaint0, g.getClipBounds().getWidth(), g.getClipBounds().getHeight());
+            return;
+        }
+        paintNow (g);
+        if (paintprof::enabled()) paintprof::paintDone ("take window", juce::Time::getMillisecondCounterHiRes() - tPaint0, g.getClipBounds().getWidth(), g.getClipBounds().getHeight());
+        held.keep (g, visible, [this] (juce::Graphics& ig) { paintNow (ig); });       // (only while a process window is in use)
+    }
+    HeldPicture held;
+    void paintNow (juce::Graphics& g)
+    {
         headerPass = false;
         paintAll (g);
         const int sy = viewport.getViewPositionY();
@@ -336,7 +351,6 @@ public:
             g.setColour (theme::accent.withAlpha (0.9f));  g.drawRect (lr, 1);
         }
         if (moveActive && moveMoved) paintMoveGhost (g);             // Ctrl + Shift + drag: where the clips will go
-        if (paintprof::enabled()) paintprof::paintDone ("take window", juce::Time::getMillisecondCounterHiRes() - tPaint0, g.getClipBounds().getWidth(), g.getClipBounds().getHeight());
     }
     // ---- Alt + drag: a lasso; every take it touches is selected (whole takes)
     bool lassoActive = false, lassoMoved = false; juce::Point<int> lassoFrom, lassoTo;
@@ -1861,7 +1875,7 @@ private:
     size_t pruneLeft = 0; juce::String pruneAfter;
     void refreshThumbsAndPrune()
     {
-        if (thumbsChanged && juce::Time::getMillisecondCounter() - lastThumbRefresh >= 150)
+        if (thumbsChanged && juce::Time::getMillisecondCounter() - lastThumbRefresh >= (ProcessWindows::get().inUse() ? 1000u : 150u))      // (3.52.0: as in the Edit window)
         {
             thumbsChanged = false; lastThumbRefresh = juce::Time::getMillisecondCounter();
             saver.saveFinished (thumbs, wavesFolder()); repaint();
@@ -1911,9 +1925,18 @@ private:
 
     void timerCallback() override
     {
-        if (const int held = modhint::heldFor (*this); held != shownMods)      // the corner box: what the keys being held do here
+        // 3.52.0: held behind a process window that is playing (HeldPicture.h): nothing here asks for a redraw until the play is over. Never
+        // while this window records - a recording is always drawn.
+        held.notePlaying (app.isPlaying());
+        if (! app.engine.isRecording())
         {
-            shownMods = held;
+            if (held.frozen (app.isPlaying())) return;
+            if (held.stale) { held.stale = false; repaint(); }
+            else if (held.wanted (viewport.getViewArea(), app.isPlaying())) repaint();      // (the picture to hold, made while nothing plays)
+        }
+        if (const int keysHeld = modhint::heldFor (*this); keysHeld != shownMods)      // the corner box: what the keys being held do here
+        {
+            shownMods = keysHeld;
             repaint (viewport.getViewPositionX(), viewport.getViewPositionY(), kNameW, kRulerH + kLaneH);
         }
         updateMeters();
@@ -1947,6 +1970,7 @@ private:
     void movePlayhead()
     {
         const double live = app.engine.isRecording() || ! app.isPlaying() ? -1.0 : livePosition (true);
+        if (! app.engine.isRecording() && held.frozen (app.isPlaying())) { shownPhX = kNoLine; return; }      // (3.52.0: held behind a process window)
         const int x = live >= 0.0 ? xOf (live) : kNoLine;
         if (x == shownPhX) return;
         const int h = juce::jmax (1, getHeight() - kRulerH);

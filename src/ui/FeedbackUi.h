@@ -54,24 +54,42 @@ struct EditorHand
     int version = 0;                                                       // the version of the edit being worked on now (FeedbackNote::madeIn of what is written)
 };
 
+/** 3.52.0 (asked for on 10 November 2026): in the box a reply is written in, Enter is "Add" and Shift + Enter starts a new line. */
+struct ReplyEditor : public juce::TextEditor
+{
+    std::function<void()> onEnter;
+    bool keyPressed (const juce::KeyPress& k) override
+    {
+        if (k.getKeyCode() == juce::KeyPress::returnKey && ! k.getModifiers().isCommandDown() && ! k.getModifiers().isAltDown())
+        {
+            if (k.getModifiers().isShiftDown()) insertTextAtCaret ("\n");
+            else if (onEnter) onEnter();
+            return true;
+        }
+        return juce::TextEditor::keyPressed (k);
+    }
+};
+
 /** The box a note of the editor's is written in: the words, and the name it is signed with. 'done' gets both when "Add" (or "Save") is pressed with
     some words in the box. */
 inline void askEditorNote (const juce::String& title, const juce::String& about, const juce::String& text, const EditorHand& hand, bool changing,
                            std::function<void (const juce::String& who, const juce::String& text)> done)
 {
-    auto* w = new juce::AlertWindow (title, about, juce::MessageBoxIconType::NoIcon, hand.over.getComponent());
-    auto* words = new juce::TextEditor();
-    words->setMultiLine (true, true); words->setReturnKeyStartsNewLine (true); words->setScrollbarsShown (true);
+    auto* w = new juce::AlertWindow (title, about + (about.isNotEmpty() ? "\n" : "") + "Enter adds it; Shift + Enter starts a new line.", juce::MessageBoxIconType::NoIcon, hand.over.getComponent());
+    auto* words = new ReplyEditor();
+    words->setMultiLine (true, true); words->setReturnKeyStartsNewLine (false); words->setScrollbarsShown (true);
+    words->onEnter = [w, words] { if (words->getText().trim().isNotEmpty()) w->exitModalState (1); };       // (Enter with nothing written does nothing)
     words->setFont (juce::FontOptions (14.0f)); words->setText (text, false); words->setSize (440, 130);
     words->setTextToShowWhenEmpty ("What you want them to read", juce::Colours::grey);
     w->addCustomComponent (words);
     w->addTextEditor ("who", hand.name ? hand.name() : juce::String(), "Your name (shown with your notes):");
-    w->addButton (changing ? "Save" : "Add", 1);                           // (the positive action on the left, Cancel on the right)
+    w->addButton (changing ? "Save" : "Add", 1, juce::KeyPress (juce::KeyPress::returnKey));      // (the positive action on the left, Cancel on the right; Enter in the name box presses it too)
     w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
-    juce::Component::SafePointer<juce::TextEditor> focus (words);
+    juce::Component::SafePointer<juce::Component> focus (words);
     juce::MessageManager::callAsync ([focus] { if (focus != nullptr) focus->grabKeyboardFocus(); });
     w->enterModalState (true, juce::ModalCallbackFunction::create ([w, words, hand, done] (int r)
     {
+        words->onEnter = nullptr;
         const auto t = words->getText().trim();
         std::unique_ptr<juce::Component> ownWords (w->removeCustomComponent (0));       // (a custom component is the caller's to delete)
         auto who = w->getTextEditorContents ("who").trim();
