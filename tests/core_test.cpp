@@ -58,6 +58,7 @@
 #include "../src/core/Surround.h"
 #include "../src/ui/TakeMatchService.h"
 #include "../src/ui/WaveThumb.h"
+#include "../src/ui/OnceSavedBin.h"
 #include <cstdio>
 #include <thread>
 
@@ -1952,6 +1953,75 @@ int main()
         eng.setSessionMode (false);
     }
 
+    {
+        std::printf ("-- 3.46.1 session mode (Pre): a device block bigger than the engine was prepared for is recorded as it came, not as old sound from the memory\n");
+        // The ring that feeds a take in session mode left such a block out but still moved its position on by it, so the take's files got whatever
+        // the ring held there - the sound of some seconds before - in place of the block. (Without session mode such a block was always kept as silence.)
+        Project q;
+        q.projectFile = tmp.getChildFile ("Giant").getChildFile ("Giant.fermata");
+        q.setInputCount (8); q.setOutputCount (2);
+        q.tracks.clear();
+        const auto tid = q.addTrack ("violin", TrackFormat::Mono, 0).id;
+        const auto tid2 = q.addTrack ("nothing", TrackFormat::Mono, 5).id;          // (its input is missing in the big block: silence there)
+        q.takeWindows.front()->name = "Giant";
+        AudioEngine e2 (q);
+        e2.prepare (48000.0, Rig::block);
+        Rig r2;
+        e2.setSessionMode (true);
+        CHECK (e2.waitForPreRoll (5000));
+        q.findTrack (tid)->setArmed (true); q.findTrack (tid2)->setArmed (true);
+        r2.run (e2, 700);                                                  // more than the 5 s of pre-roll: the ring has gone round, so it is full of older sound
+        const juce::int64 posAtRecord = r2.pos;
+        CHECK (e2.startRecording (*q.takeWindows.front()).isEmpty());
+        r2.run (e2, 20);
+        const int big = 3 * 8192 + 100;                                    // (the engine was prepared for 512: its own silence is 8192 long)
+        const float bigGain = 0.25f;                                       // (the big block at half the level: what the ring held there before - a whole number of cycles earlier - is not the same)
+        {
+            std::vector<std::vector<float>> bin (Rig::nIn, std::vector<float> ((size_t) big)), bout (Rig::nOut, std::vector<float> ((size_t) big));
+            std::vector<const float*> bi; std::vector<float*> bo;
+            for (int c = 0; c < Rig::nIn; ++c)
+            {
+                for (int i = 0; i < big; ++i) bin[(size_t) c][(size_t) i] = bigGain * (float) std::sin (2.0 * 3.14159265358979 * (200.0 + 100.0 * c) * (double) (r2.pos + i) / 48000.0);
+                bi.push_back (c == 5 ? nullptr : bin[(size_t) c].data());      // input 6 is not delivered in this block
+            }
+            for (auto& v : bout) bo.push_back (v.data());
+            e2.process (bi.data(), Rig::nIn, bo.data(), Rig::nOut, big);
+            r2.pos += big;
+        }
+        r2.run (e2, 40);
+        auto gidBig = e2.stopRecording();
+        CHECK (e2.waitForFinishedTakes (10000)); e2.reapFinishedTakes();
+        auto* gBig = q.takeWindows.front()->findGroup (gidBig);
+        const juce::int64 preLen = 5 * 48000;
+        CHECK (gBig != nullptr && gBig->lengthSamples == preLen + 60 * Rig::block + big);
+        if (gBig != nullptr && gBig->files.size() == 2)
+        {
+            juce::AudioFormatManager fm; fm.registerBasicFormats();
+            for (int f = 0; f < 2; ++f)
+            {
+                std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (gBig->files[(size_t) f].file));
+                CHECK (rd != nullptr && rd->lengthInSamples == gBig->lengthSamples);
+                if (rd == nullptr) continue;
+                juce::AudioBuffer<float> b (1, (int) rd->lengthInSamples);
+                rd->read (&b, 0, (int) rd->lengthInSamples, 0, true, false);
+                const double hz = f == 0 ? 200.0 : 700.0;
+                const juce::int64 bigFrom = preLen + 20 * Rig::block, bigTo = bigFrom + big;
+                double worst = 0.0, worstInBig = 0.0;
+                for (int i = 0; i < b.getNumSamples(); ++i)
+                {
+                    const bool inBig = i >= bigFrom && i < bigTo;
+                    const double want = (f == 1 && inBig) ? 0.0 : (inBig ? (double) bigGain : 0.5) * std::sin (2.0 * 3.14159265358979 * hz * (double) (posAtRecord - preLen + i) / 48000.0);
+                    const double d = std::abs (want - (double) b.getSample (0, i));
+                    if (inBig) worstInBig = juce::jmax (worstInBig, d); else worst = juce::jmax (worst, d);
+                }
+                CHECK (worst < 1e-5);                                      // everything round the big block, in order
+                CHECK (worstInBig < 1e-5);                                 // the big block itself: the sound that came (track 1), silence for the input that did not (track 2)
+            }
+        }
+        else CHECK (false);
+        e2.setSessionMode (false);
+    }
+
     SECTION ("meters: RMS and the phase scope tap");
     {
         for (auto& t : p.tracks) mixA.stripFor (t.id)->mute.set (t.id != violaId);
@@ -3472,6 +3542,24 @@ int main()
                 CHECK (makeFilesSpec (mp, mp.mastering, spec).isEmpty() && spec.items[0].editId == ed2.id && spec.items[0].baseName.startsWith ("01 - ") && spec.items[1].editId == ed.id);
                 mp.mastering.items[0].include = false;                                         // an edit left out
                 CHECK (makeFilesSpec (mp, mp.mastering, spec).isEmpty() && spec.items.size() == 1 && spec.items[0].editId == ed.id);
+                // 3.46.1: the piece left in keeps the number it has in the list (the second row: 02), in its file's name and in its track-number tag -
+                // it used to be counted afresh among the ticked pieces, so pieces 11 and 12 exported on their own came out as 01 and 02
+                CHECK (spec.items.size() == 1 && spec.items[0].trackNo == 2 && spec.items[0].baseName.startsWith ("02 - "));
+                {
+                    auto many = mp.mastering;                                                  // twelve rows, only the 11th and 12th ticked
+                    while (many.items.size() < 12) { auto extra = many.items.back(); extra.include = false; many.items.insert (many.items.begin(), extra); }
+                    for (size_t k = 0; k < many.items.size(); ++k) many.items[k].include = k >= 10;
+                    many.items[10].editId = ed2.id; many.items[11].editId = ed.id;
+                    MasterJobSpec s12;
+                    CHECK (makeFilesSpec (mp, many, s12).isEmpty() && s12.items.size() == 2);
+                    if (s12.items.size() == 2)
+                    {
+                        CHECK (s12.items[0].editId == ed2.id && s12.items[0].trackNo == 11 && s12.items[0].baseName.startsWith ("11 - "));
+                        CHECK (s12.items[1].editId == ed.id && s12.items[1].trackNo == 12 && s12.items[1].baseName.startsWith ("12 - "));
+                    }
+                    many.vm.numberFiles = false;                                               // (unticked: no number in the name; the tag keeps the list's number)
+                    CHECK (makeFilesSpec (mp, many, s12).isEmpty() && s12.items.size() == 2 && ! s12.items[0].baseName.startsWith ("11") && s12.items[0].trackNo == 11);
+                }
                 mp.mastering.items[0].include = true; std::swap (mp.mastering.items[0], mp.mastering.items[1]);
             }
             // the disc: two clips, a pause of 3 s between them, then the first edit gets longer and the pause is the same
@@ -4522,6 +4610,71 @@ int main()
         n.createDefaultDesign();
         CHECK (n.missingWindowRefs.empty() && n.loadNotes.isEmpty() && n.windowFiles.empty());
     }
+    SECTION ("3.46.1 a window whose file is missing: its mastering entries and alignment wait for it, and no other window takes its file's name");
+    {
+        // An edit whose .fmedit could not be read is left out of the open project and listed as missing ("put it back and open the project again").
+        // Its Virtual Master entry (file name, tags), its CD clip (ISRC, pause) and its alignment set used to be dropped at that open and the next
+        // save wrote the project without them; and a new window of the same name took the missing file's very name.
+        juce::String er;
+        const auto folder = tmp.getChildFile ("Missing window");
+        folder.deleteRecursively();
+        Project p;
+        p.projectFile = folder.getChildFile ("Missing window.fermata");
+        p.name = "Missing window";
+        auto& tw = *p.takeWindows.front(); tw.name = "Kyrie";
+        p.addTrack ("violin", TrackFormat::Mono, 0);
+        const auto e1 = p.addEdit ("Kyrie edit", tw.id).id, e2 = p.addEdit ("Gloria edit", juce::Uuid::null()).id;
+        p.mastering.sync (p.edits);
+        CHECK (p.mastering.items.size() == 2 && p.mastering.items[0].editId == e1 && p.mastering.ddp.clips.size() == 2);
+        if (p.mastering.findItem (e1) == nullptr || p.mastering.findClip (e1) == nullptr || p.mastering.findItem (e2) == nullptr) { CHECK (false); return 1; }
+        p.mastering.findItem (e1)->fileName = "Kyrie (master)"; p.mastering.findItem (e1)->tags.isrc = "GB-AJY-26-00001"; p.mastering.findItem (e1)->tags.title = "Kyrie eleison";
+        p.mastering.findClip (e1)->isrc = "GB-AJY-26-00001"; p.mastering.findClip (e1)->gapSectors = 300; p.mastering.findClip (e1)->title = "Kyrie eleison";
+        p.mastering.findItem (e2)->fileName = "Gloria (master)";
+        { AlignSet set; set.measuredOn = "Take 004 - Kyrie"; AlignTrack at; at.ms = 3.5; at.on = true; set.tracks[p.tracks.front().id.toString()] = at; p.alignSets[e1.toString()] = set; }
+        p.changed();
+        CHECK (p.save (er));
+        const auto editFile = folder.getChildFile (p.windowFiles[e1.toString()].rel);
+        CHECK (editFile.existsAsFile() && editFile.getFileName() == "Kyrie edit.fmedit");
+        const auto kept = folder.getChildFile ("kept aside.fmedit");
+        CHECK (editFile.copyFileTo (kept));
+        editFile.deleteFile(); editFile.getSiblingFile (editFile.getFileName() + ".bak").deleteFile();      // (gone, and no save before it either)
+        {
+            Project q; CHECK (q.load (p.projectFile, er));
+            CHECK (q.findEdit (e1) == nullptr && q.findEdit (e2) != nullptr && q.missingWindowRefs.size() == 1);
+            CHECK (q.mastering.items.size() == 1 && q.mastering.items[0].editId == e2 && q.mastering.ddp.clips.size() == 1);      // the windows see only the edit that is there
+            CHECK (q.parkedMasterItems.size() == 1 && q.parkedDdpClips.size() == 1);
+            // a new edit of the same name does not take the missing file's name
+            const auto e3 = q.addEdit ("Kyrie edit", juce::Uuid::null()).id;
+            q.mastering.sync (q.edits);                                                    // (as the Mastering window does: the new edit gets its entries)
+            q.changed();
+            CHECK (q.save (er));
+            CHECK (q.windowFiles[e3.toString()].rel == "Edit Windows/Kyrie edit (2).fmedit" && ! editFile.exists());
+            // what was saved still has the missing edit's entries, where they were
+            const auto saved = juce::JSON::parse (p.projectFile.loadFileAsString());
+            const auto items = saved["mastering"]["items"]; const auto clips = saved["mastering"]["ddp"]["clips"];
+            CHECK (items.size() == 3 && items[0]["edit"].toString() == e1.toString() && items[0]["fileName"].toString() == "Kyrie (master)" && items[0]["tags"]["isrc"].toString() == "GB-AJY-26-00001");
+            CHECK (clips.size() == 3 && clips[0]["edit"].toString() == e1.toString() && clips[0]["isrc"].toString() == "GB-AJY-26-00001" && (int) clips[0]["gap"] == 300);
+            CHECK (saved["alignSets"].hasProperty (e1.toString()) && saved["alignSets"][juce::Identifier (e1.toString())]["measuredOn"].toString() == "Take 004 - Kyrie");
+            CHECK (saved["editFiles"].size() == 3);                                        // the missing one is still listed
+            // a second save (nothing new) keeps them too
+            q.name = "Missing window (2)"; q.changed(); CHECK (q.save (er));
+            CHECK (juce::JSON::parse (p.projectFile.loadFileAsString())["mastering"]["items"].size() == 3);
+            // a new project started in the same Project object carries none of it
+            q.createDefaultDesign();
+            CHECK (q.parkedMasterItems.empty() && q.parkedDdpClips.empty());
+        }
+        // the file is put back: the edit is there again with its mastering entry, its CD clip and its alignment, in its old place
+        CHECK (kept.moveFileTo (editFile));
+        {
+            Project r; CHECK (r.load (p.projectFile, er));
+            CHECK (r.missingWindowRefs.empty() && r.findEdit (e1) != nullptr && r.edits.size() == 3 && r.parkedMasterItems.empty());
+            CHECK (r.mastering.items.size() == 3 && r.mastering.items[0].editId == e1 && r.mastering.items[0].fileName == "Kyrie (master)" && r.mastering.items[0].tags.title == "Kyrie eleison");
+            CHECK (r.mastering.findClip (e1) != nullptr && r.mastering.findClip (e1)->isrc == "GB-AJY-26-00001" && r.mastering.findClip (e1)->gapSectors == 300);
+            const auto* set = r.alignSetOf (e1.toString());
+            CHECK (set != nullptr && set->measuredOn == "Take 004 - Kyrie" && set->hasDelays());
+        }
+    }
+
     SECTION ("2.76 finding missing audio files: by name, then renamed files by length / rate / depth / channels and their headers");
     {
         // a scratch project with one take of three tracks (all its files the same length) and an edit using the take's files
@@ -8538,6 +8691,17 @@ int main()
             q.findEdit (edId)->overdubs.push_back (od);
             CHECK (q.trackHasAudio (rooms));
         }
+        {   // 3.47.0: a frozen version of an edit that still plays on a track: the track has audio, and is not deleted as empty
+            EditVersion ver; ver.number = 1; ver.edit = std::make_shared<EditDef>();
+            EditRegion fr; fr.id = juce::Uuid(); fr.srcIn = 0; fr.srcOut = 48000; fr.sampleRate = 48000.0;
+            RegionFile rf; rf.trackId = vm50; rf.trackName = "VM50"; rf.file = tmp.getChildFile ("vm50.wav"); rf.numChannels = 1; fr.files.push_back (rf);
+            ver.edit->regions.push_back (fr);
+            q.findEdit (edId)->versions.push_back (ver);
+            const auto n0 = q.tracks.size();
+            CHECK (q.trackHasAudio (vm50) && q.removeEmptyTracks ({ vm50 }) == 0 && q.tracks.size() == n0);
+            q.findEdit (edId)->versions.clear();
+            CHECK (! q.trackHasAudio (vm50));
+        }
         // deleting the emptied tracks at once: only the ones with no audio anywhere, never the LTC track
         const auto tracksBefore = q.tracks.size();
         CHECK (q.removeEmptyTracks ({ v1, v2, vm50, ltc, rooms }) == 2);
@@ -9062,6 +9226,162 @@ int main()
         // the last freeze undone: the version comes off, its comments come back onto the live edit at the same music
         CHECK (unfreezeLast (*e3) && e3->versions.empty() && e3->versionNumber() == 1 && e3->subheading == "first cut" && e3->feedback.size() == 1 && std::abs (e3->feedback[0].seconds - 12.0) < 1.0e-6);
         CHECK (! unfreezeLast (*e3));
+    }
+
+    SECTION ("3.47.0 a damaged project file's bar numbers are not believed past five digits");
+    {
+        Project p; p.createDefaultDesign();
+        auto& tw = p.addTakeWindow ("W"); tw.pieceBars = 66666;
+        TakeGroup g; g.id = juce::Uuid(); g.number = 1; g.sampleRate = 48000.0; g.lengthSamples = 48000; g.barIn = 5; g.barOut = 77777; tw.groups.push_back (g);
+        const auto text = juce::JSON::toString (p.toVar()).replace ("77777", "2000000000").replace ("66666", "1999999999");
+        CHECK (text.contains ("2000000000") && text.contains ("1999999999"));
+        Project back; CHECK (back.fromVar (juce::JSON::parse (text)));
+        const TakeWindowDef* bw = nullptr; for (auto& w : back.takeWindows) if (w->name == "W") bw = w.get();
+        CHECK (bw != nullptr && bw->groups.size() == 1);
+        if (bw != nullptr && bw->groups.size() == 1) CHECK (bw->groups[0].barIn == 5 && bw->groups[0].barOut == 99999 && bw->pieceBars == 99999);
+    }
+
+    SECTION ("3.47.0 Delete, R and glue take what lies over the music with them, and an undo brings it back with the music");
+    {
+        Project q; q.createDefaultDesign();
+        auto& tw = q.addTakeWindow ("W");
+        const auto eid = q.addEdit ("E", tw.id).id;
+        auto piece = [] (juce::int64 len) { EditRegion r; r.id = juce::Uuid(); r.takeId = juce::Uuid(); r.takeName = "t"; r.sampleRate = 48000.0; r.srcIn = 0; r.srcOut = len; r.sourceLength = 48000 * 600;
+                                            RegionFile f; f.trackId = juce::Uuid(); f.file = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("t.wav"); r.files.push_back (f); return r; };
+        auto E = [&] () -> EditDef& { return *q.findEdit (eid); };
+        E().insertRegion (piece (48000 * 10)); E().insertRegion (piece (48000 * 4)); E().insertRegion (piece (48000 * 10));      // A 0 - 10 s, B 10 - 14 s, C 14 - 24 s
+        auto mark = [] (double s) { Marker m; m.id = juce::Uuid(); m.seconds = s; return m; };
+        E().markers = { mark (5.0), mark (12.0), mark (20.0) };                                // in A, in B, in C
+        { FeedbackNote n; n.key = "k1"; n.seconds = 16.0; E().feedback.push_back (n); }        // a comment 2 s into C
+        E().addOverdub (piece (48000), 48000 * 18);
+        E().fixIn = 15.0; E().fixOut = 17.0; E().playheadSeconds = 21.0;
+        q.mastering.sync (q.edits);                                                            // (as the program keeps it: the edit's entry is there before the first step)
+        q.undoReset();
+        auto near = [] (double a, double b) { return std::abs (a - b) < 1.0e-6; };
+        auto at = [] (juce::int64 sample, double seconds) { return std::abs (sample - (juce::int64) std::llround (seconds * 48000.0)) <= 1000; };   // (a join's edge settles in the middle of its crossfade: a few ms)
+        // Delete B: C moves up 4 s - and so does everything over C. The marker that was over B stays where it is.
+        E().removeRegion (1); q.changed(); q.undoTick (false, true);
+        CHECK (E().regions.size() == 2 && at (E().regions[1].startSample, 10.0) && at (E().overdubs[0].startSample, 14.0));
+        CHECK (near (E().markers[0].seconds, 5.0) && near (E().markers[1].seconds, 12.0) && near (E().markers[2].seconds, 16.0) && near (E().feedback[0].seconds, 12.0));
+        CHECK (near (E().fixIn, 11.0) && near (E().fixOut, 13.0) && near (E().playheadSeconds, 17.0));
+        // Ctrl+Z: B is back, and each of them is back on its music (they are not part of undo, and used to stay where the delete had put them)
+        CHECK (q.undo (juce::Uuid::null()));
+        CHECK (E().regions.size() == 3 && at (E().regions[2].startSample, 14.0) && at (E().overdubs[0].startSample, 18.0));
+        CHECK (near (E().markers[0].seconds, 5.0) && near (E().markers[1].seconds, 12.0) && near (E().markers[2].seconds, 20.0) && near (E().feedback[0].seconds, 16.0));
+        CHECK (near (E().fixIn, 15.0) && near (E().fixOut, 17.0) && near (E().playheadSeconds, 21.0));
+        // ... and redo takes them along again
+        CHECK (q.redo (juce::Uuid::null()));
+        CHECK (E().regions.size() == 2 && near (E().markers[1].seconds, 12.0) && near (E().markers[2].seconds, 16.0) && near (E().feedback[0].seconds, 12.0) && near (E().fixIn, 11.0) && near (E().playheadSeconds, 17.0));
+        // a marker moved by hand after the delete, and a new one: both stay on their music through the undo
+        E().markers[2].seconds = 15.0;                                                          // 5 s into C (C is at 10 s now)
+        E().markers.push_back (mark (11.0));                                                    // 1 s into C
+        q.changed(); q.undoTick (false, true);
+        CHECK (q.undo (juce::Uuid::null()));
+        CHECK (E().regions.size() == 3 && E().markers.size() == 4 && near (E().markers[2].seconds, 19.0) && near (E().markers[3].seconds, 15.0) && near (E().markers[1].seconds, 12.0));
+        // EditDef::slideRegion by itself moves the pieces only (the windows carry what lies over them: editversions::Riders, the next section) - and
+        // undoing a change that moved no marker leaves the markers alone
+        CHECK (E().slideRegion (2, 96000, false, false) == 96000); q.changed(); q.undoTick (false, true);
+        CHECK (near (E().markers[2].seconds, 19.0) && at (E().regions[2].startSample, 16.0));
+        CHECK (q.undo (juce::Uuid::null()));
+        CHECK (at (E().regions[2].startSample, 14.0) && near (E().markers[2].seconds, 19.0) && near (E().markers[3].seconds, 15.0) && near (E().fixIn, 15.0));
+        // R (close the gap) and glue: what lies over the pieces that move goes with them
+        CHECK (E().slideRegion (2, 96000, false, false) == 96000);                              // C at 16 s: a gap of 2 s before it
+        E().markers[2].seconds = 21.0;                                                          // 5 s into C
+        CHECK (E().closeGap (2) == -96000 && near (E().markers[2].seconds, 19.0) && near (E().markers[3].seconds, 15.0));     // (the one in the gap's place stays)
+        juce::String why;
+        const int k = E().snipAt (48000 * 5, why);                                              // a snip in A at 5 s ...
+        CHECK (k == 1);
+        E().regions[1].srcIn += 24000;                                                          // ... with half a second rolled out after it: everything after is 0.5 s earlier
+        for (size_t j = 2; j < E().regions.size(); ++j) E().regions[j].startSample -= 24000;
+        E().markers[2].seconds = 18.5;                                                          // (the marker 5 s into C, where C is now)
+        CHECK (E().glueSnip (1, why) == 0 && E().regions.size() == 3 && at (E().regions[2].startSample, 14.0) && near (E().markers[2].seconds, 19.0));
+    }
+
+    SECTION ("3.47.0 sliding, shuffling and re-ordering pieces: what lies over them goes with them, and an undo brings it back");
+    {
+        using editversions::Riders;
+        auto piece = [] (juce::int64 len) { EditRegion r; r.id = juce::Uuid(); r.takeId = juce::Uuid(); r.takeName = "t"; r.sampleRate = 48000.0; r.srcIn = 48000 * 30; r.srcOut = 48000 * 30 + len; r.sourceLength = 48000 * 600;
+                                            RegionFile f; f.trackId = juce::Uuid(); f.file = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("t.wav"); r.files.push_back (f); return r; };
+        auto mark = [] (double s) { Marker m; m.id = juce::Uuid(); m.seconds = s; return m; };
+        auto near = [] (double a, double b) { return std::abs (a - b) < 1.0e-6; };
+        auto at = [] (juce::int64 sample, double seconds) { return std::abs (sample - (juce::int64) std::llround (seconds * 48000.0)) <= 1000; };
+        const juce::int64 S = 48000;
+        Project q; q.createDefaultDesign();
+        auto& tw = q.addTakeWindow ("W");
+        const auto eid = q.addEdit ("E", tw.id).id;
+        auto E = [&] () -> EditDef& { return *q.findEdit (eid); };
+        auto fill = [&]
+        {
+            E().regions.clear(); E().overdubs.clear(); E().lanes.clear(); E().insertIndex = -1;
+            E().insertRegion (piece (S * 10)); E().insertRegion (piece (S * 4)); E().insertRegion (piece (S * 10));      // A 0 - 10 s, B 10 - 14 s, C 14 - 24 s
+            E().markers = { mark (5.0), mark (12.0), mark (20.0), mark (25.0) };                // in A, in B, in C, a second past the end
+            E().feedback.clear(); { FeedbackNote n; n.key = "k1"; n.seconds = 16.0; E().feedback.push_back (n); }        // a comment 2 s into C
+            E().addOverdub (piece (S), S * 18);
+            E().fixIn = 15.0; E().fixOut = 17.0; E().playheadSeconds = 21.0;
+            AutoLane lane; lane.id = juce::Uuid(); lane.trackId = juce::Uuid();
+            { AutoPoint p; p.id = juce::Uuid(); p.time = S * 2; lane.pts.push_back (p); }       // two points fixed in time: over A, over C
+            { AutoPoint p; p.id = juce::Uuid(); p.time = S * 19; lane.pts.push_back (p); }
+            E().lanes.push_back (lane);
+        };
+        fill();
+        q.mastering.sync (q.edits); q.undoReset();
+        // the edit window's drag: C alone, 2 s later, in three moves of the mouse - each worked out from where the drag began
+        {
+            const Riders riders (E()); const auto base = E().regions;
+            for (juce::int64 d : { S, S / 2, S * 2 })
+            {
+                EditDef tmp; tmp.sampleRate = E().sampleRate; tmp.regions = base;
+                tmp.slideRegion (2, d, false, false);
+                for (size_t i = 0; i < base.size(); ++i) E().regions[i].startSample = tmp.regions[i].startSample;
+                riders.carry (E());
+            }
+        }
+        CHECK (E().regions[2].startSample == S * 16 && E().overdubs[0].startSample == S * 20 && E().lanes[0].pts[0].time == S * 2 && E().lanes[0].pts[1].time == S * 21);
+        CHECK (near (E().markers[0].seconds, 5.0) && near (E().markers[1].seconds, 12.0) && near (E().markers[2].seconds, 22.0) && near (E().markers[3].seconds, 27.0));
+        CHECK (near (E().feedback[0].seconds, 18.0) && near (E().fixIn, 17.0) && near (E().fixOut, 19.0) && near (E().playheadSeconds, 23.0));
+        // Ctrl+Z: the piece is back, and so is everything that went with it (the markers and marks are not part of undo: they follow their music back)
+        q.changed(); q.undoTick (false, true);
+        CHECK (q.undo (juce::Uuid::null()));
+        CHECK (at (E().regions[2].startSample, 14.0) && at (E().overdubs[0].startSample, 18.0) && E().lanes[0].pts[1].time == S * 19);
+        CHECK (near (E().markers[2].seconds, 20.0) && near (E().markers[3].seconds, 25.0) && near (E().feedback[0].seconds, 16.0) && near (E().fixIn, 15.0) && near (E().fixOut, 17.0) && near (E().playheadSeconds, 21.0));
+        CHECK (q.redo (juce::Uuid::null()));
+        CHECK (near (E().markers[2].seconds, 22.0) && near (E().markers[3].seconds, 27.0) && near (E().feedback[0].seconds, 18.0) && near (E().fixIn, 17.0) && near (E().markers[1].seconds, 12.0));
+        // a marker in a silence stays with the piece before it: B slid 1 s earlier takes it along, C slid does not
+        fill();
+        { const Riders r (E()); E().slideRegion (2, S * 2, false, false); r.carry (E()); }      // C at 16 s: silence from 14 to 16 s
+        E().markers.push_back (mark (15.0));                                                    // in the silence, 1 s after B
+        { const Riders r (E()); E().slideRegion (2, S, false, false); r.carry (E()); }
+        CHECK (near (E().markers[4].seconds, 15.0) && near (E().markers[2].seconds, 23.0));
+        { const Riders r (E()); CHECK (E().slideRegion (1, -S, false, false) == -S); r.carry (E()); }
+        CHECK (near (E().markers[4].seconds, 14.0) && near (E().markers[1].seconds, 11.0) && near (E().markers[2].seconds, 23.0) && near (E().markers[0].seconds, 5.0));
+        // "every piece after it slides with it": B 1 s later with C - everything over both goes along, what is over A stays
+        fill();
+        { const Riders r (E()); CHECK (E().slideRegion (1, S, false, true) == S); r.carry (E()); }
+        CHECK (near (E().markers[0].seconds, 5.0) && near (E().markers[1].seconds, 13.0) && near (E().markers[2].seconds, 21.0) && near (E().markers[3].seconds, 26.0) && E().overdubs[0].startSample == S * 19 && E().lanes[0].pts[0].time == S * 2);
+        // shuffle: B and C trade places - each takes its own markers; marks 1 and 2 over C go with C
+        fill();
+        { const Riders r (E()); CHECK (E().shuffleRegion (1, 1) == 2); r.carry (E()); }         // A 0 - 10, C 10 - 20, B 20 - 24
+        CHECK (near (E().markers[1].seconds, 22.0) && near (E().markers[2].seconds, 16.0) && near (E().feedback[0].seconds, 12.0) && near (E().fixIn, 11.0) && near (E().fixOut, 13.0) && E().overdubs[0].startSample == S * 14);
+        CHECK (E().lanes[0].pts[0].time == S * 2 && E().lanes[0].pts[1].time == S * 15);
+        // ... and marks that had one foot in each are the wrong way round afterwards: nothing is marked any more
+        fill(); E().fixIn = 12.0; E().fixOut = 16.0;
+        { const Riders r (E()); E().shuffleRegion (1, 1); r.carry (E()); }
+        CHECK (E().fixIn < 0.0 && E().fixOut < 0.0);
+        // another order (Ctrl + arrows): A to the end
+        fill();
+        { const Riders r (E()); E().moveRegion (0, 2); r.carry (E()); }                         // B 0 - 4, C 4 - 14, A 14 - 24
+        CHECK (near (E().markers[0].seconds, 19.0) && near (E().markers[1].seconds, 2.0) && near (E().markers[2].seconds, 10.0) && E().lanes[0].pts.front().time == S * 9 && E().lanes[0].pts.back().time == S * 16);
+        // the Trim window: C's audio slid half a second later under the join (its start stays) - what lies over C is half a second later too;
+        // slid the other way, a marker whose music the join has cut off stays where it was
+        fill(); E().markers.push_back (mark (14.25));                                           // a quarter of a second into C
+        { const Riders r (E()); CHECK (E().slipIn (2, S / 2, false) == S / 2); r.carry (E()); }
+        CHECK (near (E().markers[2].seconds, 20.5) && near (E().markers[4].seconds, 14.75) && near (E().markers[1].seconds, 12.0) && E().overdubs[0].startSample == S * 18 + S / 2);
+        fill(); E().markers.push_back (mark (14.25));
+        { const Riders r (E()); CHECK (E().slipIn (2, -S / 2, false) == -S / 2); r.carry (E()); }
+        CHECK (near (E().markers[2].seconds, 19.5) && near (E().markers[4].seconds, 14.25));
+        // a marker added during a drag is left alone
+        fill();
+        { const Riders r (E()); E().slideRegion (2, S, false, false); E().markers.push_back (mark (22.0)); r.carry (E()); CHECK (near (E().markers[4].seconds, 22.0) && near (E().markers[2].seconds, 21.0)); }
     }
 
     SECTION ("3.42.0 edit versions: a comment on an earlier version is shown where its music is now");
@@ -9898,6 +10218,22 @@ int main()
             const auto r = readAaf (f);
             CHECK (r.error.isNotEmpty() && juce::Time::getMillisecondCounterHiRes() - t0 < 2000.0);
         }
+        // 3.46.1: an AAF with the audio inside it (embedded) is as big as the session's audio. It is not read into memory at all (that froze the
+        // program, and could end it): it is turned down by its size, with what to do about it. (A file of 1 GB + 1 byte that takes no room on the disk.)
+        {
+            const auto f = tmp.getChildFile ("embedded.aaf");
+            f.deleteFile();
+            {
+                juce::FileOutputStream o (f);
+                static const unsigned char magic[8] = { 0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1 };
+                CHECK (o.openedOk() && o.write (magic, 8) && o.setPosition ((juce::int64) 1024 * 1024 * 1024) && o.write ("x", 1));
+            }
+            CHECK (f.getSize() == (juce::int64) 1024 * 1024 * 1024 + 1);
+            const auto t0 = juce::Time::getMillisecondCounterHiRes();
+            const auto r = readAaf (f);
+            CHECK (r.error.contains ("embedded") && r.error.contains ("linked") && juce::Time::getMillisecondCounterHiRes() - t0 < 500.0);
+            f.deleteFile();
+        }
     }
 
     SECTION ("3.1.2 AudioJob: start() while the last job still runs asks it to stop and waits for it (never kills it); only the new job's onDone is heard");
@@ -10045,6 +10381,72 @@ int main()
         BackupCopier::cancel (job3);
         for (int w = 0; w < 300 && bc.busy() > 0; ++w) juce::Thread::sleep (10);
         CHECK (bc.busy() == 0 && bc.takeBinned().isEmpty() && ! tmp.getChildFile ("bc copies").getChildFile ("bc-src3.wav").exists());
+    }
+
+    SECTION ("3.46.1 the second drive: a file of the same name that is already there (another recording's copy) is never deleted or written over");
+    {
+        // A project of the same name on another drive - or one started again after its main drive failed - gives its takes the same file names. The
+        // copier used to delete what was at that place on the second drive before it wrote (and a take that never started deleted it too): the copy of
+        // the earlier recording, perhaps the only one left.
+        BackupCopier bc;
+        const auto folder = tmp.getChildFile ("bc same name");
+        folder.deleteRecursively(); folder.createDirectory();
+        const auto src = tmp.getChildFile ("bc-new-take.wav"), dst = folder.getChildFile ("001 - Piece - violin.wav");
+        std::vector<std::vector<float>> older (1, std::vector<float> (30000, 0.5f)), newer (1, std::vector<float> (12000, -0.25f));
+        CHECK (audioops::writeWav (dst, older, 48000.0));                                    // (the earlier recording's copy: 30000 frames at 0.5)
+        CHECK (audioops::writeWav (src, newer, 48000.0));
+        const auto olderSize = dst.getSize();
+        auto holdsOlder = [&] (const juce::File& f)
+        {
+            const auto r = wavrepair::inspect (f, false);
+            return f.existsAsFile() && f.getSize() == olderSize && r.ok && r.frames == 30000;
+        };
+        auto job = bc.add (src, dst, 48000.0 * 3.0);
+        for (int w = 0; w < 300 && dst.getSize() != src.getSize(); ++w) juce::Thread::sleep (10);
+        BackupCopier::finish (job);
+        for (int w = 0; w < 300 && bc.busy() > 0; ++w) juce::Thread::sleep (10);
+        CHECK (bc.busy() == 0 && bc.takeBinned().isEmpty());
+        const auto aside = folder.getChildFile ("001 - Piece - violin (earlier copy).wav");
+        CHECK (holdsOlder (aside));                                                          // the earlier recording's copy: whole, under a name that says what it is
+        { const auto r = wavrepair::inspect (dst, false); CHECK (dst.getSize() == src.getSize() && r.ok && r.frames == 12000); }      // and the new take's copy in its place
+        // again: now the name AND its "(earlier copy)" are both taken - a third name is found, nothing is lost
+        CHECK (audioops::writeWav (src, newer, 48000.0));
+        auto job2 = bc.add (src, dst, 48000.0 * 3.0);
+        BackupCopier::finish (job2);
+        for (int w = 0; w < 300 && bc.busy() > 0; ++w) juce::Thread::sleep (10);
+        CHECK (bc.busy() == 0 && holdsOlder (aside) && folder.getNumberOfChildFiles (juce::File::findFiles, "*.wav") == 3);
+        // a take that never started (its copy is called off): what was there stays - at its place, or moved aside if the copier had already begun
+        const auto dst3 = folder.getChildFile ("002 - Piece - violin.wav");
+        CHECK (audioops::writeWav (dst3, older, 48000.0));
+        auto job3 = bc.add (src, dst3, 48000.0 * 3.0);
+        BackupCopier::cancel (job3);
+        for (int w = 0; w < 300 && bc.busy() > 0; ++w) juce::Thread::sleep (10);
+        CHECK (bc.busy() == 0 && bc.takeBinned().isEmpty());
+        CHECK (holdsOlder (dst3) || holdsOlder (folder.getChildFile ("002 - Piece - violin (earlier copy).wav")));
+        // a copy that is thrown away (the second drive could not keep up) takes only its own file with it
+        const auto dst4 = folder.getChildFile ("003 - Piece - violin.wav");
+        CHECK (audioops::writeWav (dst4, older, 48000.0));
+        std::vector<std::vector<float>> big (1, std::vector<float> (480000, 0.1f));
+        CHECK (audioops::writeWav (src, big, 48000.0));
+        bc.maxLagSeconds.store (-1.0);                                                       // (nothing is ever near enough)
+        auto job4 = bc.add (src, dst4, 48000.0 * 3.0);
+        for (int w = 0; w < 300 && bc.busy() > 0; ++w) juce::Thread::sleep (10);
+        const auto notes4 = bc.takeBinned();
+        CHECK (bc.busy() == 0 && notes4.size() == 1 && notes4[0].contains ("could not keep up"));
+        CHECK (holdsOlder (folder.getChildFile ("003 - Piece - violin (earlier copy).wav")) && ! dst4.exists());
+        bc.maxLagSeconds.store (20.0);
+        // the second drive's folder is the one the project's folder is in: the "copy" would be the recording's own file. Nothing is moved, renamed
+        // or written next to it, and the person is told there is no second copy.
+        const auto own = folder.getChildFile ("004 - Piece - violin.wav");
+        CHECK (audioops::writeWav (own, newer, 48000.0));
+        const auto ownSize = own.getSize();
+        const int before5 = folder.getNumberOfChildFiles (juce::File::findFiles, "*.wav");
+        auto job5 = bc.add (own, own, 48000.0 * 3.0);
+        BackupCopier::finish (job5);
+        for (int w = 0; w < 300 && bc.busy() > 0; ++w) juce::Thread::sleep (10);
+        const auto notes5 = bc.takeBinned();
+        CHECK (bc.busy() == 0 && notes5.size() == 1 && notes5[0].contains ("no second copy"));
+        CHECK (own.existsAsFile() && own.getSize() == ownSize && folder.getNumberOfChildFiles (juce::File::findFiles, "*.wav") == before5);
     }
 
     SECTION ("3.1.3 a take whose later track's file cannot be made leaves nothing behind: no header-only files, no second-drive copies, no notice");
@@ -11696,6 +12098,26 @@ int main()
             auto r = piece (0, 480000); r.srcIn = 12000; r.srcOut = 492000; r.inStart = -0.5; r.inEnd = -0.3; f.regions.push_back (r);
             CHECK (f.anchorStart() && f.regions[0].srcIn == 0 && f.audibleStart() == 0 && std::abs (f.regions[0].inStart + 0.25) < 1e-9 && f.regions[0].startSample == 12000);
         }
+        {   // 3.47.0: the first piece's volume changes stay on their music when it reaches back to its fade. They are counted from the piece's start,
+            // which moves earlier - and they were left as they were, so each happened that much earlier in the music than it had been set. The level
+            // the piece starts with stays at its start.
+            for (int way = 0; way < 2; ++way)                                     // 0: the edit's start is anchored; 1: the Trim window trims the start to its fade
+            {
+                EditDef f; f.sampleRate = 48000.0;
+                auto r = piece (48000, 480000); r.inStart = -0.5; r.inEnd = -0.3;  // (srcIn 48000: a second of the take before it)
+                r.files.resize (1);
+                r.setGainChange (0, 0.0, { -3.0f });                                // the piece's own level
+                r.setGainChange (96000, 0.25, { 2.0f });                            // a change 2 s into the piece: at take sample 144000
+                f.regions.push_back (r);
+                const float before = f.regions[0].levelDbAt (0, 96000 + 24000);     // (well inside the change)
+                if (way == 0) CHECK (f.anchorStart());
+                else CHECK (f.trimEdgeToFade (0, false) == 24000);
+                const auto& g = f.regions[0];
+                CHECK (g.srcIn == 24000 && g.gains.size() == 2 && g.gains[0].at == 0 && std::abs (g.pieceLevelDb() + 3.0f) < 1e-6f);
+                CHECK (g.gains[1].at == 96000 + 24000 && g.srcIn + g.gains[1].at == 144000);           // still at take sample 144000
+                CHECK (std::abs (g.levelDbAt (0, 96000 + 24000 + 24000) - before) < 1e-4f);
+            }
+        }
         // saved with the edit
         Project p; p.createDefaultDesign();
         auto& tw = p.addTakeWindow ("W");
@@ -12253,6 +12675,50 @@ int main()
             const auto one = sw.ready ({ look ("a", 3, 10), look ("b", ++t, 10) }, seen, 2);
             CHECK (one.size() == 1 && one[0] == "a");
         }
+        // 3.46.1: a watched file that stays away (deleted by hand once its work was done) holds the others back only for a moment - it used to count
+        // as "being replaced" for ever, so every later save of another file came back maxHold looks (half a minute) late
+        {
+            RxSaveWatch sw; std::map<juce::String, juce::int64> seen;
+            auto look = [] (const char* p, juce::int64 t, juce::int64 sz, bool exists = true) { RxSaveWatch::Look l; l.path = p; l.exists = exists; l.modified = t; l.size = sz; return l; };
+            CHECK (sw.ready ({ look ("gone", 1, 10), look ("a", 1, 10) }, seen).empty());                      // first sight of both
+            for (int i = 0; i < 20; ++i) CHECK (sw.ready ({ look ("gone", 1, 10, false), look ("a", 1, 10) }, seen).empty());   // "gone" was deleted long ago
+            CHECK (sw.ready ({ look ("gone", 1, 10, false), look ("a", 2, 10) }, seen).empty());                // a is saved: being written?
+            const auto r = sw.ready ({ look ("gone", 1, 10, false), look ("a", 2, 10) }, seen);                  // the same twice running: it comes back NOW
+            CHECK (r.size() == 1 && r[0] == "a");
+            sw.done ("a", 2, seen);
+            // a file that is missing only for a moment (being replaced) still makes the others wait for it, as before
+            CHECK (sw.ready ({ look ("b", 1, 10), look ("a", 2, 10) }, seen).empty());                          // first sight of b
+            CHECK (sw.ready ({ look ("b", 1, 10), look ("a", 3, 10) }, seen).empty());                          // a written again
+            CHECK (sw.ready ({ look ("b", 1, 10, false), look ("a", 3, 10) }, seen).empty());                   // a ready, but b is being replaced: a waits
+            CHECK (sw.ready ({ look ("b", 2, 10), look ("a", 3, 10) }, seen).empty());                          // b back, just written
+            CHECK (sw.ready ({ look ("b", 2, 10), look ("a", 3, 10) }, seen).size() == 2);                      // both, together
+        }
+    }
+
+    SECTION ("3.46.1 a file taken out of the project is deleted only once a save made WITHOUT it is on the disk (Noise mode's Undo)");
+    {
+        // Noise mode's fixes are in the edit at once, so the automatic save writes them; Undo deleted their files there and then, and until the next save
+        // (or for good, after "Quit without saving") the project file named audio that was gone.
+        auto f = [] (const char* n) { return juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile (n); };
+        auto names = [] (const std::vector<juce::File>& v) { juce::StringArray a; for (auto& x : v) a.add (x.getFileName()); a.sort (false); return a.joinIntoString (","); };
+        td::OnceSavedBin bin;
+        const int s1 = bin.snapshot();                                  // a save is being written (its snapshot was taken with the fix still in the edit)
+        bin.add ({ f ("a.wav") });                                      // Undo: the fix's file is out of the edit now
+        CHECK (bin.saved (s1).empty() && bin.size() == 1);              // that save names it: it stays
+        const int s2 = bin.snapshot();
+        bin.add ({ f ("b.wav"), f ("c.wav") });                         // another Undo, after the second snapshot was taken
+        CHECK (names (bin.saved (s2)) == "a.wav" && bin.size() == 2);   // the second save is without a.wav - and may still name b and c
+        const int s3 = bin.snapshot();                                  // a save that FAILS: nothing is handed back for it
+        const int s4 = bin.snapshot();
+        bin.add ({ f ("d.wav") });
+        CHECK (bin.saved (s1).empty() && bin.saved (s2).empty());       // (an older save reported again, late: nothing)
+        CHECK (names (bin.saved (s4)) == "b.wav,c.wav" && bin.size() == 1);
+        CHECK (s3 < s4 && bin.saved (s3).empty());
+        bin.forget();                                                   // another project is opened: d.wav is left on the disk
+        CHECK (bin.size() == 0 && bin.saved (bin.snapshot()).empty());
+        td::OnceSavedBin never;                                         // no save at all (the program closes without one): nothing is ever handed back
+        never.add ({ f ("e.wav") });
+        CHECK (never.saved (0).empty() && never.size() == 1);
     }
 
     SECTION ("3.23.0 the send dials leave out where the fader already sends: Main by default, the main Ext Bus back (first) when the fader goes elsewhere");
@@ -12462,6 +12928,64 @@ int main()
             juce::String w3;
             CHECK (! stereojoin::apply (r, p3, w3) && w3.isNotEmpty() && r.tracks.size() == 2 && rw.groups.size() == 2);
             for (auto& j : p3.jobs) j.dest.deleteFile();
+            // 3.46.1: the frozen versions of an edit (Edit 1 ...) are converted with it - their pieces, lists, automation and the mixer settings kept with
+            // them. (They were left on the two tracks, which are gone: silent when compared, listened to or put back - and the change cannot be undone.)
+            rw.groups.pop_back();
+            auto& ed = r.addEdit ("Frozen", rw.id);
+            {   // piece 1: the take as it is; piece 2: a repaired piece on a only (a short file), b still the take's file
+                EditRegion er; er.id = juce::Uuid(); er.takeId = rw.groups[0].id; er.windowId = rw.id; er.sampleRate = sr; er.srcIn = 0; er.srcOut = 2 * S; er.sourceLength = 4 * S; er.takeName = "001 - W";
+                { RegionFile rf; rf.trackId = a; rf.trackName = "a"; rf.file = f1L; rf.numChannels = 1; er.files.push_back (rf); }
+                { RegionFile rf; rf.trackId = b; rf.trackName = "b"; rf.file = f1R; rf.numChannels = 1; er.files.push_back (rf); }
+                GainChange gc; gc.at = 0; gc.ramp = 0.0; gc.db = { -2.0f, -4.0f }; er.gains.push_back (gc);
+                ed.insertRegion (er);
+                const auto fixA = makeConstWav (dir.getChildFile ("fix a.wav"), 0.6, 1);       // 1 s of a repaired a, standing for take samples 2 s .. 3 s
+                EditRegion er2 = er; er2.id = juce::Uuid(); er2.srcIn = 2 * S + 1000; er2.srcOut = 3 * S - 1000; er2.takeName = "001 - W (repair)"; er2.gains.clear();
+                er2.files[0].file = fixA; er2.files[0].fileStart = 2 * S;
+                ed.insertRegion (er2);
+            }
+            ed.trackIds = { a, b };
+            { AutoLane l; l.id = juce::Uuid(); l.trackId = a; l.param = autoparam::fader; ed.lanes.push_back (l); }
+            { AutoLane l; l.id = juce::Uuid(); l.trackId = b; l.param = autoparam::fader; ed.lanes.push_back (l); }
+            r.syncMixers(); r.syncEditMixers();
+            auto& rm = *r.mixers.front();
+            rm.stripFor (a)->gainDb.set (-5.0f); rm.stripFor (b)->gainDb.set (-9.0f);
+            stereojoin::Plan p4;
+            CHECK (stereojoin::plan (r, a, b, "ab", p4).isEmpty() && stereojoin::writeFiles (fm, p4).isEmpty());     // planned with no frozen version ...
+            editversions::freeze (ed, r.mixSnapshot (rm, true));                                                       // ... and the edit is frozen meanwhile:
+            juce::String w4;                                                                                           // the plan does not know the version's pieces
+            CHECK (! stereojoin::apply (r, p4, w4) && w4.isNotEmpty() && r.tracks.size() == 2 && ed.regions[0].files.size() == 2 && ed.versions[0].edit->regions[0].files.size() == 2);
+            for (auto& j : p4.jobs) j.dest.deleteFile();
+            ed.regions[1].srcIn += 5000;                                               // the edit moves on after the freeze: its repaired piece is trimmed
+            stereojoin::Plan p5;
+            CHECK (stereojoin::plan (r, a, b, "ab", p5).isEmpty());
+            CHECK (p5.pieces.size() == 4 && p5.jobs.size() == 2 && p5.edits.size() == 1);     // the edit's two pieces and the version's two; the take's file and ONE file for the repaired piece
+            CHECK (stereojoin::writeFiles (fm, p5).isEmpty());
+            juce::String w5;
+            CHECK (stereojoin::apply (r, p5, w5));
+            CHECK (r.tracks.size() == 1 && r.tracks[0].id == p5.stereo);
+            auto& V = *ed.versions[0].edit;
+            CHECK (V.regions.size() == 2 && V.regions[0].files.size() == 1 && V.regions[0].files[0].trackId == p5.stereo && V.regions[0].files[0].numChannels == 2);
+            CHECK (V.regions[0].files[0].file == ed.regions[0].files[0].file && V.regions[0].files[0].file == rw.groups[0].files[0].file);     // the take's stereo file
+            CHECK (V.regions[0].gains.size() == 1 && V.regions[0].gains[0].db.size() == 1 && std::abs (V.regions[0].gains[0].db[0] + 3.0f) < 1e-6f);
+            const auto& vf = V.regions[1].files[0]; const auto& lf = ed.regions[1].files[0];
+            CHECK (V.regions[1].files.size() == 1 && vf.trackId == p5.stereo && vf.numChannels == 2 && vf.file == lf.file && vf.fileStart == lf.fileStart);   // the same new file as the edit's piece
+            CHECK (vf.fileStart <= V.regions[1].srcIn && vf.fileStart + lenOf (vf.file) >= V.regions[1].srcOut && V.regions[1].srcIn < ed.regions[1].srcIn);   // ... long enough for the version's untrimmed piece
+            CHECK (std::abs (readAt (vf.file, V.regions[1].srcIn + 10 - vf.fileStart, 0) - 0.6f) < 1e-4f
+                   && std::abs (readAt (vf.file, V.regions[1].srcIn + 10 - vf.fileStart, 1) - readAt (f1R, V.regions[1].srcIn + 10, 0)) < 1e-9f);
+            CHECK (V.trackIds.size() == 1 && V.trackIds[0] == p5.stereo && V.lanes.size() == 1 && V.lanes[0].trackId == p5.stereo && V.lanes[0].param == autoparam::fader);
+            // the mixer settings kept with the version: the stereo strip where a's was, with a's fader; b's strip gone - and nothing differs from the mixer as it is now
+            const auto vm = ed.versions[0].mixer;
+            const auto* vs = vm["strips"].getArray();
+            CHECK (vs != nullptr && vs->size() == 1 && (*vs)[0]["track"].toString() == p5.stereo.toString() && std::abs ((double) (*vs)[0]["gainDb"] + 5.0) < 1e-6);
+            CHECK (editversions::compareMix (vm, r.mixSnapshot (rm, true), [] (const juce::String&, const juce::String&) { return juce::String ("x"); }).empty());
+            // saved and opened again: the version is as converted
+            juce::String e5; CHECK (r.save (e5));
+            Project r2; CHECK (r2.load (r.projectFile, e5));
+            CHECK (r2.edits.size() == 1 && r2.edits[0]->versions.size() == 1 && r2.edits[0]->versions[0].edit != nullptr
+                   && r2.edits[0]->versions[0].edit->regions.size() == 2 && r2.edits[0]->versions[0].edit->regions[1].files.size() == 1
+                   && r2.edits[0]->versions[0].edit->regions[1].files[0].numChannels == 2 && r2.edits[0]->versions[0].edit->regions[1].files[0].trackId == p5.stereo);
+            // a snapshot that names neither track comes back as it is
+            CHECK (stereojoin::joinedMix (vm, juce::Uuid(), juce::Uuid(), juce::Uuid()) == vm);
         }
     }
 

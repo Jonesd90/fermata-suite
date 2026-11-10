@@ -383,7 +383,6 @@ public:
     /** Gives the edit its own track list (the current project order) if it has none yet. */
     void materialiseEditTracks (EditDef&) const;
     TakeWindowDef* findTakeWindow (const juce::Uuid&);
-    juce::Array<int> inputsOfTrack (const TrackDef&) const;
 
     /** Moves clips of a take window from one track to another, the takes staying where they are in time (an import that put them on new tracks of
         their own): the clip each of 'takes' has on 'fromTrack' goes onto 'toTrack' (a take with none there is passed over). The pieces of edits made
@@ -505,6 +504,12 @@ public:
     struct WindowFile { juce::String rel; juce::String hash; };
     std::map<juce::String, WindowFile> windowFiles;     // window id -> its file (path from the project folder)
     std::vector<juce::var> missingWindowRefs;            // listed by the project file but not readable when it was opened: kept in the list so nothing is forgotten
+    /** 3.46.1: the Mastering window's entries (the Virtual Master's items, the CD's clips) of edits whose file could not be read when the project was
+        opened (missingWindowRefs), as the project file had them, each with its place in its list. They are not in 'mastering' - the windows only show
+        edits that are there - but every save writes them back where they were, so an edit whose file is put back has its file name, tags, ISRC, pause
+        and place on the CD again. (They used to be dropped at the open, and the next save wrote the project without them.) */
+    struct ParkedMastering { int index = 0; juce::var entry; };
+    std::vector<ParkedMastering> parkedMasterItems, parkedDdpClips;
     std::function<void()> onNewWindow;                   // the program sets this: called when an edit, take window or mixer is made, so its file is written at once
     std::function<void (MixerState&)> beforeInsertsReplaced;   // 3.27.1: the program sets this: called before applyMix replaces a mixer's plug-ins (their windows must close first)
     juce::StringArray loadNotes;                         // things to tell the person after the project was opened
@@ -598,10 +603,21 @@ public:
     //      not text - turning a big edit into text twice took a second, half a second after every change.)
     static constexpr int kUndoLevels = 30;
     enum class UndoKind { takeWindow, edit, mastering };
+    /** 3.47.0: where the things an undo does not cover - an edit's markers, comment flags, marks 1 / 2 and playhead - stood on its timeline. An
+        operation that moves the music along (a piece put in or deleted) takes them with it, so an undo of it has to bring them back with the music:
+        see restorePiece. ('set' false: an edit step from before, or not an edit.) */
+    struct UndoTimes
+    {
+        std::map<juce::String, double> markers, feedback;                     // by the marker's id / the comment's key
+        double fixIn = -1.0, fixOut = -1.0, playhead = 0.0;
+        bool set = false;
+    };
+    static UndoTimes timesOf (const EditDef&);
     struct UndoPiece
     {
         UndoKind kind; juce::Uuid id; juce::String text;                      // text: the mastering list (and a window whose copy is not there)
         std::shared_ptr<const TakeWindowDef> take; std::shared_ptr<const EditDef> edit;     // the window as it was
+        UndoTimes before;                                                     // (an edit: where those things stood just before the change this step undoes)
     };
     struct UndoStep { std::vector<UndoPiece> pieces; };
     /** A window's state as of the last quiet moment: its hash and a plain copy of the window (the mastering list: its text). */
@@ -609,6 +625,7 @@ public:
     {
         juce::uint64 hash = 0; juce::String text;
         std::shared_ptr<TakeWindowDef> takeCopy; std::shared_ptr<EditDef> editCopy;
+        UndoTimes made, fresh;                               // (an edit: as they stood when this snapshot was made, and as of the last look since - a marker moved makes no new snapshot)
     };
     static UndoSnap snapOf (const TakeWindowDef&);       // the hash and a copy (about a millisecond for a big window)
     static UndoSnap snapOf (const EditDef&);

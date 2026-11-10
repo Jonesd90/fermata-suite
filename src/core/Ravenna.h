@@ -77,7 +77,6 @@ private:
     void handleMessage (const juce::var& m);
     void handleSettings (const juce::var& data);
     void rebuildChannelList();
-    void sendRaw (const juce::String& json);
     juce::String nextId() { return juce::String (idCounter.fetch_add (1) + 1); }
 
     juce::String deviceName, hostName; int portNumber;

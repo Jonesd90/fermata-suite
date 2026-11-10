@@ -1742,8 +1742,6 @@ void ReHarmoniserEditor::clearChanges()
     if (cand.has) { hist.clear(); hist.push_back ({ params }); histPos = 0; replan(); } else updateButtons();
 }
 
-void ReHarmoniserEditor::pushHistory() {}
-
 void ReHarmoniserEditor::undoStep()
 {
     if (cand.has && histPos > 0)

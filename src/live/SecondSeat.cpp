@@ -380,6 +380,10 @@ bool SecondSeat::start (juce::String& why)
     buttons = 0; keyMods = 0; lShift = rShift = lCtrl = rCtrl = lAlt = rAlt = false; escapes.clear(); dragPeer = nullptr;
     const auto a = area ? area() : juce::Rectangle<int> (0, 0, 800, 600);
     pos = a.getCentre().toFloat();
+    // 0.8.0: a Learn still waiting for its key or click ends here. Left waiting, the first key of the seat's own keyboard (or click of its mouse)
+    // was taken as the answer to Learn, which then switched the driver off while the panel went on saying ON: the Fixer's keyboard typed into
+    // whichever window was in front - the Primary's.
+    learningNow = Learn::none;
     on = true;
     setMode (3);
     startTimerHz (20);                                                       // (the PC's keyboard stays the Primary's: keepForeground)
@@ -915,8 +919,11 @@ void SecondSeat::applyKey (const Stroke& s)
         bool modifier = true;
         switch (s.code)
         {
-            case 0x2A: lShift = ! up; break;
-            case 0x36: rShift = ! up; break;
+            // 0.8.0: only the real Shift keys. A keyboard on the PS/2 plug (a laptop's own, say) sends a "pretend" Shift - the same code with the
+            // E0 mark - round the arrows, Home, End, Insert, Delete and the Page keys while Num Lock is on: taken for the Shift key, every arrow
+            // was Shift + arrow. It is kept from Windows as before, and used for nothing.
+            case 0x2A: if (! e0) lShift = ! up; break;
+            case 0x36: if (! e0) rShift = ! up; break;
             case 0x1D: (e0 ? rCtrl : lCtrl) = ! up; break;
             case 0x38: (e0 ? rAlt : lAlt) = ! up; break;
             case 0x5B: case 0x5C: case 0x5D: modifier = e0; break;            // (the Windows keys and the menu key: kept from Windows, used for nothing)

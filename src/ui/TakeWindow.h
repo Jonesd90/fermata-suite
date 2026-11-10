@@ -59,7 +59,6 @@ private:
     /** A right-click on the bar strip (3.8.0): asks how many bars the piece has. */
     void askPieceBars();
     std::unique_ptr<TakeChartComponent> chart;                // the take chart, while it is down
-    void playMarked();
     void loopChanged();                  // the Loop button / key L
     bool markedRange (juce::Uuid& take, double& in, double& out) const;
     juce::String playLoop (const juce::Uuid& take, double in, double out);     // goes round the marked area on the window timeline

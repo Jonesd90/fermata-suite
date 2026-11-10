@@ -2,6 +2,7 @@
 #include "RecorderService.h"
 #include "TakeRegister.h"
 #include "LiveRecorder.h"
+#include "../core/FileSync.h"
 
 namespace td::live
 {
@@ -140,6 +141,10 @@ void RecorderPanel::setProject (const juce::File& file, bool create)
     if (create)
     {
         const auto folder = file.getParentDirectory().getChildFile (file.getFileNameWithoutExtension());
+        // 0.8.0 (as the Primary's New project): never over a project that is already there - the file chooser asks about the name typed, not about
+        // the project file inside the folder made for it
+        for (const auto& f : { folder.getChildFile (file.getFileNameWithoutExtension() + ".fermata"), folder.getChildFile (file.getFileNameWithoutExtension() + ".takedaw") })
+            if (f.existsAsFile() || filesync::backupOf (f).existsAsFile()) { addLog ("There is already a project there (" + f.getFullPathName() + "): nothing was changed - give the new one another name, or open that one"); return; }
         if (! folder.createDirectory()) { addLog ("Cannot make " + folder.getFullPathName()); return; }
         p->projectFile = folder.getChildFile (file.getFileName());
         p->name = file.getFileNameWithoutExtension();

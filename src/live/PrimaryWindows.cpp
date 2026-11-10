@@ -353,13 +353,25 @@ private:
         juce::Label number; juce::TextEditor name; juce::ComboBox format, input; juce::TextButton remove { "Remove" };
     };
     bool locked() const { return app.model.sessionOn; }
+    /** What the rows were made from: the project, and its tracks in their order (without the timecode track, which has no row). */
+    juce::String rowsKey() const
+    {
+        juce::String k = app.project.projectFile.getFullPathName();
+        for (auto& t : app.project.tracks) if (! t.isLtc) k << "|" << t.id.toString();
+        return k;
+    }
     void changeListenerCallback (juce::ChangeBroadcaster*) override
     {
-        if ((int) app.project.tracks.size() != rowList.size() || locked() != wasLocked) rebuild();
+        // 0.8.0: made again when the tracks are others, not when their number differs from the number of rows. A project with a timecode track
+        // (one made in fermata) always has one track more than rows: the rows were made again at every message from the recorder - about once
+        // a second - so a name being typed lost the keyboard and an open list closed. And another project opened with as many tracks kept the
+        // old project's rows: leaving one of their name boxes wrote the old project's name over the new project's track.
+        if (rowsKey() != shownKey || locked() != wasLocked) rebuild();
     }
     void rebuild()
     {
         wasLocked = locked();
+        shownKey = rowsKey();
         rowList.clear();
         for (int i = 0; i < (int) app.project.tracks.size(); ++i)
             if (! app.project.tracks[(size_t) i].isLtc) rows.addAndMakeVisible (rowList.add (new Row (*this, i)));
@@ -415,6 +427,7 @@ private:
     juce::TextButton addMono { "Add a mono track" }, addStereo { "Add a stereo track" }, perInput { "A mono track for each of the first inputs:" };
     juce::TextEditor perCount;
     bool wasLocked = false;
+    juce::String shownKey;
 };
 
 //==============================================================================================================================================
@@ -457,9 +470,11 @@ public:
 private:
     void fillTakes()
     {
+        const int chosen = takeBox.getSelectedId();                          // (0.8.0: a take put into the project meanwhile does not change the one chosen)
         takeBox.clear (juce::dontSendNotification);
         if (auto* w = app.pieceWindow())
             for (auto& g : w->groups) takeBox.addItem (g.number > 0 ? juce::String (g.number).paddedLeft ('0', 3) + " - " + (g.label.isNotEmpty() ? g.label : w->name) + "  (" + juce::String (g.lengthSeconds() / 60.0, 1) + " min)" : g.label, g.number > 0 ? g.number : 999);
+        if (chosen != 0) takeBox.setSelectedId (chosen, juce::dontSendNotification);
         if (takeBox.getNumItems() > 0 && takeBox.getSelectedId() == 0) takeBox.setSelectedItemIndex (takeBox.getNumItems() - 1, juce::dontSendNotification);
         shownTakes = takeBox.getNumItems();
     }

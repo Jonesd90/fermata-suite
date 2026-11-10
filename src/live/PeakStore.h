@@ -47,9 +47,6 @@ public:
         }
         if (! coarseLevel) highest = juce::jmax (highest, first + n);
     }
-    /** Does the store have point k (fine or coarse)? */
-    bool hasFine (juce::int64 k) const     { return has (fine, k); }
-    bool hasCoarse (juce::int64 k) const   { return has (coarse, k); }
     juce::int64 fineEnd() const noexcept   { return highest; }
 
     /** The lowest and highest sample of channel ch over the timeline's samples [s0, s1) (-1 .. 1). The fine points where they are here, the
@@ -121,12 +118,6 @@ private:
         if (it != level.end()) return it->second;
         Block b; b.data.assign ((size_t) numCh, std::vector<juce::int8> ((size_t) kBlock * 2, 0)); b.has.assign ((size_t) kBlock, 0);
         return level.emplace (bi, std::move (b)).first->second;
-    }
-    bool has (const Level& level, juce::int64 k) const
-    {
-        if (k < 0) return false;
-        auto it = level.find (k / kBlock);
-        return it != level.end() && it->second.has[(size_t) (k % kBlock)] != 0;
     }
     /** Folds the points [k0, k1) of one level into l / h, a block at a time; returns how many were there. */
     int foldRange (const Level& level, int ch, juce::int64 k0, juce::int64 k1, juce::int8& l, juce::int8& h) const

@@ -1,4 +1,5 @@
 #include "Project.h"
+#include "EditVersions.h"
 #include "FileSync.h"
 #include "WavRepair.h"
 #include "AudioRelink.h"
@@ -11,6 +12,9 @@
 
 namespace td
 {
+/** 3.47.0: the highest bar number a project file is believed (what the bars boxes take: five digits). A damaged file's bar of two thousand million
+    made the take chart count that many bars. */
+static constexpr int kMaxBar = 99999;
 namespace
 {
 using juce::var; using juce::DynamicObject; using juce::String;
@@ -456,6 +460,7 @@ void Project::createDefaultDesign()
     sampleRate = 0.0;                                                                                 // (3.9.0: chosen for the new project by the one making it)
     postFaderSlots = false;                                                                           // (3.40.0: a new project starts without the post-fader slots)
     windowFiles.clear(); missingWindowRefs.clear(); loadNotes.clear(); oldWindowFiles.clear();     // (nothing of the project that was open before: its missing files are not this one's)
+    parkedMasterItems.clear(); parkedDdpClips.clear();                                                // (3.46.1: nor the mastering entries kept for its missing edits)
     layouts.clear();                                                                                  // (nor its saved Display Organiser layouts)
     ignoredMissing.clear(); windowBounds.clear(); filesMoved = false;                                // (3.18.2: nor its ignored missing files, its window places or its "moved" flag - they stayed, and were saved into the new project)
     setInputCount (8);
@@ -1218,7 +1223,14 @@ bool Project::trackHasAudio (const juce::Uuid& trackId) const
         for (auto& r : rs) for (auto& rf : r.files) if (rf.trackId == trackId) return true;
         return false;
     };
-    for (auto& e : edits) if (inRegions (e->regions) || inRegions (e->overdubs)) return true;
+    for (auto& e : edits)
+    {
+        if (inRegions (e->regions) || inRegions (e->overdubs)) return true;
+        // 3.47.0: a frozen version of the edit (Edit 1, Edit 2 ...) counts too. Moving clips onto another track takes the edit's pieces along but leaves
+        // the frozen versions as they were, so the track the clips came from looked empty and was offered for deleting ("nothing is lost") while a
+        // frozen version still played on it.
+        for (auto& v : e->versions) if (v.edit != nullptr && (inRegions (v.edit->regions) || inRegions (v.edit->overdubs))) return true;
+    }
     return false;
 }
 
@@ -1230,13 +1242,6 @@ int Project::removeEmptyTracks (const std::vector<juce::Uuid>& ids)
     const int gone = (int) (before - tracks.size());
     if (gone > 0) structureChanged();
     return gone;
-}
-
-juce::Array<int> Project::inputsOfTrack (const TrackDef& t) const
-{
-    juce::Array<int> r;
-    for (int c = 0; c < t.channelCount(); ++c) if (t.inputOf (c) >= 0) r.add (t.inputOf (c));
-    return r;
 }
 
 void Project::retireAllMixers()
@@ -1885,6 +1890,7 @@ var Project::toVar (bool withWindows) const
             bool exists = false;
             for (auto& w : takeWindows) exists = exists || w->id == oid;
             for (auto& e : edits) exists = exists || e->id == oid;
+            for (auto& m : missingWindowRefs) exists = exists || m["id"].toString() == owner;      // (3.46.1: a piece whose file is missing is not deleted: its set waits for it)
             if (! exists) continue;                                                       // (a piece that was deleted: its measurements go with it)
             var so = obj(); put (so, "measuredOn", set.measuredOn);
             var trs = obj();
@@ -1914,7 +1920,16 @@ var Project::toVar (bool withWindows) const
     }
 
     if (withWindows) addWindowsToVar (root);
-    put (root, "mastering", mastering.toVar());
+    {
+        var mv = mastering.toVar();
+        // 3.46.1: the entries kept aside for edits whose file is missing go back where they were (see parkedMasterItems)
+        auto unpark = [] (const var& list, const std::vector<ParkedMastering>& from)
+        {
+            if (auto* a = list.getArray()) for (auto& pk : from) a->insert (juce::jlimit (0, a->size(), pk.index), pk.entry);
+        };
+        unpark (mv["items"], parkedMasterItems); unpark (mv["ddp"]["clips"], parkedDdpClips);
+        put (root, "mastering", mv);
+    }
     if (roomTone.valid()) put (root, "roomTone", roomToneToVar (roomTone));
     if (! rxSeen.empty())                                                       // 3.22.0: the saves in linked programs already dealt with
     {
@@ -2046,7 +2061,7 @@ static std::unique_ptr<EditDef> editFromVarIn (const var& v, const juce::File& b
         r.id = juce::Uuid (rv[key::k_id].toString()); r.windowId = juce::Uuid (rv[key::k_window].toString()); r.takeId = juce::Uuid (rv[key::k_take].toString());
         r.takeName = rv[key::k_takeName].toString(); r.srcIn = samplesFromVar (rv[key::k_in]); r.srcOut = samplesFromVar (rv[key::k_out]);
         r.startSample = samplesFromVar (rv[key::k_start]); r.sourceLength = samplesFromVar (rv[key::k_sourceLength]);
-        r.barIn = juce::jmax (0, (int) rv[key::k_barIn]); r.barOut = juce::jmax (0, (int) rv[key::k_barOut]);
+        r.barIn = juce::jlimit (0, kMaxBar, (int) rv[key::k_barIn]); r.barOut = juce::jlimit (0, kMaxBar, (int) rv[key::k_barOut]);
         r.sampleRate = rateFromVar (rv[key::k_rate]); r.curve = (FadeCurve) juce::jlimit (0, (int) FadeCurve::Count - 1, (int) rv[key::k_curve]);
         r.fixIn = (bool) rv[key::k_fixIn]; r.fixOut = (bool) rv[key::k_fixOut]; r.snipIn = (bool) rv[key::k_snipIn]; r.snipOut = (bool) rv[key::k_snipOut]; r.normaliseIn = (bool) rv[key::k_normaliseIn];
         if (rv.hasProperty (key::k_outCurve)) r.setOutCurve ((FadeCurve) juce::jlimit (0, (int) FadeCurve::Count - 1, (int) rv[key::k_outCurve]));
@@ -2326,7 +2341,7 @@ bool Project::fromVar (const var& root)
             if (v.hasProperty ("playhead")) w->playheadSeconds = juce::jmax (0.0, (double) v["playhead"]);
             w->showLtc = v.hasProperty ("showLtc") && (bool) v["showLtc"];
             markersFromVar (v["markers"], w->markers); w->showMarkers = v["showMarkers"].isVoid() ? true : (bool) v["showMarkers"];
-            w->pieceBars = juce::jmax (0, (int) v["pieceBars"]);
+            w->pieceBars = juce::jlimit (0, kMaxBar, (int) v["pieceBars"]);
             w->takeMatching = v.hasProperty ("takeMatching") && (bool) v["takeMatching"];
             if (auto* fv = v["fixVersions"].getArray()) for (auto& f : *fv) w->fixVersions.push_back (fixVersionFromVar (f, base, &moved));     // (fermata:Live's fixes, contract 3)
             if (auto* hid = v["hiddenTracks"].getArray()) for (auto& h : *hid) w->hiddenTracks.push_back (juce::Uuid (h.toString()));
@@ -2341,7 +2356,7 @@ bool Project::fromVar (const var& root)
                     if (g.fadeInSeconds <= 0.0011 && g.fadeInSeconds > 0.0) g.fadeInSeconds = kDefaultEdgeFade;       // the old 1 ms default becomes the new one
                     if (gv.hasProperty (key::k_fadeOut)) g.fadeOutSeconds = juce::jmax (0.0, (double) gv[key::k_fadeOut]);
                     if (g.fadeOutSeconds <= 0.0011 && g.fadeOutSeconds > 0.0) g.fadeOutSeconds = kDefaultEdgeFade;
-                    g.dud = (bool) gv[key::k_dud]; g.verified = (bool) gv[key::k_verified]; g.barIn = juce::jmax (0, (int) gv[key::k_barIn]); g.barOut = juce::jmax (0, (int) gv[key::k_barOut]);
+                    g.dud = (bool) gv[key::k_dud]; g.verified = (bool) gv[key::k_verified]; g.barIn = juce::jlimit (0, kMaxBar, (int) gv[key::k_barIn]); g.barOut = juce::jlimit (0, kMaxBar, (int) gv[key::k_barOut]);
                     g.notes = gv[key::k_takeNotes].toString();
                     g.roomTone = (bool) gv[key::k_roomTone]; g.roomToneIn = gv.hasProperty (key::k_roomToneIn) ? (double) gv[key::k_roomToneIn] : -1.0; g.roomToneOut = gv.hasProperty (key::k_roomToneOut) ? (double) gv[key::k_roomToneOut] : -1.0;
                     g.overruns = juce::jmax (0, (int) gv[key::k_overruns]); g.lostSamples = juce::jmax<juce::int64> (0, samplesFromVar (gv[key::k_lost])); g.writeFailed = (bool) gv[key::k_writeFailed];
@@ -2373,6 +2388,19 @@ bool Project::fromVar (const var& root)
     }
 
     mastering.fromVar (root["mastering"]);
+    {   // 3.46.1: the entries of edits whose file could not be read (missingWindowRefs) are kept aside as they were written, with their places:
+        // mastering.sync below takes them out of the lists (those edits are not here), and toVar puts them back into every save
+        parkedMasterItems.clear(); parkedDdpClips.clear();
+        std::set<String> missingEdits;
+        for (auto& m : missingWindowRefs) if (m["kind"].toString() == "edit" && m["id"].toString().isNotEmpty()) missingEdits.insert (m["id"].toString());
+        auto park = [&missingEdits] (const var& list, std::vector<ParkedMastering>& into)
+        {
+            if (auto* a = list.getArray())
+                for (int i = 0; i < a->size(); ++i)
+                    if (missingEdits.count (a->getReference (i)["edit"].toString()) > 0) into.push_back ({ i, a->getReference (i) });
+        };
+        if (! missingEdits.empty()) { park (root["mastering"]["items"], parkedMasterItems); park (root["mastering"]["ddp"]["clips"], parkedDdpClips); }
+    }
     roomTone = roomToneFromVar (root["roomTone"]);
     rxSeen.clear();
     if (auto* ra = root["rxSeen"].getArray())
@@ -2594,11 +2622,19 @@ juce::String Project::undoText (const MasteringDef& m) const
 }
 
 Project::UndoSnap Project::snapOf (const TakeWindowDef& w) { UndoSnap s; s.hash = undoHash (w); s.takeCopy = std::make_shared<TakeWindowDef> (w); return s; }
-Project::UndoSnap Project::snapOf (const EditDef& e)       { UndoSnap s; s.hash = undoHash (e); s.editCopy = std::make_shared<EditDef> (e); return s; }
+Project::UndoSnap Project::snapOf (const EditDef& e)       { UndoSnap s; s.hash = undoHash (e); s.editCopy = std::make_shared<EditDef> (e); s.made = s.fresh = timesOf (e); return s; }
+Project::UndoTimes Project::timesOf (const EditDef& e)
+{
+    UndoTimes t; t.set = true;
+    for (auto& m : e.markers) t.markers[m.id.toString()] = m.seconds;
+    for (auto& n : e.feedback) t.feedback[n.key] = n.seconds;
+    t.fixIn = e.fixIn; t.fixOut = e.fixOut; t.playhead = e.playheadSeconds;
+    return t;
+}
 Project::UndoSnap Project::masteringSnap() const   { UndoSnap s; s.hash = undoHash (mastering); s.text = undoText (mastering); return s; }
 Project::UndoPiece Project::pieceOf (UndoKind kind, const juce::Uuid& id, const UndoSnap& s)
 {
-    UndoPiece p; p.kind = kind; p.id = id; p.text = s.text; p.take = s.takeCopy; p.edit = s.editCopy;
+    UndoPiece p; p.kind = kind; p.id = id; p.text = s.text; p.take = s.takeCopy; p.edit = s.editCopy; p.before = s.fresh;
     return p;
 }
 
@@ -2644,7 +2680,7 @@ void Project::undoTick (bool recording, bool force)
         const auto hash = undoHash (*e);
         auto it = undoEdits.find (e->id);
         if (it == undoEdits.end()) { undoEdits[e->id] = snapOf (*e); continue; }
-        if (it->second.hash == hash) continue;
+        if (it->second.hash == hash) { it->second.fresh = timesOf (*e); continue; }      // (3.47.0: nothing an undo covers changed - but a marker or a mark may have been moved)
         step.pieces.push_back (pieceOf (UndoKind::edit, e->id, it->second));
         it->second = snapOf (*e);
     }
@@ -2675,7 +2711,7 @@ var rootWith (const char* key, const var& v, bool asArray)
 
 /** Puts one window back as its snapshot says, keeping what the snapshot does not cover (view state, the take being recorded).
     True when the project's structure changed (an edit came back, which needs a mixer): the caller then raises structureChanged rather than changed. */
-bool restorePiece (Project& p, const Project::UndoPiece& piece, const juce::Uuid& liveTake)
+bool restorePiece (Project& p, const Project::UndoPiece& piece, const juce::Uuid& liveTake, const Project::UndoTimes* made = nullptr)
 {
     if (piece.kind == Project::UndoKind::mastering)
     {
@@ -2741,6 +2777,28 @@ bool restorePiece (Project& p, const Project::UndoPiece& piece, const juce::Uuid
             te->autoBefore = live->autoBefore;                            // (3.27.0: where the automated controls were: an undo that takes a lane's points away puts the control back from here)
             te->showGuide = live->showGuide;                              // (the Guide button: a view; the guide itself is part of undo)
             te->versions = live->versions; te->subheading = live->subheading; te->compareWith = live->compareWith;     // (3.42.0: the frozen versions: saved, never undone)
+            // 3.47.0: the markers, comment flags, marks 1 / 2 and the playhead are not part of an undo - they are kept as they are now (above). But a
+            // change that moved the music along (a piece put in, or deleted) took them with it, and undoing it left them where the change had put
+            // them: the piece's length away from their music. Each one now stays ON ITS MUSIC through the undo (editversions::mapSeconds: the take
+            // and the place in it under it now, found in the edit as it comes back) - except one that the change did not move and that has not been
+            // moved since, which stays exactly where it is (a piece slid along under a marker leaves the marker alone, and so does undoing that).
+            // 'made': where they stood when the state being left was made; piece.before: just before the change being undone.
+            if (piece.before.set && made != nullptr && made->set)
+            {
+                auto at = [] (const std::map<juce::String, double>& m, const juce::String& k) -> const double* { const auto it = m.find (k); return it != m.end() ? &it->second : nullptr; };
+                auto place = [&] (double now, const double* was, const double* after)
+                {
+                    if (now < 0.0) return now;                                                       // (a mark that is not set)
+                    if (was != nullptr && after != nullptr && std::abs (now - *after) < 1.0e-9 && std::abs (now - *was) < 1.0e-9) return now;
+                    return editversions::mapSeconds (*live, *te, now);
+                };
+                for (auto& m : te->markers)  { const auto k = m.id.toString(); m.seconds = place (m.seconds, at (piece.before.markers, k), at (made->markers, k)); }
+                for (auto& n : te->feedback) n.seconds = place (n.seconds, at (piece.before.feedback, n.key), at (made->feedback, n.key));
+                te->fixIn = place (te->fixIn, &piece.before.fixIn, &made->fixIn);
+                te->fixOut = place (te->fixOut, &piece.before.fixOut, &made->fixOut);
+                if (te->fixIn >= 0.0 && te->fixOut >= 0.0 && te->fixOut <= te->fixIn) te->fixOut = -1.0;
+                te->playheadSeconds = juce::jmax (0.0, place (te->playheadSeconds, &piece.before.playhead, &made->playhead));
+            }
             *live = std::move (*te);
         }
         else { p.edits.push_back (std::move (te)); p.syncEditMixers(); structural = true; }
@@ -2803,10 +2861,11 @@ bool Project::undo (const juce::Uuid& liveTake)
     UndoStep back; bool structural = false;                // what redo will put back: the windows as they are now
     for (auto& piece : step.pieces)
     {
+        const UndoTimes* made = nullptr;                   // (3.47.0: an edit - where its markers and marks stood when the state being left was made)
         if (piece.kind == UndoKind::takeWindow) { auto it = undoTakes.find (piece.id); if (it != undoTakes.end()) back.pieces.push_back (pieceOf (piece.kind, piece.id, it->second)); }
-        else if (piece.kind == UndoKind::edit) { auto it = undoEdits.find (piece.id); if (it != undoEdits.end()) back.pieces.push_back (pieceOf (piece.kind, piece.id, it->second)); }
+        else if (piece.kind == UndoKind::edit) { auto it = undoEdits.find (piece.id); if (it != undoEdits.end()) { back.pieces.push_back (pieceOf (piece.kind, piece.id, it->second)); made = &it->second.made; } }
         else { UndoPiece m; m.kind = piece.kind; m.id = piece.id; m.text = undoMastering.text; back.pieces.push_back (m); }
-        structural = restorePiece (*this, piece, liveTake) || structural;
+        structural = restorePiece (*this, piece, liveTake, made) || structural;
     }
     redoStack.push_back (std::move (back));
     if (structural) structureChanged(); else changed();           // (a structure change rebuilds the main window's strips, the mixer windows and the engine's plan: only when an edit came back)
@@ -2828,10 +2887,11 @@ bool Project::redo (const juce::Uuid& liveTake)
     UndoStep back; bool structural = false;
     for (auto& piece : step.pieces)
     {
+        const UndoTimes* made = nullptr;                   // (3.47.0: an edit - where its markers and marks stood when the state being left was made)
         if (piece.kind == UndoKind::takeWindow) { auto it = undoTakes.find (piece.id); if (it != undoTakes.end()) back.pieces.push_back (pieceOf (piece.kind, piece.id, it->second)); }
-        else if (piece.kind == UndoKind::edit) { auto it = undoEdits.find (piece.id); if (it != undoEdits.end()) back.pieces.push_back (pieceOf (piece.kind, piece.id, it->second)); }
+        else if (piece.kind == UndoKind::edit) { auto it = undoEdits.find (piece.id); if (it != undoEdits.end()) { back.pieces.push_back (pieceOf (piece.kind, piece.id, it->second)); made = &it->second.made; } }
         else { UndoPiece m; m.kind = piece.kind; m.id = piece.id; m.text = undoMastering.text; back.pieces.push_back (m); }
-        structural = restorePiece (*this, piece, liveTake) || structural;
+        structural = restorePiece (*this, piece, liveTake, made) || structural;
     }
     undoStack.push_back (std::move (back));
     if (structural) structureChanged(); else changed();           // (a structure change rebuilds the main window's strips, the mixer windows and the engine's plan: only when an edit came back)
@@ -3375,6 +3435,9 @@ void Project::planWindowFiles (var& root, SaveJob& job, std::map<String, WindowF
 
     std::map<String, String> ownerOf;                      // the files the windows have (lower case) -> whose: another window's is never taken, whether it is on the disk yet or not
     for (auto& kv : windowFiles) ownerOf[kv.second.rel.toLowerCase()] = kv.first;
+    // 3.46.1: nor the file of a window that could not be read when the project was opened (missingWindowRefs: the person is told to put it back) -
+    // a new window of the same name used to take that very name while the file was away, so putting the file back meant writing over one of them
+    for (auto& m : missingWindowRefs) if (const auto rel = m["file"].toString(); rel.isNotEmpty()) ownerOf[rel.replaceCharacter ('\\', '/').toLowerCase()] = m["id"].toString();
     auto place = [&] (const String& id, const String& nm, const String& sub, const String& ext)
     {
         const auto base = sanitiseForFile (nm);
@@ -3908,7 +3971,8 @@ bool Project::importMixerFile (const juce::File& file, String& message)
             for (auto& mine : buses) if (mine.name.equalsIgnoreCase (nm) && mine.external == ext) { subs.push_back ({ b["id"].toString(), mine.id.toString() }); break; }
         }
     auto text = juce::JSON::toString (fv, true);
-    for (auto& sb : subs) text = text.replace (sb.first, sb.second);
+    // (3.46.1: only real ids - a track or bus written with no id, in a damaged or hand-made file, made this replace "nothing" by an id for ever)
+    for (auto& sb : subs) if (sb.first.length() >= 8 && sb.first != sb.second) text = text.replace (sb.first, sb.second);
     if (juce::JSON::parse (text, fv).failed()) { message = "Could not read that file."; return false; }
     // keep only what exists here
     juce::Array<var> tk, bs;
@@ -3979,7 +4043,7 @@ bool Project::importWindowFile (const juce::File& file, String& message, juce::U
     if (! subs.empty())
     {
         auto text = juce::JSON::toString (fv, true);
-        for (auto& s : subs) text = text.replace (s.first, s.second);
+        for (auto& s : subs) if (s.first.length() >= 8 && s.first != s.second) text = text.replace (s.first, s.second);      // (3.46.1: only real ids, as in importMixerFile)
         if (juce::JSON::parse (text, fv).failed()) { message = "Could not read that file."; return false; }
         win = fv[isEdit ? "edit" : "window"];
     }

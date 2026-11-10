@@ -125,7 +125,6 @@ inline int speakerChannels (BusFormat f) noexcept     { return channels (f) - (i
 inline juce::String name (BusFormat f)                { return layout (f).name; }
 inline juce::String key (BusFormat f)                 { return layout (f).key; }
 inline juce::String channelLabel (BusFormat f, int c) { const auto& l = layout (f); return juce::isPositiveAndBelow (c, l.count) ? juce::String (info (l.spk[c]).shortName) : juce::String(); }
-inline juce::String channelLongName (BusFormat f, int c) { const auto& l = layout (f); return juce::isPositiveAndBelow (c, l.count) ? juce::String (info (l.spk[c]).longName) : juce::String(); }
 
 /** A format from its key in a file; stereo for a missing or unknown key (an older fermata wrote none: every bus was stereo). */
 inline BusFormat parse (const juce::String& k) noexcept

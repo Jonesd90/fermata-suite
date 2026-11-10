@@ -142,10 +142,10 @@ public:
         label.setTooltip ("The next take's label, as fermata shows it (\"005 - <label>\"); empty = the piece's name");
         label.onTextChange = [this] { app.takeLabel = label.getText(); };
         label.onReturnKey = [this] { grabKeyboardFocus(); };
-        for (auto* c : std::initializer_list<juce::Component*> { &piece, &label, &nextTake, &recButton, &takeLength, &bigTime, &playheadLine, &flags, &view, &noteBox, &noteCaption, &hint })
+        for (auto* c : std::initializer_list<juce::Component*> { &piece, &label, &nextTake, &recButton, &takeLength, &bigTime, &playheadLine, &flags, &view, &noteBox, &noteCaption, &removeFlagBtn, &hint })
             addAndMakeVisible (c);
         addChildComponent (notePanel);
-        noteBox.setVisible (false); noteCaption.setVisible (false);
+        noteBox.setVisible (false); noteCaption.setVisible (false); removeFlagBtn.setVisible (false);
         recButton.setIcon (Icon::Record, "Record");
         recButton.setBoxLook (true);
         recButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xffc62828));
@@ -201,6 +201,10 @@ public:
         noteBox.setFont (juce::FontOptions (16.0f));
         noteBox.onReturnKey = [this] { saveNote(); };
         noteBox.onEscapeKey = [this] { closeNote(); };
+        // 0.8.0 (asked for on 10 November 2026): a flag can be taken away - one pinned by mistake stayed for good, with the Fixer told of it
+        removeFlagBtn.setTooltip ("Take this flag away (one pinned by mistake): it goes from the Fixer's list and from the project too");
+        removeFlagBtn.setWantsKeyboardFocus (false);
+        removeFlagBtn.onClick = [this] { removeFlag(); };
         hint.setFont (juce::FontOptions (12.5f)); hint.setColour (juce::Label::textColourId, theme::dimText); hint.setMinimumHorizontalScale (0.7f);
         flags.onPick = [this] (const juce::String& id, double s) { if (s >= 0.0) { view.keepInView (s, false); view.selectedFlag = id; if (! app.isRecording()) seek (s); } };
         // the note panel (0.5.0)
@@ -316,7 +320,12 @@ public:
             reportBtn.setBounds (row3.removeFromLeft (80));
         }
         auto noteRow = r.removeFromTop (30);
-        if (noteBox.isVisible()) { noteCaption.setBounds (noteRow.removeFromLeft (330)); noteBox.setBounds (noteRow.reduced (0, 2)); hint.setBounds ({}); }
+        if (noteBox.isVisible())
+        {
+            noteCaption.setBounds (noteRow.removeFromLeft (330));
+            removeFlagBtn.setBounds (noteRow.removeFromRight (110).reduced (0, 2)); noteRow.removeFromRight (6);
+            noteBox.setBounds (noteRow.reduced (0, 2)); hint.setBounds ({});
+        }
         else hint.setBounds (noteRow);
         // the side column: the note panel (when a note is open) over the flags and replies
         const int sideW = notePanel.isOpen() ? juce::jmin (420, r.getWidth() / 3) : juce::jmin (300, r.getWidth() / 4);
@@ -599,7 +608,7 @@ private:
             else if (auto* w = app.pieceWindow()) if (auto* m = findMarker (w->markers, juce::Uuid (id)); m != nullptr && m->flag) current = m->note;   // (a flag already in the project)
         }
         noteBox.setText (current, false);
-        noteBox.setVisible (true); noteCaption.setVisible (true);
+        noteBox.setVisible (true); noteCaption.setVisible (true); removeFlagBtn.setVisible (true);
         resized();
         noteBox.grabKeyboardFocus();
         view.selectedFlag = id;
@@ -615,10 +624,24 @@ private:
         }
         closeNote();
     }
+    /** The flag whose note row is open is taken away: the session's through the recorder (which tells the Fixer, and the project loses its marker
+        at the next look), one the project has from an earlier session straight out of the project. */
+    void removeFlag()
+    {
+        if (noteFor.isEmpty()) return;
+        const auto id = noteFor;
+        if (app.model.findFlag (id) != nullptr || noteFresh) app.removeFlag (id);
+        else if (auto* w = app.pieceWindow())
+            if (auto* m = findMarker (w->markers, juce::Uuid (id)); m != nullptr && m->flag) { removeMarker (w->markers, juce::Uuid (id)); app.markDirty(); }
+        if (view.selectedFlag == id) view.selectedFlag.clear();
+        closeNote();
+        setHint ("Flag taken away.");
+        view.repaint();
+    }
     void closeNote()
     {
         noteFor.clear();
-        noteBox.setVisible (false); noteCaption.setVisible (false);
+        noteBox.setVisible (false); noteCaption.setVisible (false); removeFlagBtn.setVisible (false);
         resized();
         grabKeyboardFocus();
     }
@@ -698,6 +721,7 @@ private:
     std::function<void (const juce::String&)> openWindow;
     juce::Label pieceCaption, labelCaption, playheadLine, noteCaption, hint;
     juce::TextEditor piece, label, noteBox;
+    juce::TextButton removeFlagBtn { "Remove flag" };
     NextTakeBox nextTake;
     IconButton recButton { "REC [R]" };
     TimeBox takeLength { "TAKE LENGTH", 26.0f }, bigTime { "H : M : S . MS", 32.0f };

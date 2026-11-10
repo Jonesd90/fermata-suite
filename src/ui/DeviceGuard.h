@@ -110,10 +110,6 @@ public:
         }
     }
 
-    /** (tests, the log) */
-    bool deviceIsGone() const noexcept   { return deviceGone; }
-    int questionsWaiting() const         { return (int) pending.size(); }
-
 private:
     struct Names { juce::StringArray in, out; };
     struct Wanted

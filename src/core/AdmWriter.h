@@ -93,7 +93,6 @@ namespace adm
         bool write (const float* const* chans, int numSamples);
         /** Writes the metadata chunks and patches the sizes. False if the frames written differ from the description's, or on an error. */
         bool finish();
-        juce::int64 framesWritten() const noexcept { return written; }
     private:
         bool put (const void* data, size_t bytes);
         bool putChunk (const char* id, const juce::MemoryBlock& payload);

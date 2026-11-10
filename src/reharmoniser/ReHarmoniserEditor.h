@@ -113,7 +113,6 @@ private:
     void clearChanges();
     void undoStep();
     void redoStep();
-    void pushHistory();
     void audition();
     void auditionAny();                              // the one Audition button: the note, the voices or the brush stroke, whichever is being worked on
     void afterAudition(); bool autoPlayNext = false, extProgress = false;

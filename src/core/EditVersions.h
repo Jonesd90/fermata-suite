@@ -2,6 +2,7 @@
 #include "Edit.h"
 #include "LowCut.h"
 #include <functional>
+#include <map>
 
 namespace td
 {
@@ -28,15 +29,11 @@ inline int freeze (EditDef& live, const juce::var& mixer, juce::Time now = juce:
     return live.versions.back().number;
 }
 
-/** A moment on version 'from' found on version 'to', by the music: the take and the place in it that was playing there. In a gap, or past the
-    end, it keeps its distance from the piece before it. When the music is not in 'to' any more the time is kept and 'floating' is set. */
-inline double mapSeconds (const EditDef& from, const EditDef& to, double seconds, bool* floating = nullptr)
+namespace detail
 {
-    if (floating) *floating = false;
-    if (&from == &to) return seconds;
-    const double rate = from.sampleRate > 0.0 ? from.sampleRate : to.sampleRate;
-    if (rate <= 0.0 || from.regions.empty() || to.regions.empty()) { if (floating) *floating = ! from.regions.empty() || ! to.regions.empty(); return seconds; }
-    const auto t = (juce::int64) std::llround (seconds * rate);
+/** The sample t of 'from' found in 'to' (see mapSeconds, which is this in seconds). False when the music is not in 'to' any more. Neither edit is empty. */
+inline bool placeOf (const EditDef& from, const EditDef& to, juce::int64 t, juce::int64& out)
+{
     // the piece of 'from' at t, or the one before it (and how far past its end)
     int i = from.regionAt (t); juce::int64 past = 0;
     if (i < 0)
@@ -58,9 +55,80 @@ inline double mapSeconds (const EditDef& from, const EditDef& to, double seconds
         const auto d = std::abs (tt - t);
         if (best == nullptr || c.id == r.id || d < bestDist) { best = &c; bestDist = d; if (c.id == r.id) break; }
     }
-    if (best == nullptr) { if (floating) *floating = true; return seconds; }
-    return (double) juce::jmax ((juce::int64) 0, best->startSample + (src - best->srcIn) + past) / rate;
+    if (best == nullptr) return false;
+    out = juce::jmax ((juce::int64) 0, best->startSample + (src - best->srcIn) + past);
+    return true;
 }
+}
+
+/** A moment on version 'from' found on version 'to', by the music: the take and the place in it that was playing there. In a gap, or past the
+    end, it keeps its distance from the piece before it. When the music is not in 'to' any more the time is kept and 'floating' is set. */
+inline double mapSeconds (const EditDef& from, const EditDef& to, double seconds, bool* floating = nullptr)
+{
+    if (floating) *floating = false;
+    if (&from == &to) return seconds;
+    const double rate = from.sampleRate > 0.0 ? from.sampleRate : to.sampleRate;
+    if (rate <= 0.0 || from.regions.empty() || to.regions.empty()) { if (floating) *floating = ! from.regions.empty() || ! to.regions.empty(); return seconds; }
+    juce::int64 out = 0;
+    if (! detail::placeOf (from, to, (juce::int64) std::llround (seconds * rate), out)) { if (floating) *floating = true; return seconds; }
+    return (double) out / rate;
+}
+
+/** 3.47.0 (decided on 10 November 2026: "sliding pieces should also move markers and overdubs"): what lies over an edit's pieces - the overdubs,
+    the markers, the comment flags, marks 1 / 2, the playhead and the automation points fixed in time - as it stood BEFORE pieces are slid,
+    shuffled or put in another order, so that each can be put back on its music afterwards (carry). The rule is mapSeconds': a thing stays over
+    the same place in the same piece; in a silence, or past the end, it stays with the piece before it; one whose music is no longer there (a
+    piece slid under a join until that place was cut off) stays where it was. Putting a piece in, or taking one out, has its own way
+    (EditDef::rippleAfter); this is for the operations that move pieces about.
+
+    A drag makes ONE of these when it starts and carries from it at every move of the mouse: carried from the move before, a piece sliding
+    over a marker in a silence would pick it up and take it along. */
+class Riders
+{
+public:
+    explicit Riders (const EditDef& e) : fixIn (e.fixIn), fixOut (e.fixOut), playhead (e.playheadSeconds)
+    {
+        was.sampleRate = e.sampleRate; was.regions = e.regions;
+        for (auto& o : e.overdubs) overdubs.push_back ({ o.id.toString(), (double) o.startSample });
+        for (auto& m : e.markers)  markers.push_back ({ m.id.toString(), m.seconds });
+        for (auto& f : e.feedback) feedback.push_back ({ f.key, f.seconds });
+        for (auto& l : e.lanes) for (auto& p : l.pts) if (p.region.isNull()) points[p.id] = p.time;
+    }
+
+    /** Puts everything where its music is now. What was not there when this was made (a marker added since) is left alone. */
+    void carry (EditDef& e) const
+    {
+        if (was.sampleRate <= 0.0 || was.regions.empty() || e.regions.empty()) return;
+        auto smp = [&] (juce::int64 t) { juce::int64 o = t; return detail::placeOf (was, e, t, o) ? o : t; };
+        auto sec = [&] (double s) { return s < 0.0 ? s : mapSeconds (was, e, s); };
+        auto then = [] (const std::vector<std::pair<juce::String, double>>& list, size_t i, const juce::String& id) -> const double*
+        {
+            if (i < list.size() && list[i].first == id) return &list[i].second;                 // (the usual case: the same list in the same order)
+            for (auto& x : list) if (x.first == id) return &x.second;
+            return nullptr;
+        };
+        for (size_t i = 0; i < e.overdubs.size(); ++i) if (auto* t = then (overdubs, i, e.overdubs[i].id.toString())) e.overdubs[i].startSample = smp ((juce::int64) *t);
+        for (size_t i = 0; i < e.markers.size(); ++i)  if (auto* t = then (markers, i, e.markers[i].id.toString()))   e.markers[i].seconds = sec (*t);
+        for (size_t i = 0; i < e.feedback.size(); ++i) if (auto* t = then (feedback, i, e.feedback[i].key))           e.feedback[i].seconds = sec (*t);
+        e.fixIn = sec (fixIn); e.fixOut = sec (fixOut);
+        if (e.fixIn >= 0.0 && e.fixOut >= 0.0 && e.fixOut <= e.fixIn) e.fixIn = e.fixOut = -1.0;      // (the marked music is in two places now, the wrong way round: nothing is marked)
+        e.playheadSeconds = juce::jmax (0.0, sec (playhead));
+        for (auto& l : e.lanes)
+        {
+            bool any = false;
+            for (auto& p : l.pts)
+                if (p.region.isNull())
+                    if (const auto it = points.find (p.id); it != points.end()) { const auto t = smp (it->second); any = any || t != p.time; p.time = t; }
+            if (any) l.sortPoints();
+        }
+    }
+
+private:
+    EditDef was;                                                           // (its pieces and its sample rate: all mapSeconds reads)
+    std::vector<std::pair<juce::String, double>> overdubs, markers, feedback;  // id (a comment flag's key) -> where it was
+    std::map<juce::Uuid, juce::int64> points;
+    double fixIn = -1.0, fixOut = -1.0, playhead = 0.0;
+};
 
 /** The last freeze undone: the newest frozen version comes off the list, its subheading comes back, and its comments come onto the live edit again
     (at the same music). False when there is none. */

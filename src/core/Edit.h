@@ -676,9 +676,13 @@ struct EditDef
     void removeRegion (int i, bool ripple = true)
     {
         if (! juce::isPositiveAndBelow (i, (int) regions.size())) return;
-        const auto len = regions[(size_t) i].length();
+        const auto len = regions[(size_t) i].length(), end = regions[(size_t) i].endSample();
         regions.erase (regions.begin() + i);
         if (ripple) for (int j = i; j < (int) regions.size(); ++j) regions[(size_t) j].startSample -= len;
+        // 3.47.0 (decided on 9 November 2026: "it all needs to stay with the content, rather than the timeline"): what lies over the music after the
+        // piece moves up with it - the overdubs, markers, comment flags, marks 1 / 2, the playhead, automation points fixed in time (rippleAfter), as
+        // when a piece is put in. They used to stay where they were, so each was the piece's length late against its music afterwards.
+        if (ripple) rippleAfter (end, -len);
         if (isEmpty()) sampleRate = 0.0;
         setDefaultJoinFades (i);
         hardenEnds();
@@ -825,10 +829,11 @@ struct EditDef
         std::stable_sort (m.gains.begin(), m.gains.end(), [] (const GainChange& x, const GainChange& y) { return x.at < y.at; });
 
         const juce::int64 shift = m.endSample() - b.endSample();                            // (not 0 when a moment had been rolled out, or in)
-        const auto bid = b.id, mid = m.id;
+        const auto bid = b.id, mid = m.id; const auto oldEnd = b.endSample();
         regions[(size_t) k - 1] = std::move (m);
         regions.erase (regions.begin() + k);
         for (size_t j = (size_t) k; j < regions.size(); ++j) regions[j].startSample += shift;
+        rippleAfter (oldEnd, shift);                                                         // (3.47.0: and what lies over them - see removeRegion)
         if (insertIndex > k) --insertIndex; else if (insertIndex == k) insertIndex = k + 1 <= (int) regions.size() ? k : -1;   // (the next take's place: at the glued piece's end)
         for (auto& lane : lanes) for (auto& p : lane.pts) if (p.region == bid) p.region = mid;   // (they find their audio in the glued piece: resolveAutomation)
         clampAll();
@@ -957,6 +962,7 @@ struct EditDef
             for (auto& p : lane.pts) if (p.region.isNull() && p.time >= from) p.time = juce::jmax ((juce::int64) 0, p.time + delta);
             lane.sortPoints();
         }
+        if (fixIn >= 0.0 && fixOut >= 0.0 && fixOut <= fixIn) fixIn = fixOut = -1.0;     // (3.47.0: music taken out from between the marks, mark 1 over it: nothing is marked any more)
     }
 
     /** Takes the audio between 'from' and 'to' off the main track and puts 'r' in its place, moving everything after 'to' by the difference in length
@@ -1150,9 +1156,10 @@ struct EditDef
             if (b.waiting.active()) return 0;
             if (const auto ext = juce::jmin (b.startSample - b.fadeInBegin(), b.startSample, b.srcIn); ext > 0)       // the fade-in was dragged EARLIER than the piece: the piece grows to cover it
             {
-                const auto ib = b.fadeInBegin(), ie = b.fadeInFinish();
+                const auto ib = b.fadeInBegin(), ie = b.fadeInFinish(); const auto old = b;
                 b.srcIn -= ext; b.startSample -= ext;
-                for (auto& g : b.gains) g.at += ext;
+                b.rebaseGains (old, -ext);                 // (3.47.0: the volume changes stay on their music; the level the piece starts with stays at its start - it
+                                                           //  was moved with the others, so the piece no longer had a level of its own and the Trim window's fader read 0)
                 b.inStart = (double) (ib - b.startSample) / juce::jmax (1.0, b.sampleRate); b.inEnd = (double) (ie - b.startSample) / juce::jmax (1.0, b.sampleRate);
                 clampFades (0);
                 return ext;
@@ -1280,7 +1287,9 @@ struct EditDef
         if (k < 1 || k >= (int) regions.size()) return 0;
         const juce::int64 d = regions[(size_t) k - 1].endSample() - regions[(size_t) k].startSample;
         if (d == 0) return 0;
+        const auto from = regions[(size_t) k].startSample;
         for (size_t j = (size_t) k; j < regions.size(); ++j) regions[j].startSample += d;
+        rippleAfter (from, d);                                      // (3.47.0: what lies over those pieces goes with them - see removeRegion)
         setDefaultJoinFades (k);
         return d;
     }
@@ -1304,7 +1313,10 @@ inline bool EditDef::anchorStart()
             const juce::int64 d = juce::jlimit ((juce::int64) 0, juce::jmax ((juce::int64) 0, r.srcIn - floor), want);
             if (d > 0)
             {
+                const auto old = r;
                 r.srcIn -= d; r.startSample -= d;
+                r.rebaseGains (old, -d);                   // 3.47.0: its volume changes are counted from its start, which has just moved d earlier: they stay on their
+                                                           // music (they were left as they were, so each one happened d earlier in the music than it had been set)
                 const double ds = (double) d / r.sampleRate;
                 r.inStart += ds; r.inEnd += ds;
                 if (std::abs (r.inStart) < 0.5 / r.sampleRate) r.inStart = 0.0;

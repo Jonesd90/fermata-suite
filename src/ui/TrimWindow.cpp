@@ -1,5 +1,6 @@
 #include "TrimWindow.h"
 #include "../core/AudioFormats.h"
+#include "../core/EditVersions.h"
 #include <limits>
 
 namespace td
@@ -165,7 +166,7 @@ public:
             if (e.y >= lanes.a.getBottom() && e.y < lanes.b.getY()) { mode = Mode::Pan; panBase = owner.centreSample; }
             return;
         }
-        regions0 = ed->regions;
+        regions0 = ed->regions; riders0.emplace (*ed);
         downT = timeAtX (e.x);                                       // 3.20.0: where the drag began on the timeline (the view may move during it)
         beginDragAutoRepeat (30);                                    // (held still at an edge, the drag carries on: the view keeps moving)
         owner.getApp().stopPlayback();
@@ -214,6 +215,9 @@ public:
             const auto did = mode == Mode::SlipA ? tmp.slipOut (k, want, owner.slipLeft()) : tmp.slipIn (k, want, owner.slipRight());
             if (did != want) owner.getApp().setNotice (juce::String (mode == Mode::SlipA ? "A" : "B") + " cannot slide any further that way: the take runs out of audio there (" + juce::String (std::abs (did) / rate * 1000.0, 0) + " ms is the most)");
             ed->regions = tmp.regions;
+            // 3.47.0 (decided 10 November 2026): what lies over the music that slides goes with it - the markers, comment flags, overdubs, marks
+            // 1 / 2 (from where they were when the drag began; one whose music the join has now cut off stays where it was)
+            if (riders0) riders0->carry (*ed);
         }
         else
         {
@@ -263,7 +267,7 @@ public:
     {
         if (mode == Mode::RefLine) { owner.centreSample = owner.refSample; owner.viewMoved(); }          // the view re-centres on the new reference line, so zooming stays on it
         else if (mode != Mode::None && mode != Mode::Pan && mode != Mode::Ruler) owner.dragFinished();
-        mode = Mode::None;
+        mode = Mode::None; riders0.reset();
     }
 
     void mouseMove (const juce::MouseEvent& e) override
@@ -441,6 +445,7 @@ private:
     TrimComponent& owner;
     Mode mode = Mode::None; juce::int64 panBase = 0; double downT = 0.0;
     std::vector<EditRegion> regions0;
+    std::optional<editversions::Riders> riders0;           // (3.47.0) what lay over the pieces when the drag began
     Cache cacheA, cacheB; Key cacheKey; float scale = 1.0f;
     bool wasPlaying = false;
 };
@@ -843,7 +848,15 @@ void TrimComponent::dragChanged()
 void TrimComponent::dragFinished()
 {
     // at the very start / end of the edit the audio that the moved fade leaves out is cut off the piece (and with Slip right on, what follows moves up to close the space)
-    if (auto* e = edit()) { const int k = joinIndex(); if ((k == 0 || k == (int) e->regions.size()) && e->trimEdgeToFade (k, slipRight()) != 0) waves->invalidate(); }
+    if (auto* e = edit())
+    {
+        const int k = joinIndex();
+        if (k == 0 || k == (int) e->regions.size())
+        {
+            const editversions::Riders riders (*e);
+            if (e->trimEdgeToFade (k, slipRight()) != 0) { riders.carry (*e); waves->invalidate(); }      // (3.47.0: with Slip right on the pieces after it move up - and what lies over them)
+        }
+    }
     app.project.changed();
 }
 

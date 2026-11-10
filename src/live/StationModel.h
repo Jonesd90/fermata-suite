@@ -80,8 +80,6 @@ public:
     }
     const StationTake* findTake (int number) const { for (auto& t : takes) if (t.number == number) return &t; return nullptr; }
     const FlagRec* findFlag (const juce::String& id) const { for (auto& f : flags) if (f.id == id) return &f; return nullptr; }
-    /** The track of the session that records ring channel 'ch' (or nullptr). */
-    const StationTrack* trackOfChannel (int ch) const { for (auto& t : tracks) if (ch >= t.ringFirst && ch < t.ringFirst + t.channels) return &t; return nullptr; }
     const StationTrack* findTrack (const juce::Uuid& id) const { for (auto& t : tracks) if (t.id == id) return &t; return nullptr; }
 
     /** RecorderLink's connection came or went. */

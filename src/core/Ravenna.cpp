@@ -352,8 +352,6 @@ bool RavennaDevice::sendChannelFields (int i, const juce::var& fields)
     return true;
 }
 
-void RavennaDevice::sendRaw (const juce::String& json) { ws.sendText (json); }
-
 void RavennaDevice::handleSettings (const juce::var& data)
 {
     const auto path = data["path"].toString();
@@ -511,7 +509,9 @@ void RavennaDevice::run()
     {
         session();
         connected = false;
-        { const juce::ScopedLock sl (lock); modules.clear(); refs.clear(); if (! threadShouldExit()) status = status + " (retrying)"; }
+        // (3.46.1: a change that was waiting to be sent when the connection went is dropped with it. It used to stay in the list and was sent to the
+        // device when the connection came back - seconds or hours later, perhaps in the middle of a take.)
+        { const juce::ScopedLock sl (lock); modules.clear(); refs.clear(); outgoing.clear(); if (! threadShouldExit()) status = status + " (retrying)"; }
         if (onUpdate) onUpdate();
         for (int i = 0; i < 40 && ! threadShouldExit(); ++i) wait (100);
     }

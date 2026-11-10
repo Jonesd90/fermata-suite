@@ -23,7 +23,14 @@ public:
         addAndMakeVisible (fader);
         value.setJustificationType (juce::Justification::centred); value.setFont (juce::FontOptions (11.0f)); value.setColour (juce::Label::textColourId, mixTheme().text);
         value.setEditable (false, true);
-        value.onTextChange = [this] { const double db = value.getText().getDoubleValue(); fader.setValue (dbToFader (db), juce::sendNotificationSync); };
+        value.onTextChange = [this]
+        {   // 0.8.0: a level typed in is read as a level. Anything without a number in it ("-inf", a slip of the keys) used to count as 0: the
+            // fader jumped to 0 dB. "-inf" (or "off") now closes the fader, and what is no number at all leaves it where it was.
+            const auto t = value.getText().trim().toLowerCase().replaceCharacter (',', '.');
+            if (t.startsWith ("-inf") || t == "off") fader.setValue (0.0, juce::sendNotificationSync);
+            else if (t.containsAnyOf ("0123456789")) fader.setValue (dbToFader (juce::jlimit (-90.0, 12.0, t.getDoubleValue())), juce::sendNotificationSync);
+            value.setText (dbText (faderToDb (fader.getValue())), juce::dontSendNotification);
+        };
         addAndMakeVisible (value);
         for (int k = 0; k < (channels == 2 ? 2 : 1); ++k)
         {
@@ -56,7 +63,8 @@ public:
     {
         updating = true;
         if (! fader.isMouseButtonDown()) fader.setValue (dbToFader (s.gainDb), juce::dontSendNotification);
-        value.setText (dbText (s.gainDb), juce::dontSendNotification);
+        if (! value.isBeingEdited()) value.setText (dbText (s.gainDb), juce::dontSendNotification);   // (0.8.0: not while a level is being typed into it - setting its text
+                                                                                                      //  closes the box, and this runs twice a second: there was half a second to type in)
         if (pans.size() == 1 && ! pans[0]->isMouseButtonDown()) pans[0]->setValue (s.pan, juce::dontSendNotification);
         if (pans.size() == 2) { if (! pans[0]->isMouseButtonDown()) pans[0]->setValue (s.panL, juce::dontSendNotification); if (! pans[1]->isMouseButtonDown()) pans[1]->setValue (s.panR, juce::dontSendNotification); }
         mute.setToggleState (s.mute, juce::dontSendNotification); solo.setToggleState (s.solo, juce::dontSendNotification);

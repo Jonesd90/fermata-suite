@@ -84,9 +84,6 @@ public:
     /** The component the seat's keyboard types into from now on (a text box it opened, say). */
     void setKeyTarget (juce::Component* c)          { keyTarget = c; }
 
-    /** The pointer's place on the screen now. */
-    juce::Point<float> pointerPosition() const noexcept { return pos; }
-
 private:
     struct Stroke
     {

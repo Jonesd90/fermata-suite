@@ -74,30 +74,9 @@ AppContext::AppContext()
         if (engine.playbackFinished()) stopPlayback (true);                  // tidy up when a play-through reaches its end
         else if (! engine.isPlaying() && playInfo.kind != PlayInfo::Kind::None) stopPlayback (true);     // the engine stopped on its own (the device restarted: AudioEngine::prepare): the windows are told the same way (3.1.5)
         engine.servicePreRoll();                                             // Pre-Rec's memory, made in the background, goes in place
-        if (const auto done = engine.reapFinishedTakes(); ! done.empty())     // a stopped take's files are finished on the disk: draw their real waveforms
-        {
-            forgetWaveforms (done);
-            for (auto& [wid, gid] : engine.takeFinishFailures())              // 3.27.1: a file that refused the end of the take while it was finished: the take is marked cut short, and the person told
-                if (auto* w = project.findTakeWindow (wid))
-                    if (auto* g = w->findGroup (gid))
-                    {
-                        g->writeFailed = true; project.markDirty();
-                        const auto text = "FILE STOPPED TAKING DATA while " + w->labelFor (*g) + " " + juce::String (g->number) + " was finished: the end of a track is missing (the drive is full, or has gone).";
-                        if (recordMonitor.events.size() >= RecordMonitor::kMaxEvents) recordMonitor.events.erase (recordMonitor.events.begin());
-                        recordMonitor.events.push_back ({ juce::Time::getCurrentTime().formatted ("%H:%M:%S"), text, true });
-                        recordMonitor.writeFailed = true;
-                        setNotice (text);
-                        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Recording", text);
-                    }
-            project.sendChangeMessage();
-        }
+        takeInFinishedTakes (true);                                          // a stopped take's files are finished on the disk: draw their real waveforms
         if (++alignTicks % 3 == 0 && ! engine.isPlaying() && ! engine.isRecording())   // idle: the live inputs are aligned for the piece being worked on
             setAlignOwner (currentAlignOwner());
-        if (engine.isPlaying() && ! discAlign.empty() && playInfo.kind == PlayInfo::Kind::Other && playInfo.id == discToken)
-        {                                                                    // a disc through the mixers: each piece with its own spot delays, switched in the pause before it
-            const double pos = playInfo.startSeconds + playedSeconds();
-            for (auto& d : discAlign) if (pos < d.end) { setAlignOwner (d.owner); break; }
-        }
     };
     watcher.startTimer (100);
     liveAutoTicker.fn = [this] { followAutomation(); };
@@ -171,6 +150,57 @@ AppContext::~AppContext()
     project.structure.removeChangeListener (this);
     devices.removeChangeListener (this);
     closing::step ("timers and listeners stopped");
+}
+
+void AppContext::takeInFinishedTakes (bool tellPerson)
+{
+    const auto done = engine.reapFinishedTakes();
+    if (done.empty()) return;
+    forgetWaveforms (done);
+    for (auto& [wid, gid] : engine.takeFinishFailures())              // 3.27.1: a file that refused the end of the take while it was finished: the take is marked cut short, and the person told
+        if (auto* w = project.findTakeWindow (wid))
+            if (auto* g = w->findGroup (gid))
+            {
+                g->writeFailed = true; project.markDirty();
+                const auto text = "FILE STOPPED TAKING DATA while " + w->labelFor (*g) + " " + juce::String (g->number) + " was finished: the end of a track is missing (the drive is full, or has gone).";
+                if (recordMonitor.events.size() >= RecordMonitor::kMaxEvents) recordMonitor.events.erase (recordMonitor.events.begin());
+                recordMonitor.events.push_back ({ juce::Time::getCurrentTime().formatted ("%H:%M:%S"), text, true });
+                recordMonitor.writeFailed = true;
+                if (! tellPerson) { juce::Logger::writeToLog ("Recording: " + text); continue; }      // (closing: no box can be shown - the take is marked, and it is in the log)
+                setNotice (text);
+                juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Recording", text);
+            }
+    project.sendChangeMessage();
+}
+
+void AppContext::finishTakesBeforeClosing()
+{
+    // 3.46.1: a take stopped a moment before closing (or by it) is finished on the disk HERE - what is still in its files' buffers, then their headers,
+    // then the last of the second drive's copies. The engine waits for these itself when it is deleted (up to a minute for a drive that is behind), but
+    // that comes after the closing safety net has started, and the safety net ends the program 15 s later whatever is still being written: the end of
+    // the take could be cut off though it was in memory. So it is waited for before the safety net starts, with the same limits. The main thread means
+    // to wait here, and tells the stall watch so (it is not a freeze).
+    if (engine.anyFinishing() || engine.backupCopiesGoing() > 0)
+    {
+        BusyLabel busy ("finishing the last take's files before closing");
+        const auto t0 = juce::Time::getMillisecondCounter();
+        auto elapsed = [t0] { return (int) (juce::Time::getMillisecondCounter() - t0); };
+        auto beat = [this] { if (stallWatch != nullptr) stallWatch->touch(); };
+        bool filesDone = false;
+        while (elapsed() < 60000)
+        {
+            const int before = elapsed();
+            if (engine.waitForFinishedTakes (40)) { filesDone = true; break; }
+            beat();
+            if (elapsed() - before < 20) break;                              // (it came straight back: the finisher thread is not running, so nothing more will be finished)
+        }
+        const int filesMs = elapsed();
+        while (engine.backupCopiesGoing() > 0 && elapsed() - filesMs < 10000) { juce::Thread::sleep (20); beat(); }
+        juce::Logger::writeToLog ("Closing: the last take's files " + juce::String (filesDone ? "were finished" : "were NOT finished") + " after " + juce::String (filesMs) + " ms"
+                                  + (engine.backupCopiesGoing() > 0 ? "; " + juce::String (engine.backupCopiesGoing()) + " copies on the second drive were still being written"
+                                                                    : juce::String ("; the second drive's copies are complete (or there is no second drive)")));
+    }
+    takeInFinishedTakes (false);                                             // (a file that refused the end of the take: the take is marked cut short before the last save)
 }
 
 void AppContext::setCrMicInput (int i, bool on)
@@ -875,13 +905,14 @@ bool AppContext::saveNow (bool quick, juce::String* errorOut, bool keepAll)
         // (and its windows written again) before the next snapshot is taken: one asked for meanwhile is taken once the one being written is done
         if (saver->isBusy()) { quickSaveWanted = true; return true; }
         BusyLabel busy ("taking the snapshot for an automatic save");
+        const int snap = onceSaved.snapshot();           // (3.46.1: what was taken out of the project before this snapshot may be deleted once it is written)
         if (auto job = project.prepareSave (true))
         {
             if (job->prepareMs > 60.0)
                 juce::Logger::writeToLog ("Automatic save: the snapshot took " + juce::String (juce::roundToInt (job->prepareMs)) + " ms (" + juce::String ((int) job->windows.size())
                                           + " window files to write)");
             const int gen = saveGeneration;
-            saver->write (std::move (job), [this, gen] (BackgroundSaver::Result& r) { savedInBackground (r, gen); });
+            saver->write (std::move (job), [this, gen, snap] (BackgroundSaver::Result& r) { savedInBackground (r, gen, snap); });
         }
     }
     else
@@ -889,10 +920,11 @@ bool AppContext::saveNow (bool quick, juce::String* errorOut, bool keepAll)
         BusyLabel busy ("saving the project");
         juce::String err;
         const auto t0 = juce::Time::getMillisecondCounterHiRes();
+        const int snap = onceSaved.snapshot();
         ok = project.save (err, quick);                  // (waits for the saver first: Project::settleBackgroundSaves)
         const auto ms = juce::Time::getMillisecondCounterHiRes() - t0;
         if (ms > 250.0) juce::Logger::writeToLog ("Saved the project in " + juce::String (juce::roundToInt (ms)) + " ms (written there and then)");
-        if (ok) { wholeSaveNext = false; lastFailedJob.reset(); if (! quick && keepAll) project.keepAllWindows(); }     // (3.19.0: a save the person asked for keeps every window as it is)
+        if (ok) { wholeSaveNext = false; lastFailedJob.reset(); savedWithout (snap); if (! quick && keepAll) project.keepAllWindows(); }     // (3.19.0: a save the person asked for keeps every window as it is)
         else
         {
             // every save that fails is in the log (a message box that the person is not there to see, or that cannot be shown while the program closes, is not enough)
@@ -937,7 +969,35 @@ void AppContext::waitForSaves()
     saver->drain();
 }
 
-void AppContext::savedInBackground (BackgroundSaver::Result& r, int generation)
+void AppContext::deleteOnceSaved (const std::vector<juce::File>& files)
+{
+    if (project.projectFile == juce::File()) { for (auto& f : files) f.deleteFile(); return; }      // (no project file: nothing on the disk names them)
+    onceSaved.add (files);
+}
+
+bool AppContext::projectNamesFile (const juce::File& f) const
+{
+    auto inEdit = [&f] (const EditDef& e)
+    {
+        for (auto* list : { &e.regions, &e.overdubs }) for (auto& r : *list) for (auto& rf : r.files) if (rf.file == f) return true;
+        return false;
+    };
+    for (auto& e : project.edits)
+    {
+        if (inEdit (*e)) return true;
+        for (auto& v : e->versions) if (v.edit != nullptr && inEdit (*v.edit)) return true;
+    }
+    for (auto& w : project.takeWindows) for (auto& g : w->groups) for (auto& tf : g.files) if (tf.file == f) return true;
+    return false;
+}
+
+void AppContext::savedWithout (int snapshot)
+{
+    // (a file that is in the project again - nothing does that today - is no longer this list's to delete)
+    for (auto& f : onceSaved.saved (snapshot)) if (! projectNamesFile (f)) f.deleteFile();
+}
+
+void AppContext::savedInBackground (BackgroundSaver::Result& r, int generation, int snapshot)
 {
     if (generation != saveGeneration || r.job == nullptr) return;          // (another project since: not this one's)
     if (quickSaveWanted)                                                    // a save was asked for while this one was being written: now it can be
@@ -948,6 +1008,7 @@ void AppContext::savedInBackground (BackgroundSaver::Result& r, int generation)
     if (r.ok)
     {
         lastFailedJob.reset();
+        savedWithout (snapshot);                         // 3.46.1
         if (r.job->writeMs > 2000.0)
             juce::Logger::writeToLog ("Automatic save: writing took " + juce::String (juce::roundToInt (r.job->writeMs)) + " ms (on its own thread: nothing waited for it)");
         return;
@@ -1046,6 +1107,7 @@ void AppContext::afterProjectReplaced()
     takeMatch.projectReplaced();                       // (the takes' fingerprints were the old project's; the new one's are found by its sweep)
     waveColors.clear();                                // (3.18.2: and so were the waveform colours - they were kept for the whole run)
     wholeSaveNext = false; quickSaveWanted = false; lastFailedJob.reset();
+    onceSaved.forget();                                // (3.46.1: what the project before did not get saved without stays on the disk - its file may name it)
     fixUndo = nullptr; fixUndoLabel.clear(); fixUndoHash = 0;      // (the last fix was in the project that was open before: 3.1.4)
     lastAutosaveMs = juce::Time::getMillisecondCounter();
     openStep ("take matching told of the new project");
@@ -1179,10 +1241,23 @@ void AppContext::refreshPreampsFromAneman()
     });
 }
 
+juce::String AppContext::newProjectProblem (const juce::File& file)
+{
+    // 3.46.1: never over a project that is already there. The file chooser's own "replace it?" question looks at the name typed, not at the project
+    // file inside the folder that is made for it - so a second project of the same name in the same place ("New project" accepted twice) quietly
+    // put an empty project in place of the first one's project file, and the save after that did the same to its .bak.
+    for (const auto& f : { file, file.withFileExtension ("fermata"), file.withFileExtension ("takedaw") })
+        if (f.existsAsFile() || filesync::backupOf (f).existsAsFile())
+            return "There is already a project called \"" + f.getFileNameWithoutExtension() + "\" there (" + f.getFullPathName() + ").\n\n"
+                   "Give the new project another name, or put it in another place - or use Open project to open the one that is there. Nothing was changed.";
+    return {};
+}
+
 bool AppContext::newProject (const juce::File& file, double rate)
 {
     if (engine.isRecording()) { showError ("Recording", "Stop recording first."); return false; }
     if (saveHold > 0) { showError ("A fix is being tried out", "A ReTouch or Pitch window is still trying something out. Write it back or close it first."); return false; }   // (3.27.1: a preview must not be saved as the project)
+    if (const auto problem = newProjectProblem (file); problem.isNotEmpty()) { showError ("New project", problem); return false; }
     stopPlayback();
     engine.auxSounds().click.setRunning (false); engine.auxSounds().pipe.allOff();     // (the click and the pitch pipe belong to the old project's outputs)
     plugins.closeAllEditors();                       // (the old project's plug-ins go with it)
@@ -1196,7 +1271,15 @@ bool AppContext::newProject (const juce::File& file, double rate)
     project.projectFile = file;
     project.sampleRate = rate > 0.0 ? rate : 0.0;    // (3.9.0: chosen on purpose in the sample-rate box; 0 = asked for before the first take)
     juce::String err;
-    if (! project.save (err)) { showError ("Could not create project", err); return false; }
+    if (! project.save (err))
+    {
+        // 3.46.1: back to the start panel. (It used to stay as an empty project that pointed at the file that could not be made: every automatic save
+        // failed from then on, and a take would have been recorded into a folder that is not there.) The project that was open was saved above.
+        juce::Logger::writeToLog ("New project: " + file.getFullPathName() + " could not be made: " + err);
+        showError ("Could not create project", err + "\n\nNo project is open now: choose New project again (another place, or another drive), or Open project.");
+        startBlankProject();
+        return false;
+    }
     project.createFolders();                         // Recorded Media, Bounced Media, Bounced Media/Mastered Audio
     afterProjectReplaced();
     props.getUserSettings()->setValue ("lastProject", file.getFullPathName());
@@ -1406,16 +1489,6 @@ juce::File AppContext::lastProjectFile()
 {
     juce::File last (props.getUserSettings()->getValue ("lastProject"));
     return last.existsAsFile() || filesync::backupOf (last).existsAsFile() ? last : juce::File();      // (a project whose file went while it was being written still opens, from its .bak)
-}
-
-void AppContext::restoreLastProject()
-{
-    const auto last = lastProjectFile();
-    if (last != juce::File() && openProject (last)) return;
-
-    auto folder = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("Fermata")
-                      .getChildFile ("Session " + juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H.%M"));
-    newProject (folder.getChildFile ("Session.fermata"));
 }
 
 void AppContext::setSessionMode (bool on)
@@ -1667,6 +1740,11 @@ void AppContext::toggleRecord (const juce::Uuid& takeWindowId)
         return;
     }
     if (! hasProject()) { setNotice ("First choose where the project is saved (New project or Open project)."); return; }
+    // 3.46.1 (decided on 9 November 2026): no take is started while a ReTouch or Pitch window is trying something out. The project is not saved in
+    // that state (saveHold: the preview's files are in a take or an edit), so the new take would be in no project file until that window closed -
+    // through Record, Stop and anything that happened in between. New, Open, Close and Quit already refuse there; Record (reached from a Stream
+    // Deck or a controller: the fix window has the keyboard) did not.
+    if (saveHold > 0) { showError ("A fix is being tried out", "A ReTouch or Pitch window is still trying something out. Write it back or close it first, then record."); return; }
     if (project.audioRate() <= 0.0)                 // 3.9.0: the rate is chosen on purpose before the first take, never taken from whatever the device runs at
     {
         askProjectRate ("Choose this project's sample rate before the first take: every take in it is recorded at this rate.");
@@ -1952,59 +2030,6 @@ juce::String AppContext::setEditGuide (const juce::Uuid& windowId, const juce::U
     return {};
 }
 
-juce::String AppContext::playDisc (const std::vector<DiscPlayItem>& items, double fromSec, double toSec, const juce::Uuid& token)
-{
-    PlayStartTimer timing (*this);
-    double rate = 0.0; juce::int64 endAll = 0;
-    std::vector<PlaySegment> segs;
-    auto plan = std::make_shared<AutomationPlan>();
-    project.resolveAllAutomation();
-    discAlign.clear();                                                       // each piece's spot delays, switched in the pause before it (see the watcher)
-    for (auto& it : items)
-        if (auto* e = project.findEdit (it.editId); e != nullptr && ! e->isEmpty() && e->sampleRate > 0.0)
-            discAlign.push_back ({ it.startSeconds + (double) e->lengthSamples() / e->sampleRate, project.alignOwnerFor (true, it.editId) });
-    std::sort (discAlign.begin(), discAlign.end(), [] (const DiscAlign& x, const DiscAlign& y) { return x.end < y.end; });
-    discToken = token;
-    for (auto& d : discAlign) if (fromSec < d.end) { setAlignOwner (d.owner); break; }      // the piece it starts in (or the next one)
-    int used = 0;
-    for (auto& it : items)
-    {
-        auto* e = project.findEdit (it.editId);
-        if (e == nullptr || e->isEmpty()) continue;
-        if (rate <= 0.0) rate = e->sampleRate; else if (std::abs (e->sampleRate - rate) > 0.5) continue;        // an edit at another sample rate cannot be played together with these
-        const juce::int64 D = (juce::int64) std::llround (it.startSeconds * rate);
-        for (auto s : segmentsForEdit (project, *e))
-        {
-            s.srcOffset -= D; s.begin += D; s.end += D;
-            if (s.fadeInLen > 0) s.fadeInStart += D;
-            if (s.fadeOutLen > 0) s.fadeOutStart += D;
-            for (auto& g : s.gainSteps) g.at += D;
-            segs.push_back (std::move (s));
-        }
-        endAll = juce::jmax (endAll, D + e->lengthSamples());
-        ++used;
-        if (auto p = automationPlanFor (project, *e, true))      // the disc preview plays through the processing mixer, so the automation moves that one
-            for (auto lane : p->items)
-            {
-                if (lane.lane.pts.empty()) continue;
-                for (auto& pt : lane.lane.pts) pt.time += D;
-                AutomationPlan::Item* same = nullptr;
-                for (auto& q : plan->items) if (q.target == lane.target && q.slot == lane.slot && q.paramIndex == lane.paramIndex) same = &q;
-                if (same == nullptr) { plan->items.push_back (std::move (lane)); continue; }
-                const auto firstT = lane.lane.pts.front().time;                                             // a step between the clips: hold the old value until the new clip starts
-                if (same->lane.pts.back().time < firstT - 1) { auto hold = same->lane.pts.back(); hold.time = firstT - 1; same->lane.pts.push_back (hold); }
-                for (auto& pt : lane.lane.pts) same->lane.pts.push_back (pt);
-            }
-    }
-    if (used == 0 || rate <= 0.0) return "There is nothing to play (the clips are empty)";
-    const juce::int64 a = juce::jlimit ((juce::int64) 0, endAll, (juce::int64) std::llround (fromSec * rate));
-    const juce::int64 b = toSec < 0 ? endAll : juce::jlimit (a, endAll, (juce::int64) std::llround (toSec * rate));
-    transportFades (segs, a, b, rate);
-    auto err = beginSession (*this, std::move (segs), a, b, rate, plan->items.empty() ? nullptr : plan);
-    if (err.isEmpty()) playInfo = { PlayInfo::Kind::Other, juce::Uuid::null(), token, (double) a / rate };
-    return err;
-}
-
 juce::String AppContext::playRenders (const std::vector<RenderPlayItem>& items, double fromSec, double toSec, const juce::Uuid& token, int outFirst)
 {
     PlayStartTimer timing (*this);
@@ -2149,7 +2174,6 @@ void AppContext::stopPlayback (bool quick)
     }
     engine.stopPlayback (quick);                       // (quick: a press of Space or Stop - the tidying up of the play is left to a thread of its own)
     playInfo = {};
-    discAlign.clear();
     freeRetiredMixersSoon();                           // (mixers retired while it played waited for this)
     // (no save after Stop any more: the automatic save waits for a quiet moment - see autosaveIfIdle)
     const auto stopMs = juce::Time::getMillisecondCounterHiRes() - t0;
@@ -2239,6 +2263,8 @@ void AppContext::shutdown()
     if (engine.isRecording()) engine.stopRecording();
     stopPlayback();
     closing::step ("playback stopped");
+    finishTakesBeforeClosing();                        // 3.46.1: before the last save, and before the closing safety net starts to count
+    closing::step ("recordings made sure of on the disk");
     project.preampDriver = std::make_shared<NullPreampDriver>();
     closing::step ("preamp connections handed over to close");
     plugins.closeAllEditors();

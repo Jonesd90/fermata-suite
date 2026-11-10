@@ -182,7 +182,7 @@ inline bool write (const Input& in, const juce::File& file, juce::String& error)
                 for (auto& l : pdf::wrap ("-> " + r.by + (r.at.toMilliseconds() != 0 ? " (" + r.at.formatted ("%H:%M:%S") + ")" : juce::String()) + ": " + r.text, pdf::Italic, 9.0f, textW))
                     lines.add ("\x01" + l);
             room (12.0f * (float) juce::jmax (1, lines.size()) + 4.0f);
-            const auto clock = L->clockMsAt (i.seconds);
+            const auto clock = i.seconds >= 0.0 ? L->clockMsAt (i.seconds) : 0;     // (0.8.0: one with no place - a fix version of a take that has gone - has no time of day: on the clock it showed the second before midnight)
             d.text (cNum, y, juce::String ((int) k + 1), pdf::Bold, 9.0f, kindColour (i));
             d.text (cClock, y, clock != 0 ? juce::Time (clock).formatted ("%H:%M:%S") : juce::String ("-"), pdf::Regular, 9.0f, ink);
             d.text (cIn, y, t != nullptr ? TakeLayout::hmsText (i.seconds - t->start, false) : juce::String ("-"), pdf::Regular, 9.0f, ink);

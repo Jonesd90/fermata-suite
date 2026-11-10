@@ -11,6 +11,7 @@
 #include "TakeMatchService.h"
 #include "ClosingLog.h"
 #include "DeviceGuard.h"
+#include "OnceSavedBin.h"
 
 namespace td
 {
@@ -243,6 +244,9 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     /** The last pitch correction / repair, so it can be undone (the new audio files stay on the disk; the originals were never touched). */
     int undoHold = 0;      // > 0 while a dialog is trying something out (pitch curve audition): the undo history is not written to meanwhile
     int saveHold = 0;      // > 0 while a fix's preview files are in a take or an edit (FixTools.cpp: PreviewApplied): the automatic save waits, so a crash can never leave the project pointing at them
+    /** 3.46.1: files a fix that was taken off again leaves behind, when the project file on the disk may name them (Noise mode: its fixes are in the edit at
+        once, and the automatic save writes them). They are deleted once the project has been saved without them - see OnceSavedBin. */
+    void deleteOnceSaved (const std::vector<juce::File>& files);
     std::function<void()> fixUndo;
     juce::String fixUndoLabel;
     /** Arms Undo fix: 'fn' puts the edit (or take window) 'id' back as it was before the fix. It is only good for the state the fix left - the hash of
@@ -284,9 +288,6 @@ public:
     bool deleteMixer (const juce::Uuid& mixerId);
     juce::Uuid recordTarget;                         // take window used by the main Record button (the one recorded into last)
     int alignTicks = 0;                              // (the watcher looks at which piece to align for three times a second)
-    struct DiscAlign { double end = 0.0; juce::String owner; };
-    std::vector<DiscAlign> discAlign;                // while a disc plays through the mixers: where each piece ends on the disc and the spot delays it has
-    juce::Uuid discToken;
     /** For the "Next Take / This Take" box: true while recording (number = the take being recorded), otherwise number = the next take of the take window
         counterTakeWindow() names - or 0 when no take window is open (the boxes, the Take Display and the Stream Deck then show a dash). */
     bool takeBoxInfo (int& number);
@@ -329,13 +330,11 @@ public:
     juce::String setEditGuide (const juce::Uuid& takeWindowId, const juce::Uuid& takeId, const juce::Uuid& trackId, juce::Uuid* editOut = nullptr);
     /** One clip of a disc audition: the edit and where it starts on the disc's timeline. */
     struct DiscPlayItem { juce::Uuid editId = juce::Uuid::null(); double startSeconds = 0.0; };
-    /** Plays the clips one after the other, each at its place on the disc timeline (the pauses between them are silence), through the mixers with the
-        edits' automation, from fromSec to toSec (-1 = to the end of the last clip). 'token' goes into playInfo.id so the caller knows it is its own playback. */
-    juce::String playDisc (const std::vector<DiscPlayItem>& items, double fromSec, double toSec, const juce::Uuid& token);
     /** One finished render (a stereo file made by the Mastering window) and where it starts on the disc's timeline. */
     struct RenderPlayItem { juce::File file; double startSeconds = 0.0; double rate = 0.0; juce::int64 frames = 0; };
     /** Plays the renders where they sit on the timeline (the pauses are silence; a tail that runs into the next piece is added to it), straight to the
-        driver outputs outFirst and outFirst + 1 at unity: no mixer, no gain change. Same position / token rules as playDisc. */
+        driver outputs outFirst and outFirst + 1 at unity: no mixer, no gain change. From fromSec to toSec (-1 = to the end of the last one); 'token' goes
+        into playInfo.id so the caller knows it is its own playback. */
     juce::String playRenders (const std::vector<RenderPlayItem>& items, double fromSec, double toSec, const juce::Uuid& token, int outFirst);
     /** Plays one region's raw files (no fades, no neighbours) on the timeline of the file's own samples:
         the trim window's 'play original A / B'. */
@@ -422,6 +421,8 @@ public:
     void rebuildPreampDriver();
     /** rate: the project's sample rate (3.9.0: chosen in ProjectRateChooser; 0 = not chosen yet - it is asked for before the first recording). */
     bool newProject (const juce::File& projectFile, double rate = 0.0);
+    /** 3.46.1: why a new project cannot be made at this file ("" = it can): a project is already there. New project never replaces one. */
+    static juce::String newProjectProblem (const juce::File& projectFile);
     bool openProject (const juce::File& projectFile);
     /** 3.9.0: puts up the sample-rate chooser for the open project (why: the sentence above the buttons) and, when a rate is picked, makes it the project's
         (only while it has no takes), the engine follows and the device is offered the rate (offerDeviceRate). */
@@ -494,7 +495,6 @@ public:
     unsigned long messageThreadId = 0;                 // Windows' id of the main thread (for the thread listings)
     std::unique_ptr<StallWatch> stallWatch;           // logs every moment the message thread is held up (see StallWatch)
     bool skipFinalSave = false;                       // "Quit without saving": the last save when closing is left out
-    void restoreLastProject();
     /** After a plan rebuild: the mixers retired before it (a removed mixer, the mixers of a project that was open before) are freed with their
         plug-ins, a little later on the message thread (once every window has let go of them), if the rebuild freed the old plan. */
     void freeRetiredMixersSoon();
@@ -533,6 +533,11 @@ private:
     bool loadWasRecording = false;
     void tickLoad();
     void tickRecordMonitor();                        // the watcher, 10 Hz: samples the engine for the recording monitor and raises its notices
+    /** The takes whose files the engine has finished on the disk are taken in: their real waveforms are drawn, and a take whose file refused its last
+        moments is marked cut short. tellPerson: with a message (the watcher); without, only the log (closing). */
+    void takeInFinishedTakes (bool tellPerson);
+    /** 3.46.1: closing - waits until the last take's files (and the second drive's copies) are whole on the disk; see the function. */
+    void finishTakesBeforeClosing();
     void timerCallback() override;                   // autosave
     void changeListenerCallback (juce::ChangeBroadcaster*) override;   // re-plan the engine after structural edits
     // ---- saving (2.102). An automatic save is a snapshot taken here (a few tens of milliseconds) and written on the saver's thread, and it only
@@ -541,7 +546,10 @@ private:
     //      opening another project and closing wait for the saver, then write everything there and then.
     static constexpr juce::uint32 kAutosaveGapMs = 30000, kAutosaveLatestMs = 300000;
     void autosaveIfIdle();
-    void savedInBackground (BackgroundSaver::Result&, int generation);
+    void savedInBackground (BackgroundSaver::Result&, int generation, int snapshot);
+    OnceSavedBin onceSaved;                          // 3.46.1: files to delete once a save without them is on the disk
+    void savedWithout (int snapshot);                // the save made from that snapshot is on the disk
+    bool projectNamesFile (const juce::File&) const;
     void showSaveError (const juce::String& err, bool automatic);
     void retryFailedSave();                          // closing without saving: the automatic save that failed (if the last one did) is written again
     std::unique_ptr<Project::SaveJob> lastFailedJob; // the automatic save that failed, until a save gets through
