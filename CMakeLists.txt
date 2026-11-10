@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-set(FERMATA_VERSION 3.50.0)        # fermata's version: the ONE place it is changed (see CHANGELOG.md). fermata:Live's is in src/live/Live.cmake.
+set(FERMATA_VERSION 3.51.0)        # fermata's version: the ONE place it is changed (see CHANGELOG.md). fermata:Live's is in src/live/Live.cmake.
 project(Fermata VERSION ${FERMATA_VERSION} LANGUAGES C CXX)
 
 # This repository builds TWO programs from one shared core (read COMPATIBILITY.md before changing anything shared):
@@ -72,6 +72,28 @@ target_sources(Fermata PRIVATE
 target_compile_definitions(Fermata PRIVATE
     ${FERMATA_SHARED_DEFINITIONS}
     FERMATA_VERSION_STRING="${FERMATA_VERSION}")
+
+# 3.51.0: the score window's PDF pages (src/ui/PdfPages.h). They are drawn by Windows' own PDF reader, reached through C++/WinRT - headers that
+# come with the Windows SDK and that nothing else here uses. That one file is built on its own, as C++20, and ONLY IF it builds here: it is
+# tried first (compiled and linked into a small program). If the trial fails - an SDK without those headers, or a mistake in that file, which
+# could not be compiled where it was written - fermata is built without it (PdfPagesNone.cpp: the score window then says that this build
+# cannot draw the pages) and the reason is printed below as a warning. The PDF reader can never stop fermata from building.
+set(FERMATA_PDF_SOURCE src/ui/PdfPagesNone.cpp)
+if(MSVC)
+    try_compile(FERMATA_PDF_READER_BUILDS "${CMAKE_BINARY_DIR}/pdf-reader-trial"
+        SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/ui/PdfPagesWin.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/PdfCheckMain.cpp"
+        CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON
+        OUTPUT_VARIABLE FERMATA_PDF_READER_LOG)
+    if(FERMATA_PDF_READER_BUILDS)
+        set(FERMATA_PDF_SOURCE src/ui/PdfPagesWin.cpp)
+        message(STATUS "PDF pages: the reader is in (Windows.Data.Pdf)")
+    else()
+        message(WARNING "PDF pages: the reader did NOT build, so fermata is built without it (the score window will say so). The trial's output:\n${FERMATA_PDF_READER_LOG}")
+    endif()
+endif()
+add_library(FermataPdfPages STATIC ${FERMATA_PDF_SOURCE})
+set_target_properties(FermataPdfPages PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+target_link_libraries(Fermata PRIVATE FermataPdfPages)
 
 fermata_keep_debug_symbols(Fermata Fermata)
 fermata_use_windows_audio(Fermata)

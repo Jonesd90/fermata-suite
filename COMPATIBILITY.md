@@ -168,3 +168,14 @@ copies it like everything else, which is fine.
     (`segmentsForEdit`); an edit without areas plays exactly as before. An older fermata does not read the key: it plays such an edit
     without its areas and drops them when it saves. Also shared from here on: Inter Medium in `src/ui/FontData.cpp` and
     `theme::figureFont` in `src/ui/Uikit.h` (the Fermata style UI's type, in both programs).
+  - Still contract 3 (fermata 3.51.0, fermata:Live 0.10.1): the conversation with the listeners and an edit's score. The project file
+    gained keys, none changed, each written only when it is set: on a comment (an edit's `"feedback"` list, and each frozen version's)
+    `"editor"` (the editor's own note), `"replyTo"` (the key of the comment it answers) and `"madeIn"` (the version that was being made
+    when the editor wrote it); on an edit `"score"` (the NAME of a PDF in the project's new `PDFs` folder - `Project::pdfsFolder`,
+    `addScore`), `"scoreTop"` and `"scoreZoom"` (where its window was looking: a view, not part of undo). fermata:Live reads and writes
+    them through the shared code and never looks at them. The listening copy's page gained `"history"` on a piece (`reviewpage::PastLane`;
+    new shared header `src/core/ReviewHistory.h`, header only), written only when there are comments, and a note in the notes file that
+    comes back may have `"re"` (what it answers). An older fermata reads such a project, ignores those keys and drops them when it
+    saves - the replies then become ordinary comments, and the edit loses its score (the PDF stays in the folder). The page's source,
+    `tools/review_page.html`, is the truth for `src/core/ReviewPageTemplate.inc` again (three lines of 3.42.0 had been made in the
+    template only). Also shared from here on: `Pins` in `src/ui/Uikit.h` - any number of windows pinned, in both programs.

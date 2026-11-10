@@ -9,7 +9,12 @@
 namespace td
 {
 /** One listener's comment, pinned to a time on an edit's timeline. They come from the review page (Include Feedback Form) or from a marker list exported by a review website.
-    Several notes at the same time form a thread (the first is the comment, the rest are replies). Not part of undo. */
+    Several notes at the same time form a thread (the first is the comment, the rest are replies). Not part of undo.
+
+    3.51.0 (asked for on 10 November 2026: "it sort of allows a conversation across versions"): the editor - the person at fermata - answers a
+    comment with a note of their own ('editor', at the comment's time, 'replyTo' its key), or writes a note anywhere. These live in the same
+    list as the listeners' comments of that version and go out in the next listening copy, which shows every version's comments in lanes
+    (ReviewHistory.h). A listener can answer in turn from the listening copy: that comment comes back with 'replyTo' set. */
 struct FeedbackNote
 {
     juce::String key;                // identity, so importing the same file twice does not double the notes
@@ -18,6 +23,11 @@ struct FeedbackNote
     juce::String source;             // the file it was imported from
     double       seconds = 0.0;      // on the edit's timeline
     bool         done = false;       // ticked off by the producer
+    bool         editor = false;     // 3.51.0: written in fermata by the editor (shown with a gold ring, in fermata and in the listening copy)
+    juce::String replyTo;            // 3.51.0: the key of the comment this one answers ("" = it answers none)
+    int          madeIn = 0;         // 3.51.0: for the editor's own - the version of the edit that was being worked on when it was written (a reply to a comment on
+                                     //         Edit 1, written while making Edit 2: 2). The listening copy shows it in THAT version's lane: "what the editor says
+                                     //         about this version". 0 = not said (it then counts as the version whose comments it is kept with)
 };
 
 namespace feedback
@@ -47,6 +57,22 @@ inline juce::uint32 colourArgb (const juce::String& name)
     if (n == "white") return 0xfff0f0f0u;
     return 0xff35b7c9u;
 }
+
+/** 3.51.0: one colour for each person, the same every time and everywhere (the Edit window's flags and lanes, the listening copy): by their name.
+    A colour the source gave (a review website's marker colour) wins. The listening copy's own script makes the same choice for the listener's
+    name (tools/review_page.html, personColour): keep the two alike. */
+inline juce::uint32 personArgb (const juce::String& who, const juce::String& colour = {})
+{
+    if (colour.isNotEmpty()) return colourArgb (colour);
+    const auto w = who.trim().toLowerCase();
+    if (w.isEmpty()) return 0xff35b7c9u;
+    static const juce::uint32 palette[] = { 0xff35b7c9u, 0xffee9a2eu, 0xff9a6ae0u, 0xff3cc75au, 0xffe36ab5u, 0xff4a8fe8u, 0xffe9d23au, 0xffe8433au };
+    juce::uint32 h = 0;                                                    // (written out, so that the page's script can do exactly the same)
+    for (auto p = w.getCharPointer(); ! p.isEmpty();) h = h * 31u + (juce::uint32) p.getAndAdvance();
+    return palette[h % 8u];
+}
+inline juce::uint32 personArgb (const FeedbackNote& n) { return personArgb (n.who, n.colour); }
+constexpr juce::uint32 kEditorGold = 0xffd4a84bu;                          // the ring round the editor's own notes
 
 /** A time as written by a person or a program: 83.5, 1:23.5, 0:01:23, 00:01:23:12 (hours:minutes:seconds:frames; ';' also allowed), "1m 23s". Returns false if it is not a time. */
 inline bool parseTime (juce::String s, double frameRate, double& seconds)
@@ -189,6 +215,7 @@ inline void readNotes (const juce::var& list, double frameRate, const juce::Stri
         n.who = v["who"].toString(); if (n.who.isEmpty()) n.who = v["author"].toString(); if (n.who.isEmpty()) n.who = v["user"].toString(); if (n.who.isEmpty()) n.who = defaultWho;
         n.bar = v["bar"].toString(); n.colour = v["colour"].toString(); if (n.colour.isEmpty()) n.colour = v["color"].toString();
         n.source = source; n.done = (bool) v["done"];
+        n.replyTo = v["re"].toString();                                    // 3.51.0: the comment it answers (the listening copy's "Reply")
         const auto id = v["id"].toString();
         n.key = id.isNotEmpty() ? id : makeKey (source, n.seconds, n.who, n.text);
         into.push_back (n);
@@ -247,6 +274,41 @@ inline juce::String parse (const void* data, size_t size, double frameRate, cons
     return detail::parseTable (text, frameRate, source, out);
 }
 
+/** 3.51.0: the list in its order - by time, and within one moment (a thread: see threads) an answer after the comment it answers, whichever
+    was put into the list first. Otherwise the order the notes were in is kept. */
+inline void sortNotes (std::vector<FeedbackNote>& list, double window = 0.05)
+{
+    std::stable_sort (list.begin(), list.end(), [] (const FeedbackNote& a, const FeedbackNote& b) { return a.seconds < b.seconds; });
+    for (size_t i = 0; i < list.size();)
+    {
+        size_t j = i + 1;
+        while (j < list.size() && std::abs (list[j].seconds - list[i].seconds) <= window) ++j;
+        if (j - i > 1)
+        {
+            bool anyReply = false; for (size_t k = i; k < j; ++k) anyReply = anyReply || list[k].replyTo.isNotEmpty();
+            if (anyReply)
+            {
+                std::vector<FeedbackNote> in (list.begin() + (std::ptrdiff_t) i, list.begin() + (std::ptrdiff_t) j), out;
+                std::vector<bool> used (in.size(), false);
+                auto waits = [&] (size_t k)                                       // its comment is in this thread and has not been placed yet
+                {
+                    if (in[k].replyTo.isEmpty()) return false;
+                    for (size_t m = 0; m < in.size(); ++m) if (m != k && ! used[m] && in[m].key == in[k].replyTo) return true;
+                    return false;
+                };
+                while (out.size() < in.size())
+                {
+                    bool moved = false;
+                    for (size_t k = 0; k < in.size(); ++k) if (! used[k] && ! waits (k)) { used[k] = true; out.push_back (in[k]); moved = true; }
+                    if (! moved) for (size_t k = 0; k < in.size(); ++k) if (! used[k]) { used[k] = true; out.push_back (in[k]); }      // (two that answer each other: as they were)
+                }
+                std::copy (out.begin(), out.end(), list.begin() + (std::ptrdiff_t) i);
+            }
+        }
+        i = j;
+    }
+}
+
 /** Adds the notes whose key is new; a note already there keeps its 'done' tick and gets the new text. Returns how many were added. */
 inline int merge (std::vector<FeedbackNote>& into, const std::vector<FeedbackNote>& incoming, int* updated = nullptr)
 {
@@ -262,7 +324,7 @@ inline int merge (std::vector<FeedbackNote>& into, const std::vector<FeedbackNot
         if (found == at.end()) { at.emplace (n.key, into.size()); into.push_back (n); ++added; }
         else { auto& o = into[found->second]; const bool d = o.done; if (o.text != n.text || o.bar != n.bar || o.who != n.who) ++upd; o = n; o.done = d || n.done; }
     }
-    std::stable_sort (into.begin(), into.end(), [] (const FeedbackNote& a, const FeedbackNote& b) { return a.seconds < b.seconds; });
+    sortNotes (into);
     if (updated) *updated = upd;
     return added;
 }

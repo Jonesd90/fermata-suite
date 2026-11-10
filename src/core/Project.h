@@ -459,6 +459,11 @@ public:
     void restoreSavedComments();                    // after a project is opened: an edit with no comments of its own gets its saved copy back
     juce::File processingFolder() const;            // Processing Media: audio sent out with "Export for Processing"
     juce::File bouncedFolder() const;                // Bounced Media
+    /** 3.51.0: the scores. Each edit can have one PDF (EditDef::score); the file is COPIED into the project's "PDFs" folder when it is chosen, so
+        that it is copied, moved and archived with the project. addScore returns an error text, or "" when the edit now has that score. */
+    juce::File pdfsFolder() const;                   // PDFs
+    juce::File scoreFileFor (const EditDef&) const;  // the edit's score in that folder (a file that may not exist), or no file when it has none
+    juce::String addScore (EditDef&, const juce::File& pdf);
     juce::File masteredFolder() const;               // Bounced Media/Mastered Audio
     void createFolders() const;
     /** After a crash or power cut: recordings that were still being made have a header that says 'empty'. Puts the headers right and the takes' lengths,

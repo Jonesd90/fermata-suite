@@ -740,3 +740,11 @@ Two reviewers read the recorder core and found 6 serious things, all fixed, and 
   columns.
 - Nothing of the recorder changed. The shared changes that reach this program are listed in `LIVE-CHANGELOG.md` (the ReTouch window's
   tab keys from fermata 3.49.0; volume areas are carried through a save by the shared code and never looked at).
+
+## 0.10.1: what fermata 3.51.0's shared code brings (10 November 2026, with Claude Fable)
+
+- None of fermata:Live's own files changed. `Pins` (Uikit.h, shared) replaces the one-pinned-window rule: every `ToolWindow` of this
+  program can be pinned at once.
+- The shared project code carries the new keys of fermata 3.51.0 through a save (a comment's `editor`, `replyTo`, `madeIn`; an edit's
+  `score`, `scoreTop`, `scoreZoom`); nothing here reads them.
+

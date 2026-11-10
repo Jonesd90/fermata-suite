@@ -422,6 +422,12 @@ struct EditDef
     std::vector<Marker>  markers;               // quick markers along the top of this edit window (not part of undo)
     std::vector<FeedbackNote> feedback;         // listeners' comments (Include Feedback Form / imported marker lists), drawn as flags on this edit window (not part of undo)
     bool                 showFeedback = true;
+    /** 3.51.0 (asked for on 10 November 2026: "attach scores to each Edit window. It just needs to be one"): the score that goes with this edit -
+        the NAME of a PDF in the project's PDFs folder (Project::pdfsFolder; the file is copied there when it is chosen, so it travels with the
+        project), and where its window was last looking. A view, like the markers: saved, not part of undo, the same for every version. */
+    juce::String         score;
+    double               scoreTop = 0.0;        // the page at the top of the score window, and how far down it (2.25 = a quarter of the way down the third page)
+    double               scoreZoom = 0.0;       // 0 = the page fits the window's width; otherwise the width of a page in pixels for each point (1/72 inch) of it
     bool                 showMarkers = true;          // the Markers tick box in the edit window
     EditGuide            guide;                       // the visual guide above the tracks (see EditGuide); part of undo
     bool                 showGuide = true;            // the Guide button at the top of the edit window: the guide's lane is shown (a view: not part of undo)

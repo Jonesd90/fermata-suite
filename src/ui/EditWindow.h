@@ -2,6 +2,7 @@
 #include "AppContext.h"
 #include "Uikit.h"
 #include "TimeReadout.h"
+#include "ScoreWindow.h"
 
 namespace td
 {
@@ -97,6 +98,9 @@ private:
     PlayheadModeButton playheadMode;
     RainbowButton waveColourBtn;
     CompressWaveButton waveCompressBtn;                 // 3.27.0: compressed waveforms (the picture only)
+    ScoreButton scoreButton;                            // 3.51.0: the edit's score (a PDF) in a window of its own: opens / closes it
+    void scoreKey();                                    //   a click: the window open / closed (the first time: asks for the PDF)
+    void scoreMenu();                                   //   a right-click: another PDF, the folder, take it off
     std::unique_ptr<EditTimeline> timeline;
     std::unique_ptr<juce::Viewport> viewportOwner;
     std::unique_ptr<KeepKeysOnTimeline> keysKeeper;           // declared after the viewport: destroyed first

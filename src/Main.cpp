@@ -21,6 +21,7 @@
 #include "ui/VideoExportWindow.h"
 #include "ui/AafExportWindow.h"
 #include "ui/VersionsWindow.h"
+#include "ui/ScoreWindow.h"
 #include "ui/Surface.h"
 #include "ui/SurfacePanel.h"
 #include "ui/PitchPipeWindow.h"
@@ -201,6 +202,12 @@ public:
         ctx->showVideoExport = [this] (const juce::Uuid& editId, juce::Component* parent) { td::showVideoExport (*ctx, editId, parent); };
         ctx->showAafExport = [this] (const juce::Uuid& editId, juce::Component* parent) { td::showAafExport (*ctx, editId, parent); };
         ctx->showVersions = [this] (const juce::Uuid& editId, juce::Component* parent) { td::showVersions (*ctx, editId, parent); };
+        ctx->showScore = [this] (const juce::Uuid& editId)                 // 3.51.0: the edit's score
+        {
+            auto* e = ctx->project.findEdit (editId);
+            if (e == nullptr) return;
+            showWindow (score::windowKey (editId), "Score - " + e->name, [this, editId] { return new ScoreComponent (*ctx, editId); });
+        };
         ctx->windowIsOpen = [this] (const juce::String& key) { return windows.find (key) != windows.end(); };
         focusKeeper = std::make_unique<ToolWindow::FocusKeeper>();              // the keys never go dead after a text box lets go of the keyboard
         globalKeyHook() = [this] (const juce::KeyPress& k)
@@ -762,7 +769,7 @@ private:
         if (auto* host = dynamic_cast<CornerStripHost*> (content)) host->content->setWantsKeyboardFocus (true);
         w->setIcon (makeFermataIcon (256));
         w->isTransportWindow = key.startsWith ("take:") || key.startsWith ("edit:");
-        w->forwardKeys = key.startsWith ("mixer:") || key.startsWith ("scope:") || key == "bridge" || key == "media" || key == "takedisplay" || key == "organiser" || key == "pitchpipe" || key == "click" || key == "align" || key == "hotkeys";
+        w->forwardKeys = key.startsWith ("mixer:") || key.startsWith ("scope:") || key == "bridge" || key == "media" || key == "takedisplay" || key == "organiser" || key == "pitchpipe" || key == "click" || key == "align" || key == "hotkeys" || key.startsWith ("score:");
         juce::Rectangle<int> mixerRemembered;                                         // a mixer's size when it was last closed (put back by fitWindowToStrips)
         {   // where it was left last time (kept in the project), or else centred; never wider than the screen, nor taller
             const auto& displays = juce::Desktop::getInstance().getDisplays();
@@ -1223,6 +1230,11 @@ private:
             {
                 if (auto* e = ctx->project.findEdit (juce::Uuid (key.fromFirstOccurrenceOf (":", false, false))))
                     w->setName ((key.startsWith ("edit:") ? "Edit - " + e->versionTitle (e->versionNumber()) : "Trim - " + e->name));     // (3.42.0: the edit window says which version: "Edit - The Lion - Edit 2 - More reverb")
+                else dead.push_back (key);
+            }
+            else if (key.startsWith ("score:"))                                   // 3.51.0: an edit's score goes when the edit goes
+            {
+                if (auto* e = ctx->project.findEdit (juce::Uuid (key.fromFirstOccurrenceOf (":", false, false)))) w->setName ("Score - " + e->name);
                 else dead.push_back (key);
             }
             else if (key.startsWith ("scope:"))

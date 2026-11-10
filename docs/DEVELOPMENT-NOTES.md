@@ -2395,10 +2395,78 @@ change of style), so a switch of UI style changes it. Lists in columns keep `Fon
 the destination channel's colour, invisible when that was dark), "muted" (the whole ring pulses red, timed from the clock so every
 muted dial pulses together; `SendDial::pulse` repaints the dial at 15 Hz only while its send is muted), "pre" (the yellow square).
 
-**Asked for on 10 November and not built** (the next build): answering the listeners' comments. After a frozen version's comments are
-imported, a note written against a comment ("this happens in every take - would you like A or B?") that goes out in the next listening
-copy, so a conversation runs across versions. `FeedbackNote` has no reply today (who, bar, text, colour, seconds, done); the listening
-page is `src/core/ReviewPage.cpp`.
+(The answering of listeners' comments, asked for on 10 November and noted here as not built, is 3.51.0.)
+
+## 3.51.0: replies to comments and the conversation in the listening copy; the score; pins; old volume changes as sections (10 November 2026, with Claude Fable)
+
+**The conversation.** What a later change must not undo:
+- **One list, three new fields.** The editor's replies and notes are `FeedbackNote`s in the same list as the listeners' comments of that
+  version (`EditDef::feedback`, the live edit's or a frozen version's): `editor` (gold ring), `replyTo` (the key of the comment it
+  answers) and `madeIn` (the live version's number when the editor wrote it). A reply has the SAME `seconds` as its comment, so it is
+  in that comment's thread (`feedback::threads`: notes within 0.05 s) and travels with it through every operation that moves comments
+  (rippleAfter, `editversions::Riders`, the undo's carry, freeze / unfreeze). `feedback::sortNotes` keeps a reply after its comment
+  whichever was put in first; `feedback::merge` ends with it.
+- **Where a note is KEPT and where it is SHOWN are different on purpose.** Kept: under the comment (so fermata's lanes show comment and
+  reply together). Shown in the listening copy: in the lane of the round it was made in - a listener's comment in the lane of the
+  version it was made on, an editor's note in the lane of `madeIn` (`reviewpage::historyFor`, ReviewHistory.h). So the live version's
+  lane is "the editor's replies on this version", which is what was asked for (10 November: "They should be able to 'see replies on
+  current version'"). A note with `madeIn` 0 counts as the version it is kept with.
+- **The page only shows it.** `reviewpage::Spec::history` -> the piece's `"history"` in the page's meta JSON (written only when not
+  empty: a first copy's page is byte-for-byte what it was apart from the new script). Times are in the copy's own time
+  (`mapSeconds` to the live edit, less `editOffsetSeconds`); the page clamps them to the audio. What the listener adds goes back in the
+  .fmnotes file as before, a reply with `"re"` (read into `replyTo`; `"editor"` is never read from a file that comes back - nobody
+  outside can claim the ring).
+- **One colour a person**: `feedback::personArgb` (Feedback.h) and `personColour` in `tools/review_page.html` are the same function,
+  written out by hand in both (multiply by 31, add the character, modulo 8 into the same palette). The core test holds the values the
+  page's script gives for six names; change one and the test fails.
+- **The import replaces the listeners' comments of a version, never the editor's notes** (`importFeedbackFiles`: the notes with `editor`
+  are put back before the merge). "Mark every comment as done" and "Take away the comments marked done" leave the editor's notes alone;
+  `feedbackui::allDone` does not count them.
+- **`tools/review_page.html` is the page; `src/core/ReviewPageTemplate.inc` is made from it** (`tools/make_review_template.py`). In 3.42.0
+  three lines (the version number that comes back with the comments) were changed in the template only; a regeneration would have lost
+  them. They are in the source now. Always change the .html and regenerate. The page must stay pure ASCII.
+- The page was driven in a browser here (Chromium, by script): the lanes, the ticks (and that they are remembered), a reply, a new
+  comment, a click on a lane's flag, the exported notes file, light and dark, a phone's width.
+
+**The score.**
+- `EditDef::score` is a NAME in `Project::pdfsFolder()` (read through `createLegalFileName`: never a path). `scoreTop` / `scoreZoom` are
+  the window's view. All three are view keys: saved, in `saveHash`, not in `undoHash`, carried over by an undo (restorePiece), the same
+  for every version. `Project::addScore` copies (the same file again is not copied twice; another file of that name gets "(2)").
+- `ScoreWindow.h`: one worker thread owns the open PDF and makes pictures of the pages in view at the size they are shown (the display's
+  scale included, 3600 pixels at most), one at a time (`busyPage`); the message thread keeps the pictures of the pages within three of
+  the view. The window is a ToolWindow from `showWindow` (key `score:<edit id>`, `forwardKeys`, closed with its edit in
+  `refreshWindows`).
+- **`PdfPages.h` is plain C++ with two bodies.** `PdfPagesWin.cpp` (Windows.Data.Pdf through C++/WinRT, C++20, `#pragma comment(lib,
+  "windowsapp")`) is tried by `try_compile` in CMakeLists.txt with `cmake/PdfCheckMain.cpp`; when the trial fails the build uses
+  `PdfPagesNone.cpp` and prints why. **It has never been compiled here** (no Windows SDK on Linux); `tools/syntax-check-ui.sh` skips it.
+  It was written to the documented API: `StorageFile::GetFileFromPathAsync`, `PdfDocument::LoadFromFileAsync`, `GetPage`, `Size`,
+  `RenderToStreamAsync` with `PdfPageRenderOptions` into an `InMemoryRandomAccessStream`, read back with a `DataReader` (the picture is a
+  PNG, decoded by JUCE). Every call is on the worker thread (`.get()` must not run on the message thread). If the first Windows build
+  reports that the reader did not build, the trial's output in the configure step is what to read.
+- Looked at here with a stand-in body that uses the Linux PDF tools (not in the repository).
+
+**Pins.** `Pins` (Uikit.h, shared): the list of pinned windows; one timer brings them all forward, in the order they are in now, while
+an unpinned window of the program's own is the one in front (the single-pin rule's test, kept: the program is in front, no modal box
+is up, the active window is a native-title-bar DocumentWindow). `ToolWindow::setPinned` and a plug-in's window both go through it. A
+plug-in's window (`PluginHost::EditorWindow`) now holds a `Holder` - a 26-pixel bar with the pin, and the plug-in's editor under it: the
+pin cannot be laid over the editor, which is a native window of its own. The holder follows the editor's size (plug-ins resize
+themselves) and gives a resizable editor the room under the bar. **Not seen with a real plug-in here** (none on this machine).
+
+**Old volume changes as sections.** `EditTimeline::oldChangesAsAreas` runs `volumeareas::takeOutLoneChange` on a copy of the edit for
+each lone change (cached on `undoHash`) and `gainUnits` draws the area it gives; a later change that the reading consumed (the way
+back) is not drawn on its own. Drawing only: the pieces are not touched, and a click still opens `showOldChangeAsArea`, which makes the
+same reading.
+
+**The subheading box.** A click on a component that does not take the keyboard hands it to the first child that does
+(`Component::grabKeyboardFocusInternal`): for the version strip that was the subheading box. The strip has
+`setMouseClickGrabsKeyboardFocus (false)` and gives the keyboard to the timeline in `mouseDown`.
+
+**Asked for on 10 November and not built**: a listening copy of an older, frozen version, chosen per piece on the Listening copy tab
+(default: the newest). The export renders an edit by its id through `MasterRenderBatch` / `Bouncer`, with the live edit's automation
+(`bi.automationEdit`) and the edit's mixer as it is now; a frozen version needs its own pieces (`segmentsForEdit (live, *v.edit)` is
+enough for those), its own automation lanes and the mixer snapshot it was frozen with (`EditVersion::mixer`, with plug-ins' states),
+and the render store keeps one render per edit id. "Hear Edit N" (`AppContext::playEditVersion`) plays the pieces through the mixer as
+it is now and says so; an export must not do that silently.
 
 ## 3.46.1: the fourth sweep, areas A, B and C; the list number in "Number the files" (9 November 2026, with Claude Fable)
 

@@ -5,6 +5,7 @@
 #include "Resampler.h"
 #include "Dither.h"
 #include "ReviewPage.h"
+#include "ReviewHistory.h"
 #include "Loudness.h"
 #include "AudioFormats.h"
 #include "FileSync.h"
@@ -211,6 +212,7 @@ juce::String makeFilesSpec (const Project& p, const MasteringDef& def, MasterJob
             const int ver = edits[i]->versionNumber();
             const auto versionTail = edits[i]->versionTail (ver);                                                      // " - Edit 2 - More reverb"
             j.editVersion = ver; j.editName = edits[i]->versionTitle (ver);
+            j.history = reviewpage::historyFor (*edits[i], j.editOffsetSeconds);                                       // 3.51.0: the comments so far go into the copy
             base += versionTail; title += versionTail;
         }
         j.baseName = def.vm.numberFiles ? juce::String (n).paddedLeft ('0', 2) + " - " + base : base;
@@ -704,7 +706,7 @@ MasterExportResult MasterExportJob::executeInner()
             {
                 reviewpage::Spec ps;
                 ps.audio = audioFile; ps.mime = fmtForm == MasterFormat::Mp3 ? "audio/mpeg" : fmtForm == MasterFormat::Flac ? "audio/flac" : "audio/wav";
-                ps.piece = item.tags.title.isNotEmpty() ? item.tags.title : item.editName; ps.project = item.projectName; ps.editId = item.editId.toString(); ps.version = item.editVersion;
+                ps.piece = item.tags.title.isNotEmpty() ? item.tags.title : item.editName; ps.project = item.projectName; ps.editId = item.editId.toString(); ps.version = item.editVersion; ps.history = item.history;
                 ps.offsetSeconds = item.editOffsetSeconds; ps.durationSeconds = (double) R.frames[(size_t) i] / juce::jmax (1.0, rates[(size_t) i]);
                 ps.peaks = reviewpage::computePeaks (proc[(size_t) i], gain, reviewpage::peakColumnsFor (ps.durationSeconds), &cancelFlag);
                 if (single) onePage.push_back (ps);                                   // written once every piece is ready (below); its audio waits till then

@@ -1094,7 +1094,18 @@ void MasteringComponent::refreshFormatControls()
             if (minutes > 0.0) t += " All the pieces together: about " + (bytesPerMin * 1.34 * minutes >= 1.0e9 ? juce::String (bytesPerMin * 1.34 * minutes / 1.0e9, 1) + " GB." : juce::String (juce::roundToInt (bytesPerMin * 1.34 * minutes / 1.0e6)) + " MB.");
         }
         if (vm.formAudio == 0 && bytesPerMin * 1.34 / 1.0e6 > 60.0) t += " Phones and tablets may struggle with files over about 150 MB; FLAC is half the size with no loss.";
-        formInfo.setText (t, juce::dontSendNotification);
+        {   // 3.51.0 (asked on 10 November 2026: "how do I make sure that the edit version I am exporting is edit 3?"): the tab says which version each
+            // copy will be of. It is always the piece as its Edit window has it now - its newest version; the name is in the file's name, on the
+            // page and in the notes that come back.
+            juce::StringArray names; int more = 0;
+            for (auto& it : def().items)
+                if (it.include)
+                    if (auto* e = app.project.findEdit (it.editId)) { if (names.size() < 4) names.add (e->versionTitle (e->versionNumber())); else ++more; }
+            if (! names.isEmpty())
+                t = "Each copy is of the piece as its Edit window has it now - its newest version, named in the file's name and on the page:  " + names.joinIntoString (";  ")
+                  + (more > 0 ? ";  and " + juce::String (more) + " more" : juce::String()) + ".\n" + t;
+        }
+        if (formInfo.getText() != t) { formInfo.setText (t, juce::dontSendNotification); resized(); }
     }
     if (vm.folder.trim().isEmpty()) vm.folder = app.project.masteredFolder().getFullPathName();           // the default place: the project's Bounced Media / Mastered Audio folder
     folderEditor.setText (vm.folder, false);
@@ -1993,7 +2004,13 @@ void MasteringComponent::layoutForms (juce::Rectangle<int> area)
     labelled (formAudioCaption, formAudioBox);
     labelled (formRateCaption, formRateBox);
     labelled (formBitsCaption, formBitsBox);
-    formInfo.setBounds (row (34));
+    {   // (3.51.0: as many lines as its text needs - it now begins with the versions the copies will be of)
+        const int lineH = juce::roundToInt (formInfo.getFont().getHeight() * 1.25f);
+        int lines = 0;
+        for (auto& ln : juce::StringArray::fromLines (formInfo.getText()))
+            lines += 1 + juce::roundToInt ((float) juce::GlyphArrangement::getStringWidthInt (formInfo.getFont(), ln) / (float) juce::jmax (100, r.getWidth() - 10));
+        formInfo.setBounds (row (juce::jmax (34, lineH * juce::jmax (1, lines))));
+    }
     formLevelNote.setBounds (row (20));
     formLevelBox.setBounds (row (LevelBox::kHeight));
     { auto x = row (grid::btnH + 2); formFolderCaption.setBounds (x.removeFromLeft (60)); formChoose.setBounds (x.removeFromRight (136)); x.removeFromRight (4); formFolderEditor.setBounds (x); }

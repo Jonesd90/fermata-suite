@@ -81,6 +81,9 @@ var feedbackToVar (const std::vector<FeedbackNote>& list)
         var o = new DynamicObject(); auto* d = o.getDynamicObject();
         d->setProperty ("key", n.key); d->setProperty ("who", n.who); d->setProperty ("bar", n.bar); d->setProperty ("text", n.text);
         d->setProperty ("colour", n.colour); d->setProperty ("source", n.source); d->setProperty ("t", n.seconds); if (n.done) d->setProperty ("done", true);
+        if (n.editor) d->setProperty ("editor", true);                     // 3.51.0: the editor's own notes and what a note answers (written only when set)
+        if (n.replyTo.isNotEmpty()) d->setProperty ("replyTo", n.replyTo);
+        if (n.madeIn > 0) d->setProperty ("madeIn", n.madeIn);
         a.add (o);
     }
     return a;
@@ -93,6 +96,7 @@ void feedbackFromVar (const var& v, std::vector<FeedbackNote>& list)
         {
             FeedbackNote n; n.key = o["key"].toString(); n.who = o["who"].toString(); n.bar = o["bar"].toString(); n.text = o["text"].toString();
             n.colour = o["colour"].toString(); n.source = o["source"].toString(); n.seconds = juce::jmax (0.0, (double) o["t"]); n.done = (bool) o["done"];
+            n.editor = (bool) o["editor"]; n.replyTo = o["replyTo"].toString(); n.madeIn = juce::jlimit (0, 100000, (int) o["madeIn"]);
             list.push_back (n);
         }
 }
@@ -1478,6 +1482,22 @@ void Project::restoreSavedComments()
         if (json.existsAsFile() && ! juce::JSON::parse (json.loadFileAsString(), v).failed()) { feedbackFromVar (v, e->feedback); e->showFeedback = true; }
     }
 }
+juce::File Project::pdfsFolder() const { return projectFolder().getChildFile ("PDFs"); }
+juce::File Project::scoreFileFor (const EditDef& e) const { return e.score.isNotEmpty() ? pdfsFolder().getChildFile (e.score) : juce::File(); }
+juce::String Project::addScore (EditDef& e, const juce::File& pdf)
+{
+    if (! pdf.existsAsFile()) return "The file is not there: " + pdf.getFullPathName();
+    const auto dir = pdfsFolder();
+    if (pdf.getParentDirectory() == dir) { e.score = pdf.getFileName(); e.scoreTop = 0.0; markDirty(); return {}; }      // (chosen from the PDFs folder itself: no copy)
+    if (! dir.createDirectory().wasOk()) return "The folder could not be made: " + dir.getFullPathName();
+    auto name = juce::File::createLegalFileName (pdf.getFileName()); if (name.isEmpty()) name = "Score.pdf";
+    auto dest = dir.getChildFile (name);
+    // the same file chosen again (the same name, size and contents) is not copied twice; another file of that name gets "(2)"
+    if (dest.existsAsFile() && ! (dest.getSize() == pdf.getSize() && dest.hasIdenticalContentTo (pdf))) dest = dir.getNonexistentChildFile (dest.getFileNameWithoutExtension(), dest.getFileExtension(), true);
+    if (! dest.existsAsFile() && ! pdf.copyFileTo (dest)) return "The file could not be copied into the project's PDFs folder (" + dir.getFullPathName() + ").";
+    e.score = dest.getFileName(); e.scoreTop = 0.0; markDirty();
+    return {};
+}
 juce::File Project::processingFolder() const { return projectFolder().getChildFile ("Processing Media"); }
 juce::File Project::bouncedFolder() const { return projectFolder().getChildFile ("Bounced Media"); }
 juce::File Project::masteredFolder() const { return bouncedFolder().getChildFile ("Mastered Audio"); }
@@ -1692,6 +1712,12 @@ var Project::editToVarIn (const EditDef& eref, const juce::File& base, bool with
     if (! e->feedback.empty()) put (o, "feedback", feedbackToVar (e->feedback));
     if (! e->showFeedback) put (o, "showFeedback", false);
     if (! e->showMarkers) put (o, "showMarkers", false);
+    if (e->score.isNotEmpty())                                                         // 3.51.0: the edit's score (a PDF in the project's PDFs folder), written only when there is one
+    {
+        put (o, "score", e->score);
+        if (e->scoreTop > 0.0) put (o, "scoreTop", e->scoreTop);
+        if (e->scoreZoom > 0.0) put (o, "scoreZoom", e->scoreZoom);
+    }
     if (e->guide.active())                                                             // the visual guide (2.102)
     {
         const auto& gd = e->guide;
@@ -2116,6 +2142,8 @@ static std::unique_ptr<EditDef> editFromVarIn (const var& v, const juce::File& b
     }
     e->showGuide = v["showGuide"].isVoid() ? true : (bool) v["showGuide"];
     e->leadIn = (bool) v["leadIn"]; e->leadInSeconds = juce::jlimit (0.0, 3600.0, (double) v["leadInSeconds"]);
+    e->score = juce::File::createLegalFileName (v["score"].toString());               // (a name only: never a path out of the PDFs folder)
+    e->scoreTop = juce::jlimit (0.0, 100000.0, (double) v["scoreTop"]); e->scoreZoom = juce::jlimit (0.0, 40.0, (double) v["scoreZoom"]);
     if (auto* ls = v["autoLanes"].getArray())
         for (auto& lv : *ls)
         {
@@ -2608,7 +2636,8 @@ juce::uint64 Project::saveHash (const EditDef& e)
     for (auto& kv : e.laneRows)                                                      // (an entry that only says "one fader row" is the same as none)
         if (! EditDef::isDefaultRows (kv.second)) { h.add (kv.first); h.count (kv.second.size()); for (auto& sh : kv.second) { h.add (sh.param); h.add (sh.mixer); } }
     h.count (e.feedback.size());
-    for (auto& n : e.feedback) { h.add (n.key); h.add (n.who); h.add (n.bar); h.add (n.text); h.add (n.colour); h.add (n.source); h.add (n.seconds); h.add (n.done); }
+    for (auto& n : e.feedback) { h.add (n.key); h.add (n.who); h.add (n.bar); h.add (n.text); h.add (n.colour); h.add (n.source); h.add (n.seconds); h.add (n.done); h.add (n.editor); h.add (n.replyTo); h.add (n.madeIn); }
+    h.add (e.score); h.add (e.scoreTop); h.add (e.scoreZoom);                        // 3.51.0: the edit's score
     h.count (e.autoBefore.size()); for (auto& kv : e.autoBefore) { h.add (kv.first); h.add (kv.second); }
     h.add (e.subheading); h.add (e.compareWith);                                     // 3.42.0: the versions (saved, never undone - a frozen version's comments change, so all of it is hashed)
     h.count (e.versions.size());
@@ -2630,7 +2659,8 @@ void strip (const var& o, std::initializer_list<const char*> keys)
 const std::initializer_list<const char*> kTakeViewKeys = { "editTake", "editIn", "editOut", "editTracks", "cursorTake", "cursorSeconds", "playhead", "hiddenTracks", "overdub", "markers", "showMarkers", "takeMatching", "fixVersions" };   // (fixVersions: fermata:Live's, made outside - saved, never undone)
 const std::initializer_list<const char*> kTakeMachineKeys = { "length", "overruns", "lost", "writeFailed", "verified" };     // per take: the recorder's, not the person's (3.1.4)
 const std::initializer_list<const char*> kEditViewKeys = { "markIn", "markOut", "fixIn", "fixOut", "fixTracks", "playhead", "insertIndex", "markers", "feedback", "showFeedback", "showMarkers", "laneRows", "showGuide", "autoBefore",
-                                                           "versions", "subheading", "compareWith" };       // (3.42.0: the frozen versions are saved, never undone)
+                                                           "versions", "subheading", "compareWith",
+                                                           "score", "scoreTop", "scoreZoom" };       // (3.42.0: the frozen versions are saved, never undone)
 }
 
 juce::String Project::undoText (const TakeWindowDef& w) const
@@ -2811,6 +2841,7 @@ bool restorePiece (Project& p, const Project::UndoPiece& piece, const juce::Uuid
             te->autoBefore = live->autoBefore;                            // (3.27.0: where the automated controls were: an undo that takes a lane's points away puts the control back from here)
             te->showGuide = live->showGuide;                              // (the Guide button: a view; the guide itself is part of undo)
             te->versions = live->versions; te->subheading = live->subheading; te->compareWith = live->compareWith;     // (3.42.0: the frozen versions: saved, never undone)
+            te->score = live->score; te->scoreTop = live->scoreTop; te->scoreZoom = live->scoreZoom;                    // (3.51.0: the edit's score: a view)
             // 3.47.0: the markers, comment flags, marks 1 / 2 and the playhead are not part of an undo - they are kept as they are now (above). But a
             // change that moved the music along (a piece put in, or deleted) took them with it, and undoing it left them where the change had put
             // them: the piece's length away from their music. Each one now stays ON ITS MUSIC through the undo (editversions::mapSeconds: the take

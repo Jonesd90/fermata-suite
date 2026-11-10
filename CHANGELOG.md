@@ -6,6 +6,68 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.51.0
+Built 10 November 2026 (the conversation for both programs), with Claude Fable. Replies to the listeners' comments, which go out in the
+next listening copy with the whole conversation; an edit's score (a PDF) in a window of its own; any number of pinned windows, plug-ins'
+included; an old volume change drawn as the whole section it covers.
+- **Shared: Write Reply** (asked for on 10 November 2026: "it sort of allows a conversation across versions"). Click a comment's flag -
+  on the timeline, or in an earlier version's lane above it - and the box that opens has **Write Reply...**. What you write is kept
+  under that comment, signed with your name (asked for the first time, then remembered for every project), with a **gold ring** round
+  it. **Change...** on a reply of yours alters it; Delete takes it away. The Feedback key's menu has **Write a note of your own at the
+  playhead...** for something nobody asked about. Importing a newer comments file for the same version no longer touches what you wrote.
+- **Shared: every listening copy carries the conversation.** Above the picture of the sound the page has a lane for each version, and
+  tick boxes to show or hide each one (the browser remembers them):
+  - **Edit 1, Edit 2 ...**: what the listeners said about that version, each comment placed where that music is in THIS recording (a
+    comment whose music is no longer in the edit is marked "not in this version"), and what you wrote while that version was being made;
+  - **Replies on this version (Edit N)**: what you wrote while making the version they are listening to - each reply says whom it
+    answers, on which version, and quotes the comment, so it reads on its own with the older lanes hidden. A reply is therefore kept
+    under its comment in fermata, and shown to the listener in the lane of the version it is about.
+  The side of the page lists the same as "The conversation so far". **Everyone has a colour of their own** (by their name, the same in
+  fermata and on the page - the flags on the Edit window's timeline are in those colours too; they were all teal), and the editor's
+  replies have the gold ring. A comment ticked "done" in fermata says "done". The listener's own new comments are in a strip called
+  Yours, in their colour; **Reply** on anything in the conversation writes an answer at that moment, which comes back in the notes file
+  saying what it answers. A first listening copy, with no comments yet, looks exactly as it did.
+- **The score: a PDF for each edit** (asked for on 10 November 2026). The Edit window has a **PDF** key. The first click asks for the
+  file and **copies it into a new "PDFs" folder in the project's folder**, so it is moved, copied and archived with the project. After
+  that the key opens and closes the score, in a window of its own that can be pinned, that remembers its place, its page and its size
+  of page, and in which Space still plays and stops the edit. Page Up / Page Down, Home / End, + and - (or Ctrl and the wheel), 0 or
+  "Fit width"; the page can be dragged about with the mouse. Right-click the key (or "PDF..." in the window) for another PDF, the
+  folder, the computer's own PDF program, or to take the score off the edit. Choosing or changing a score is not an undo step.
+  **The pages are drawn by Windows' own PDF reader** (part of Windows 10 and 11; nothing is installed). That part **could not be compiled
+  or run where this was made**: the first build on GitHub is its first compile. It is built on its own and only if it builds - if it
+  does not, fermata is still built, the score window says that this copy has no PDF reader and offers the computer's own PDF program,
+  and the build's log says why under "PDF pages" (please send me that if it happens).
+- **Shared: any number of windows can be pinned** (asked for on 10 November 2026: "so I can see two, three or more at once"). Pinning
+  one window no longer unpins another. **A plug-in's window has a pin too**: a thin bar of fermata's own above the plug-in, with the
+  plug-in's name and the pin at its right end. Pinned windows stay in front of fermata's other windows (press Play in the Edit window
+  and they stay where they are); another program still covers them, as before.
+- **An old volume change is drawn as the whole section it covers** (asked for on 10 November 2026, from a picture: "that whole section
+  on the orange track should be encircled"). A change made before 3.50.0 was drawn piece by piece: a box to the end of the piece it
+  began in, nothing round the pieces that carried it on, and a separate mark where a later change brought the level back. It is now one
+  box, round the tracks it raises, from where the raise begins to the end of the glide that takes it back - the same reading the box
+  makes when you click its triangle. Nothing in the edit is changed by this: it plays exactly as before, and the level lines still show
+  what plays. (Open it and press Done to make it a volume area for good, as in 3.50.0.)
+- A click on the empty part of the line with the "subheading (optional)" box no longer puts the keyboard into that box - only a click
+  in the box does. A click on the empty part now takes the keyboard out of it.
+- "Change the volume change" is **"Change the volume adjustment"**, and one that is there already is called an adjustment in its box
+  and in the piece's menu ("Change this volume adjustment...", "Remove this adjustment").
+- The Listening copy tab says which version each copy will be of. It is always the piece as its Edit window has it now - its newest
+  version - and the name ("The Lion - Edit 3") is in the file's name, at the top of the page and in the notes that come back.
+- **Not in this build**: choosing an older, frozen version for a listening copy (asked for on 10 November 2026). A frozen version has
+  to be made through the mixer settings and automation it was frozen with, which the export does not do yet; it is the first thing for
+  the next build. There is no switch yet to leave the conversation out of a listening copy.
+
+Checked here: the shared core's tests (all pass, with new ones for the replies, which lane of the listening copy each note goes to, the
+colours, the score's folder, and the saving and undo of all of it); the compatibility check, the Windows-code check and fermata:Live's
+recorder tests (all pass); the changed windows' code compiled with every warning on (none). Both programs were built for Linux and
+fermata was run on a virtual screen: a reply written from a comment's flag, saved, and found in a listening copy that fermata then
+made, opened in a browser (the lanes, the tick boxes and that they are remembered, Reply, a new comment, the notes file that comes
+back, a phone's width, light and dark); the score window with a stand-in for Windows' PDF reader (choosing the file, the copy in the
+PDFs folder, the pages, bigger and smaller, the place remembered when the project is opened again); the score and a mixer both pinned
+and both staying in front of the Edit window; an old volume change drawn across its join; the subheading box. **Not checked**:
+anything on Windows; the PDF reader itself (see above); a plug-in's window with its new bar and pin (there are no plug-ins on this
+machine); anything by ear. The address, thread and realtime checks and the long sandbox run were not run for this build.
+
 ## 3.50.0
 Built 10 November 2026 (the conversation for both programs), with Claude Fable. A volume change is now an area of the edit, with one box
 that says what it does and changes all of it; the Fermata style UI is in Inter throughout; the mixer's send dials fill with green.

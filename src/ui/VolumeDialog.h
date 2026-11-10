@@ -75,7 +75,7 @@ public:
         allLabel.setText ("All", juce::dontSendNotification); allLabel.setJustificationType (juce::Justification::centred);
         allLabel.setFont (juce::FontOptions (12.0f, juce::Font::bold)); addAndMakeVisible (allLabel);
 
-        title.setText ("Volume change at " + formatTimeShort ((double) (r->startSample + rel) / rate, 2) + "  -  " + r->takeName, juce::dontSendNotification);
+        title.setText ("Volume adjustment at " + formatTimeShort ((double) (r->startSample + rel) / rate, 2) + "  -  " + r->takeName, juce::dontSendNotification);
         title.setFont (juce::FontOptions (13.0f, juce::Font::bold)); addAndMakeVisible (title);
 
         fadeBox.setButtonText ("Fade the change");
@@ -92,7 +92,7 @@ public:
         if (rel <= 0) { wholeBox.setToggleState (true, juce::dontSendNotification); wholeBox.onClick(); }
         addAndMakeVisible (wholeBox);
 
-        apply.setButtonText ("Apply"); cancel.setButtonText ("Cancel"); remove.setButtonText ("Remove this change");
+        apply.setButtonText ("Apply"); cancel.setButtonText ("Cancel"); remove.setButtonText ("Remove this adjustment");
         remove.setEnabled (existing);
         apply.onClick  = [this] { doApply(); };
         cancel.onClick = [this] { if (closeFn) closeFn(); };
@@ -349,7 +349,7 @@ private:
         viewport.setViewedComponent (&content, false); viewport.setScrollBarsShown (false, true);
         addAndMakeVisible (viewport);
 
-        title.setText ("Volume change", juce::dontSendNotification);
+        title.setText ("Volume adjustment", juce::dontSendNotification);
         title.setFont (juce::FontOptions (13.0f, juce::Font::bold)); addAndMakeVisible (title);
         summary.setFont (juce::FontOptions (12.5f)); summary.setJustificationType (juce::Justification::topLeft); summary.setMinimumHorizontalScale (1.0f); addAndMakeVisible (summary);
         info.setFont (juce::FontOptions (11.5f)); info.setColour (juce::Label::textColourId, theme::dimText); info.setJustificationType (juce::Justification::topLeft);
@@ -362,13 +362,13 @@ private:
             ed.onReturnKey = [this] { pending = true; }; ed.onFocusLost = [this] { pending = true; };
             addAndMakeVisible (ed);
         };
-        edit (fromEd, formatTimeShort ((double) area.from / rate, 2), "Where the change begins on the edit's timeline (its fade in starts here). Type a time: 1:33.27");
-        edit (toEd, formatTimeShort ((double) area.to / rate, 2), "Where the change ends (its fade out ends here). Type a time: 2:10.63");
+        edit (fromEd, formatTimeShort ((double) area.from / rate, 2), "Where the adjustment begins on the edit's timeline (its fade in starts here). Type a time: 1:33.27");
+        edit (toEd, formatTimeShort ((double) area.to / rate, 2), "Where the adjustment ends (its fade out ends here). Type a time: 2:10.63");
         edit (fadeInEd, juce::String (area.fadeIn, 2), "Seconds the level takes to glide to the new value at the start (0: it jumps)");
         edit (fadeOutEd, juce::String (area.fadeOut, 2), "Seconds the level takes to glide back at the end (0: it jumps back)");
-        play.setButtonText ("Play"); play.setTooltip ("Plays the change, from 2 seconds before it to 2 seconds after it (press again to stop)");
+        play.setButtonText ("Play"); play.setTooltip ("Plays the adjustment, from 2 seconds before it to 2 seconds after it (press again to stop)");
         play.onClick = [this] { togglePlay(); };
-        done_.setButtonText ("Done"); cancel.setButtonText ("Cancel"); remove.setButtonText ("Remove this change");
+        done_.setButtonText ("Done"); cancel.setButtonText ("Cancel"); remove.setButtonText ("Remove this adjustment");
         done_.onClick = [this] { applyNow(); done = true; if (closeFn) closeFn(); };
         cancel.onClick = [this] { if (closeFn) closeFn(); };
         remove.onClick = [this] { removeIt(); };
@@ -508,7 +508,7 @@ inline void showNewVolumeArea (AppContext& app, const juce::Uuid& editId, juce::
 inline void showVolumeArea (AppContext& app, const juce::Uuid& editId, const juce::Uuid& areaId)
 {
     VolumeAreaPanel::Start st; st.areaId = areaId;
-    launchVolumeArea (app, editId, st, "Volume change");
+    launchVolumeArea (app, editId, st, "Change the volume adjustment");       // (3.51.0: was "Change the volume change" - the same word twice)
 }
 /** A volume change made before 3.50.0 (its group; or, for a change on its own, the piece and the place), opened as the area it amounts to. False -
     nothing opened - when it cannot be an area (a piece of the overdub layer, the level a piece starts with, a change that moves nothing):
@@ -523,7 +523,7 @@ inline bool showOldChangeAsArea (AppContext& app, const juce::Uuid& editId, cons
         if (! ok || a.isEmpty()) return false;
     }
     VolumeAreaPanel::Start st; st.old = true; st.oldGroup = group; st.oldRegion = regionId; st.oldAt = at;
-    launchVolumeArea (app, editId, st, "Volume change");
+    launchVolumeArea (app, editId, st, "Change the volume adjustment");       // (3.51.0: was "Change the volume change" - the same word twice)
     return true;
 }
 } // namespace td

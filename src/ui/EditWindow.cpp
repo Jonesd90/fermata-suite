@@ -39,6 +39,27 @@ static constexpr int kRulerH = 32 + kRulerTop, kLaneH = 38;                // (t
                                                                            //  3.35.1: its times on a line of their own, above the edit points' numbers, which hid them)
 static int kNameW = 210;                        // width of the track-name column (drag its right edge to change it; shared by all edit windows)
 
+/** 3.51.0: what the editor's own notes need (FeedbackUi.h): the name they are signed with, kept in the program's settings for every project. */
+static feedbackui::EditorHand editorHand (AppContext& app, juce::Component* over, int versionNow)
+{
+    feedbackui::EditorHand h;
+    h.version = versionNow;
+    auto* a = &app;                                                        // (the application's: it outlives every window)
+    h.name = [a] { auto* st = a->props.getUserSettings(); return st != nullptr ? st->getValue ("editorName") : juce::String(); };
+    h.setName = [a] (const juce::String& n) { if (auto* st = a->props.getUserSettings()) if (st->getValue ("editorName") != n) { st->setValue ("editorName", n); a->props.saveIfNeeded(); } };
+    h.over = over;
+    return h;
+}
+/** Who wrote the comment with this key, in any version of the edit: "Sarah (Edit 1)". Empty when it is not there any more. */
+static juce::String commentWriter (const EditDef& live, const juce::String& key)
+{
+    for (int n = 1; n <= live.versionNumber(); ++n)
+        if (auto* ve = live.versionEdit (n))
+            for (auto& f : ve->feedback)
+                if (f.key == key) return (f.who.isNotEmpty() ? f.who : juce::String ("someone")) + " (Edit " + juce::String (n) + ")";
+    return {};
+}
+
 class EditTimeline : public juce::Component, private juce::ChangeListener, private juce::Timer
 {
 public:
@@ -1103,7 +1124,9 @@ public:
                 juce::Component::SafePointer<EditTimeline> safe (this);
                 feedbackui::showThread ([safe] () -> EditDef* { return safe != nullptr ? safe->edit() : nullptr; }, th, area,      // (the box can outlive the window)
                                         [this, safe] { if (safe == nullptr) return; app.project.markDirty(); repaint(); },
-                                        [this, safe] (double s) { if (safe == nullptr) return; if (auto* w = findParentComponentOfClass<EditWindowComponent>()) w->goToSeconds (s); });
+                                        [this, safe] (double s) { if (safe == nullptr) return; if (auto* w = findParentComponentOfClass<EditWindowComponent>()) w->goToSeconds (s); },
+                                        editorHand (app, getTopLevelComponent(), ed->versionNumber()),
+                                        [safe] (const juce::String& key) { auto* le = safe != nullptr ? safe->edit() : nullptr; return le != nullptr ? commentWriter (*le, key) : juce::String(); });
                 return;
             }
         }
@@ -2545,9 +2568,52 @@ private:
         GainHit hit; int x0 = 0, x1 = 0;
         std::vector<Point> points; std::vector<juce::Rectangle<int>> boxes;
     };
+    /** 3.51.0 (asked for on 10 November 2026: "that whole section on the orange track should be encircled"): a volume change made before 3.50.0 was
+        written into the pieces, and was drawn piece by piece - a box to the end of the piece it began in, nothing round the next pieces that
+        carried it on, and another mark where a later change brought the level back. It is now DRAWN as the area it amounts to - the same
+        reading the box makes when the change is opened (volumeareas::takeOutLoneChange, tried on a copy: nothing in the edit changes): one
+        box from where the raise begins, through every piece that carries it, to the end of the glide that takes it back, round the tracks it
+        raises. A later change that only brings it back is that box's fade out, and is not drawn on its own.
+        Worked out again only when the edit has changed. */
+    struct OldChanges
+    {
+        using Key = std::pair<juce::Uuid, juce::int64>;                     // the piece, and where in it
+        std::map<Key, VolumeArea> areas;                                    // an old change -> the area it amounts to
+        std::set<Key> partOfAnother;                                        // a later change that is another one's way back
+    };
+    mutable OldChanges oldChanges; mutable juce::uint64 oldChangesHash = 0; mutable bool oldChangesKnown = false;
+    const OldChanges& oldChangesAsAreas (const EditDef& ed) const
+    {
+        const auto h = Project::undoHash (ed);
+        if (oldChangesKnown && h == oldChangesHash) return oldChanges;
+        oldChangesKnown = true; oldChangesHash = h; oldChanges = {};
+        auto lone = [] (const GainChange& g) { return ! g.autoNorm && g.group.isEmpty() && ! (g.at == 0 && g.ramp == 0.0); };
+        bool any = false; for (auto& r : ed.regions) for (auto& g : r.gains) any = any || lone (g);
+        if (! any) return oldChanges;
+        for (size_t ri = 0; ri < ed.regions.size(); ++ri)
+            for (auto& g : ed.regions[ri].gains)
+            {
+                if (! lone (g)) continue;
+                const OldChanges::Key k { ed.regions[ri].id, g.at };
+                if (oldChanges.partOfAnother.count (k) != 0) continue;
+                EditDef probe = ed; probe.versions.clear();
+                VolumeArea a;
+                if (! volumeareas::takeOutLoneChange (probe, k.first, k.second, a) || a.isEmpty() || probe.regions.size() != ed.regions.size()) continue;
+                oldChanges.areas[k] = a;
+                for (size_t rj = ri; rj < ed.regions.size(); ++rj)                // what it took with it: the later changes that are in the pieces no more
+                    for (auto& g2 : ed.regions[rj].gains)
+                    {
+                        if (! lone (g2) || (rj == ri && g2.at <= g.at)) continue;
+                        bool still = false; for (auto& c : probe.regions[rj].gains) still = still || (c.at == g2.at && ! c.autoNorm && c.group.isEmpty());
+                        if (! still) oldChanges.partOfAnother.insert ({ ed.regions[rj].id, g2.at });
+                    }
+            }
+        return oldChanges;
+    }
     std::vector<GainUnit> gainUnits (const EditDef& ed, const std::vector<TrackDef>& tracks, double rate) const
     {
         std::vector<GainUnit> out;
+        const auto& old = oldChangesAsAreas (ed);
         const int top = bandH();
         auto rowOf = [&] (const juce::Uuid& id) { for (size_t i = 0; i < tracks.size(); ++i) if (tracks[i].id == id) return (int) i; return -1; };
         // the rows whose level the change at index i of piece r really moves (0.05 dB or more), from the level just before it
@@ -2574,12 +2640,31 @@ private:
         std::map<juce::String, size_t> groups;                                          // group -> its unit in 'out'
         std::map<juce::String, std::set<int>> groupRows;
         std::map<juce::String, bool> groupHasEnd; std::map<juce::String, int> groupPieceEnd;
+        auto areaUnit = [&] (const VolumeArea& a, GainHit hit)                          // a box round the tracks an area is on, from its start to its end (its fades
+        {                                                                                 // shaded), a triangle where it starts and where its fade out begins
+            GainUnit u; u.hit = hit;
+            u.x0 = xOf ((double) a.from / rate); u.x1 = juce::jmax (u.x0 + 3, xOf ((double) a.to / rate));
+            juce::int64 fin = 0, fout = 0; a.fades (rate, fin, fout);
+            const int inPx = (int) ((double) fin / rate * pixelsPerSecond), outPx = (int) ((double) fout / rate * pixelsPerSecond);
+            u.points.push_back ({ u.x0, inPx, true });
+            u.points.push_back ({ u.x1 - outPx, outPx, true });
+            std::set<int> rows;
+            for (auto& d : a.db) if (a.touches (d.first)) if (const int row = rowOf (d.first); row >= 0) rows.insert (row);
+            u.boxes = boxesFor (rows, u.x0, u.x1);
+            return u;
+        };
         auto look = [&] (const EditRegion& r)
         {
             for (size_t i = 0; i < r.gains.size(); ++i)
             {
                 const auto& gc = r.gains[i];
                 if (gc.autoNorm || (gc.group.isEmpty() && gc.at == 0 && gc.ramp == 0.0)) continue;
+                if (gc.group.isEmpty())                                                   // 3.51.0: a change from before 3.50.0 is drawn as the area it amounts to
+                {
+                    const OldChanges::Key k { r.id, gc.at };
+                    if (old.partOfAnother.count (k) != 0) continue;                     // (another one's way back: that one's fade out)
+                    if (const auto it = old.areas.find (k); it != old.areas.end()) { out.push_back (areaUnit (it->second, { r.id, gc.at, {} })); continue; }
+                }
                 const int x = xOf ((double) (r.startSample + gc.at) / rate), gw = juce::jmax (0, (int) (gc.ramp * pixelsPerSecond));
                 if (gc.group.isNotEmpty())
                 {
@@ -2616,19 +2701,7 @@ private:
             if (! groupHasEnd[grp]) out[idx].x1 = juce::jmax (out[idx].x1, groupPieceEnd[grp]);
             out[idx].boxes = boxesFor (groupRows[grp], out[idx].x0, out[idx].x1);
         }
-        for (auto& a : ed.areas)                                                          // 3.50.0: the volume areas - a box round the tracks each is on, from its start to its end
-        {                                                                                  // (its fades shaded), a triangle where it starts and where its fade out begins
-            GainUnit u; u.hit.areaId = a.id;
-            u.x0 = xOf ((double) a.from / rate); u.x1 = juce::jmax (u.x0 + 3, xOf ((double) a.to / rate));
-            juce::int64 fin = 0, fout = 0; a.fades (rate, fin, fout);
-            const int inPx = (int) ((double) fin / rate * pixelsPerSecond), outPx = (int) ((double) fout / rate * pixelsPerSecond);
-            u.points.push_back ({ u.x0, inPx, true });
-            u.points.push_back ({ u.x1 - outPx, outPx, true });
-            std::set<int> rows;
-            for (auto& d : a.db) if (a.touches (d.first)) if (const int row = rowOf (d.first); row >= 0) rows.insert (row);
-            u.boxes = boxesFor (rows, u.x0, u.x1);
-            out.push_back (u);
-        }
+        for (auto& a : ed.areas) { GainHit hit; hit.areaId = a.id; out.push_back (areaUnit (a, hit)); }      // 3.50.0: the volume areas
         return out;
     }
     /** 3.18.5 (3.45.0: the triangle, or the edge of the box round the tracks it moves): the volume change under 'p', if any. */
@@ -2686,7 +2759,7 @@ private:
         const juce::Uuid snipB = snipK > 0 ? ed.regions[(size_t) snipK].id : juce::Uuid::null();
         if (snipK > 0) { m.addItem (50, "Remove snip (glue it back together)"); m.addSeparator(); }
         const auto hit = gainMarkAt (ed, e.getPosition(), rate);                     // 3.18.5: on a volume change's line: change it again
-        if (hit) { m.addItem (10, "Change this volume change..."); m.addSeparator(); }
+        if (hit) { m.addItem (10, "Change this volume adjustment..."); m.addSeparator(); }
         // the area between marks 1 and 2 for all tracks or the ones chosen with Ctrl + Alt + drag
         juce::int64 rangeFrom = 0, rangeTo = 0;
         if (ed.fixIn >= 0 && ed.fixOut > ed.fixIn) { rangeFrom = (juce::int64) std::llround (ed.fixIn * rate); rangeTo = (juce::int64) std::llround (ed.fixOut * rate); }
@@ -2986,6 +3059,10 @@ public:
     VersionStrip (AppContext& a, const juce::Uuid& eid, EditTimeline& t, juce::Viewport& vp) : app (a), editId (eid), timeline (t), viewport (vp)
     {
         addAndMakeVisible (subheading);
+        // 3.51.0 (asked for on 10 November 2026): a click on the empty part of this line put the keyboard into the subheading box. JUCE does that: a
+        // click on something that does not take the keyboard itself hands it to the first thing inside it that does - here, the box. This strip
+        // no longer takes part in that; a click on its empty part gives the keyboard to the timeline instead (and so takes it OUT of the box).
+        setMouseClickGrabsKeyboardFocus (false);
         subheading.setTextToShowWhenEmpty ("subheading (optional)", theme::dimText.withAlpha (0.7f));
         subheading.setTooltip ("A few words about this version, after its number: 'The Lion - Edit 2 - More reverb'. They go with it when it is frozen, and onto its listening copy.");
         subheading.onFocusLost = [this] { commitSubheading(); };
@@ -3066,10 +3143,10 @@ public:
             g.setColour (theme::ruler.withAlpha (0.55f)); g.fillRect (lane);
             g.setColour (theme::grid.withAlpha (0.6f)); g.fillRect (0, y + kLaneH - 1, getWidth(), 1);
             const auto& notes = v.edit->feedback;
-            int open = 0; for (auto& n : notes) if (! n.done) ++open;
+            int open = 0, said = 0; for (auto& n : notes) if (! n.editor) { ++said; if (! n.done) ++open; }      // (the editor's own answers are not comments to deal with)
             g.setColour (juce::Colour (0xff35b7c9));
             g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
-            g.drawText ("Edit " + juce::String (v.number) + " comments" + (notes.empty() ? juce::String ("  (none yet)") : "  (" + juce::String (open) + " open of " + juce::String ((int) notes.size()) + ")"), 6, y, kNameW - 12, kLaneH, juce::Justification::centredLeft, true);
+            g.drawText ("Edit " + juce::String (v.number) + " comments" + (notes.empty() ? juce::String ("  (none yet)") : "  (" + juce::String (open) + " open of " + juce::String (said) + ")"), 6, y, kNameW - 12, kLaneH, juce::Justification::centredLeft, true);
             g.setFont (feedbackui::flagFont());
             for (auto& th : feedback::threads (notes))
             {
@@ -3079,10 +3156,11 @@ public:
                 const int x = xOf (sec);
                 if (x < kNameW) continue;
                 const bool done = feedbackui::allDone (notes, th);
-                const auto body = done ? juce::Colour (0xff6d7078) : personColour (first);
+                const auto body = done ? juce::Colour (0xff6d7078) : feedbackui::personColour (first);
                 const auto text = feedbackui::flagText (notes, th);
                 auto f = juce::Rectangle<int> (x, y + 2, feedbackui::flagWidth (text), kLaneH - 4);
                 g.setColour (body.withAlpha (floating ? 0.55f : 1.0f)); g.fillRoundedRectangle (f.toFloat(), 3.0f);
+                if (feedbackui::hasEditorNote (notes, th)) feedbackui::paintEditorRing (g, f.toFloat());        // 3.51.0: the editor has answered here
                 if (floating) { g.setColour (juce::Colours::white.withAlpha (0.7f)); g.drawRoundedRectangle (f.toFloat().reduced (0.5f), 3.0f, 1.0f); }
                 g.setColour (done ? juce::Colour (0xffd0d2d8) : juce::Colour (0xff0b1b1e));
                 g.drawText (text, f.reduced (6, 0), juce::Justification::centredLeft, true);
@@ -3145,6 +3223,7 @@ public:
     }
     void mouseDown (const juce::MouseEvent& ev) override
     {
+        timeline.grabKeyboardFocus();                          // (3.51.0: never the subheading box - see the constructor)
         auto* e = edit(); if (e == nullptr) return;
         for (auto& lr : laneRects)
         {
@@ -3168,7 +3247,9 @@ public:
             feedbackui::showThread ([safe, number] () -> EditDef* { if (safe == nullptr) return nullptr; auto* ed = safe->edit(); auto* vv = ed ? ed->version (number) : nullptr; return vv ? vv->edit.get() : nullptr; },
                                     thread, localAreaToGlobal (juce::Rectangle<int> (ev.x, lr.rect.getY(), 1, lr.rect.getHeight())),
                                     [safe] { if (safe != nullptr) { safe->app.project.markDirty(); safe->repaint(); } },
-                                    [safe, liveSec] (double) { if (safe != nullptr && safe->goTo) safe->goTo (liveSec); });
+                                    [safe, liveSec] (double) { if (safe != nullptr && safe->goTo) safe->goTo (liveSec); },
+                                    editorHand (app, getTopLevelComponent(), e->versionNumber()),
+                                    [safe] (const juce::String& key) { auto* le = safe != nullptr ? safe->edit() : nullptr; return le != nullptr ? commentWriter (*le, key) : juce::String(); });
             return;
         }
     }
@@ -3185,13 +3266,6 @@ private:
     struct ChangeRect { int index; juce::Rectangle<int> rect; };
     EditDef* edit() const { return app.project.findEdit (editId); }
     void timerCallback() override { refreshFromEdit(); }
-    static juce::Colour personColour (const FeedbackNote& n)
-    {
-        if (n.colour.isNotEmpty()) return juce::Colour (feedback::colourArgb (n.colour));
-        if (n.who.trim().isEmpty()) return juce::Colour (0xff35b7c9);
-        static const juce::uint32 palette[] = { 0xff35b7c9, 0xffee9a2e, 0xff9a6ae0, 0xff3cc75a, 0xffe36ab5, 0xff4a8fe8, 0xffe9d23a, 0xffe8433a };
-        return juce::Colour (palette[(juce::uint32) n.who.trim().toLowerCase().hashCode() % 8]);      // (one colour per person, the same every time)
-    }
     void commitSubheading()
     {
         auto* e = edit(); if (e == nullptr) return;
@@ -3475,11 +3549,17 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
                              "You can also drag the files onto this window. Each track goes on its own row.");
     importButton.onClick = [this] { fixtools::showImportMenu (app, juce::Uuid::null(), &importButton, editId); };
     addAndMakeVisible (importButton);
-    feedbackButton.setTooltip ("Comments from listeners: import the file they sent back (or a marker list exported from a review website) and see their comments as flags along the top of this timeline. The file they send back ends in .fmnotes; a file with all the pieces puts each piece's comments on its own edit. Make the listening copy in Mastering, on the Listening copy tab.");
+    feedbackButton.setTooltip ("Comments from listeners: import the file they sent back (or a marker list exported from a review website) and see their comments as flags along the top of this timeline (click a flag to read it, tick it off, or write a reply: your replies go out in the next listening copy, where the listeners see the conversation). The file they send back ends in .fmnotes; a file with all the pieces puts each piece's comments on its own edit. Make the listening copy in Mastering, on the Listening copy tab.");
     feedbackButton.onClick = [this] { showFeedbackMenu(); };
     addAndMakeVisible (feedbackButton); feedbackButton.setWantsKeyboardFocus (false);
+    scoreButton.setTooltip ("The score of this edit (a PDF), in a window of its own that you can pin. Click: open / close it. The first time it asks for the PDF and keeps a copy of it in the project's PDFs folder. "
+                            "Right-click: choose another PDF, or take the score off this edit.");
+    scoreButton.onClick = [this] { scoreKey(); };
+    scoreButton.onMenu = [this] { scoreMenu(); };
+    scoreButton.setWantsKeyboardFocus (false);
+    addAndMakeVisible (scoreButton);
     markersToggle.setTooltip ("Show or hide your own markers (the amber flags on the top line). Right-click that line to add one.");
-    feedbackToggle.setTooltip ("Show or hide the listeners' comment flags (the teal flags on the line under the markers).");
+    feedbackToggle.setTooltip ("Show or hide the comment flags (on the line under the markers: one colour for each person, a gold ring where you have written).");
     if (auto* e0 = edit()) { markersToggle.setToggleState (e0->showMarkers, juce::dontSendNotification); feedbackToggle.setToggleState (e0->showFeedback, juce::dontSendNotification); }
     markersToggle.onClick = [this] { if (auto* e1 = edit()) { e1->showMarkers = markersToggle.getToggleState(); app.project.markDirty(); timeline->repaint(); } };
     feedbackToggle.onClick = [this] { if (auto* e1 = edit()) { e1->showFeedback = feedbackToggle.getToggleState(); app.project.markDirty(); timeline->repaint(); } };
@@ -3670,7 +3750,7 @@ void EditWindowComponent::resized()
         { &bounceButton, IW, IH, 2 }, { &videoButton, IW, IH, 2 }, { &aafButton, IW, IH, 2 }, { &mixerButton, IW, IH, 6 }, { &ltcButton, 74, grid::btnH, 6 }, { &guideToggle, IW, IH, 14 },
         { &automationButton, IW, IH, 14 },
         { &pitchButton, IW, IH, 2 }, { &repairButton, IW, IH, 2 }, { &roomToneButton, IW, IH, 2 }, { &noiseModeButton, IW, IH, 2 }, { &reharmoniserButton, IW, IH, 2 }, { &retimerButton, IW, IH, 10 }, { &exportProcButton, IW + 8, IH, 2 }, { &undoFixButton, IW, IH, 14 }, { &alignButton, IW, IH, 14 },
-        { &tracksButton, IW, IH, 2 }, { &importButton, IW + 8, IH, 14 }, { &feedbackButton, IW, IH, 8 }, { &markersToggle, IW, IH, 2 }, { &feedbackToggle, IW + 8, IH, 14 },
+        { &tracksButton, IW, IH, 2 }, { &importButton, IW + 8, IH, 14 }, { &feedbackButton, IW, IH, 8 }, { &markersToggle, IW, IH, 2 }, { &feedbackToggle, IW + 8, IH, 8 }, { &scoreButton, 44, grid::btnH, 14 },
         { &slipLeftToggle, IW + 8, IH, 2 }, { &slipRightToggle, IW + 8, IH, 6 }, { &shuffleToggle, IW, IH, 2 }, { &insertFlagToggle, IW, IH, 14 },
         { &zoomOutButton, 34 }, { &zoomInButton, 34 }
     };
@@ -3823,13 +3903,51 @@ void EditWindowComponent::transportKey (AppContext::TransportKey k)
     }
 }
 
+// ----------------------------------------------------------------------------- the score (3.51.0: ScoreWindow.h)
+void EditWindowComponent::scoreKey()
+{
+    auto* e = edit(); if (e == nullptr) return;
+    const auto key = score::windowKey (editId);
+    if (app.windowIsOpen && app.windowIsOpen (key)) { if (app.closeWindowByKey) app.closeWindowByKey (key); return; }
+    if (e->score.isNotEmpty() && app.project.scoreFileFor (*e).existsAsFile()) { if (app.showScore) app.showScore (editId); return; }
+    // no score yet (or its file has gone from the PDFs folder): ask for it, then open the window
+    auto* a = &app; const auto id = editId;
+    score::choosePdf (app, editId, getTopLevelComponent(), [a, id] { if (a->showScore) a->showScore (id); });
+}
+
+void EditWindowComponent::scoreMenu()
+{
+    auto* e = edit(); if (e == nullptr) return;
+    const bool has = e->score.isNotEmpty();
+    juce::PopupMenu m;
+    if (has) m.addSectionHeader (e->score);
+    m.addItem (1, has ? "Choose another PDF for this edit..." : "Choose the PDF for this edit...");
+    m.addItem (2, "Show the project's PDFs folder");
+    m.addSeparator();
+    m.addItem (3, "Take the score off this edit  (the file stays in the PDFs folder)", has);
+    juce::Component::SafePointer<EditWindowComponent> safe (this);
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&scoreButton), [safe] (int r)
+    {
+        if (safe == nullptr || r == 0) return;
+        auto* a = &safe->app; const auto id = safe->editId;
+        if (r == 1) score::choosePdf (*a, id, safe->getTopLevelComponent(), [a, id] { if (a->showScore) a->showScore (id); });      // (an open score window takes the new PDF by itself)
+        else if (r == 2) { auto dir = a->project.pdfsFolder(); dir.createDirectory(); dir.revealToUser(); }
+        else if (r == 3)
+        {
+            if (auto* ed = safe->edit()) { ed->score.clear(); ed->scoreTop = 0.0; ed->scoreZoom = 0.0; a->project.markDirty(); }
+            if (a->closeWindowByKey) a->closeWindowByKey (score::windowKey (id));
+        }
+    });
+}
+
 // ----------------------------------------------------------------------------- listeners' comments
 void EditWindowComponent::showFeedbackMenu()
 {
     auto* e = edit(); if (e == nullptr) return;
-    int open = 0, done = 0; for (auto& n : e->feedback) (n.done ? done : open)++;
+    int open = 0, done = 0; for (auto& n : e->feedback) if (! n.editor) (n.done ? done : open)++;       // (the editor's own notes are not there to be ticked off)
     juce::PopupMenu m;
     m.addItem (1, "Import comments from a file...");
+    m.addItem (2, "Write a note of your own at the playhead...");          // 3.51.0: it goes out in the next listening copy, with a gold ring
     m.addSeparator();
     m.addItem (3, "Mark every comment as done", open > 0);
     m.addItem (4, "Take away the comments marked done (" + juce::String (done) + ")", done > 0);
@@ -3841,16 +3959,27 @@ void EditWindowComponent::showFeedbackMenu()
         auto* ed = safe->edit(); if (ed == nullptr) return;
         auto& app = safe->app;
         if (r == 1) safe->importFeedback();
-        else if (r == 3) { for (auto& n : ed->feedback) n.done = true; app.project.markDirty(); safe->timeline->repaint(); }
+        else if (r == 2)
+        {
+            const double at = ed->playheadSeconds;
+            feedbackui::askEditorNote ("A note of your own", "At " + timefmt::minSecText (at) + ", where the playhead is. It is kept with this version's comments, with a gold ring, and goes out in the next listening copy.",
+                                       {}, editorHand (app, safe->getTopLevelComponent(), ed->versionNumber()), false,
+                                       [safe, at] (const juce::String& who, const juce::String& text)
+                                       {
+                                           if (safe == nullptr) return;
+                                           if (auto* ed2 = safe->edit()) { feedbackui::addEditorNote (*ed2, at, who, text, {}, ed2->versionNumber()); ed2->showFeedback = true; safe->feedbackToggle.setToggleState (true, juce::dontSendNotification); safe->app.project.markDirty(); safe->timeline->repaint(); }
+                                       });
+        }
+        else if (r == 3) { for (auto& n : ed->feedback) if (! n.editor) n.done = true; app.project.markDirty(); safe->timeline->repaint(); }
         else if (r == 4)
         {
-            ed->feedback.erase (std::remove_if (ed->feedback.begin(), ed->feedback.end(), [] (const FeedbackNote& n) { return n.done; }), ed->feedback.end());
+            ed->feedback.erase (std::remove_if (ed->feedback.begin(), ed->feedback.end(), [] (const FeedbackNote& n) { return n.done && ! n.editor; }), ed->feedback.end());
             app.project.markDirty(); safe->timeline->repaint();
         }
         else if (r == 5)
         {
             juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::QuestionIcon)
-                .withTitle ("Take away all comments").withMessage ("Take every listener comment off this edit? (The files they came from are not touched; you can import them again.)")
+                .withTitle ("Take away all comments").withMessage ("Take every listener comment off this edit, and your own notes on it? (The files the listeners' comments came from are not touched; you can import them again. Your own notes are gone for good.)")
                 .withButton ("Take away").withButton ("Cancel").withAssociatedComponent (safe.getComponent()),
                 [safe] (int result)
                 {
@@ -3952,6 +4081,7 @@ void EditWindowComponent::importFeedbackFiles (juce::Array<juce::File> files, do
                 replaced.push_back (replacedKey);
                 auto oldNotes = versionEdit->feedback; versionEdit->feedback.clear();
                 for (auto& n : p.notes) for (auto& o : oldNotes) if (o.key == n.key && o.done) n.done = true;
+                for (auto& o : oldNotes) if (o.editor) versionEdit->feedback.push_back (o);      // 3.51.0: the editor's own notes and answers are not the listeners' to replace
             }
             if (versionEdit == target) kept[target->id.toString()].push_back (f);
             const int added = feedback::merge (versionEdit->feedback, p.notes, &updated);
@@ -4400,6 +4530,7 @@ void EditWindowComponent::timerCallback()
     if (playheadMode.getToggleState() != app.playheadFollows) playheadMode.setToggleState (app.playheadFollows, juce::dontSendNotification);
     if (waveColourBtn.getToggleState() != app.waveColour) { waveColourBtn.setToggleState (app.waveColour, juce::dontSendNotification); repaint(); }
     if (waveCompressBtn.getToggleState() != (app.waveCompress > 0)) { waveCompressBtn.setToggleState (app.waveCompress > 0, juce::dontSendNotification); repaint(); }
+    if (app.windowIsOpen) { const bool on = app.windowIsOpen (score::windowKey (editId)); if (scoreButton.getToggleState() != on) scoreButton.setToggleState (on, juce::dontSendNotification); }     // (lit while the score is open)
     if (app.windowIsOpen)         // Trim and Bounce Out are lit only while their window is open (closing the Bounce Out window also ends a bounce that is running)
     {
         const bool trimOpen = app.windowIsOpen ("trim:" + editId.toString()), bounceOpen = app.windowIsOpen ("bounce:" + editId.toString());

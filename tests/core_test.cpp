@@ -34,6 +34,7 @@
 #include "../src/core/EditVersions.h"
 #include "../src/core/VolumeAreas.h"
 #include "../src/core/ReviewPage.h"
+#include "../src/core/ReviewHistory.h"
 #include "../src/core/FileSync.h"
 #include "../src/core/AudioRelink.h"
 #include "../src/core/AudioOps.h"
@@ -14796,6 +14797,142 @@ int main()
             CHECK (takeOutGroup (E(), "g", a) && a.from == S * 8 && a.to == S * 13 && a.fadeIn == 0.5 && a.fadeOut == 0.5 && a.db.size() == 1 && std::abs (a.dbOf (tS) - 3.0f) < 0.01f);
             CHECK (p0.gains.empty() && p1.gains.size() == 1 && p1.gains[0].group.isEmpty() && p1.gains[0].role == 0 && std::abs (p1.gains[0].db[2] - 1.0f) < 0.01f && std::abs (p1.gains[0].db[0] - 1.0f) < 0.01f);
         }
+    }
+
+    SECTION ("3.51.0 the conversation: the editor's answers saved, every version's comments in the listening copy where their music is now, one colour a person; an edit's score in the PDFs folder");
+    {
+        using namespace editversions;
+        const auto dir = tmp.getChildFile ("conversation"); dir.deleteRecursively(); dir.createDirectory();
+        Project q; q.setInputCount (2); q.setOutputCount (2);
+        q.projectFile = dir.getChildFile ("Lion.fermata"); q.name = "Lion";
+        auto& tw = q.addTakeWindow ("Takes");
+        auto& e = q.addEdit ("The Lion", tw.id);
+        e.sampleRate = 48000.0;
+        const auto takeA = juce::Uuid(), takeB = juce::Uuid(), trackId = q.tracks.empty() ? juce::Uuid() : q.tracks.front().id;
+        auto piece = [&] (const juce::Uuid& take, const juce::String& nm, juce::int64 in, juce::int64 len)
+        {
+            EditRegion r; r.id = juce::Uuid(); r.takeId = take; r.takeName = nm; r.sampleRate = 48000.0; r.srcIn = in; r.srcOut = in + len; r.sourceLength = 48000 * 120;
+            RegionFile f; f.trackId = trackId; f.trackName = "A"; f.file = dir.getChildFile (nm + ".wav"); r.files.push_back (f); return r;
+        };
+        e.insertRegion (piece (takeA, "001", 0, 48000 * 10));
+        e.insertRegion (piece (takeB, "002", 0, 48000 * 10));
+        // one colour a person, by the name (the listening copy's script makes the same choice: these are what it gives)
+        CHECK (feedback::personArgb ("Sarah Whitfield") == 0xffee9a2eu && feedback::personArgb ("David Jones") == 0xff3cc75au && feedback::personArgb ("Tom Okafor") == 0xff9a6ae0u);
+        CHECK (feedback::personArgb (" Conductor ") == 0xffe8433au && feedback::personArgb ("producer") == 0xff9a6ae0u && feedback::personArgb ("SARAH whitfield") == 0xffee9a2eu);
+        CHECK (feedback::personArgb (juce::String::fromUTF8 ("Zo\xc3\xab")) == 0xffe9d23au && feedback::personArgb ("") == 0xff35b7c9u && feedback::personArgb ("Anyone", "Red") == 0xffe8433au);
+        // Edit 1: a comment 5 s into the second take with the editor's answer at the same moment, one 1 s into it, and one in the first take (ticked)
+        FeedbackNote c1; c1.key = "c1"; c1.who = "Sarah Whitfield"; c1.bar = "Bar 50"; c1.text = "rocky tempo - why?"; c1.seconds = 15.0;
+        FeedbackNote r1; r1.key = "r1"; r1.who = "David Jones"; r1.text = "it is like that in every take"; r1.seconds = 15.0; r1.editor = true; r1.replyTo = "c1"; r1.madeIn = 2;      // (written while Edit 2 was being made)
+        FeedbackNote c2; c2.key = "c2"; c2.who = "Tom Okafor"; c2.text = "lovely"; c2.seconds = 3.0; c2.done = true;
+        FeedbackNote c3; c3.key = "c3"; c3.who = "Tom Okafor"; c3.text = "a click"; c3.seconds = 11.0;
+        e.feedback = { r1, c2, c3, c1 };                                     // (the reply first in the list: it is still put after its comment)
+        feedback::sortNotes (e.feedback);
+        CHECK (e.feedback[0].key == "c2" && e.feedback[1].key == "c3" && e.feedback[2].key == "c1" && e.feedback[3].key == "r1");
+        e.subheading = "first cut";
+        CHECK (reviewpage::historyFor (e, 0.0).size() == 1 && reviewpage::historyFor (e, 0.0)[0].version == 1 && reviewpage::historyFor (e, 0.0)[0].label == "Edit 1 - first cut" && reviewpage::historyFor (e, 0.0)[0].current);
+        freeze (e, juce::var());
+        CHECK (e.versionNumber() == 2 && e.feedback.empty() && e.versions[0].edit->feedback.size() == 4 && e.versions[0].edit->feedback[3].editor && e.versions[0].edit->feedback[3].replyTo == "c1");
+        // Edit 2: 3 s of music put in at the front, and the first 2 s of the second take trimmed away (the click was in them)
+        e.insertIndex = 0; e.insertRegion (piece (takeA, "001", 48000 * 50, 48000 * 3));
+        CHECK (e.regions.size() == 3 && e.regions[2].takeId == takeB && e.regions[2].startSample == 48000 * 13);
+        e.regions[2].srcIn += 48000 * 2; e.regions[2].startSample += 48000 * 2;
+        FeedbackNote own; own.key = "o1"; own.who = "David Jones"; own.text = "a new opening chord"; own.seconds = 1.0; own.editor = true; own.madeIn = 2; e.feedback.push_back (own);
+        {
+            const auto lanes = reviewpage::historyFor (e, 0.5);              // (the copy's 0:00 is half a second into the edit)
+            CHECK (lanes.size() == 2);
+            if (lanes.size() == 2)
+            {
+                const auto& l1 = lanes[0]; const auto& l2 = lanes[1];
+                // Edit 1's lane: what the listeners said about Edit 1. Edit 2's lane (this version): what the editor wrote while making it - the reply to
+                // the comment on Edit 1, at that comment's place, and the note of his own
+                CHECK (l1.version == 1 && l1.label == "Edit 1 - first cut" && ! l1.current && l1.notes.size() == 3 && l2.version == 2 && l2.label == "Edit 2" && l2.current && l2.notes.size() == 2);
+                if (l1.notes.size() == 3)
+                {
+                    CHECK (l1.notes[0].id == "c2" && std::abs (l1.notes[0].seconds - 5.5) < 1.0e-6 && l1.notes[0].done && ! l1.notes[0].adrift && l1.notes[0].argb == 0xff9a6ae0u);     // 3 s later, less the half second
+                    CHECK (l1.notes[1].id == "c3" && std::abs (l1.notes[1].seconds - 10.5) < 1.0e-6 && l1.notes[1].adrift);                                                         // its music is gone: where it was
+                    CHECK (l1.notes[2].id == "c1" && std::abs (l1.notes[2].seconds - 17.5) < 1.0e-6 && ! l1.notes[2].adrift && ! l1.notes[2].editor && l1.notes[2].bar == "Bar 50");
+                }
+                if (l2.notes.size() == 2)
+                {
+                    CHECK (l2.notes[0].id == "o1" && l2.notes[0].editor && std::abs (l2.notes[0].seconds - 0.5) < 1.0e-6);
+                    CHECK (l2.notes[1].id == "r1" && std::abs (l2.notes[1].seconds - 17.5) < 1.0e-6 && l2.notes[1].editor && l2.notes[1].replyTo == "c1" && l2.notes[1].argb == 0xff3cc75au);
+                }
+            }
+            {   // a reply that does not say when it was written stays in the lane of the comments it is kept with
+                EditDef e0 = e; e0.versions[0].edit = std::make_shared<EditDef> (*e.versions[0].edit);
+                for (auto& f : e0.versions[0].edit->feedback) f.madeIn = 0;
+                const auto l0 = reviewpage::historyFor (e0, 0.5);
+                CHECK (l0.size() == 2 && l0[0].notes.size() == 4 && l0[0].notes[3].id == "r1" && l0[0].notes[3].seconds == l0[0].notes[2].seconds && l0[1].notes.size() == 1);
+            }
+            // into the page: a lane for each version; a copy with no comments has no such key (the page is as it was)
+            const auto wav = dir.getChildFile ("t.wav");
+            { auto w = audioops::makeWavWriter (wav, 48000.0, 2, true); std::vector<float> a (48000, 0.1f); const float* pp[2] = { a.data(), a.data() }; w->writeFromFloatArrays (pp, 2, (int) a.size()); }
+            reviewpage::Spec sp; sp.audio = wav; sp.mime = "audio/wav"; sp.piece = "The Lion"; sp.editId = e.id.toString(); sp.version = 2; sp.durationSeconds = 1.0; sp.peaks = { 0, 0 };
+            const auto plain = dir.getChildFile ("plain.html"), talk = dir.getChildFile ("talk.html");
+            CHECK (reviewpage::write (plain, sp).isEmpty());
+            sp.history = lanes;
+            CHECK (reviewpage::write (talk, sp).isEmpty());
+            auto metaOf = [] (const juce::File& f) { const auto t = f.loadFileAsString(); const int a0 = t.indexOf ("id=\"meta\">") + 10; juce::var v; juce::JSON::parse (t.substring (a0, t.indexOf (a0, "</script>")), v); return v; };
+            const auto mp = metaOf (plain), mt = metaOf (talk);
+            CHECK (mp["tracks"][0]["edit"].toString() == e.id.toString() && ! mp["tracks"][0].hasProperty ("history"));
+            const auto h = mt["tracks"][0]["history"];
+            CHECK (h.isArray() && h.size() == 2 && (int) h[0]["version"] == 1 && h[0]["label"].toString() == "Edit 1 - first cut" && h[0]["notes"].size() == 3 && ! h[0].hasProperty ("current"));
+            if (h.isArray() && h.size() == 2 && h[0]["notes"].size() == 3 && h[1]["notes"].size() == 2)
+            {
+                const auto n3 = h[1]["notes"][1];
+                CHECK ((bool) h[1]["current"] && (int) h[1]["version"] == 2);
+                CHECK (n3["id"].toString() == "r1" && (bool) n3["editor"] && n3["re"].toString() == "c1" && n3["colour"].toString() == "#3cc75a" && std::abs ((double) n3["t"] - 17.5) < 1.0e-6 && n3["who"].toString() == "David Jones");
+                CHECK ((bool) h[0]["notes"][0]["done"] && (bool) h[0]["notes"][1]["adrift"] && ! h[0]["notes"][2].hasProperty ("editor") && h[0]["notes"][2]["bar"].toString() == "Bar 50");
+            }
+            else CHECK (false);
+            CHECK (talk.loadFileAsString().contains ("The conversation so far"));
+        }
+        // a listener's answer comes back from the listening copy saying what it answers
+        {
+            const char* back = "{\"fermata\":\"feedback\",\"v\":2,\"edit\":\"E\",\"version\":2,\"offset\":0.5,\"who\":\"Sarah Whitfield\",\"notes\":[{\"id\":\"n9\",\"t\":17.5,\"text\":\"take 7 please\",\"re\":\"r1\",\"reWho\":\"David Jones\",\"editor\":true}]}";
+            feedback::Parsed pr;
+            CHECK (feedback::parse (back, std::strlen (back), 25.0, "back.fmnotes", pr).isEmpty());
+            CHECK (pr.version == 2 && pr.notes.size() == 1 && pr.notes[0].replyTo == "r1" && ! pr.notes[0].editor && pr.notes[0].who == "Sarah Whitfield");      // (nobody outside can claim the editor's ring)
+        }
+        // the edit's score: copied into the project's PDFs folder; the same file is not copied twice, another of that name gets a name of its own
+        const auto outside = dir.getChildFile ("elsewhere"); outside.createDirectory();
+        const auto pdf = outside.getChildFile ("Lion full score.pdf"); pdf.replaceWithText ("%PDF-1.4 one");
+        CHECK (q.scoreFileFor (e) == juce::File() && q.pdfsFolder() == dir.getChildFile ("PDFs"));
+        CHECK (q.addScore (e, outside.getChildFile ("missing.pdf")).isNotEmpty() && e.score.isEmpty());
+        CHECK (q.addScore (e, pdf).isEmpty() && e.score == "Lion full score.pdf" && q.scoreFileFor (e).existsAsFile() && q.scoreFileFor (e).getParentDirectory() == q.pdfsFolder());
+        CHECK (q.addScore (e, pdf).isEmpty() && e.score == "Lion full score.pdf" && q.pdfsFolder().getNumberOfChildFiles (juce::File::findFiles) == 1);
+        const auto other = outside.getChildFile ("b").getChildFile ("Lion full score.pdf"); other.create(); other.replaceWithText ("%PDF-1.4 another edition");
+        CHECK (q.addScore (e, other).isEmpty() && e.score != "Lion full score.pdf" && e.score.endsWith (".pdf") && q.scoreFileFor (e).loadFileAsString() == "%PDF-1.4 another edition");
+        CHECK (q.pdfsFolder().getNumberOfChildFiles (juce::File::findFiles) == 2);
+        const auto second = e.score;
+        CHECK (q.addScore (e, q.pdfsFolder().getChildFile ("Lion full score.pdf")).isEmpty() && e.score == "Lion full score.pdf" && q.pdfsFolder().getNumberOfChildFiles (juce::File::findFiles) == 2);   // chosen from the folder itself
+        e.score = second; e.scoreTop = 2.25; e.scoreZoom = 1.5;
+        // saved and read back: the answers, whom they answer, the score and where its window was; an edit with none writes no such keys
+        juce::String err; CHECK (q.save (err));
+        Project q2; CHECK (q2.load (q.projectFile, err));
+        auto* e2 = q2.findEdit (e.id);
+        CHECK (e2 != nullptr && e2->score == second && e2->scoreTop == 2.25 && e2->scoreZoom == 1.5 && q2.scoreFileFor (*e2).existsAsFile());
+        CHECK (e2 != nullptr && e2->feedback.size() == 1 && e2->feedback[0].editor && e2->feedback[0].replyTo.isEmpty() && e2->versions.size() == 1);
+        if (e2 != nullptr && e2->versions.size() == 1 && e2->versions[0].edit != nullptr && e2->versions[0].edit->feedback.size() == 4)
+        {
+            const auto& fb = e2->versions[0].edit->feedback;
+            CHECK (fb[3].key == "r1" && fb[3].editor && fb[3].replyTo == "c1" && fb[3].madeIn == 2 && ! fb[2].editor && fb[2].replyTo.isEmpty() && fb[2].madeIn == 0);
+            CHECK (reviewpage::historyFor (*e2, 0.5).size() == 2);
+        }
+        else CHECK (false);
+        {
+            EditDef plainEdit; plainEdit.id = juce::Uuid(); plainEdit.name = "Plain";
+            FeedbackNote pn; pn.key = "p"; pn.text = "x"; plainEdit.feedback.push_back (pn);
+            const auto pv = Project::editToVarIn (plainEdit, dir);
+            CHECK (! pv.hasProperty ("score") && ! pv.hasProperty ("scoreTop") && ! pv["feedback"][0].hasProperty ("editor") && ! pv["feedback"][0].hasProperty ("replyTo") && ! pv["feedback"][0].hasProperty ("madeIn"));
+        }
+        // the score is a view: an undo of an edit step leaves it alone, and choosing one is not a step of its own
+        q.undoReset(); q.changed(); q.undoTick (false, true);
+        e.removeRegion (0); q.changed(); q.undoTick (false, true);
+        e.score = "Lion full score.pdf"; e.scoreTop = 4.0;
+        CHECK (q.undo());
+        auto* e3 = q.findEdit (e.id);
+        CHECK (e3 != nullptr && e3->regions.size() == 3 && e3->score == "Lion full score.pdf" && e3->scoreTop == 4.0 && e3->feedback.size() == 1);
     }
 
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);

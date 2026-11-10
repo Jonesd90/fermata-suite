@@ -246,20 +246,67 @@ private:
 class PluginHost::EditorWindow : public juce::DocumentWindow, private juce::Timer
 {
 public:
+    /** 3.51.0: what the window holds - a thin bar of the program's own with the pin on it, and the plug-in's editor under it. (The pin cannot be laid
+        over the editor as it is over the program's own windows: a plug-in's editor is a window of its own and would cover it.)
+        The editor decides its own size (many change it when a panel is opened, and some refuse the size they are given), so this follows the
+        editor; when the window itself is resized (a resizable editor) the editor is given the room under the bar. */
+    struct Holder : public juce::Component, private juce::ComponentListener
+    {
+        static constexpr int kBarH = 26;
+        Holder (juce::AudioProcessorEditor* e, const juce::String& n) : editor (e), name (n)
+        {
+            setOpaque (true);
+            addAndMakeVisible (*editor); addAndMakeVisible (pin);
+            editor->addComponentListener (this);
+            setSize (juce::jmax (60, editor->getWidth()), editor->getHeight() + kBarH);
+        }
+        ~Holder() override { editor->removeComponentListener (this); }
+        void paint (juce::Graphics& g) override
+        {
+            g.fillAll (theme::window);
+            g.setColour (theme::panel); g.fillRect (0, 0, getWidth(), kBarH);
+            g.setColour (theme::border); g.fillRect (0, kBarH - 1, getWidth(), 1);
+            g.setColour (theme::dimText); g.setFont (juce::FontOptions (12.5f));
+            g.drawText (name, 8, 0, juce::jmax (0, pin.getX() - 14), kBarH - 1, juce::Justification::centredLeft, true);
+        }
+        void resized() override
+        {
+            pin.setTopLeftPosition (getWidth() - pin.getWidth() - 4, (kBarH - 1 - pin.getHeight()) / 2);
+            if (fitting) return;
+            const juce::ScopedValueSetter<bool> s (fitting, true);
+            editor->setBounds (0, kBarH, getWidth(), juce::jmax (1, getHeight() - kBarH));
+            if (editor->getWidth() != getWidth() || editor->getHeight() != getHeight() - kBarH)      // the editor did not take that size: its own size stands
+                setSize (juce::jmax (60, editor->getWidth()), editor->getHeight() + kBarH);
+        }
+        void componentMovedOrResized (juce::Component&, bool, bool wasResized) override
+        {
+            if (fitting) return;
+            const juce::ScopedValueSetter<bool> s (fitting, true);
+            editor->setTopLeftPosition (0, kBarH);
+            if (wasResized) setSize (juce::jmax (60, editor->getWidth()), editor->getHeight() + kBarH);
+        }
+        std::unique_ptr<juce::AudioProcessorEditor> editor;
+        juce::String name;
+        PinButton pin;
+        bool fitting = false;
+    };
     EditorWindow (PluginHost& h, Vst3Insert* i, juce::AudioProcessorEditor* editor)
         : juce::DocumentWindow (i->getName(), juce::Colours::darkgrey, juce::DocumentWindow::closeButton | juce::DocumentWindow::minimiseButton),
           host (h), insert (i)
     {
         setUsingNativeTitleBar (true);
         getProperties().set (ownsRKeyProperty(), true);       // R typed into a plug-in (a preset name ...) is the plug-in's: it does not start a recording (Space still stops one)
-        setContentOwned (editor, true);
-        setResizable (editor->isResizable(), false);
+        const bool resizable = editor->isResizable();
+        auto* holder = new Holder (editor, i->getName());
+        holder->pin.onClick = [this, holder] { const bool on = ! holder->pin.getToggleState(); Pins::get().set (*this, on); holder->pin.setToggleState (on, juce::dontSendNotification); };
+        setContentOwned (holder, true);
+        setResizable (resizable, false);
         centreWithSize (getWidth(), getHeight());
         if (host.adoptWindow) host.adoptWindow (*this);
         setVisible (true);
         startTimerHz (40);
     }
-    ~EditorWindow() override { stopTimer(); }
+    ~EditorWindow() override { stopTimer(); Pins::get().forget (*this); }
     bool keyPressed (const juce::KeyPress& k) override
     {
         if (k.getKeyCode() == juce::KeyPress::spaceKey && ! k.getModifiers().isAnyModifierKeyDown()) return true;   // (the timer below acts on it, so it happens once)

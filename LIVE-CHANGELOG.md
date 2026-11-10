@@ -8,6 +8,20 @@ fermata:Live is the live-concert recorder that goes with fermata (see `docs/LIVE
 
 A line that starts with **Shared:** is a change to the code fermata shares (see `COMPATIBILITY.md`), so fermata's next build mentions it too.
 
+## 0.10.1
+Built 10 November 2026 (the conversation for both programs), with Claude Fable. No change to the recorder and none to fermata:Live's own
+code: what the shared code brings.
+- **Shared (fermata 3.51.0): any number of windows can be pinned.** The pin next to the sun / moon in the corner of the take window, the
+  mixer, the second seat and the other windows used to belong to one window at a time - pinning another unpinned the first. Now each
+  window keeps its own pin, and all the pinned ones stay in front of fermata:Live's other windows (`src/ui/Uikit.h`).
+- **Shared (fermata 3.51.0): the comments' new fields and an edit's score.** A project in which fermata has written replies to listeners'
+  comments, or given an edit a score (a PDF in the project's new "PDFs" folder), keeps all of that when fermata:Live saves it (the shared
+  code reads and writes it); fermata:Live does not show comments or scores, so nothing else changes here. A copy of the whole project
+  takes the PDFs folder with it, like every file in the project's folder.
+- Looked at here: fermata:Live built for Linux and started on a virtual screen; the pins themselves were tried in fermata (two windows
+  pinned at once, both staying in front), which uses the same code. The recorder's tests and the compatibility check pass. Not run on
+  Windows.
+
 ## 0.10.0
 Built 10 November 2026 (the conversation for both programs), with Claude Fable. No change to the recorder. The type of the Fermata style
 UI, and what the shared code brings.

@@ -99,6 +99,32 @@ juce::String writeMany (const juce::File& html, const juce::String& title, const
         t->setProperty ("offset", s.offsetSeconds); t->setProperty ("duration", s.durationSeconds); t->setProperty ("mime", s.mime);
         juce::Array<juce::var> pk; for (int v : s.peaks) pk.add (v);
         t->setProperty ("peaks", pk);
+        if (! s.history.empty())
+        {   // 3.51.0: the comments so far, a lane for each version (written only when there are any: a first listening copy is as it always was)
+            juce::Array<juce::var> lanes;
+            for (auto& l : s.history)
+            {
+                auto lo = new juce::DynamicObject();
+                lo->setProperty ("version", l.version); lo->setProperty ("label", l.label); if (l.current) lo->setProperty ("current", true);
+                juce::Array<juce::var> ns;
+                for (auto& n : l.notes)
+                {
+                    auto no = new juce::DynamicObject();
+                    no->setProperty ("id", n.id); no->setProperty ("t", std::round (n.seconds * 1000.0) / 1000.0); no->setProperty ("who", n.who);
+                    if (n.bar.isNotEmpty()) no->setProperty ("bar", n.bar);
+                    no->setProperty ("text", n.text);
+                    no->setProperty ("colour", "#" + juce::String::toHexString ((int) (n.argb & 0xffffffu)).paddedLeft ('0', 6));
+                    if (n.replyTo.isNotEmpty()) no->setProperty ("re", n.replyTo);
+                    if (n.editor) no->setProperty ("editor", true);
+                    if (n.done) no->setProperty ("done", true);
+                    if (n.adrift) no->setProperty ("adrift", true);
+                    ns.add (juce::var (no));
+                }
+                lo->setProperty ("notes", ns);
+                lanes.add (juce::var (lo));
+            }
+            t->setProperty ("history", lanes);
+        }
         tracks.add (juce::var (t));
     }
     meta->setProperty ("tracks", tracks);

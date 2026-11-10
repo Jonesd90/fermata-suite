@@ -3,6 +3,7 @@
 #include "MasterDef.h"
 #include "Ddp.h"
 #include "MasterRender.h"
+#include "ReviewPage.h"
 
 namespace td
 {
@@ -16,6 +17,7 @@ struct MasterJobItem
     juce::String editName, projectName;   // for the listening copy (3.42.0: for a listening copy, the version's name - "The Lion - Edit 2 - More reverb")
     int          editVersion = 0;         // 3.42.0: the edit's version number a listening copy was made from (goes into the page, and comes back with the comments)
     double       editOffsetSeconds = 0.0;   // where the exported file's time 0 sits on the edit's timeline
+    std::vector<reviewpage::PastLane> history;   // 3.51.0: a listening copy's conversation so far (reviewpage::historyFor): every version's comments
 };
 
 struct MasterJobSpec

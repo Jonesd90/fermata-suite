@@ -757,7 +757,53 @@ inline std::function<juce::Rectangle<int>()>& menuBarAvoidArea() { static std::f
 /** Brings the menu bar strip back in front of the other Fermata windows (not in front of other programs). Set by the main window. */
 inline std::function<void()>& menuBarRaise() { static std::function<void()> f; return f; }
 
-/** The little drawing-pin button next to the sun / moon: a pinned window stays in front of the other windows. Only one window is pinned at a time. */
+/** 3.51.0 (asked for on 10 November 2026: "as many as I want - so I can see two, three or more at once"): the pinned windows. A pinned window stays in
+    front of the other windows of the program - not of the whole desktop: another program covers it like any window. ANY NUMBER of windows can be
+    pinned (until 3.51.0 only one could be: pinning another unpinned it): the tool windows, the score, and each plug-in's own window.
+
+    How: a few times a second, while the program is the one in use and the window in front is one of its own that is NOT pinned, every pinned
+    window is brought forward again (without taking the keyboard) - in the order they are in now, back to front, so that their order among
+    themselves never changes and nothing flickers where two of them overlap. While a pinned window is itself the one in front nothing is done. */
+class Pins : private juce::Timer
+{
+public:
+    static Pins& get() { static Pins p; return p; }
+    bool isPinned (const juce::Component* c) const { for (auto& w : list) if (w.getComponent() == c) return true; return false; }
+    void set (juce::Component& c, bool on)
+    {
+        list.erase (std::remove_if (list.begin(), list.end(), [&c] (const juce::Component::SafePointer<juce::Component>& w) { return w == nullptr || w.getComponent() == &c; }), list.end());
+        if (on) { list.push_back (&c); c.toFront (false); startTimer (250); }
+        else if (list.empty()) stopTimer();
+    }
+    void forget (juce::Component& c) { set (c, false); }
+private:
+    void timerCallback() override
+    {
+        list.erase (std::remove_if (list.begin(), list.end(), [] (const juce::Component::SafePointer<juce::Component>& w) { return w == nullptr; }), list.end());
+        if (list.empty()) { stopTimer(); return; }
+        if (! juce::Process::isForegroundProcess()) return;
+        if (juce::ModalComponentManager::getInstance()->getNumModalComponents() > 0) return;
+        auto* active = juce::TopLevelWindow::getActiveTopLevelWindow();
+        if (active == nullptr || isPinned (active)) return;
+        auto* dw = dynamic_cast<juce::DocumentWindow*> (active);
+        if (dw == nullptr || ! dw->isUsingNativeTitleBar()) return;                  // an alert or a pop-up stays in front
+        auto& desk = juce::Desktop::getInstance();
+        std::vector<std::pair<int, juce::Component*>> order;                        // (where each is among the desktop's windows now: the desktop lists them back to front)
+        for (auto& w : list)
+        {
+            auto* c = w.getComponent();
+            if (c == nullptr || ! c->isVisible()) continue;
+            int at = -1;
+            for (int i = 0; i < desk.getNumComponents(); ++i) if (desk.getComponent (i) == c) { at = i; break; }
+            order.push_back ({ at, c });
+        }
+        std::stable_sort (order.begin(), order.end(), [] (const auto& a, const auto& b) { return a.first < b.first; });
+        for (auto& o : order) o.second->toFront (false);
+    }
+    std::vector<juce::Component::SafePointer<juce::Component>> list;
+};
+
+/** The little drawing-pin button next to the sun / moon: a pinned window stays in front of the other windows (see Pins: any number can be pinned). */
 class PinButton : public juce::Button
 {
 public:
@@ -766,7 +812,7 @@ public:
         setMouseCursor (juce::MouseCursor::PointingHandCursor);
         setWantsKeyboardFocus (false);
         setClickingTogglesState (false);
-        setTooltip ("Pin: keeps this window in front of the others. Only one window can be pinned - pinning another one unpins this one.");
+        setTooltip ("Pin: keeps this window in front of the program's other windows. Any number of windows can be pinned; click again to unpin.");
         setSize (24, 22);
     }
     void paintButton (juce::Graphics& g, bool over, bool down) override
@@ -849,35 +895,13 @@ public:
         setUsingNativeTitleBar (true);
         setResizable (true, true);
     }
-    ~ToolWindow() override { DockHub::get().remove (this); if (pinnedWindow().getComponent() == this) pinnedWindow() = nullptr; }
-    static juce::Component::SafePointer<ToolWindow>& pinnedWindow() { static juce::Component::SafePointer<ToolWindow> p; return p; }
-    /** Pins this window and unpins the one that was pinned before; false unpins it. A pinned window stays in front of the other FERMATA windows only -
-        it is not "always on top" of the whole desktop, so other programs can cover it like any window. */
+    ~ToolWindow() override { DockHub::get().remove (this); Pins::get().forget (*this); }
+    /** Pins this window, or unpins it (see Pins: it stays in front of the program's other windows; any number of windows can be pinned). */
     void setPinned (bool on)
     {
-        if (on)
-        {
-            if (auto* old = pinnedWindow().getComponent()) if (old != this) { old->pinTimer.stopTimer(); old->pinButton.setToggleState (false, juce::dontSendNotification); }
-            pinnedWindow() = this;
-            pinTimer.fn = [this] { keepInFront(); };
-            pinTimer.startTimer (250);
-            toFront (false);
-        }
-        else { if (pinnedWindow().getComponent() == this) pinnedWindow() = nullptr; pinTimer.stopTimer(); }
+        Pins::get().set (*this, on);
         pinButton.setToggleState (on, juce::dontSendNotification);
     }
-    /** While Fermata is the program in use and one of its own windows is active, the pinned window is brought back above it (without taking the keyboard). */
-    void keepInFront()
-    {
-        if (! isVisible() || ! juce::Process::isForegroundProcess()) return;
-        if (juce::ModalComponentManager::getInstance()->getNumModalComponents() > 0) return;
-        auto* active = juce::TopLevelWindow::getActiveTopLevelWindow();
-        if (active == nullptr || active == this) return;
-        auto* dw = dynamic_cast<juce::DocumentWindow*> (active);
-        if (dw == nullptr || ! dw->isUsingNativeTitleBar()) return;                  // an alert, a pop-up or a plug-in's own window stays in front
-        toFront (false);
-    }
-    struct PinTimer : public juce::Timer { std::function<void()> fn; void timerCallback() override { if (fn) fn(); } } pinTimer;
     void resized() override
     {
         juce::DocumentWindow::resized(); placeThemeToggle (*this, themeToggle);
