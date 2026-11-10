@@ -2324,6 +2324,34 @@ Asked for the same day and NOT built yet (the next build): the volume changes sh
   to say what the change does and to change its length, its fade in and its fade out. (Today: a double-click opens it; a "from here"
   change has one glide and no end of its own; neither kind's start or end can be changed.)
 
+## 3.49.0: the levels drawn; tab keys open their tab first (10 November 2026, with Claude Fable)
+
+- **`EditTimeline::paintLevelLines`** draws what `EditRegion::levelDbAt` says, nothing else: it does not look at what made a level (group,
+  role, autoNorm), so it stays true whatever the volume changes become. It is called before the boxes and triangles. The figures: at a
+  piece's start only when the level differs from the end of the piece before (pieces of the edit in order; an overdub: when it is not
+  0 dB); after a change only when its glide arrives (a later change that starts first says where the level goes instead); alike on every
+  row of the piece: once, on the top row.
+- **Tab keys** (`NoiseModeDialog::keyPressed` in FixToolsEdits.cpp; `SpectralWindow.h`, shared, `tabWasOpen`): a tab's key does the work
+  only when `tab` is already that tab. L and P are not tab keys and still act at once.
+
+**The edit that was asked about** (A New Song - EDIT, sent on 10 November) - what its file holds, because it decides the next build:
+- Piece 010 (1:32 - 1:58): one "from here" change at 1:33.27, a 1 s glide, Spot2 +4 dB.
+- Piece 007 (1:58 - 2:07): starts at Spot2 +4 dB (a level of its own that happens to match: nothing ties it to the change).
+- Piece 010 again (2:07 - 2:12): starts at +2 dB on every track and +6 on Spot2 (the Trim window's +2, "normalise" ticked, on top of the
+  carried +4); the normalise glide then takes EVERY track to 0 dB - Spot2's +4 with it; at 2:09.63 a "from here" change takes every track
+  to +0.6 dB over 1 s, where they stay to the end of the piece (the normalise glide never arrives).
+- So: the raise was carried over both joins, but only as loose copies; the fade back was written as a level for all eleven tracks; and
+  the raise had already been melting away under the normalise glide. Every level is stored as an absolute figure per track, in the
+  piece: a raise, the Trim window's level and the normalise glide overwrite one another instead of adding up.
+
+**Proposed for the next build (not built: it is shared code and changes what plays, so it was put to the user first):** a volume change
+as an AREA of the edit, kept beside the pieces and not inside them - start, end, fade in, fade out, and so many dB for each track it is
+on - added ON TOP of each piece's own level (the Trim window's, with its normalise glide). It crosses joins by itself, is not undone by
+a normalise glide, and is opened from its triangle to change its start, end and both fades. The pieces' `gains` stay as they are (the
+Trim window, old edits); the player (`addRegionSegments`, Playback.cpp, the one place that reads them for sound) would play the two
+combined. The project file gains a key (rule 4: it only grows); an older fermata would drop the areas when it saves. "From here to next
+edit" and "between the 1/2 marks" would both make an area; an old change would become one when it is opened and kept.
+
 ## 3.46.1: the fourth sweep, areas A, B and C; the list number in "Number the files" (9 November 2026, with Claude Fable)
 
 **The sweep.** `docs/SWEEP-4-FINDINGS.md` is the record: per area the files read line by line, and every finding as FIXED (with its test), HELD

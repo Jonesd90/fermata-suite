@@ -352,7 +352,6 @@ public:
     //      harmonic next to it (it would take sound that belongs to that one - or to another instrument).
     struct Harmonics { int count = 10; int boxIs = 1; double spreadCents = 0.0; double thinning = 1.0; };
     bool harmonicsOn() const { return harmBase >= 0; }
-    const Harmonics& harmonicSettings() const { return harm; }
     /** Gives the last box drawn its harmonics, or new settings to the box that has them. False: no box to give them to. */
     bool setHarmonics (const Harmonics& h)
     {
@@ -363,8 +362,7 @@ public:
         return harmBase >= 0;
     }
     void clearHarmonics() { if (harmBase < 0) return; dropHarmonics(); selectionChanged (true); }
-    /** The pitch (Hz) found for the harmonic in the box itself (the strongest steady line in it; the middle of the box when there is none), and the fundamental's. */
-    double harmonicBoxPitch() const { return harmPitch; }
+    /** The fundamental (Hz) worked out from the pitch found for the harmonic in the box itself (the strongest steady line in it; the middle of the box when there is none). */
     double harmonicFundamental() const { return harmFund; }
     /** The highest harmonic that is still below the top of the picture, with these settings (at least the box's own). */
     int maxHarmonic (const Harmonics& h) const
@@ -2219,6 +2217,8 @@ public:
         lightTab();
         refreshControls();                                                       // (which also lays the controls out again)
     }
+    /** 3.49.0: for a tab's key - true when its tab is the one open (the key does the tab's work); otherwise the tab is opened and the key does no more. */
+    bool tabWasOpen (int t) { if (tab == t) return true; selectTab (t); return false; }
     void setupTabs()
     {
         const char* names[] = { "ReTouch [R]", "Gain [G]", "De-click [D]", "Denoise [N]", "Consonants [C]", "De-hum [H]" };
@@ -2388,7 +2388,9 @@ protected:
         }
         if ((k.getTextCharacter() == 'r' || k.getTextCharacter() == 'R') && ! k.getModifiers().isAnyModifierKeyDown())      // R: do the fix with the settings as they are
         {
-            selectTab (kTabTouch);
+            // 3.49.0 (asked for on 10 November 2026): R, G, D, N and H do their tab's work only when that tab is already open; pressed from another
+            // tab they open theirs and do nothing more (a second press does the work). They used to open the tab and do the work in one press.
+            if (! tabWasOpen (kTabTouch)) return true;
             if (previewBtn.isEnabled()) preview (0);
             return true;
         }
@@ -2400,7 +2402,7 @@ protected:
         }
         if ((k.getTextCharacter() == 'h' || k.getTextCharacter() == 'H') && ! k.getModifiers().isAnyModifierKeyDown())      // 3.44.0: H: the De-hum tab, and look for the hums in the box
         {
-            selectTab (kTabHum);
+            if (! tabWasOpen (kTabHum)) return true;
             findHums();
             return true;
         }
@@ -2408,7 +2410,7 @@ protected:
         if (toolsBar.key (k)) return true;                                                                                    // 3.33.0: S, T, B, [ and ]
         if ((k.getTextCharacter() == 'n' || k.getTextCharacter() == 'N') && ! k.getModifiers().isAnyModifierKeyDown())      // N: denoise the box
         {
-            selectTab (kTabDenoise);
+            if (! tabWasOpen (kTabDenoise)) return true;
             if (denoiseBtn.isEnabled()) preview (2);
             return true;
         }
@@ -2420,13 +2422,13 @@ protected:
         }
         if ((k.getTextCharacter() == 'g' || k.getTextCharacter() == 'G') && ! k.getModifiers().isAnyModifierKeyDown())      // G: change the gain of the box
         {
-            selectTab (kTabGain);
+            if (! tabWasOpen (kTabGain)) return true;
             if (gainBtn.isEnabled()) applyGain();
             return true;
         }
         if ((k.getTextCharacter() == 'd' || k.getTextCharacter() == 'D') && ! k.getModifiers().isAnyModifierKeyDown())
         {
-            selectTab (kTabClick);
+            if (! tabWasOpen (kTabClick)) return true;
             if (declickBtn.isEnabled()) preview (1);
             return true;
         }

@@ -933,14 +933,18 @@ protected:
         if ((ch == 'h' || ch == 'H') && k.getModifiers().withoutMouseButtons() == juce::ModifierKeys::shiftModifier) { selectTab (kTabTouch); harmBar.toggle(); return true; }     // 3.33.0: Shift+H (3.44.0: was H): the harmonics of the box, on or off
         if (! k.getModifiers().isAnyModifierKeyDown())
         {
-            if (ch == 'r' || ch == 'R') { selectTab (kTabTouch); if (retouchBtn.isEnabled()) retouch (false); return true; }
-            if (ch == 'h' || ch == 'H') { selectTab (kTabHum); findHums(); return true; }                   // 3.44.0: H: the De-hum tab, and look for the hums in the box
+            // 3.49.0 (asked for on 10 November 2026): R, G, D, N and H do their tab's work only when that tab is already open. Pressed from another
+            // tab they open theirs and do nothing more - the settings can be looked at first; a second press does the work. (They used to open
+            // the tab and do the work in one press: a key meant to look at a tab changed the audio.) The same in the ReTouch window (SpectralWindow.h).
+            auto opened = [this] (int t) { if (tab == t) return false; selectTab (t); return true; };
+            if (ch == 'r' || ch == 'R') { if (! opened (kTabTouch) && retouchBtn.isEnabled()) retouch (false); return true; }
+            if (ch == 'h' || ch == 'H') { if (! opened (kTabHum)) findHums(); return true; }                 // 3.44.0: H: the De-hum tab; there, look for the hums in the box
             if (sideKey (k)) return true;                                                                   // 3.33.0: Z, \ and X: L, C and R
             if (toolsBar.key (k)) return true;                                                              // 3.33.0: S, T, B, [ and ]
-            if (ch == 'g' || ch == 'G') { selectTab (kTabGain); if (gainBtn.isEnabled()) applyGain(); return true; }
-            if (ch == 'd' || ch == 'D') { selectTab (kTabClick); if (declickBtn.isEnabled()) retouch (true); return true; }
+            if (ch == 'g' || ch == 'G') { if (! opened (kTabGain) && gainBtn.isEnabled()) applyGain(); return true; }
+            if (ch == 'd' || ch == 'D') { if (! opened (kTabClick) && declickBtn.isEnabled()) retouch (true); return true; }
             if (ch == 'l' || ch == 'L') { selectTab (kTabDenoise); if (learnBtn.isEnabled()) roomFromBox(); return true; }
-            if (ch == 'n' || ch == 'N') { selectTab (kTabDenoise); if (denoiseBtn.isEnabled()) denoise(); return true; }
+            if (ch == 'n' || ch == 'N') { if (! opened (kTabDenoise) && denoiseBtn.isEnabled()) denoise(); return true; }
             if (ch == 'c' || ch == 'C') { selectTab (kTabConsonant); return true; }                         // 3.36.0: the Consonants tab
             if (ch == 'p' || ch == 'P') { selectTab (kTabConsonant); if (pasteBtn.isEnabled()) pasteConsonant(); return true; }    // P: the chosen consonant at the playhead
         }
@@ -1575,7 +1579,7 @@ private:
         auto* e = edit(); if (e == nullptr || steps.empty()) return;
         auto st = std::move (steps.back()); steps.pop_back();
         e->regions = st.before;
-        for (auto& rj : st.jobs) for (auto& r : rj.results) r.file.deleteFile();
+        binFiles (st.jobs);
         audioChanged (st.t0, st.t1);                                             // 3.36.0
         app.project.changed();
         cur = std::make_shared<TrackParts> (buildTrackParts (*e, 0, length, only));
@@ -1882,8 +1886,17 @@ private:
     {
         if (steps.empty()) return;
         if (auto* e = edit()) { e->regions = base; app.project.changed(); }
-        for (auto& st : steps) for (auto& rj : st.jobs) for (auto& r : rj.results) r.file.deleteFile();
+        for (auto& st : steps) binFiles (st.jobs);
         steps.clear();
+    }
+    /** 3.46.1: the files of a fix that was in the edit and is taken off again. Every fix here is in the edit the moment it is made, so an automatic save may
+        have written the project file with these files in it: they are deleted once the project has been saved without them (AppContext::deleteOnceSaved).
+        They were deleted here and then - and a crash, or "Quit without saving", before the next save left the project file naming audio that was gone. */
+    void binFiles (const std::vector<RegionJob>& jobs)
+    {
+        std::vector<juce::File> files;
+        for (auto& rj : jobs) for (auto& r : rj.results) files.push_back (r.file);
+        app.deleteOnceSaved (files);
     }
     static constexpr double kDetailMaxSeconds = 180.0;
     AppContext& app; juce::Uuid eid; double rate = 48000.0; juce::int64 length = 0; std::vector<juce::Uuid> only; juce::File fixFolder;

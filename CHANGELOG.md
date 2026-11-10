@@ -6,6 +6,29 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.49.0
+Built 10 November 2026 (the conversation for both programs), with Claude Fable. What an edit's volume changes do is drawn; the tab keys of
+the noise and ReTouch windows open their tab first. Nothing changes how an edit sounds.
+- **Edit window: the level every track plays at is drawn** (asked for: "it is unclear what I have done"). In every piece that has a level
+  of its own - from a volume change, from the level the Trim window gave the piece, from "normalise volume over next take", or carried
+  into a piece when it was split or replaced - a thin teal line runs through each track's row: the middle of the row is 0 dB, higher is
+  louder (12 dB reaches the row's edge). Where the level settles on a new value the figure is written beside the line: "+4.0 dB", "0 dB".
+  A level that is **carried over a join** is one unbroken line with no new figure; one that is not carried gets its new figure at the
+  join. A level that every track of the piece has alike (the Trim window's) is written once, on the top row, as "+2.0 dB, all tracks".
+  Until now a piece that started at a level showed only a small dash under its banner - not which tracks, not how much - so a level
+  carried over an edit could not be seen, and a box round every track did not say what each track did there.
+- **One click on a volume change's teal triangle opens it** (it took a double-click). The box's edges still open it with a double-click.
+- **Shared: the ReTouch window's tab keys** (`src/ui/SpectralWindow.h` - fermata:Live's Fixer opens the same window, so it needs a rebuild
+  and a test). R, G, D, N and H did their work the moment they were pressed, whichever tab was open: a key pressed to look at the Gain
+  tab changed the gain. Now a key pressed from another tab only opens its tab; pressed with its tab already open it does the tab's work
+  (R ReTouch, G Gain, D De-click, N Denoise, H looks for the hums). C opens Consonants, as before. L (room tone) and P (paste a
+  consonant) are as they were.
+- **The noise window's tab keys**: the same (it is fermata's own window).
+
+Seen running here (the Linux build, the Manuscript UI): a four-track test edit given the same pattern of levels as the edit that was
+asked about - the lines, the figures at and after the join, "all tracks" - and one click on a triangle opening its change. Not seen here:
+the two windows' keys (they are compiled, for both programs, but were not opened), and anything on Windows.
+
 ## 3.48.0
 Built 10 November 2026 (the conversation for both programs), with Claude Fable. Six things asked for that day, all in the Edit window (two
 of them in the take window as well). fermata's own code only: nothing shared changed, fermata:Live is as it was.

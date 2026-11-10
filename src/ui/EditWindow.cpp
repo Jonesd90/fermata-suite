@@ -861,6 +861,7 @@ public:
         // volume changes (3.45.0): a teal box round only the tracks the change moves - from where it starts to where it ends (a change between the 1/2
         // marks: to the end of its glide back), its glides shaded inside the box - and a triangle at the top of the rows where it starts and ends
         // (double-click either, or the box's edge, to change it or remove it). The level a piece starts with keeps its small mark on the lane.
+        paintLevelLines (g, *e, tracks, rate, clip);                 // 3.49.0: the level each track really plays at, wherever a piece has one of its own
         {
             const auto teal = juce::Colour (0xff1aa39a);
             auto smallMarks = [&] (const EditRegion& r)
@@ -1195,6 +1196,8 @@ public:
             lassoActive = true; lassoMoved = false; lassoFrom = lassoTo = e.getPosition();
             return;
         }
+        if (! e.mods.isPopupMenu() && ! e.mods.isAnyModifierKeyDown())                       // 3.49.0: one click on a volume change's triangle opens it (it took a double-click)
+            if (const auto hit = gainTriangleAt (*ed, e.getPosition(), rate)) { openGainChange (*hit); return; }
         if (! e.mods.isPopupMenu() && ! e.mods.isAnyModifierKeyDown())                       // 3.25.0: the line of mark 1 or 2: drag it (the marked tracks stay as they are)
         {
             EditRegion* fh = nullptr; bool fhIn = true;
@@ -2413,6 +2416,105 @@ private:
             }
         }
     }
+    /** 3.49.0 (asked for on 10 November 2026: "it is unclear what I have done"): the level every track really plays at, as a line through its row,
+        in every piece that has a level of its own - whatever made it: a volume change, the level the Trim window gave the piece, the glide back of
+        "normalise volume over next take", a level carried into a piece when it was split or replaced. The middle of the row is 0 dB; 12 dB reaches
+        the row's edge (more than that stays at the edge: the figure says how much). Where the level settles on a new value the figure is written
+        ("+4.0 dB", "0 dB"): at the start of a piece only when it is not the level the piece before ended at - so a level carried over a join is
+        one unbroken line with no new figure, and one that is not carried says so. A level every track of the piece has alike (the Trim window's)
+        is written once, on the top row, "all tracks". The boxes and triangles of the changes themselves are drawn over this, as before. */
+    void paintLevelLines (juce::Graphics& g, const EditDef& ed, const std::vector<TrackDef>& tracks, double rate, juce::Rectangle<int> clip) const
+    {
+        if (rowH < 18 || tracks.empty()) return;
+        const int top = bandH();
+        const auto bright = juce::Colour (0xff5fe8dc);
+        const juce::Font font (juce::FontOptions (10.5f, juce::Font::bold));
+        auto rowOf = [&] (const juce::Uuid& id) { for (size_t i = 0; i < tracks.size(); ++i) if (tracks[i].id == id) return (int) i; return -1; };
+        const float reach = (float) rowH * 0.5f - 4.0f;
+        auto yOf = [&] (int row, float db) { return (float) (top + row * rowH) + (float) rowH * 0.5f - (db <= -99.0f ? -1.0f : juce::jlimit (-1.0f, 1.0f, db / 12.0f)) * reach; };
+        std::vector<int> labelRight (tracks.size(), std::numeric_limits<int>::min());      // where the last figure of each row ends (no figure is written over another)
+        struct Label { int row = 0, x = 0; float y = 0.0f, db = 0.0f; };
+        auto pieces = [&] (const std::vector<EditRegion>& list, bool inARow)
+        {
+            std::vector<float> endOfLast (tracks.size(), 0.0f);                              // the level each row had at the end of the piece before (pieces in a row only)
+            for (auto& r : list)
+            {
+                const int x0 = xOf ((double) r.startSample / rate), x1 = xOf ((double) r.endSample() / rate);
+                const bool seen = x1 >= clip.getX() - 160 && x0 <= clip.getRight() + 8;
+                const juce::int64 len = r.length();
+                std::vector<juce::int64> at { 0, len };                                      // where the level can turn: each change's start and the end of its glide
+                for (auto& gc : r.gains)
+                {
+                    const auto rl = (juce::int64) std::llround (gc.ramp * rate);
+                    if (gc.at > 0 && rl == 0) at.push_back (gc.at - 1);                     // (a change with no glide is a step)
+                    at.push_back (gc.at); at.push_back (gc.at + rl);
+                }
+                for (auto& a : at) a = juce::jlimit ((juce::int64) 0, len, a);
+                std::sort (at.begin(), at.end()); at.erase (std::unique (at.begin(), at.end()), at.end());
+                std::vector<Label> labels; int rowsHere = 0;
+                for (size_t f = 0; f < r.files.size(); ++f)
+                {
+                    const int row = rowOf (r.files[f].trackId);
+                    if (row < 0) continue;
+                    ++rowsHere;
+                    const float startDb = juce::jmax (-100.0f, r.levelDbAt (f, 0)), endDb = juce::jmax (-100.0f, r.levelDbAt (f, len));
+                    if (seen)
+                    {
+                        if (std::abs (startDb - (inARow ? endOfLast[(size_t) row] : 0.0f)) >= 0.05f) labels.push_back ({ row, x0, yOf (row, startDb), startDb });
+                        std::vector<float> db (at.size()); bool any = false;
+                        for (size_t i = 0; i < at.size(); ++i) { db[i] = juce::jmax (-100.0f, r.levelDbAt (f, at[i])); any = any || std::abs (db[i]) >= 0.05f; }
+                        if (any)
+                        {
+                            juce::Path line;
+                            for (size_t i = 0; i < at.size(); ++i)
+                            {
+                                const float x = (float) xOf ((double) (r.startSample + at[i]) / rate), y = yOf (row, db[i]);
+                                if (i == 0) line.startNewSubPath (x, y); else line.lineTo (x, y);
+                            }
+                            g.setColour (juce::Colours::black.withAlpha (0.55f)); g.strokePath (line, juce::PathStrokeType (3.4f));
+                            g.setColour (bright); g.strokePath (line, juce::PathStrokeType (1.5f));
+                            for (size_t k = 0; k < r.gains.size(); ++k)                     // where a change's glide arrives: the level it settles on
+                            {
+                                const auto& gc = r.gains[k];
+                                const juce::int64 arrives = gc.at + (juce::int64) std::llround (gc.ramp * rate);
+                                if (arrives <= 0 || arrives > len) continue;
+                                bool cutShort = false;                                      // (a later change that starts before this one has arrived: that one's figure says where it goes)
+                                for (size_t j = k + 1; j < r.gains.size(); ++j) cutShort = cutShort || r.gains[j].at < arrives;
+                                if (cutShort) continue;
+                                const float before = juce::jmax (-100.0f, r.levelDbAt (f, juce::jmax ((juce::int64) 0, gc.at - 1))), after = juce::jmax (-100.0f, r.levelDbAt (f, arrives));
+                                if (std::abs (after - before) >= 0.05f) labels.push_back ({ row, xOf ((double) (r.startSample + arrives) / rate), yOf (row, after), after });
+                            }
+                        }
+                    }
+                    if (inARow) endOfLast[(size_t) row] = endDb;
+                }
+                if (! seen || labels.empty() || x1 - x0 < 24) continue;
+                std::stable_sort (labels.begin(), labels.end(), [] (const Label& a, const Label& b) { return a.x != b.x ? a.x < b.x : a.row < b.row; });
+                for (size_t i = 0; i < labels.size();)
+                {
+                    size_t j = i; bool alike = true;                                        // the figures at one place: the same on every row of the piece?
+                    while (j < labels.size() && labels[j].x == labels[i].x) { alike = alike && std::abs (labels[j].db - labels[i].db) < 0.05f; ++j; }
+                    const bool once = alike && rowsHere >= 2 && (int) (j - i) == rowsHere;
+                    for (size_t k = i; k < (once ? i + 1 : j); ++k)
+                    {
+                        const auto& L = labels[k];
+                        const juce::String text = (L.db <= -99.0f ? juce::String ("off") : std::abs (L.db) < 0.05f ? juce::String ("0 dB") : (L.db > 0.0f ? "+" : "") + juce::String (L.db, 1) + " dB")
+                                                  + (once ? ", all tracks" : "");
+                        const int w = juce::GlyphArrangement::getStringWidthInt (font, text) + 8, rowTop = top + L.row * rowH;
+                        auto box = juce::Rectangle<int> (L.x + 4, (int) L.y - 16, w, 13);
+                        if (box.getY() < rowTop + 1) box.setY ((int) L.y + 3);
+                        if (box.getX() < labelRight[(size_t) L.row] + 3) continue;
+                        labelRight[(size_t) L.row] = box.getRight();
+                        g.setColour (juce::Colours::black.withAlpha (0.62f)); g.fillRoundedRectangle (box.toFloat(), 3.0f);
+                        g.setColour (bright); g.setFont (font); g.drawText (text, box, juce::Justification::centred, false);
+                    }
+                    i = j;
+                }
+            }
+        };
+        pieces (ed.regions, true);
+        pieces (ed.overdubs, false);
+    }
     /** 3.18.5: a volume change, as the double-click and the right-click menu open it: the piece it is in, where, and its group. */
     struct GainHit { juce::Uuid regionId; juce::int64 at = 0; juce::String group; };
     /** 3.45.0: one volume change as it is drawn - a lone change, or every point of a "between the 1/2 marks" change (its group, across pieces): where it
@@ -2518,6 +2620,17 @@ private:
             }
             if (u.boxes.empty() && std::abs (p.x - u.x0) <= 4 && std::abs (p.x - u.x0) < bestDist) { bestDist = std::abs (p.x - u.x0); best = u.hit; }
         }
+        return best;
+    }
+    /** 3.49.0: the triangle of a volume change under 'p' (not the edges of its box): one click on it opens the change. */
+    std::optional<GainHit> gainTriangleAt (EditDef& ed, juce::Point<int> p, double rate)
+    {
+        const int top = bandH();
+        if (p.x <= kNameW || p.y < top || p.y > top + 13) return std::nullopt;
+        std::optional<GainHit> best; int bestDist = 1 << 30;
+        for (auto& u : gainUnits (ed, rowTracks(), rate))
+            for (auto& pt : u.points)
+                if (pt.triangle && std::abs (p.x - pt.x) <= 8 && std::abs (p.x - pt.x) < bestDist) { bestDist = std::abs (p.x - pt.x); best = u.hit; }
         return best;
     }
     void openGainChange (const GainHit& h)
