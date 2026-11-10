@@ -4,6 +4,7 @@
 #include "StationNotes.h"
 #include "SecondSeat.h"
 #include "LiveDesk.h"
+#include "LiveLook.h"
 #include "../core/AudioOps.h"
 #include "../ui/SpectralWindow.h"                 // fermata's ReTouch window (shared: COMPATIBILITY.md)
 #include <mutex>
@@ -59,6 +60,27 @@ struct FixTry
 static void openTimeline (const FixTry& t, ChunkTimeline& timeline)
 {
     if (t.session) { timeline.setSession (t.sessionFolder); timeline.setWrittenTo (t.writtenTo); }
+}
+/** 0.8.0 (asked for on 10 November 2026): why a part is too long to fix in one go ("" = it is not). Try it keeps every chosen track's fixed audio
+    in memory - to be heard at once, and written as a fix version - and works on a track at a time in memory too; the ReTouch window holds the
+    part as its picture as well ('window'). P round a whole long take on many tracks ran out of memory, and all the job could say was "Something
+    went wrong while processing". The sum is a rough one, on the safe side: half the PC's memory is the most a part may ask for. */
+static juce::String whyTooLong (const FixTry& t, bool window)
+{
+    juce::int64 chans = 0; int widest = 1;
+    for (auto& tr : t.tracks) { chans += juce::jmax (1, tr.channels); widest = juce::jmax (widest, tr.channels); }
+    const double rate = juce::jmax (1.0, t.rate), len = (double) juce::jmax ((juce::int64) 0, t.to - t.from);
+    // for every sample of the part: 4 bytes for each channel kept, and the room to work on the widest track (its audio, its fix, the working copies)
+    const double perSample = 4.0 * ((double) chans + 6.0 * (double) widest) * (window ? 2.0 : 1.0);
+    const int ramMb = juce::SystemStats::getMemorySizeInMegabytes();
+    const double room = (ramMb > 0 ? (double) ramMb * 0.5 : 4096.0) * 1024.0 * 1024.0;
+    const double most = juce::jmin (room / perSample, 2.0e9);                                   // (samples; the part is counted in an int further on)
+    if (len <= most) return {};
+    auto span = [] (double seconds) { return seconds >= 90.0 ? juce::String ((int) (seconds / 60.0)) + " minutes" : juce::String (juce::jmax (1, (int) seconds)) + " seconds"; };
+    return "That part is too long to fix in one go: " + span (len / rate) + " on " + juce::String ((int) t.tracks.size()) + (t.tracks.size() == 1 ? " track" : " tracks")
+         + " needs about " + juce::String (len * perSample / 1.0e9, 1) + " GB of memory"
+         + (ramMb > 0 ? ", and this PC has " + juce::String (juce::roundToInt ((double) ramMb / 1024.0)) + " GB" : juce::String())
+         + ". Choose a shorter part (about " + span (most / rate) + " at most on these tracks), or fewer tracks. Nothing was changed.";
 }
 /** One track's take samples [at, at + n), every channel: from the session's chunks for a take of the session, else from the take's file. False when
     it could not be read (then 'buf' holds silence). */
@@ -522,7 +544,7 @@ public:
         setWantsKeyboardFocus (true);
         for (auto* c : std::initializer_list<juce::Component*> { &badge, &pieceLabel, &followBtn, &delayLabel, &delayBox, &backBtn, &playBtn, &fwdBtn, &playhead, &behind, &mixerBtn,
                                                                  &status, &flags, &view, &fixTitle, &selLabel, &fixKind, &amount, &amountLabel, &tryBtn, &abBtn, &saveBtn, &fixNote, &tellPrimary, &retouchBtn,
-                                                                 &versions, &progressLabel, &noteBtn, &todBtn, &nameLabel, &nameBox, &seatBtn })
+                                                                 &versions, &progressLabel, &noteBtn, &todBtn, &nameLabel, &nameBox, &seatBtn, &lookBtn })
             addAndMakeVisible (c);
         addChildComponent (notePanel);
         // 0.5.0: notes, the name, the time of day
@@ -540,7 +562,10 @@ public:
         notePanel.onSave = [this] (const juce::String& id, const juce::String& text) { app.setNoteText (id, text); };
         notePanel.onDelete = [this] (const juce::String& id) { app.removeNote (id); };
         notePanel.onClosed = [this] { view.selectedNote.clear(); resized(); grabKeyboardFocus(); if (seat != nullptr && seat->dispatching()) seat->setKeyTarget (this); view.repaint(); };
-        for (juce::Button* b : std::initializer_list<juce::Button*> { &noteBtn, &todBtn, &seatBtn }) b->setWantsKeyboardFocus (false);
+        for (juce::Button* b : std::initializer_list<juce::Button*> { &noteBtn, &todBtn, &seatBtn, &lookBtn }) b->setWantsKeyboardFocus (false);
+        // 0.9.0: fermata's looks, for the Fixer's own windows (the Primary has them in its Project menu; each station keeps its own)
+        lookBtn.setTooltip ("The look of the Fixer's windows: the UI style (fermata's desk, or the Manuscript UI) and the desk's colour. The sun / moon in a window's corner switches between light and dark.");
+        lookBtn.onClick = [this] { showLookMenu(); };
         // 0.6.0: the second seat - the Fixer's own keyboard and mouse on the Primary's PC (SecondSeat.h)
         seat = std::make_unique<SecondSeat> (*app.settings);
         seat->label = app.stationName();
@@ -689,7 +714,7 @@ public:
             auto x = col.removeFromTop (28); nameLabel.setBounds (x.removeFromLeft (72)); nameBox.setBounds (x.reduced (0, 2));
         }
         r.removeFromTop (4);
-        status.setBounds (r.removeFromTop (22));
+        { auto x = r.removeFromTop (22); lookBtn.setBounds (x.removeFromRight (66)); x.removeFromRight (8); status.setBounds (x); }     // (0.9.0: the Look key at the right end of the status line - the top row is full)
         r.removeFromTop (4);
         auto fix = r.removeFromBottom (150);
         {
@@ -787,6 +812,19 @@ private:
         else seatWindow->centreWithSize (seatWindow->getWidth(), seatWindow->getHeight());
         seatWindow->setVisible (true);
         if (auto* top = getTopLevelComponent()) makeOwnedBy (*seatWindow, *top);
+    }
+    void showLookMenu()
+    {
+        juce::PopupMenu m;
+        const auto picked = std::make_shared<int> (-1);
+        look::addToMenu (m, picked);
+        juce::Component::SafePointer<FixerComponent> safe (this);
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&lookBtn), [safe, picked] (int r)
+        {
+            if (safe == nullptr || ! look::chosen (r, picked, *safe->app.settings)) return;
+            safe->refreshSeatButton();                                          // (its colour is the look's key colour unless the seat is on)
+            safe->resized(); safe->repaint();
+        });
     }
     void refreshSeatButton()
     {
@@ -966,6 +1004,7 @@ private:
                 for (auto& f : t->files) if (f.trackId == id) tr.file = f.file;
                 fx->tracks.push_back (tr);
             }
+        if (const auto why = whyTooLong (*fx, false); why.isNotEmpty()) { app.say (why); return; }
         auto& spec = fx->spec;
         const double v = amount.getValue();
         switch (fixKind.getSelectedId())
@@ -1007,6 +1046,9 @@ private:
     juce::String whyNoVersion()
     {
         if (app.pieceWindow() == nullptr || ! app.hasProject()) return "No project to keep the version in.";
+        // 0.8.0: nor while the recorder is not answering - the Fixer still shows the session it last heard of, but there is nobody to keep the version:
+        // its files were written and "Kept as fix version" said, and the recorder that came back (a new one, with no session yet) refused it
+        if (! app.model.connected) return "The recorder is not answering, and a fix version is kept by its session. Nothing was saved - keep it again when it is back.";
         // the session keeps the fix versions (every drive's index) and the Primary puts them into the project: with no session there is nowhere
         // safe for one - nothing is written, and the fix stays to be kept once the Primary has started the session (Pre-take is enough)
         if (! app.model.sessionOn) return "A fix version is kept by the session: the Primary must start it first (Pre-take is enough). Nothing was saved - keep it again then.";
@@ -1084,6 +1126,7 @@ private:
                 src->tracks.push_back (tr);
             }
         if (src->tracks.empty()) { app.say ("None of the tracks chosen are in that take"); return; }
+        if (const auto why = whyTooLong (*src, true); why.isNotEmpty()) { app.say (why); return; }
         lastTry.reset(); lastFix.reset(); app.setAudition (nullptr);           // (one thing heard at a time: what was being tried here goes)
         refreshFixControls();
 
@@ -1258,7 +1301,7 @@ private:
     juce::Label nameLabel;
     juce::TextEditor nameBox;
     NotePanel notePanel;
-    juce::TextButton seatBtn { "Second seat..." };
+    juce::TextButton seatBtn { "Second seat..." }, lookBtn { "Look..." };
     std::unique_ptr<SecondSeat> seat;                                     // (0.6.0: made in the constructor, gone first in the destructor)
     std::unique_ptr<ToolWindow> seatWindow;
     int chosenTake = 0;

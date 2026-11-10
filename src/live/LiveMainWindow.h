@@ -34,6 +34,7 @@ private:
     void showProjectMenu();
     void showHelpMenu();
     void askStationName();
+    void lookChanged();                                             // 0.9.0: another UI style or desk colour was chosen in the Project menu
     void newProjectDialog();
     void openProjectDialog();
     void showStartPanel (bool show);

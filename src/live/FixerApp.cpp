@@ -1,6 +1,7 @@
 #include "FixerApp.h"
 #include "StationNotes.h"
 #include "FixerWindow.h"
+#include "LiveLook.h"
 #include "../ui/ClosingLog.h"
 
 namespace td::live
@@ -20,6 +21,7 @@ FixerApp::FixerApp (const juce::String& ver, int p) : version (ver), port (p), l
     o.applicationName = "fermata-Live-Fixer"; o.filenameSuffix = ".settings"; o.folderName = "Fermata"; o.osxLibrarySubFolder = "Application Support";
     o.storageFormat = juce::PropertiesFile::storeAsXML;
     settings = std::make_unique<juce::PropertiesFile> (o);
+    look::install (*settings);                                                // 0.9.0: the look this station had (UI style, colour, dark or light), before its window is made
     delaySeconds = juce::jlimit (1.0, 30.0, settings->getDoubleValue ("delaySeconds", 3.0));
     outPair = settings->getIntValue ("outPair", 2);
     model.send = [this] (const juce::var& c) { link.send (c); };
@@ -59,6 +61,7 @@ FixerApp::~FixerApp()
     stopTimer();
     saveSettings();
     window.reset();
+    look::uninstall();
     closing::step ("the Fixer's window closed");
     model.removeChangeListener (this);
     player.reset();

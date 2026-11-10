@@ -2,6 +2,67 @@
 
 The brief is in `docs/LIVE-BRIEF.md`, and the rules shared with fermata are in `COMPATIBILITY.md`. Newest entries come first.
 
+## 0.9.0: fermata's looks in fermata:Live (10 November 2026, with Claude Fable)
+
+- **`src/live/LiveLook.h`** is all of it: `look::install (settings)` (called in `PrimaryApp`'s and `FixerApp`'s constructors, right after the
+  settings file is made and BEFORE any window - a window made first keeps a few labels in the old typeface), `look::addToMenu` /
+  `look::chosen` (the "UI style" submenu and fermata's `desk::SwatchRow`), `look::uninstall` (in both destructors: the sun / moon hook holds
+  a reference to the settings). The switching itself is fermata's `src/ui/ThemeSwitch.h` (`applyStyle`, `applyDeskColour`, `switchTheme`),
+  shared and unchanged; the settings names are fermata's (`uiStyle`, `deskColour`, `deskDark`), in each station's OWN settings file.
+- After a change `LiveMainComponent::lookChanged` makes the strips again (they hold colours and fonts of their own); the Fixer lays itself
+  out again. Everything else follows through `applyStyle`'s walk over the open windows.
+- **Draw from the palette.** fermata:Live's own drawing mostly does (`theme::`, `desk::pal()`), which is why the Manuscript UI works at all.
+  What is written on a key uses `theme::inkOn (fill)`, never a fixed dark colour (the M / S keys of `LiveTakeView` were the one place found).
+  Status colours (the reds, greens and golds of flags, REC, the drives) are the same in every look, on purpose.
+- The Fixer's top row is full at 1400 pixels: the Look key sits at the right end of the status line.
+- fermata:Live can be built and run on Linux for a look (the build script of earlier work links JUCE's Linux objects with `src/core`,
+  the shared look and `src/live`; the device is the test signal): that is how this was checked. It is not the Windows program.
+
+## 0.8.0: the windows read in the fourth sweep; Remove flag; a part too long for Try it (10 November 2026, with Claude Fable)
+
+The Primary's and the Fixer's windows and the second seat, read for the first time (`docs/SWEEP-4-FINDINGS.md`, "fermata:Live's windows").
+What a later change must not undo:
+- **`PrimaryApp::newProject` refuses a name that is already a project there** (`Name/Name.fermata`, `.takedaw`, or either's `.bak`), before
+  anything is written - the file chooser's own question is about `Name.fermata` beside the folder, not the file inside it. The test bench's
+  `setProject` the same. A new project that cannot be saved leaves NO project open (`projectFile` cleared).
+- **`SecondSeat::start` ends a Learn that is waiting** (`learningNow = none`): `handleAsyncUpdate` treats the next stroke as the Learn's answer
+  while `learningNow` is set, and ends with `setMode (0)` - the filter off - whatever `on` says. Anything that sets mode 0 while `on` is true
+  hands the Fixer's keyboard to the window in front. Scan codes 0x2A / 0x36 with the E0 mark are a PS/2 keyboard's pretend Shift: not a key.
+- **The Fixer keeps a fix version only with a session AND the recorder answering** (`whyNoVersion`): `StationModel::sessionOn` stays as it was
+  when the link drops (the Primary relies on that to carry a session on), so `connected` is asked too.
+- **A list of rows made from the project is keyed on the project and its ids** (`DesignerPanel::rowsKey`), never on a count: counts differ for
+  good (the timecode track has no row) or agree by accident (another project with as many tracks).
+- **A juce::Label that can be typed into is not given its text while `isBeingEdited()`** - `setText` closes its box. The mixer view refreshes
+  twice a second.
+- **"Remove flag"** (asked for, 10 November 2026): the key in the flag's note row of the Primary's take window (`removeFlag` there). The
+  session's flag - and one just pinned, which the model may not have heard back yet (`noteFresh`) - goes through `PrimaryApp::removeFlag`
+  ("flag-remove": the recorder marks it removed, every list skips it, `syncNotesIntoProject` takes its marker out); a flag the project has
+  from an earlier session is taken out of the take window's markers directly. Notes (N) had their "Delete note" already.
+- **`whyTooLong` (FixerWindow.cpp)** refuses a part that will not fit in memory, for Try it and for the ReTouch window, before anything is
+  read: `runFix` keeps every chosen track's fixed audio (`FixTry::fixed`) and works on one track at a time in memory, and counts the part
+  in an `int`. The sum (4 bytes x (channels kept + 6 x the widest track), doubled for the window; half the PC's memory at most) is a rough
+  one - change it with a measurement, not a guess. A real cure for whole takes would work through the take in pieces.
+- Not checkable here: all of it - the windows run on Windows only. The changed files compile (`tools/syntax-check-ui.sh`).
+
+## 0.7.1: the recorder read in the fourth sweep (9 November 2026, with Claude Fable)
+`docs/SWEEP-4-FINDINGS.md` (the section "fermata:Live's recorder") has every finding. Read line by line: `Ring`, `DriveWriter`, `LiveRecorder`,
+`Merge`, `RecorderService`, `MonitorMix`, `StreamServer` / `StreamClient`, `PeakTap`, `TakeRegister`, `RecorderLink`, the closing safety net. The
+audio path (the callback into the ring, each drive's thread out of it) was left exactly as it is. What a later change must keep:
+- **A drive's index has one writer at a time, and the thread hands it over as its last step.** `DriveWriter::run` is now a shell round
+  `writeLoop()`: after the loop it writes the index until nothing is unwritten (up to 10 tries, 1 for a dropped drive) and then, under
+  `handoverLock`, sets `threadDone`. `updateIndex` marks the index dirty and, under the same lock, either writes it itself (`threadDone`: the
+  lock is held until it is written, so two callers cannot cross) or wakes the thread. Never write the index from outside without that lock.
+- **`LiveRecorder::close` keeps the writers in `writers` while they drain** (it waits on raw pointers; a writer that will not end goes to the
+  `stuck` list under `writersLock`), so `pinFlag`, `noteTake` and the merge's `markMerged` reach the indexes during the close.
+- **`resumeDrive` never destroys a writer whose thread is still running**: it waits 2 s (`waitForClose`) and otherwise answers "not answering
+  yet". Destroying it would wait for the drive with `lock` held.
+- **Nothing thrown may leave a thread**: `DriveWriter::run` drops its own drive, `PeakTap::run` stops the waveform, `RecorderService::timerCallback`
+  skips the round (`handleLine` and the merge thread already caught theirs).
+- **`Merge::pieces` measures only the chunks of the take's span** (`firstSample` / `samples` from the index decide; `lengthOf`, which opens the
+  file and may mend its header, is asked only for those).
+- Tests: `live_recorder_test` has three sections "0.7.1: ..."; `TestDisk::stallIndexMs` makes the index write slow so the hand-over is in
+  the middle of it. Run against 0.7.0's sources they fail in 9 places.
+
 ## 0.6.0: the second seat (6 November 2026, built in the fermata:Live conversation)
 Asked for on 6 November 2026: two people on one PC, each with their own mouse and keyboard, the second only working the program. Five ways were set
 out (take turns on one mouse; a Stream Deck; the Interception driver; Windows' Raw Input; a second PC with remote control); the user chose the

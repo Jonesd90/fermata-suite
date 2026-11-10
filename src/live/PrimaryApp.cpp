@@ -2,10 +2,12 @@
 #include "TakeRegister.h"
 #include "StationNotes.h"
 #include "LiveReport.h"
+#include "LiveLook.h"
 #include "../ui/WinOwner.h"
 #include "../ui/ClosingLog.h"
 #include "LiveRecorder.h"
 #include "Merge.h"
+#include "../core/FileSync.h"
 
 namespace td::live
 {
@@ -26,6 +28,7 @@ PrimaryApp::PrimaryApp (const juce::String& ver, int p) : version (ver), port (p
     o.applicationName = "fermata-Live"; o.filenameSuffix = ".settings"; o.folderName = "Fermata"; o.osxLibrarySubFolder = "Application Support";
     o.storageFormat = juce::PropertiesFile::storeAsXML;
     settings = std::make_unique<juce::PropertiesFile> (o);
+    look::install (*settings);                                                // 0.9.0: the look this station had (UI style, colour, dark or light), before its windows are made
     model.send = [this] (const juce::var& c) { link.send (c); };
     model.onEvent = [this] (const juce::var& e) { onEvent (e); };
     model.addChangeListener (this);
@@ -46,6 +49,7 @@ PrimaryApp::~PrimaryApp()
     // (0.3.1: each step into the log with its time - fermata's closing log, written only while the program closes)
     *alive = false;
     stopTimer();
+    look::uninstall();
     if (dirty) { saveNow(); closing::step ("the project saved again (the windows had changed it)"); }
     model.removeChangeListener (this);
     project.removeChangeListener (this);
@@ -71,8 +75,18 @@ void PrimaryApp::addLog (const juce::String& text)
 bool PrimaryApp::newProject (const juce::File& file, double rate, juce::String& error)
 {
     if (model.sessionOn) { error = "End the session first (the recording belongs to the project that is open)."; return false; }
-    if (dirty) saveNow();
     const auto folder = file.getParentDirectory().getChildFile (file.getFileNameWithoutExtension());
+    // 0.8.0 (as fermata 3.46.1): never over a project that is already there. The file chooser's own "replace it?" question looks at the name typed
+    // (Documents/Name.fermata), not at the project file inside the folder that is made for it (Documents/Name/Name.fermata) - so a new project
+    // with the name of an earlier concert's put an empty project in place of that concert's project file, and the next save did the same to its .bak.
+    for (const auto& f : { folder.getChildFile (file.getFileNameWithoutExtension() + ".fermata"), folder.getChildFile (file.getFileNameWithoutExtension() + ".takedaw") })
+        if (f.existsAsFile() || filesync::backupOf (f).existsAsFile())
+        {
+            error = "There is already a project called \"" + f.getFileNameWithoutExtension() + "\" there (" + f.getFullPathName() + ").\n\n"
+                    "Give the new project another name, or put it in another place - or use Open project to open the one that is there. Nothing was changed.";
+            return false;
+        }
+    if (dirty) saveNow();
     if (! folder.createDirectory()) { error = "Cannot make the folder " + folder.getFullPathName(); return false; }
     project.createDefaultDesign();
     project.addDefaultMainBus();
@@ -84,7 +98,16 @@ bool PrimaryApp::newProject (const juce::File& file, double rate, juce::String& 
     auto v = juce::JSON::parse (settings->getValue ("preampDevices"));
     if (auto* a = v.getArray()) for (auto& d : *a) project.preampDevices.push_back (PreampDeviceCfg::fromVar (d));
     project.createFolders();
-    if (! project.save (error)) return false;
+    if (! project.save (error))
+    {   // 0.8.0 (as fermata 3.46.1): no project is open then. It used to stay as an empty project that pointed at the file that could not be made:
+        // every save failed from then on, while the window showed it as open and a session could be started in it.
+        addLog ("New project: " + project.projectFile.getFullPathName() + " could not be made: " + error);
+        error << "\n\nNo project is open now: choose New project again (another place, or another drive), or Open project.";
+        project.projectFile = juce::File(); project.name = {};
+        dirty = false; layoutDirty = true;
+        sendChangeMessage();
+        return false;
+    }
     settings->setValue ("lastProject", project.projectFile.getFullPathName());
     settings->setValue ("piece", project.takeWindows.empty() ? juce::String ("Concert") : project.takeWindows.front()->name);
     setPreampDevices (project.preampDevices);
@@ -416,6 +439,7 @@ void PrimaryApp::removeFlag (const juce::String& id)
 {
     auto c = cmd ("flag-remove"); put (c, "id", id);
     send (c);
+    addLog ("Flag taken away");
 }
 
 // ---- monitoring ---------------------------------------------------------------------------------------------------------------------------------

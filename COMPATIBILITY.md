@@ -41,7 +41,8 @@ Everything listed here is built into BOTH programs, so a change to any of it cha
 - **fermata's look** (contract 3: fermata:Live's windows are drawn with it). These files stay in fermata's folder, unchanged, and are shared from
   there: `src/ui/Uikit.h`, `src/ui/FermataLookAndFeel.h`, `src/ui/FontData.cpp`, `src/ui/FontData2.cpp`, `src/ui/WaveColor.h`, `src/ui/WaveStore.h`,
   `src/ui/WaveThumb.h`, `src/ui/WinOwner.h`, `src/ui/WinOwner.cpp`, `src/ui/MixerLook.h`, `src/ui/DeskLook.h`, `src/ui/ValueEntry.h`,
-  `src/ui/WaveDraw.h`, `src/ui/MarkerStrip.h`, `src/ui/TimeReadout.h`, `src/ui/TalkbackGlow.h`, `src/ui/BusyWindow.h`. Each of them may include only
+  `src/ui/WaveDraw.h`, `src/ui/MarkerStrip.h`, `src/ui/TimeReadout.h`, `src/ui/TalkbackGlow.h`, `src/ui/BusyWindow.h`, `src/ui/ThemeSwitch.h` (fermata:Live
+  0.9.0: the switching between the UI styles, the desk's colours and light and dark - fermata:Live offers the same choice). Each of them may include only
   the others in this list and `src/core` (never `AppContext.h` or any other file of fermata's windows), and fermata:Live includes nothing else from
   `src/ui`. The check enforces both. A change to one of them changes how both programs look: build and look at both.
 - **fermata's closing log and closing safety net** (fermata 3.15.0 / 3.17.0; shared from fermata:Live 0.3.1, which uses them in its window, its

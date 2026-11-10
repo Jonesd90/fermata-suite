@@ -8,6 +8,77 @@ fermata:Live is the live-concert recorder that goes with fermata (see `docs/LIVE
 
 A line that starts with **Shared:** is a change to the code fermata shares (see `COMPATIBILITY.md`), so fermata's next build mentions it too.
 
+## 0.9.0
+Built 10 November 2026 (the conversation for both programs), with Claude Fable. Asked for on 10 November 2026: "give the same 'fermata' style UI
+option to fermata:Live".
+- **fermata's looks, in fermata:Live.** The Primary's Project menu has **UI style** - the Fermata style UI (the blue-grey desk) or the
+  Manuscript UI (midnight blue and gilt, the Renaissance serif) - and the row of **colour themes** (the desk in blue, red, orange, yellow,
+  green or purple), exactly as fermata's Project menu has them. Every open window changes at once.
+- **The sun / moon key works.** It has been in the corner of every fermata:Live window from the start (the windows are fermata's), with
+  nothing behind it: it now switches the light and the dark look, as in fermata.
+- **The Fixer has the same choice**, behind a "Look..." key at the right end of its status line.
+- Each station remembers its own look - the Primary in its settings, the Fixer in its own - and starts in it next time. They are separate
+  programs, often on two screens for two people, so one may be the blue desk and the other the Manuscript UI. fermata's own choice stays
+  fermata's: the two programs do not share settings.
+- The M and S keys beside the track names (take window, Fixer) are written in the look's own ink: in the Manuscript UI their dark letters
+  could not be seen on its navy keys.
+- **Shared:** `src/ui/ThemeSwitch.h` - fermata's code for switching looks - is now one of the look files both programs use (added to the list
+  in `COMPATIBILITY.md`; the file itself is unchanged, and so is fermata).
+- Looked at here: fermata:Live was built for Linux and run on a virtual screen - both styles, a desk colour, light and dark, in the
+  Primary's main window, take window and mixer and in the Fixer, and that the choice is remembered. Not run on Windows.
+
+## 0.8.0
+Built 10 November 2026 (the conversation for both programs), with Claude Fable. fermata:Live's windows - the Primary's, the Fixer's, the second
+seat - read in the fourth code sweep (they had never been in one; the list is in `docs/SWEEP-4-FINDINGS.md`), and two things asked for on
+10 November 2026: the first two below.
+- **A flag can be taken away** (asked for). Primary's take window: the flag's note row - it opens when a flag is pinned, and on a double-click
+  on a flag - has a "Remove flag" key. A flag pinned by mistake used to stay for good: the Fixer had been told of it, and it went into the
+  project as a marker. Removed, it goes from the Fixer's list and from the project too.
+- **A part too long for "Try it" is refused in plain words** (asked for). Fixer: P chooses a whole take on every track, and Try it (or the
+  ReTouch window) then needs all of it in memory - an hour on 16 tracks does not fit, and all it said was "Something went wrong while
+  processing". It now says how long the part is, on how many tracks, about how much memory that would need and how much the PC has, and
+  about how long a part works on those tracks. (The sum is a careful one: half the PC's memory at most.)
+- **A new project can no longer take the place of an earlier concert's.** A new project given the name of one already in that place wrote an
+  empty project over the first one's project file (the recordings stayed on the disk; the project that listed them was gone). It is refused
+  now, with the reason, before anything is written.
+- **The second seat cannot let go without saying so.** "Start the second seat" pressed while a Learn was still waiting for its key started the
+  seat - and its first key then answered the Learn, which switched the driver off: the panel still said ON, but the Fixer's keyboard typed
+  into whichever window was in front (the Primary's). Starting the seat now ends a Learn that is waiting.
+- **"Kept as fix version" is only said when the recorder is there to keep it.** With the recorder not answering, the Fixer wrote the fix's
+  files and said it was kept; the recorder that came back refused it. Nothing is written then, and the fix stays to be kept when it is back.
+- **Project Designer:** with a timecode track in the project (one made in fermata) the rows were made again about once a second - a name
+  being typed lost the keyboard; and after opening another project with as many tracks, the old project's names could be written over the
+  new one's tracks.
+- **A level typed into a mixer strip** (both stations): the box closed by itself within half a second, and "-inf" or a slip of the keys was
+  read as 0 dB - the fader jumped up. The box stays while you type; "-inf" closes the fader; what is no number changes nothing.
+- A new project that could not be saved (a full or read-only drive) no longer stays open as an empty project in which a session could be
+  started. On the second seat, a laptop-type (PS/2) keyboard's arrows are no longer Shift + arrow while Num Lock is on. Bounce out's list
+  keeps the take chosen when a new take arrives. The report gives no time of day to a fix version whose take has gone.
+- Clean-up: three small functions nothing called are out (`PeakStore.h`, `StationModel.h`, `SecondSeat.h`).
+- **Shared:** fermata 3.47.0 changed `src/core/Edit.h`, `EditVersions.h`, `Project.h` and `Project.cpp` (edit operations, undo, a bar-number
+  limit), and took unused functions out of `Ravenna.h/.cpp`, `AdmWriter.h` and `Surround.h` (see `CHANGELOG.md`). fermata:Live's own code
+  calls none of the changed parts. No file format changes.
+
+## 0.7.1
+Built 9 November 2026 (the conversation for both programs), with Claude Fable. The recorder read line by line in the fourth code sweep (the whole
+list is in `docs/SWEEP-4-FINDINGS.md`). The recording path itself - the audio into the buffer, each drive's own writer out of it - had nothing to
+put right; what was found is round it. Nothing here changes how the program is used.
+- **What is noted while a session closes reaches the drives.** A flag or a note pinned, or a take marked as merged, while the recorder was
+  waiting for the drives to finish (a moment normally, minutes on a slow drive) was kept in memory only and written to no drive: gone if the
+  recorder then closed, and the take merged a second time at the next start. It now reaches every drive's index.
+- **The last word to a drive's index cannot be lost**, and two written at the same moment after a session (the merge, a station's note) can no
+  longer leave the older one on the disk. The last write of a session is tried again when something holds the file for a moment.
+- **A dropped drive is taken on again only once its old writer has let go of it.** Taken on while the old writer was still waiting for a
+  failing disk to answer, the recorder's status and commands waited with it (the audio and the other drives never did), and the old writer
+  could then mark the drive as dropped over the new one. The key now says "That drive is not answering yet ... try again in a moment".
+- **One drive's error cannot end the recorder.** An error inside one drive's writer (running out of memory, say) now drops that one drive - the
+  audio and the other drives go on; one in the waveform for the stations stops the waveform only; one in the recorder's timer skips that round.
+- **The merge looks only at its own take's files.** It measured every chunk recorded before the take's end - thousands in a long session - and
+  could ask about the chunk a drive was still writing.
+- **Shared:** fermata 3.46.1's sweep changed `src/core/AudioEngine.cpp`, `BackupCopier.h`, `Project.h/.cpp`, `Ravenna.cpp`, `MasterExport.cpp`,
+  `RxWatch.h`, `StereoJoin.h`, `AudioOps.cpp`, `ImportPlan.cpp`, `Aaf.cpp` (see `CHANGELOG.md`). fermata:Live's own code calls none of the changed
+  parts. No file format changes.
+
 ## 0.7.0
 Built 9 November 2026 (the conversation for both programs), with Claude Fable.
 - **De-hum in the Fixer** (asked for on 9 November 2026). The Fixer's fix list has "De-hum: find the hums in the part and take them out": Try looks

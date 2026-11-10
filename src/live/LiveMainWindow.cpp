@@ -1,5 +1,6 @@
 #include "LiveMainWindow.h"
 #include "../ui/ValueEntry.h"
+#include "LiveLook.h"
 
 namespace td::live
 {
@@ -561,12 +562,16 @@ void LiveMainComponent::showProjectMenu()
     m.addSeparator();
     m.addItem (7, "Your name (on your flags and notes): " + app.stationName() + "...");
     m.addItem (6, "Log...");
+    m.addSeparator();
+    const auto picked = std::make_shared<int> (-1);
+    look::addToMenu (m, picked);                                                // 0.9.0: fermata's looks - UI style (the desk, or the Manuscript UI) and the desk's colour
     if (app.model.sessionOn) { m.addSeparator(); m.addSectionHeader ("A session is running: end it to change the project"); }
     juce::Component::SafePointer<LiveMainComponent> safe (this);
-    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&projectButton), [safe, recent] (int r)
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&projectButton), [safe, recent, picked] (int r)
     {
         if (safe == nullptr) return;
         auto& app = safe->app;
+        if (look::chosen (r, picked, *app.settings)) { safe->lookChanged(); return; }
         if (r == 1) safe->newProjectDialog();
         else if (r == 2) safe->openProjectDialog();
         else if (r == 3) { juce::String err; if (! app.openProject (recent, err)) showError ("Open project", err); else { safe->showStartPanel (false); safe->rebuildStrips(); } }
@@ -575,6 +580,15 @@ void LiveMainComponent::showProjectMenu()
         else if (r == 6) safe->openWindow ("log");
         else if (r == 7) safe->askStationName();
     });
+}
+
+/** 0.9.0: the look was changed in the Project menu. fermata's own code has given every open window the new palette and typeface (applyStyle,
+    applyDeskColour); what this window made for itself is made again - the strips hold colours and fonts of their own. */
+void LiveMainComponent::lookChanged()
+{
+    shownInputs = shownOutputs = -1;
+    rebuildStrips();
+    resized(); repaint();
 }
 
 /** 0.5.0: the Primary's name, as its flags and notes say who wrote them ("by David"); the Fixer gives its own in its window. */

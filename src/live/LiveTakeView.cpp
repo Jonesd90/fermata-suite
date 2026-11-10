@@ -588,7 +588,7 @@ void LiveTakeView::paintTrackHeaders (juce::Graphics& g, juce::Rectangle<int> ar
         {
             g.setColour (on ? lit : theme::button); g.fillRoundedRectangle (k.toFloat(), 3.0f);
             g.setColour (theme::border); g.drawRoundedRectangle (k.toFloat().reduced (0.5f), 3.0f, 1.0f);
-            g.setColour (on ? juce::Colours::white : juce::Colour (0xff14181f)); g.setFont (juce::FontOptions (10.5f, juce::Font::bold));
+            g.setColour (on ? juce::Colours::white : theme::inkOn (theme::button)); g.setFont (juce::FontOptions (10.5f, juce::Font::bold));     // (0.9.0: the look's own ink - dark on the desk's light keys, gilt on the Manuscript UI's navy ones, where the dark letters could not be seen)
             g.drawText (txt, k, juce::Justification::centred, false);
         };
         if (isMuteSolo)
