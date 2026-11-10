@@ -232,8 +232,29 @@ public:
     }
     void changeHeightLevel (int delta)
     {
+        const double keep = rowToKeepInTheMiddle();
         heightLevel = juce::jlimit (0, kHeightLevels - 1, heightLevel + delta);
         applyHeightLevel();
+        // 3.48.0 (asked for on 10 November 2026): the rows grow or shrink round the track that was clicked - it is put in the middle of the window
+        // (as in the Edit window: the window used to keep its place in pixels, so taller rows showed the tracks nearer the top).
+        const int visH = viewport.getMaximumVisibleHeight(), rowsH = visH - kRulerH - kLaneH;
+        viewport.setViewPosition (viewport.getViewPositionX(), juce::jlimit (0, juce::jmax (0, getHeight() - visH), (int) std::lround (keep * (double) rowH - (double) rowsH * 0.5)));
+        repaint();
+    }
+    /** 3.48.0: the row the up / down arrows keep in the middle of the window, in rows from the first one's top: the row last clicked while any of it
+        can be seen; otherwise whatever is in the middle now. */
+    int clickedRow = -1;
+    double rowToKeepInTheMiddle() const
+    {
+        const int sy = viewport.getViewPositionY(), rowsH = viewport.getMaximumVisibleHeight() - kRulerH - kLaneH, h = juce::jmax (1, rowH);
+        if (juce::isPositiveAndBelow (clickedRow, (int) shownTracks().size()) && (clickedRow + 1) * h > sy && clickedRow * h < sy + rowsH) return (double) clickedRow + 0.5;
+        return ((double) sy + (double) rowsH * 0.5) / (double) h;
+    }
+    void noteClickedRow (const juce::MouseEvent& e)                // (the event as it came: the band at the top is pinned over the rows under it)
+    {
+        if (e.y - viewport.getViewPositionY() < kRulerH + kLaneH) return;
+        const int row = (e.y - kRulerH - kLaneH) / juce::jmax (1, rowH);
+        if (juce::isPositiveAndBelow (row, (int) shownTracks().size())) clickedRow = row;
     }
 
     /** Zooms in / out around the playhead (where it is recording or playing, otherwise where you put it) and puts that point in the MIDDLE of the
@@ -383,7 +404,7 @@ public:
         return (sy > 0 && e.y >= sy && e.y < sy + kRulerH + kLaneH) ? sy : 0;
     }
     juce::MouseEvent shifted (const juce::MouseEvent& e, int by) const { return by == 0 ? e : e.withNewPosition (e.position - juce::Point<float> (0.0f, (float) by)); }
-    void mouseDown (const juce::MouseEvent& e0) override { hdrShift = stickyShift (e0); mouseDownImpl (shifted (e0, hdrShift)); }
+    void mouseDown (const juce::MouseEvent& e0) override { noteClickedRow (e0); hdrShift = stickyShift (e0); mouseDownImpl (shifted (e0, hdrShift)); }
     void mouseDrag (const juce::MouseEvent& e0) override { mouseDragImpl (shifted (e0, hdrShift)); }
     void mouseUp (const juce::MouseEvent& e0) override { const int by = hdrShift; hdrShift = 0; mouseUpImpl (shifted (e0, by)); }
     void mouseMove (const juce::MouseEvent& e0) override { mouseMoveImpl (shifted (e0, stickyShift (e0))); }
@@ -646,7 +667,9 @@ public:
                 g.setColour (juce::Colour (0xff29b6ff).withAlpha (0.22f)); g.fillRect (sel);
                 g.setColour (juce::Colour (0xff29b6ff)); g.drawRect (sel.reduced (1), 2);
             }
-            g.setColour (theme::text); g.setFont (juce::jlimit (9.0f, 14.0f, (float) rowH - 4.0f));
+            // 3.48.0: the weight is named (see the Edit window's names: a height alone takes the weight of whatever was drawn last, so the first track's
+            // name could change weight from one redraw to the next). Bold, as every row under the first has always been.
+            g.setColour (theme::text); g.setFont (juce::FontOptions (juce::jlimit (9.0f, 14.0f, (float) rowH - 4.0f), juce::Font::bold));
             const bool tall = rowH >= 44;
             g.drawText (tracks[i]->name, tall ? r.reduced (8, 0).withTrimmedRight (36).withTrimmedTop (22).withTrimmedBottom (14) : r.withTrimmedLeft (46).withTrimmedRight (38), juce::Justification::centredLeft, true);
             if (auto* st = stripOf (tracks[i]->id))       // M / S at the top left, above the name (the same flags as the mixer strip)
@@ -661,7 +684,7 @@ public:
                 drawBtn (muteRect (sx, top + (int) i * rowH), "M", st->mute.get(), juce::Colour (0xffe05a3a));
                 drawBtn (soloRect (sx, top + (int) i * rowH), "S", st->solo.get(), juce::Colour (0xfff2c200));
             }
-            g.setColour (theme::dimText); g.setFont (11.0f);
+            g.setColour (theme::dimText); g.setFont (juce::FontOptions (11.0f, juce::Font::bold));     // (3.48.0: named, as above)
             if (tall)
             g.drawText (tracks[i]->format == TrackFormat::Mono ? "mono" : tracks[i]->format == TrackFormat::Stereo ? "stereo" : juce::String (tracks[i]->channelCount()) + "-ch",
                         r.reduced (8, 0).withTrimmedTop (30), juce::Justification::centredLeft);
@@ -1420,7 +1443,7 @@ private:
         const auto* A = app.project.findTrack (idA); const auto* B = app.project.findTrack (idB);
         if (A == nullptr || B == nullptr) return;
         // how much it touches, for the question
-        int takes = 0, windows = 0, pieces = 0, edits = 0;
+        int takes = 0, windows = 0, pieces = 0, edits = 0; bool frozen = false;
         for (auto& w : app.project.takeWindows)
         {
             int n = 0;
@@ -1433,6 +1456,10 @@ private:
             for (auto* list : { &e->regions, &e->overdubs })
                 for (auto& r : *list) for (auto& f : r.files) if (f.trackId == idA || f.trackId == idB) { ++n; break; }
             pieces += n; if (n > 0) ++edits;
+            for (auto& v : e->versions)                      // (3.46.1: the frozen versions are converted with it)
+                if (v.edit != nullptr)
+                    for (auto* list : { &v.edit->regions, &v.edit->overdubs })
+                        for (auto& r : *list) for (auto& f : r.files) if (f.trackId == idA || f.trackId == idB) { frozen = true; break; }
         }
         auto plural = [] (int n, const char* one, const char* many) { return juce::String (n) + " " + (n == 1 ? one : many); };
         juce::String msg;
@@ -1440,6 +1467,7 @@ private:
             << "A new stereo file is written for each of the " << plural (takes, "take", "takes") << " that use them (in " << plural (windows, "take window", "take windows") << ")"
             << (pieces > 0 ? ", and the " + plural (pieces, "piece", "pieces") + " in " + plural (edits, "edit", "edits") + " made from them play it" : juce::String())
             << ". The two mono tracks are then removed from the project; their files stay on the disk, untouched.\n\n"
+            << (frozen ? "The frozen versions of an edit (Edit 1, Edit 2 ...) that use these tracks are changed in the same way: their pieces, their automation and the mixer settings kept with them.\n\n" : "")
             << "The new track's mixer strips start with the left track's fader, output and sends (plug-ins are not carried over). "
             << "This cannot be undone with Ctrl + Z.";
         auto* aw = new juce::AlertWindow (title, msg, juce::MessageBoxIconType::QuestionIcon, this);
@@ -1480,8 +1508,11 @@ private:
             if (! stereojoin::apply (a.project, *plan, why)) { dropFiles(); showError (title, why + "\n\nNothing was changed. Please try again."); return; }
             a.engine.rebuildPlan();
             a.project.changed();
+            int livePieces = 0, frozenPieces = 0;            // (3.46.1: the plan lists the frozen versions' pieces too)
+            for (auto& u : plan->pieces) ++(u.version == 0 ? livePieces : frozenPieces);
             a.setNotice ("Made the stereo track '" + plan->name + "': " + juce::String ((int) plan->takes.size()) + (plan->takes.size() == 1 ? " take" : " takes")
-                         + (plan->pieces.empty() ? juce::String() : " and " + juce::String ((int) plan->pieces.size()) + (plan->pieces.size() == 1 ? " piece of an edit" : " pieces of edits"))
+                         + (livePieces == 0 ? juce::String() : " and " + juce::String (livePieces) + (livePieces == 1 ? " piece of an edit" : " pieces of edits"))
+                         + (frozenPieces > 0 ? " (and the frozen versions of the edits)" : "")
                          + ". The mono files are still on the disk.");
             if (safe != nullptr) { safe->selectedTracks.clear(); safe->updateSize(); safe->repaint(); }
         };
@@ -2393,19 +2424,6 @@ void TakeWindowComponent::togglePlay()
     }
     // the whole window plays from the playhead, wherever it is: over a take, in a gap, or after the last take (silent, it just carries on)
     auto err = app.playTakeWindow (windowId, w->playheadSeconds);
-    if (err.isNotEmpty()) showError ("Play", err);
-}
-
-void TakeWindowComponent::playMarked()
-{
-    auto* w = def();
-    if (w == nullptr) return;
-    if (app.isPlaying()) app.stopPlayback();
-    const bool useEdit = w->findGroup (w->editTake) != nullptr && w->editIn >= 0;
-    const auto take = w->editTake; (void) useEdit;
-    const double in = w->editIn, out = w->editOut;
-    if (w->findGroup (take) == nullptr || in < 0) { showError ("Play marked", "Mark an IN point (and an OUT point) first."); return; }
-    auto err = app.playTake (windowId, take, in, out > in ? out : -1.0, loopToggle.getToggleState() && out > in);
     if (err.isNotEmpty()) showError ("Play", err);
 }
 

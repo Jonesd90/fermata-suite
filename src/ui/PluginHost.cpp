@@ -498,6 +498,14 @@ InsertFactory PluginHost::makeFactory (std::function<double()> sampleRate, std::
     };
 }
 
+float PluginHost::valueOfText (InsertProcessor* p, int param, const juce::String& text)
+{
+    auto* v = dynamic_cast<Vst3Insert*> (p);
+    if (v == nullptr) return -1.0f;
+    auto& ps = v->getPlugin().getParameters();
+    return juce::isPositiveAndBelow (param, ps.size()) ? juce::jlimit (0.0f, 1.0f, ps[param]->getValueForText (text)) : -1.0f;
+}
+
 void PluginHost::showEditor (InsertProcessor* p)
 {
     auto* v = dynamic_cast<Vst3Insert*> (p);

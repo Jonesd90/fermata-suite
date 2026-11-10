@@ -2251,6 +2251,127 @@ pitch in every quarter second; the chord's partials change under 0.3 dB; what co
 outside the box changes; Soft takes 4.5 - 7.5 dB; an unticked hum stays; `applyFix` gives the same samples. On the real files (not in the repo): the
 finder's lists are in the conversation; after De-hum nothing stands out where the hums were, and the music before the box is bit-identical.
 
+## 3.47.0: the fourth sweep, areas D to I; Delete takes what lies over the music with it (10 November 2026, with Claude Fable)
+
+`docs/SWEEP-4-FINDINGS.md` has every finding. D was read at the agreed scope; E to H "the shorter way" (what changed since 3.27.1 / 3.30.1 /
+3.40.1 / 3.46.0); I is a scan, nothing removed. What a later change must not undo:
+- **`EditDef::rippleAfter (from, delta)` is the one way the timeline closes or opens up** (`removeRegion` with ripple, `closeGap`, `glueSnip`):
+  it moves the overdubs, the markers, the feedback flags, fixIn / fixOut, the playhead and the lanes' points fixed in time that lie at or
+  after `from` (the callers move the regions); what lies before `from` - over a deleted piece itself, say - stays; fixIn / fixOut left the
+  wrong way round are cleared. A new operation that shortens the timeline calls it with the OLD end of what went (`removeRegion` takes
+  `end` before erasing; `glueSnip` takes `oldEnd` before the piece shrinks).
+- **Volume changes are counted from their piece's start**: whatever moves a piece's start without moving its music (`anchorStart`,
+  `trimEdgeToFade`'s reach-back) calls `rebaseGains (old, shift)`; never `g.at += ...` by hand.
+- **Undo and the things undo does not own.** Markers, feedback, fixIn / fixOut, the playhead and the versions are not in an undo step
+  (`UndoSnap` hashes the pieces only). So `restorePiece` copies the live ones into the restored edit - and since 3.47.0 PLACES each one:
+  `UndoSnap::made` / `fresh` (`Project::UndoTimes`, from `timesOf`) remember where they stood when the state was made and at the last tick
+  the edit was unchanged (`UndoPiece::before`: just before the change). One the change did not move, and that has not been moved since,
+  stays exactly where it is; every other is carried through `editversions::mapSeconds (live, restored, t)` - it stays on its music.
+  `undoTick` refreshes `fresh` only when the hash is unchanged. A test
+  that calls `undoReset()` by hand must call `mastering.sync (edits)` first, or the first undo shows a phantom step.
+- **`Project::changed()` commits the joins** (`commitAllJoins`): piece edges settle a few milliseconds. Tests compare places with a tolerance.
+- **`trackHasAudio` counts the frozen versions** (`withVersions`): "is this track empty" must keep doing so.
+- **The version strip asks `undoHash` of the two edits compared**, not `saveHash` (which writes every frozen mixer out as text).
+- Bars from a project file are clamped to `kMaxBar` (99999) in `Project.cpp`'s reader.
+- **Pieces that are slid, shuffled or re-ordered carry what lies over them: `editversions::Riders`** (decided 10 November 2026). The core
+  operations (`slideRegion`, `shuffleRegion`, `moveRegion`, `slipIn`, `slipOut`, `trimEdgeToFade`) move pieces only; the WINDOW makes a
+  `Riders` before and calls `carry` after. A drag makes one when it begins and carries from it at every mouse move (`dragRiders` in the edit
+  window - for the slide and for the shuffle - `riders0` in the Trim window): carrying from the previous move would let a piece pick up a
+  marker lying in a silence it slides across. The rule is `mapSeconds`' (`detail::placeOf`): same place in the same piece; in a silence or
+  past the end, with the piece before; music gone, stay. A new way of moving pieces about must do the same - or use `rippleAfter`, if it
+  puts music in or takes it out. Not carried: a piece's own volume changes when `slipIn` slides its audio (D3 in the findings).
+- Decided, nothing to do: Move clips leaves the frozen versions' pieces on their track (D8); `trackHasAudio` keeps that track.
+- Area I's unused functions are out (the list is in the findings): `AppContext::playDisc`, `discAlign` and `discToken` among them - the
+  Mastering window plays its renders with `playRenders`; `discItems` / `DiscPlayItem` are still used (by the render list).
+
+## 3.48.0: the Edit window's one line, the first automation point, typed values, rows round the clicked track (10 November 2026, with Claude Fable)
+
+What a later change must not undo:
+- **`g.setFont (14.0f)` sets a height, not a font**: JUCE keeps the style of whatever font the Graphics last had. In a paint that is not
+  always run in full (the strip under the playhead, a clipped redraw) the "last font" differs from one redraw to the next, and text
+  flickers between bold and ordinary. The track names of the Edit and take windows name their weight now (`FontOptions (h, bold)`). The
+  other height-only calls left (`grep -n "setFont ([0-9]"`: the rulers, the Trim window's lane titles, `MeterScale`) are each the first
+  text of their paint or follow the same call every time; a new one should name its font.
+- **The Edit window's line**: `VersionStrip` still owns the tabs, the subheading, Freeze and Changes and its lanes below them, and is as
+  wide as the window. `EditWindowComponent::resized` lays `infoLabel` and the lead-in box OVER the strip's top line (they are added after
+  the strip, so they are in front) and tells the strip how much of the line's right end to leave (`rightReserve`); `keysRight()` is where
+  the text starts, `keysNeed()` decides between one line and the old two. `resized()` is called on the strip by hand because its keys' room
+  can change while its own size does not.
+- **`EditTimeline::controlNow (lane, value)`** reads the control a lane drives. It finds it exactly as the player does
+  (`automationPlanFor`, Playback.cpp) - the same mixer for a lane that names none, a VCA's fader only, an Ext Bus's fader and plug-ins only,
+  a send that must exist, pan for mono tracks only. It is a second copy of those rules on purpose (the core has `planForOneLane` /
+  `readControl`, private to Playback.cpp): using them would have changed shared code for a window's convenience. **If the player's rules
+  change, change this with them.**
+- **A lane's first point** (`automationMouseDown`, `l.pts.empty()`): value = `controlNow`, `autoDragHold` keeps the height for the rest of
+  that click (`automationDrag`). `holdAutomatedControls` then records that same value as the control's "before", so deleting the point
+  puts the control back where it was - nothing changed there.
+- **`askPointValue`**: the answer comes later (an AlertWindow, or a menu for a stepped parameter): the point is found again by lane id and
+  point id, and the edit by id, never by a pointer kept from the click. `parseDbText` holds what the lane can hold (below -59.5 dB is
+  'off', as under the mouse). A plug-in's text goes through `PluginHost::valueOfText` (JUCE `getValueForText`: the plug-in's own
+  `getParamValueByString`, else the number as 0 .. 1).
+- **Rows round the clicked track**: `clickedRow` is a row number noted at every mouse-down below the pinned band (the event as it came,
+  before `shifted`); `rowToKeepInTheMiddle()` must be read BEFORE the row height changes, the view moved after `updateSize()`. The guide
+  lane's height follows the row height (40 - 90 px), so `bandH()` is read again after the change.
+
+Asked for the same day and NOT built yet (the next build): the volume changes shown clearly. What was found:
+- There are two kinds. "Change volume from here to next edit" is one `GainChange` in one piece: it ends at that piece's end and does not
+  carry over the join. "Between the 1/2 marks" is a group (roles 1 / 2 / 3) with a fade in, a fade out, and it does cross joins.
+- A piece that STARTS at a level (a change at 0 with no glide) is drawn only as a 7 x 3 pixel mark under its banner: nothing says which
+  tracks or how much. That is why a level carried over a join cannot be seen.
+- The box is drawn round the tracks a change moves by 0.05 dB or more from the level just before it: a box round every track means every
+  track's level changes there.
+- Wanted: whether a change carries over the join to be plain; a fade back shown only on the tracks it is on; a click on the teal triangle
+  to say what the change does and to change its length, its fade in and its fade out. (Today: a double-click opens it; a "from here"
+  change has one glide and no end of its own; neither kind's start or end can be changed.)
+
+## 3.46.1: the fourth sweep, areas A, B and C; the list number in "Number the files" (9 November 2026, with Claude Fable)
+
+**The sweep.** `docs/SWEEP-4-FINDINGS.md` is the record: per area the files read line by line, and every finding as FIXED (with its test), HELD
+(the person decides) or NOTED. This build is areas A (the audio engine, playback, threads, starting and closing), B (recording and saving) and C
+(files that leave fermata and come back), with fermata:Live's recorder (`docs/LIVE-DEVELOPMENT-NOTES.md`, 0.7.1). Areas D to I follow. What a
+later change must not undo:
+- **Closing waits for the takes before the safety net starts** (`AppContext::finishTakesBeforeClosing`, called from `shutdown()` before the last
+  save): `AudioEngine::waitForFinishedTakes (60000)`, the second drive's copies (10 s), `takeInFinishedTakes (false)` for a take whose file
+  refused its end, and `StallWatch::touch()` so the wait is not reported as a freeze. The engine's destructor still waits too (a second net).
+- **The pre-roll ring takes every block** (`AudioEngine::process`): a block bigger than `maxBlock` is written in pieces, never skipped - the
+  ring's position and its contents must move together.
+- **`AppContext::newProjectProblem`** refuses a new project whose file (`.fermata`, the old `.takedaw`, or a `.bak` of either) is there. The file
+  chooser cannot ask: it sees `Folder/Name.fermata`, and the project is made at `Folder/Name/Name.fermata`.
+- **`BackupCopier` deletes only what it made** (`Job::mine`): a file already at the destination is moved aside as "(earlier copy)", or the new
+  copy takes another name. `dst == src` (the second drive's folder is where the project is) is reported, not copied.
+- **A window whose file is missing keeps what belongs to it** (`Project::parkedMasterItems` / `parkedDdpClips`, the alignment sets of
+  `missingWindowRefs`, and `planWindowFiles` never hands its file name out). `toVar` writes the parked entries back at their old places; nothing
+  new in the file format.
+- **`OnceSavedBin` (`ui/OnceSavedBin.h`, `AppContext::deleteOnceSaved`)**: files that the project file on the disk may name are deleted only
+  when a save whose snapshot was taken after they left the project is on the disk (`saveNow` numbers each snapshot; `savedInBackground` and
+  the save written there and then report it; `afterProjectReplaced` forgets the list without deleting). Noise mode uses it for the files of a
+  fix taken off again (`NoiseModeDialog::binFiles`): its fixes are in the edit at once and are NOT under `saveHold`, unlike every other try-out
+  window (`PreviewApplied`). Anything new that puts files into the project and may delete them again must use one of the two.
+- **The stereo join converts the frozen versions** (`StereoJoin.h`; first made to refuse, then converted by the person's decision). `plan`
+  walks each edit and then each `EditVersion::edit` (`planEdit`); `PieceUse::version` (0 = the edit itself) says where a piece is, because a
+  frozen copy's pieces keep their ids (`editOfUse`). The edit's own pieces get a file each, as before; a version's piece takes the file of the
+  edit's piece with the same id and the same source files, else any file planned from the same source files, and widens that job's
+  `wantFrom` / `wantTo` - so the same audio is the same `RegionFile` in both and `editversions::compare` sees no difference. `apply` runs
+  `convertLists` (trackIds, fixTracks, guide, lanes) on the edit and on every version, and replaces `EditVersion::mixer` by `joinedMix` (a
+  changed copy of the snapshot: the stereo strip where the left one was, built as a live mixer's new strip starts - compareMix against the
+  live mixer straight after the join is empty; the test checks that). The versions' `EditDef`s are changed in place (they are held by
+  `shared_ptr`, and the undo history is reset by the join anyway). A version frozen between plan and apply fails the "piece the plan does
+  not know" check. Anything new that is kept inside an `EditVersion` and names a track must be added to `convertLists` / `joinedMix`.
+- **Nothing an edit plays lives in Processing Media.** `relinkEdit` copies the corrected files into `Recorded Media/Fixes` on a job
+  (`SimpleJobDialog`; `audioops::checkWrittenLength` on each copy; the piece is looked up again and compared before it is changed), and
+  `RxLink.cpp copyFor` puts "(saved N)" copies there too (it skips a number already used beside the original by an earlier version). The
+  watched file (`RegionFile::rxFrom`) is still the one in Processing Media.
+- **`AppContext::toggleRecord` refuses while `saveHold > 0`** (the same sentence as New / Open / Quit). fermata:Live has no such state.
+- **`RxSaveWatch::missing` / `kMissingLooks`**: a watched file that is not there counts as "being replaced" for 5 looks, no longer for ever.
+- **`Aaf.cpp Cfb::open`** refuses a file over 1 GB before reading it (the reader holds the whole file in memory, on the message thread).
+- `Ravenna.cpp`: `outgoing` is emptied with the connection. `Project::importMixerFile` / `importWindowFile`: ids shorter than 8 characters are
+  not replaced (`String::replace ("", ...)` never ends). `MediaComponent::signature`: only the project's folder is listed to the bottom.
+
+**"Number the files".** `MasterExport.cpp makeFilesSpec` gives each exported piece the number of its row in `MasteringDef::items` (`listNo`:
+1-based, counted over every row, ticked or not, and over rows whose edit is gone or empty), where it used to count the ticked pieces from 1.
+`MasterJobItem::trackNo` is that number, so the "NN - " prefix and the track-number tag both follow it. The tick box has a tooltip saying so
+(`MasteringWindow.cpp`). The CD image and the DDP are not touched (their track numbers are the disc's). Test: core_test, after "an edit left out".
+
 ## 3.46.0: a look for bugs through the whole code; Find other versions for imported edits (9 November 2026)
 
 **What was looked at.** The mastering section read line by line (`MasterRender.*`, `MasterExport.cpp`, `MasterDef.cpp`, `Bounce.cpp`, `AdmWriter.*`,

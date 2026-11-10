@@ -6,6 +6,139 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.48.0
+Built 10 November 2026 (the conversation for both programs), with Claude Fable. Six things asked for that day, all in the Edit window (two
+of them in the take window as well). fermata's own code only: nothing shared changed, fermata:Live is as it was.
+- **Edit window: one line where there were two.** The Edit tabs, the subheading box, Freeze and Changes had a line of their own under the
+  line of text ("9 Takes, 04:53 - click a join ..."). They are now on that line: the keys first (they stay where they are whatever the
+  text says), then the text, then "Leave space before the first edit" at the right. The timeline gets the freed line. When the window is
+  too narrow for all of it the text is cut short with dots (the hint goes first, the takes and the length stay); only when not even that
+  fits - a very narrow window, or many frozen versions - does the text go back to a line of its own.
+- **Fixed: the first track's name flickered between bold and ordinary while the edit played** (Edit window; the same fault was there for
+  the take window's first track). The name's size was set but not its weight, so it took the weight of whatever had been drawn just before
+  it - and that differs from one redraw to the next while the playhead moves. Every other row always followed the bold M / S keys of the
+  row above. All the names are now bold by name, as all but the first always were.
+- **A lane's first automation point goes where the control stands.** Click anywhere in a lane that has no points - high or low - and the
+  point is put at the level the mixer has: a bus at -6 dB gets its first point at -6 dB, a pan at L100 at L100, a bypass that is on at On.
+  (It went under the mouse, so the control jumped to wherever the click happened to be, and its real level had to be looked up in the
+  mixer and typed in.) Its height stays put for as long as that click is held - a hand that moves a little cannot nudge it - and dragged
+  sideways it still moves in time. After that it is a point like any other. Every later point goes under the mouse, as before.
+- **The dashed line of a lane with no points lies where the control stands** (it lay at 0 dB, or the centre, whatever the mixer said), and
+  follows the mixer: move the fader and the line moves. It is where the first point will land.
+- **Double-click an automation point to type its value.** A fader, gain or send: the level in dB ("-4.5", "3", or "off" for silence). A
+  pan: "L30", "C", "R100". A plug-in's control: as the plug-in shows it ("-3.0 dB", "350 Hz" - the plug-in reads the text; one that reads
+  no text takes a number from 0 to 1). A switch or a selector - a bypass - takes no number: its positions are offered in a menu, by the
+  plug-in's own names for them (On / Off), the present one ticked. Set is on the left, Cancel on the right; Enter sets, Esc cancels. A
+  double-click on an empty part of a lane adds a point and opens the box for it.
+- **The up / down arrows size the rows round the track you clicked** (Edit window and take window). Click a track - its name, or anywhere
+  along it - and Down makes the rows taller with that track kept in the middle of the window; Up the same, smaller. (The window kept its
+  place in pixels, so taller rows showed the tracks nearer the top and the one being looked at was gone.) With no track clicked, or after
+  scrolling away from the clicked one, the track in the middle of the window stays in the middle.
+
+Seen running here (the Linux build, on a test project, in the Manuscript UI): the one line at several window widths, the first point in a
+lane after its fader was pulled to -11.3 dB and to -17.9 dB, the dashed line following the fader, the typed value, and the rows sizing
+round a clicked track in the Edit window. Not seen here: the flicker itself (it needs an edit playing through an audio device; the cause
+is read from the code and the video), the take window's rows, a real plug-in reading typed text, and anything on Windows.
+
+## 3.47.0
+Built 10 November 2026 (the conversation for both programs), with Claude Fable. The rest of the fourth code sweep: edit operations and undo
+(area D), and - read the shorter way, by what has changed since the last sweeps, as agreed on 9 November - the mixers, mastering, the readers
+and the drawing (E to H), then the clean-up (I). fermata:Live's windows were read too (`LIVE-CHANGELOG.md`, 0.8.0). Everything found, with
+what was left alone, is in `docs/SWEEP-4-FINDINGS.md`. Two changes are to how the program behaves, decided on 9 and 10 November 2026: the
+first two below.
+- **Deleting a piece takes what lies over the music with it** (decided: "it all needs to stay with the content, rather than the timeline").
+  Edit window: Delete (with the gap closing), R (remove and close the gap) and glue used to move only the pieces that follow; the overdubs,
+  markers, comment flags, the fix marks and the playhead stayed where they were on the timeline - over other music from then on. They now
+  move up with the music they belong to (a marker that lay over the deleted piece itself stays where it is). Undo, and redo, keep each one
+  on its music: markers and comment flags are not part of an undo step themselves - one added or renamed since is never taken away or
+  changed by Ctrl+Z - so until now an undo left them where the change had put them; that was already so for a piece put in, since 3.5.0.
+- **Sliding pieces takes what lies over them along too** (decided: "sliding pieces should also move markers and overdubs"). Edit window:
+  dragging a piece along (with Slip Left / Slip Right, the pieces on that side too), shuffling it past its neighbours by its banner, and
+  Move earlier / Move later. Trim window: sliding A or B under the join (with its Slip switches), and trimming the edit's first fade with
+  Slip right on. The overdubs, markers, comment flags, marks 1 and 2, the playhead and automation points fixed in time each stay over the
+  same place in the same piece. One that lies in a silence, or after the last piece, stays with the piece before it. Marks 1 and 2 that end
+  up the wrong way round (a shuffle took the piece under one past the other) are cleared. Ctrl+Z brings everything back with the music.
+  An overdub dragged by itself still moves alone.
+- **Move clips leaves the frozen versions where they are** (decided: "frozen clips should stay in place"): nothing changed there.
+- **An opening fade dragged earlier keeps the first piece's volume changes on their music.** Dragging the first piece's fade-in to the left
+  (the piece reaches back for it) moved every volume change of that piece later by the same amount, so a ride came in late. The same in the
+  piece's own start being moved (`anchorStart`).
+- **A track that only a frozen version still plays is not thrown away as empty.** After moving clips to another track, or deleting takes, a
+  track with nothing left on it is offered for removal; the frozen versions of an edit (Edit 1, Edit 2 ...) were not looked at, so a track
+  one of them still played could go - and that version was then silent there.
+- **The changes lane no longer slows the edit window.** While the lane showed, every frozen version's mixer - with all its plug-ins' settings -
+  was written out as text ten times a second, only to see whether the comparison had to be made again.
+- A damaged project file's bar numbers are believed up to 99999 (a bar number of two thousand million made the take chart count that many bars).
+- **Clean-up** (decided: "remove them"): the functions nothing called any more are out - the old way of playing a disc through the mixers
+  (`AppContext::playDisc` and what it left in the playback watcher; the Mastering window has played its finished renders since), and small
+  leftovers in the take window, the ReHarmoniSer, the device guard and the spectrogram. Nothing the program does changes.
+- **Shared:** `src/core/Edit.h` (the moves above), `src/core/EditVersions.h` (the rule that keeps things on their music, now also used when
+  pieces slide), `src/core/Project.h` and `Project.cpp` (undo's memory of where markers were; the frozen versions counted in "has this track
+  audio"; the bar limit; an unused function out), and unused functions out of `src/core/Ravenna.h/.cpp`, `AdmWriter.h` and `Surround.h`.
+  fermata:Live needs a rebuild and a test (it is built with them, though its own windows use none of the changed edit operations). No
+  file format changes.
+
+## 3.46.1
+Built 9 November 2026 (the conversation for both programs), with Claude Fable. The first part of the fourth code sweep - the audio engine, starting
+and closing; recording and saving; files that leave fermata and come back - read line by line, and one thing asked for. Everything found, with what
+was left alone, is in `docs/SWEEP-4-FINDINGS.md`. Four things the sweep found were put to the person and decided on 9 November 2026: they are
+marked "decided" below. Nothing else here changes how a feature is used.
+- **"Number the files" gives each file the number its piece has in the list** (asked for on 9 November 2026). Mastering window, Virtual Master:
+  exporting only pieces 11 and 12 of twelve made "01 - ..." and "02 - ..."; they are now "11 - ..." and "12 - ...", the numbers shown beside them
+  in the list. The track-number tag written into the file follows the same number.
+- **New project could replace an existing project's file.** A new project given the name of one that is already there (the suggested name is
+  always "New project") wrote an empty project over the first one's project file without asking: the audio and the take, edit and mixer windows
+  were untouched, but the design, the input names and the mastering list were gone. It is now refused, with the reason, before anything is written.
+- **The second drive no longer deletes a file that is already there.** A take's copy on the second drive replaced any file of the same name - and
+  a project started again under the same name (after the main drive failed, say) names its takes the same, so the new take 1 deleted the second
+  drive's copy of the first take 1. A file that is already there is now kept as "<name> (earlier copy).wav". And when the second drive's folder
+  is the project's own, the 2ND lamp says there is no second copy (the "copy" would have been the recording itself).
+- **Closing straight after Stop can no longer cut off the end of a take.** On a drive that was behind, the last moments of a take were still
+  being written when the closing safety net (which ends the program 15 s after closing starts) could step in. Closing now waits for the takes'
+  files, and the second drive's copies, before the last save and before the safety net starts.
+- **Session mode (Pre): a longer block of audio from the device no longer puts old sound into the take.** A block bigger than the engine had been
+  told to expect was left out of the pre-roll memory, and the take got the sound of some seconds earlier in its place. It is recorded as it came.
+- **Noise mode: Undo, or "Throw them away", can no longer leave the saved project pointing at deleted audio.** Its fixes are in the edit at once,
+  so the automatic save writes them; Undo then deleted the fix's files there and then. A crash - or "Quit without saving" - before the next save
+  left the edit with holes where those fixes had been. The files are now deleted only once the project has been saved without them.
+- **An edit whose file could not be read keeps its mastering entry.** A missing or unreadable edit file is reported when the project opens, to be
+  put back - but the next save dropped that edit's Virtual Master entry (file name, tags), its CD clip (ISRC, pause) and its alignment, and
+  could give its file's name to a new window. They now wait for the file to come back.
+- **"Make a stereo track" takes the frozen versions of an edit with it** (decided). The frozen versions (Edit 1, Edit 2 ...) were left on the
+  two mono tracks, which no longer exist: silent when compared, listened to or put back - and the change cannot be undone. Each frozen version
+  is now changed exactly as the edit itself is: its pieces play the new stereo files (the same file as the edit's own piece wherever the two
+  are the same audio, so the changes lane shows no difference that is not one), its automation follows, and the mixer settings kept with it
+  get the stereo strip with the left track's fader, output and sends. The question box says so when a frozen version is involved.
+- **Re-linked audio is copied into the project** (decided). "Re-link corrected audio" in an edit made the piece play the very file in
+  Processing Media: saving that file again from the other program changed the edit without an undo step, and the job's folder could never be
+  cleared. The corrected files are now copied into the project's Fixes folder ("... (re-linked).wav") and the piece plays the copies. Saves
+  brought in from a linked program (RX, Melodyne ...) were copied beside the original in Processing Media; those copies ("... (saved 1).wav")
+  now go to Fixes too. Processing Media is a hand-over place and nothing more; copies already made stay where they are and go on playing.
+- **Record is refused while a ReTouch or Pitch window is trying something out** (decided), as New, Open, Close and Quit already were: the
+  project cannot be saved in that state, so the new take would have been in no project file until the window closed. (fermata:Live is not
+  changed: there the Fixer fixes while the Primary records.)
+- **The sample-rate box has its action on the left and Cancel on the right** (decided), as every other box.
+- **A fix that could not read its audio says so.** Putting corrected audio into a take (re-linking, a save from a linked program) and a fix
+  written as a whole new file carried on when a read failed part way - a drive dropping out - and wrote silence there, reporting the fix as
+  made. Both now stop with an error and leave no half-made file.
+- **An AAF with the audio inside it no longer freezes the program.** The import read the whole file into memory: for an AAF with embedded audio
+  that is the whole session's audio (the window froze; with too little memory the program ended). Such a file is now refused at once, with what
+  to do: export the AAF again with the audio linked.
+- **A preamp change is never sent late.** A gain or 48 V change made in the moment a RAVENNA device's connection dropped was sent when the
+  connection came back - seconds or hours later, perhaps during a take. What was waiting is dropped with the connection.
+- **Importing a mixer or window file with a track that has no id no longer hangs the program.**
+- **A new project that cannot be written goes back to the start panel** and says why, instead of staying open as a project whose every save fails.
+- **The Media window no longer lists whole drives every 3 seconds.** A file brought in from the top of a drive, or from a music library, made
+  the window read all of that drive or library again and again while it was open. Only the project's own folder is read to the bottom now. A
+  file that lives in a new place is also highlighted at the first click.
+- **Linked programs: a file deleted by hand no longer makes later saves arrive half a minute late.**
+- Small things: the multitrack import says which file it left out when a take already has a file for that track; a value typed into a row of
+  the Design window's tables that has just gone (the audio device changed) is no longer written; Up on the first bus and Down on the last keep
+  the selection; the Display Organiser's list checks its rows.
+- **Shared:** `src/core/AudioEngine.cpp`, `BackupCopier.h`, `Project.h/.cpp`, `Ravenna.cpp`, `MasterExport.cpp`, `RxWatch.h`, `StereoJoin.h`,
+  `AudioOps.cpp`, `ImportPlan.cpp`, `Aaf.cpp` changed. fermata:Live needs a rebuild and test (its own code calls none of the changed parts); it is
+  0.7.1 in this build for its own fixes (`LIVE-CHANGELOG.md`).
+
 ## 3.46.0
 Built 9 November 2026 (the conversation for both programs), with Claude Fable. After a look through the whole code for bugs (the mastering section read
 closely; every source file of both programs through a static analyser): five things put right, and Find other versions for edits that came from an AAF.

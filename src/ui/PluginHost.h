@@ -24,6 +24,10 @@ public:
     /** Why the last plug-in the factory was asked for could not be started (empty: it could). Message thread. */
     juce::String lastFactoryError;
 
+    /** 3.48.0: the normalised value (0 .. 1) a plug-in reads from text typed in its own words ("-3.0 dB", "350 Hz"; a plug-in that reads no text takes
+        a plain number as 0 .. 1), for a value typed onto an automation point. Below 0: not one of this host's plug-ins, or it has no such parameter.
+        Message thread. */
+    float valueOfText (InsertProcessor*, int param, const juce::String& text);
     void showEditor (InsertProcessor*);
     void closeEditorsFor (InsertProcessor*);
     void closeAllEditors();

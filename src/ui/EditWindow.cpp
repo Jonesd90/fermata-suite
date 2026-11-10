@@ -314,8 +314,30 @@ public:
     void zoomVertical (double f)
     {
         const int maxH = juce::jmax (60, viewport.getMaximumVisibleHeight() - bandH());
+        const double keep = rowToKeepInTheMiddle();
         rowH = juce::jlimit (12, maxH, (int) std::lround ((double) rowH * f + (f > 1.0 ? 1.0 : -1.0)));
-        updateSize(); repaint();
+        updateSize();
+        // 3.48.0 (asked for on 10 November 2026): the rows grow or shrink round the track that was clicked - it is put in the middle of the window.
+        // (The window used to keep its place in pixels, so with taller rows it showed the tracks nearer the top: the one being looked at was gone.)
+        const int visH = viewport.getMaximumVisibleHeight(), rowsH = visH - bandH();
+        viewport.setViewPosition (viewport.getViewPositionX(), juce::jlimit (0, juce::jmax (0, getHeight() - visH), (int) std::lround (keep * (double) rowH - (double) rowsH * 0.5)));
+        repaint();
+    }
+    /** 3.48.0: the row the up / down arrows keep in the middle of the window, in rows from the first one's top (2.5 = the middle of the third): the
+        row last clicked (its name, or anywhere along it) while any of it can be seen; otherwise - none clicked yet, or scrolled away from - whatever
+        is in the middle now. */
+    int clickedRow = -1;
+    double rowToKeepInTheMiddle() const
+    {
+        const int sy = viewport.getViewPositionY(), rowsH = viewport.getMaximumVisibleHeight() - bandH(), h = juce::jmax (1, rowH);
+        if (juce::isPositiveAndBelow (clickedRow, (int) rowTracks().size()) && (clickedRow + 1) * h > sy && clickedRow * h < sy + rowsH) return (double) clickedRow + 0.5;
+        return ((double) sy + (double) rowsH * 0.5) / (double) h;
+    }
+    void noteClickedRow (const juce::MouseEvent& e)                // (the event as it came: the band at the top is pinned over the rows under it)
+    {
+        if (e.y - viewport.getViewPositionY() < bandH()) return;
+        const int row = (e.y - bandH()) / juce::jmax (1, rowH);
+        if (juce::isPositiveAndBelow (row, (int) rowTracks().size())) clickedRow = row;
     }
 
     /** How long the timeline is: the material (or the playhead / cursor, if that is further) and then as much empty room again (at least 10 minutes), so
@@ -972,7 +994,10 @@ public:
                 g.setColour (juce::Colours::white.withAlpha (0.08f)); g.fillRect (sx, rowTop, kNameW, rowH);
                 g.setColour (juce::Colour (0xffffc83d)); g.drawRect (juce::Rectangle<int> (sx, rowTop, kNameW, rowH).reduced (1), 2);
             }
-            g.setColour (theme::text); g.setFont (14.0f);
+            // 3.48.0: the weight is named. g.setFont (14.0f) only changes the height of whatever font was last used, so the first track's name was drawn bold
+            // or not by what had been drawn just before it - which differs from one redraw to the next while the edit plays (the name flickered); the
+            // other rows always followed the bold M / S of the row above. Bold is what every row but the first has always shown.
+            g.setColour (theme::text); g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
             if (lanesOn (*e))
             {
                 const bool boxes = inf.kind != NodeKind::Vca || extra;                      // + and - boxes: not for a VCA (its fader is all it has)
@@ -1033,7 +1058,7 @@ public:
             modhint::paint (g, { sx, markerui::kStripH + kFbH, kNameW, kGuideTop - markerui::kStripH - kFbH }, shownMods, modifierHints (shownMods));
     }
 
-    void mouseDown (const juce::MouseEvent& e0) override { hdrShift = stickyShift (e0); mouseDownImpl (shifted (e0, hdrShift)); }
+    void mouseDown (const juce::MouseEvent& e0) override { noteClickedRow (e0); hdrShift = stickyShift (e0); mouseDownImpl (shifted (e0, hdrShift)); }
     void mouseDrag (const juce::MouseEvent& e0) override { mouseDragImpl (shifted (e0, hdrShift)); }
     void mouseUp (const juce::MouseEvent& e0) override { const int by = hdrShift; hdrShift = 0; mouseUpImpl (shifted (e0, by)); }
     void mouseMove (const juce::MouseEvent& e0) override { const auto e = shifted (e0, stickyShift (e0)); updateHoverRow (e.y); mouseMoveImpl (e); }
@@ -1335,12 +1360,12 @@ public:
         else if (canMove && idx >= 0 && e.x > kNameW)
         {
             if (app.isPlaying()) app.stopPlayback();
-            dragging = true; dragIndex = idx; baseRegions = ed->regions;
+            dragging = true; dragIndex = idx; baseRegions = ed->regions; dragRiders.emplace (*ed);
             setMouseCursor (juce::MouseCursor::DraggingHandCursor);
         }
         if (e.getNumberOfClicks() > 1 && e.x > kNameW && ! additive && ! selectedRegion.isNull())     // double-click on a piece: trim its fades
         {
-            dragging = false; dragOverdub = false; baseRegions.clear();
+            dragging = false; dragOverdub = false; baseRegions.clear(); dragRiders.reset();
             if (ed->isOverdub (selectedRegion))
                 showError ("Trim", "An overdub lies on top of other audio, so it has no crossfade to trim. Pieces of the edit itself can be trimmed.");
             else
@@ -1386,7 +1411,7 @@ public:
         if (! shuffleId.isNull())
         {
             if (! shuffleMoved && std::abs (e.x - shuffleStartX) < 5) return;
-            if (! shuffleMoved) { shuffleMoved = true; if (app.isPlaying()) app.stopPlayback(); setMouseCursor (juce::MouseCursor::DraggingHandCursor); }
+            if (! shuffleMoved) { shuffleMoved = true; if (app.isPlaying()) app.stopPlayback(); setMouseCursor (juce::MouseCursor::DraggingHandCursor); dragRiders.emplace (*ed); }
             const double rt = juce::jmax (1.0, ed->sampleRate);
             shuffleSample = (juce::int64) (juce::jmax (0.0, (e.x - kNameW) / pixelsPerSecond) * rt);
             for (int guard = 0; shuffleMode && guard < 64; ++guard)       // (shuffle on) the piece trades places with a neighbour once its middle has passed the neighbour's middle
@@ -1407,6 +1432,7 @@ public:
                 ed->slideRegion (i, want - ed->regions[(size_t) i].startSample, slipLeft, slipRight);
             }
             ed->settleGapFades();
+            if (dragRiders) dragRiders->carry (*ed);          // 3.47.0: the overdubs, markers, comment flags and marks go with their music (from where they were when the drag began)
             app.project.markDirty(); updateSize(); repaint();
             return;
         }
@@ -1469,6 +1495,9 @@ public:
         EditDef tmp; tmp.sampleRate = ed->sampleRate; tmp.regions = baseRegions;
         tmp.slideRegion (dragIndex, (juce::int64) std::llround (e.getDistanceFromDragStartX() / pixelsPerSecond * rate), slipLeft, slipRight);
         for (size_t i = 0; i < ed->regions.size() && i < tmp.regions.size(); ++i) ed->regions[i].startSample = tmp.regions[i].startSample;
+        // 3.47.0 (decided 10 November 2026): what lies over the pieces that move goes with them - the overdubs, markers, comment flags, marks 1 / 2,
+        // the playhead, automation points fixed in time. Always from where they were when the drag began, so nothing is picked up on the way.
+        if (dragRiders) dragRiders->carry (*ed);
         app.project.markDirty();
         updateSize();
         repaint();
@@ -1517,7 +1546,7 @@ public:
         if (! shuffleId.isNull())
         {
             const bool moved = shuffleMoved;
-            shuffleId = juce::Uuid::null(); shuffleMoved = false;
+            shuffleId = juce::Uuid::null(); shuffleMoved = false; dragRiders.reset();
             if (moved) if (auto* ed = edit()) ed->settleGapFades();
             setMouseCursor (juce::MouseCursor::NormalCursor);
             if (moved) app.project.changed();
@@ -1571,7 +1600,7 @@ public:
         if (autoDragIndex >= 0) { autoDragIndex = -1; autoDragLane = juce::Uuid::null(); app.project.changed(); }
         if (fadeDrag != 0) { fadeDrag = 0; app.project.changed(); }
         if (dragOverdub) { dragOverdub = false; app.project.changed(); }
-        if (dragging) { dragging = false; baseRegions.clear(); if (auto* ed = edit()) ed->settleGapFades(); app.project.changed(); }
+        if (dragging) { dragging = false; baseRegions.clear(); dragRiders.reset(); if (auto* ed = edit()) ed->settleGapFades(); app.project.changed(); }
         setMouseCursor (juce::MouseCursor::NormalCursor);
     }
 
@@ -1624,6 +1653,7 @@ private:
     // ------------------------------------------------------------------ automation
     // What each row shows (which lane) is kept by the edit (EditDef::laneRows) and saved with the project; the lanes themselves are the edit's (EditDef::lanes) and play whatever the rows show.
     juce::Uuid autoDragLane = juce::Uuid::null(); int autoDragIndex = -1; int autoDragRow = 0; float autoPrevY = 0.0f;
+    bool autoDragHold = false;        // 3.48.0: the point being dragged is its lane's first, just made: its height stays where the control stood for as long as the click is held
     juce::Rectangle<int> plusRect (int sx, int rowTop) const  { return { sx + kNameW - 52, rowTop + 3, 20, 16 }; }
     juce::Rectangle<int> minusRect (int sx, int rowTop) const { return { sx + kNameW - 28, rowTop + 3, 20, 16 }; }
     /** The small box with a + or a - in it (a - that has nothing to take away is dim). */
@@ -1721,6 +1751,66 @@ private:
         auto* sls = slotsOf (m, lane.trackId);
         return sls != nullptr ? sls[slot].getProcessorUnsafe() : nullptr;
     }
+    /** 3.48.0: where the control a lane drives stands now in the mixer - a fader, gain or send in dB, the pan (-1 .. +1), a plug-in's parameter
+        (0 .. 1). The control is found exactly as the player finds it (automationPlanFor, Playback.cpp: the same mixer, and the same rules for a VCA,
+        a bus, an Ext Bus, a send that is not there, an empty slot) - keep the two alike. False when the lane drives nothing. A lane's first point
+        goes there, and the dashed line of a lane with no points lies there. */
+    bool controlNow (const AutoLane& lane, float& value) const
+    {
+        auto* m = mixerFor (lane.mixerId);
+        if (m == nullptr) return false;
+        if (const auto* vd = app.project.findVca (lane.trackId))                    // a VCA: its fader is all it has
+        {
+            if (lane.param != autoparam::fader) return false;
+            value = m->vcas[juce::jlimit (0, kMaxVcas - 1, vd->number - 1)].gainDb.get(); return true;
+        }
+        if (lane.isPlugin())
+        {
+            int idx = 0;
+            auto* pr = processorOfLane (lane, idx);
+            if (pr == nullptr || idx >= pr->numParams() || ! pr->paramAutomatable (idx)) return false;
+            value = pr->getParamNorm (idx); return true;
+        }
+        if (const auto* bd = app.project.findBus (lane.trackId))
+        {
+            auto* bs = m->busFor (lane.trackId);
+            if (bs == nullptr) return false;
+            if (lane.param == autoparam::fader) { value = bs->gainDb.get(); return true; }
+            if (bd->external) return false;                                          // (an Ext Bus: its fader and its plug-ins only)
+            if (lane.param == autoparam::gain) { value = bs->inGainDb.get(); return true; }
+            if (lane.param == autoparam::pan)  { value = bs->pan.get(); return true; }
+            if (autoparam::isSend (lane.param)) if (auto* sd = bs->sends.find (autoparam::sendDest (lane.param))) { value = sd->gainDb.get(); return true; }
+            return false;
+        }
+        const auto* t = app.project.findTrack (lane.trackId);
+        if (t == nullptr) return false;
+        auto* strip = m->stripFor (lane.trackId);
+        if (lane.param == autoparam::fader) { value = strip->gainDb.get(); return true; }
+        if (lane.param == autoparam::gain)  { value = strip->inGainDb.get(); return true; }
+        if (lane.param == autoparam::pan)   { if (t->channelCount() != 1) return false; value = strip->pan.get(); return true; }
+        if (autoparam::isSend (lane.param)) if (auto* sd = strip->sends.find (autoparam::sendDest (lane.param))) { value = sd->gainDb.get(); return true; }
+        return false;
+    }
+    /** 3.48.0: the dashed lines of the lanes with no points follow their controls - a fader moved in the mixer moves its line. Asked a few times a
+        second by the window (its timer); the lanes are drawn again only when one of those controls has moved. */
+    double restLinesSeen = 0.0;
+public:
+    void followRestLines()
+    {
+        auto* e = edit();
+        if (e == nullptr || ! lanesOn (*e)) return;
+        rowTracks();                                                                 // (fills rowInfo)
+        double seen = 0.0;
+        for (size_t i = 0; i < rowInfo.size(); ++i)
+        {
+            const auto s = e->laneShown (rowInfo[i].node, rowInfo[i].lane);
+            if (const auto* l = e->findLane (rowInfo[i].node, s.param, s.mixer); l != nullptr && ! l->pts.empty()) continue;
+            AutoLane probe; probe.trackId = rowInfo[i].node; probe.param = s.param; probe.mixerId = s.mixer;
+            if (float v = 0.0f; controlNow (probe, v)) seen += (double) (i + 1) * (1000.0 + (double) v);
+        }
+        if (seen != restLinesSeen) { restLinesSeen = seen; repaint(); }
+    }
+private:
     /** The insert slots of a track, an Int Bus or an Ext Bus in a mixer (null for anything else: a VCA has none). */
     InsertSlot* slotsOf (MixerState* m, const juce::Uuid& node) const
     {
@@ -1888,11 +1978,16 @@ private:
         const AutoLane& L = lane != nullptr ? *lane : dummy;
         const juce::Colour line = locked ? juce::Colour (0xff9aa0a6) : juce::Colour (0xffffc83d);
         auto px = [&] (juce::int64 time) { return (float) xOf ((double) time / rate); };
-        const float zeroY = yOfValue (L, L.defaultValue(), rowTop);
         if (L.pts.empty())
         {
+            // 3.48.0: the dashed line of a lane with no points lies where its control stands in the mixer (it lay at 0 dB / centre whatever the mixer
+            // said): the lane's first point goes there (automationMouseDown), so it is drawn where it will land.
+            AutoLane probe; probe.trackId = inf.node; probe.param = s.param; probe.mixerId = s.mixer;
+            float now = L.defaultValue();
+            if (controlNow (probe, now)) now = AutoLane::snapToSteps (probe.clampValue (now), stepsOfLane (probe));
+            const float restY = yOfValue (L, now, rowTop);
             const float dash[] = { 4.0f, 4.0f };
-            g.setColour (line.withAlpha (0.62f)); g.drawDashedLine (juce::Line<float> (x0, zeroY, x1, zeroY), dash, 2, 1.0f);
+            g.setColour (line.withAlpha (0.62f)); g.drawDashedLine (juce::Line<float> (x0, restY, x1, restY), dash, 2, 1.0f);
             return;
         }
         const int steps = stepsOfLane (L);                                  // a switch or selector: drawn as the steps it really has (the value holds until the next point)
@@ -1982,18 +2077,121 @@ private:
                 {
                     lane->pts.erase (lane->pts.begin() + k); app.project.changed(); repaint(); return true;
                 }
-                autoDragLane = lane->id; autoDragIndex = k; autoDragRow = row; autoPrevY = (float) e.y; repaint(); return true;
+                if (e.getNumberOfClicks() > 1) { askPointValue (ed, *lane, pt.id); return true; }     // 3.48.0: double-click: its value typed, or chosen
+                autoDragLane = lane->id; autoDragIndex = k; autoDragRow = row; autoPrevY = (float) e.y; autoDragHold = false; repaint(); return true;
             }
             if (lane->locked) return true;
         }
         if (e.mods.isPopupMenu()) return true;
+        if (e.getNumberOfClicks() > 1) return true;                                  // (the second click of a double-click that was not on a point: no second point)
         auto& l = ed.addLane (inf.node, s.param, s.mixer);
         if (s.param == autoparam::pan && t.channelCount() != 1) return true;         // pan is for mono tracks
         const auto time = (juce::int64) std::llround (juce::jmax (0.0, (double) (e.x - kNameW) / pixelsPerSecond) * rate);
         autoPrevY = (float) e.y;
-        autoDragIndex = ed.addPoint (l, time, draggedValue (l, (float) e.y, rowTop, false, 0.0f));
+        float value = draggedValue (l, (float) e.y, rowTop, false, 0.0f);
+        autoDragHold = false;
+        // 3.48.0 (asked for on 10 November 2026): the FIRST point of a lane goes where its control stands in the mixer - a bus at -6 dB gets its
+        // first point at -6 dB, a pan at L100 at L100 - however high or low the click was: until now it went under the mouse, so the control jumped
+        // to wherever that happened to be, and the level it had had to be looked up in the mixer and typed in. Its height stays put for as long as
+        // this click is held (a hand that moves a little must not nudge it); dragged sideways it still moves in time. Afterwards it is a point like
+        // any other: drag it, or double-click it and type.
+        if (l.pts.empty())
+            if (float now = 0.0f; controlNow (l, now))
+            {
+                value = AutoLane::snapToSteps (l.clampValue (now), stepsOfLane (l));
+                autoDragHold = true;
+                app.setNotice ("First point of this lane: put where the control stands now (" + autoValueText (l, value) + "). Drag it, or double-click it and type, to change it.");
+            }
+        autoDragIndex = ed.addPoint (l, time, value);
         autoDragLane = l.id; autoDragRow = row;
         app.project.markDirty(); repaint();
+        return true;
+    }
+
+    /** 3.48.0 (asked for on 10 November 2026): a point double-clicked - its value typed, in the lane's own terms: dB for a fader, a gain or a send
+        ("-4.5", "off"), L / C / R for a pan ("L30", "C", "R100"), and a plug-in's control in the plug-in's own words ("-3.0 dB", "350 Hz" - the
+        plug-in reads them). A switch or a selector (a bypass: On / Off) takes no number: its positions are offered in a menu, by the plug-in's
+        names for them. The point is found again by its id when the answer comes (the box and the menu do not block). */
+    void askPointValue (EditDef& ed, const AutoLane& lane, const juce::Uuid& pointId)
+    {
+        const auto* pt = [&] () -> const AutoPoint* { for (auto& q : lane.pts) if (q.id == pointId) return &q; return nullptr; }();
+        if (pt == nullptr) return;
+        const auto laneId = lane.id; const auto eid = editId;
+        juce::Component::SafePointer<EditTimeline> me (this);
+        auto setValue = [me, laneId, pointId, eid] (float v)
+        {
+            if (me == nullptr || me->editId != eid) return;
+            auto* e2 = me->edit(); auto* l2 = e2 != nullptr ? e2->findLane (laneId) : nullptr;
+            if (l2 == nullptr || l2->locked) return;
+            for (auto& q : l2->pts) if (q.id == pointId) { q.value = l2->clampValue (v); me->app.project.changed(); me->repaint(); return; }
+        };
+        const juce::String what = nodeName (lane.trackId) + "  -  " + describeParam (lane.param, lane.trackId, lane.mixerId);
+        if (const int steps = stepsOfLane (lane); steps >= 2)                        // a switch or a selector: its positions, nothing between
+        {
+            int idx = 0; auto* pr = processorOfLane (lane, idx);
+            const int cur = (int) std::lround (AutoLane::snapToSteps (pt->value, steps) * (float) (steps - 1));
+            juce::PopupMenu m;
+            m.addSectionHeader (what);
+            for (int k = 0; k < steps; ++k)
+            {
+                const float v = (float) k / (float) (steps - 1);
+                const juce::String word = pr != nullptr ? pr->paramText (idx, v) : juce::String();
+                m.addItem (1 + k, word.isNotEmpty() ? word : juce::String (k + 1) + " of " + juce::String (steps), true, k == cur);
+            }
+            m.showMenuAsync (juce::PopupMenu::Options(), [setValue, steps] (int r) { if (r >= 1 && r <= steps) setValue ((float) (r - 1) / (float) (steps - 1)); });
+            return;
+        }
+        const bool pan = lane.param == autoparam::pan, plug = lane.isPlugin();
+        int idx = 0; auto* pr = plug ? processorOfLane (lane, idx) : nullptr;
+        const juce::String shown = plug ? (pr != nullptr && pr->paramText (idx, pt->value).isNotEmpty() ? pr->paramText (idx, pt->value) : juce::String (pt->value, 3))
+                                 : pan  ? autoValueTextPlain (lane, pt->value)
+                                        : (pt->value <= AutoLane::kFaderOff + 0.5f ? juce::String ("off") : juce::String (pt->value, 1));
+        const juce::String how = plug ? "As the plug-in shows it (or a number from 0 to 1)"
+                               : pan  ? "Pan: L30, C, R100"
+                                      : "Level in dB. For silence: off";
+        auto* aw = new juce::AlertWindow ("Automation point", what + "\n\n" + how, juce::MessageBoxIconType::NoIcon);
+        aw->addTextEditor ("v", shown, pan ? "Pan" : plug ? "Value" : "dB");
+        aw->addButton ("Set", 1, juce::KeyPress (juce::KeyPress::returnKey));
+        aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+        aw->enterModalState (true, juce::ModalCallbackFunction::create ([me, aw, setValue, laneId, pan, plug, eid] (int res)
+        {
+            if (res != 1 || me == nullptr || me->editId != eid) return;
+            const auto text = aw->getTextEditorContents ("v").trim();
+            float v = 0.0f;
+            if (plug)
+            {
+                auto* e2 = me->edit(); auto* l2 = e2 != nullptr ? e2->findLane (laneId) : nullptr;
+                int i2 = 0; auto* p2 = l2 != nullptr ? me->processorOfLane (*l2, i2) : nullptr;
+                v = p2 != nullptr ? me->app.plugins.valueOfText (p2, i2, text) : -1.0f;
+                if (v < 0.0f || text.isEmpty()) { me->app.setNotice ("That value could not be read: the point is as it was."); return; }
+            }
+            else if (! (pan ? parsePanText (text, v) : parseDbText (text, v))) { me->app.setNotice (pan ? "That is not a pan position. Type it like L30, C or R100." : "That is not a level. Type it like -4.5, or off."); return; }
+            setValue (v);
+        }), true);
+    }
+    /** "-4.5", "+3", "-4,5 dB", "off" / "-inf" (silence): a level for a fader, gain or send lane - what the lane can hold (-60 dB and below is 'off', as it is under the mouse; +12 at most). */
+    static bool parseDbText (juce::String t, float& v)
+    {
+        t = t.trim().toLowerCase().replaceCharacter (',', '.').upToFirstOccurrenceOf ("db", false, false).trim();
+        if (t == "off" || t == "-inf" || t == "inf" || t == "-oo" || t == "mute") { v = AutoLane::kFaderOff; return true; }
+        if (! t.containsAnyOf ("0123456789") || t.containsAnyOf ("abcdefghijklmnopqrstuvwxyz")) return false;
+        const float db = std::round (t.getFloatValue() * 10.0f) / 10.0f;
+        v = db <= -59.5f ? AutoLane::kFaderOff : juce::jmin (AutoLane::kFaderMax, db);
+        return true;
+    }
+    /** "L30", "l 30", "C", "R100", or a plain number from -100 (left) to 100 (right): a pan position, -1 .. +1. */
+    static bool parsePanText (juce::String t, float& v)
+    {
+        t = t.trim().toUpperCase().replaceCharacter (',', '.').removeCharacters (" %");
+        if (t == "C" || t == "CENTRE" || t == "CENTER") { v = 0.0f; return true; }
+        float sign = 0.0f;
+        if (t.startsWithChar ('L')) { sign = -1.0f; t = t.substring (1); }
+        else if (t.startsWithChar ('R')) { sign = 1.0f; t = t.substring (1); }
+        if (t.isEmpty() || ! t.containsOnly ("0123456789.-+")) return false;
+        const float n = t.getFloatValue();
+        if (sign != 0.0f && n < 0.0f) return false;
+        v = juce::jlimit (-1.0f, 1.0f, (sign != 0.0f ? sign * n : n) / 100.0f);
+        v = std::round (v * 100.0f) / 100.0f;
         return true;
     }
 
@@ -2005,7 +2203,7 @@ private:
         const int rowTop = bandH() + autoDragRow * rowH;
         const auto time = (juce::int64) std::llround (juce::jmax (0.0, (double) (e.x - kNameW) / pixelsPerSecond) * rate);
         const float cur = juce::isPositiveAndBelow (autoDragIndex, (int) lane->pts.size()) ? lane->pts[(size_t) autoDragIndex].value : 0.0f;
-        autoDragIndex = ed.movePoint (*lane, autoDragIndex, time, draggedValue (*lane, (float) e.y, rowTop, e.mods.isAltDown(), cur));
+        autoDragIndex = ed.movePoint (*lane, autoDragIndex, time, autoDragHold ? cur : draggedValue (*lane, (float) e.y, rowTop, e.mods.isAltDown(), cur));     // (autoDragHold: a lane's first point, see automationMouseDown)
         app.project.markDirty(); repaint();
     }
 
@@ -2586,6 +2784,7 @@ private:
     XfadeWaveCache xfadeWaves;                                                          // 3.45.0: what each crossfade sounds like, track by track
     std::map<juce::String, std::unique_ptr<WaveThumb>> thumbs;
     bool dragging = false; int dragIndex = -1; std::vector<EditRegion> baseRegions;
+    std::optional<editversions::Riders> dragRiders;        // (3.47.0) what lay over the pieces when a drag of pieces began - a slide or a shuffle (see editversions::Riders)
     bool markDrag = false, markActive = false, markAlt = false; double markAnchor = 0.0; int markStartX = 0, markRow0 = 0;     // dragging over audio that is not selected sets marks 1 and 2
     int markLineDrag = 0;                                       // 3.25.0: 1 / 2 while the line of mark 1 / mark 2 is being dragged
     /** 3.25.0: 1 or 2 when p is within 5 px of the line of mark 1 / mark 2 (the nearer one), under the ruler: on the pieces' banners and on the tracks' own rows.
@@ -2627,7 +2826,12 @@ class VersionStrip : public juce::Component, private juce::Timer
 public:
     static constexpr int kTabsH = 26, kLaneH = 18, kGhostH = 20;
     std::function<void (double)> goTo;                       // the window's goTo (seconds on the live timeline)
-    std::function<void()> layoutChanged;                     // the strip's height changed: the window lays out again
+    std::function<void()> layoutChanged;                     // the strip's height or its keys changed: the window lays out again
+    /** 3.48.0: the keys share their line with the window's line of text and its lead-in box (see EditWindowComponent::resized). The window says how
+        much of the line's right end to keep clear of keys, and asks where the keys end and how little room they can do with. */
+    int rightReserve = 0;
+    int keysRight() const { return changesButton.getRight(); }
+    int keysNeed() const  { return 4 + 66 * tabs.size() + 6 + 80 + 8 + 134 + 90 + 4; }
     VersionStrip (AppContext& a, const juce::Uuid& eid, EditTimeline& t, juce::Viewport& vp) : app (a), editId (eid), timeline (t), viewport (vp)
     {
         addAndMakeVisible (subheading);
@@ -2688,9 +2892,10 @@ public:
         int x = 4;
         for (auto* b : tabs) { b->setBounds (x, r.getY(), 64, r.getHeight()); x += 66; }
         x += 6;
-        subheading.setBounds (x, r.getY(), juce::jmin (260, juce::jmax (80, getWidth() - x - 330)), r.getHeight()); x = subheading.getRight() + 8;
+        const int w = getWidth() - rightReserve;                  // (the keys' part of the line)
+        subheading.setBounds (x, r.getY(), juce::jmin (260, juce::jmax (80, w - x - 330)), r.getHeight()); x = subheading.getRight() + 8;
         freezeButton.setBounds (x, r.getY(), 128, r.getHeight()); x += 134;
-        changesButton.setBounds (x, r.getY(), juce::jmin (170, juce::jmax (90, getWidth() - x - 4)), r.getHeight());
+        changesButton.setBounds (x, r.getY(), juce::jmin (170, juce::jmax (90, w - x - 4)), r.getHeight());
     }
     void paint (juce::Graphics& g) override
     {
@@ -2847,7 +3052,10 @@ private:
     }
     void refreshChanges (const EditDef& live, const EditDef& ve)
     {
-        const auto h = Project::saveHash (live) ^ (Project::saveHash (ve) * 31u);
+        // 3.47.0: what the comparison reads - the pieces, overdubs and automation of the two - and nothing else (undoHash). It was saveHash, which also
+        // writes out every frozen version's mixer settings, plug-ins' settings and all, as text: megabytes, at every repaint of this strip (10 times a
+        // second while the changes lane is open).
+        const auto h = Project::undoHash (live) ^ (Project::undoHash (ve) * 31u);
         if (h == changesHash) return;
         changesHash = h;
         changes = editversions::compare (ve, live);
@@ -3091,6 +3299,7 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     nameEditor.onFocusLost = commitEditName;
     nameEditor.onReturnKey = [this, commitEditName] { commitEditName(); timeline->grabKeyboardFocus(); };     // Enter: the keyboard goes back to the timeline (its keys work at once)
     infoLabel.setColour (juce::Label::textColourId, theme::text);
+    infoLabel.setMinimumHorizontalScale (1.0f);              // (3.48.0: on its shared line it is cut short with dots when room is short, not squeezed narrow)
     // 3.16.0: the edit always begins at 0:00 (the opening fade's first sample) - or, ticked, this many seconds later
     leadInBox.setTooltip ("The edit always begins at 0:00: move the opening fade or the first piece and everything moves with it. Tick this to leave this many seconds of silence before it instead.");
     leadInSecs.setTooltip ("Seconds of silence before the first edit (to a hundredth of a second)");
@@ -3326,16 +3535,40 @@ void EditWindowComponent::resized()
     else                                                       // a narrow window: the buttons go under the head, across the whole width
         headH += grid::flow (juce::Rectangle<int> (r.getX(), r.getY() + headH, r.getWidth(), 0), items, true, nullptr, true);
     r.removeFromTop (headH + 2);
+    // 3.48.0 (asked for on 10 November 2026): one line where there were two. The versions' keys (the Edit tabs, the subheading, Freeze, Changes) come
+    // first - they stay where they are whatever the text says - then the line of text (how many takes, how long, the hint), then the lead-in box at
+    // the right. The text gives way first (it is cut short with dots); only when not even "9 Takes, 04:53" would fit - a narrow window, or many
+    // frozen versions - does the text keep a line of its own above the keys, as it had from 3.42.0.
+    constexpr int leadInW = 16 + 58 + 4 + 232, textLeast = 150;
+    auto textAndLeadIn = [this] (juce::Rectangle<int> row)
     {
-        auto row = r.removeFromTop (22);
         leadInUnit.setBounds (row.removeFromRight (16));
         leadInSecs.setBounds (row.removeFromRight (58).reduced (0, 1));
         row.removeFromRight (4);
         leadInBox.setBounds (row.removeFromRight (232));
         infoLabel.setBounds (row.reduced (4, 0));
+    };
+    if (versionStrip != nullptr && r.getWidth() - leadInW - textLeast >= versionStrip->keysNeed())
+    {
+        const auto strip = r.removeFromTop (versionStrip->idealHeight());
+        versionStrip->rightReserve = leadInW + textLeast;
+        versionStrip->setBounds (strip); versionStrip->resized();           // (resized by hand: the keys' room may have changed though the strip's own size has not)
+        auto row = strip.withHeight (VersionStrip::kTabsH).reduced (0, 2);
+        row.setLeft (strip.getX() + versionStrip->keysRight() + 6);
+        textAndLeadIn (row);
+        r.removeFromTop (2);
     }
-    r.removeFromTop (4);
-    if (versionStrip != nullptr) { versionStrip->setBounds (r.removeFromTop (versionStrip->idealHeight())); r.removeFromTop (2); }     // 3.42.0: the versions strip
+    else
+    {
+        textAndLeadIn (r.removeFromTop (22));
+        r.removeFromTop (4);
+        if (versionStrip != nullptr)
+        {
+            versionStrip->rightReserve = 0;
+            versionStrip->setBounds (r.removeFromTop (versionStrip->idealHeight())); versionStrip->resized();
+            r.removeFromTop (2);
+        }
+    }
     if (viewportOwner != nullptr) { viewportOwner->setBounds (r); if (timeline != nullptr) timeline->updateSize(); }
 }
 
@@ -3839,7 +4072,9 @@ void EditWindowComponent::moveSelected (int delta)
     const int i = e->indexOf (timeline->selectedRegion);
     if (i < 0) return;
     if (app.isPlaying()) app.stopPlayback();
+    const editversions::Riders riders (*e);
     e->moveRegion (i, i + delta);
+    riders.carry (*e);                                     // (3.47.0: what lay over the pieces goes where they go)
     app.project.changed();
 }
 
@@ -4021,6 +4256,7 @@ void EditWindowComponent::timerCallback()
         if (bounceButton.getToggleState() != bounceOpen) bounceButton.setToggleState (bounceOpen, juce::dontSendNotification);
     }
     clock.setSampleRate (app.engine.getSampleRate());
+    if (timeline != nullptr) timeline->followRestLines();                  // 3.48.0: the dashed line of a lane with no points lies where its control stands
     if (auto* e = edit())                                                  // (an undo, or another window, may have changed the lead-in)
     {
         if (leadInBox.getToggleState() != e->leadIn) { leadInBox.setToggleState (e->leadIn, juce::dontSendNotification); leadInSecs.setEnabled (e->leadIn); }
