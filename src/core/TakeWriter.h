@@ -89,6 +89,9 @@ public:
     }
     /** Audio thread: this block could not even be offered (nothing to write from): its time is kept as silence. */
     void skip (int n) noexcept { if (n > 0 && ! failedFlag.load (std::memory_order_relaxed)) lose (n); }
+    /** Audio thread (3.53.0): silence that belongs in the file here, after everything handed over so far - the time the audio device was stopped
+        in the middle of a take. Written by the disk thread like an overrun's silence, but nothing was lost to the disk: it is not counted as one. */
+    void addSilence (juce::int64 n) noexcept { if (n > 0 && ! failedFlag.load (std::memory_order_relaxed)) pendingLost.fetch_add (n, std::memory_order_relaxed); }
 
     // ---- any thread ----
     bool failed() const noexcept               { return failedFlag.load (std::memory_order_relaxed); }

@@ -36,6 +36,28 @@ public:
     /** Every open plug-in window (to keep them in front of the main window). */
     void forEachEditor (const std::function<void (juce::Component&)>& fn);
 
+    // ---- 3.53.0: the keys along the top of a plug-in's window - Bypass, Copy, Paste - and what the plug-in is told about where it sits ----
+    /** (Set by the application.) The insert slot a plug-in sits in, or null: the window's Bypass key switches that slot's bypass. */
+    std::function<InsertSlot* (InsertProcessor*)> slotOf;
+    /** (Set by the application.) A slot's bypass was switched, or settings were pasted: the project has changed, the mixers' delays are looked at again. */
+    std::function<void()> slotChanged;
+    /** Copy: keeps this plug-in's settings (all of them, as a project saves them) for Paste. Kept until the next Copy or until the program closes. */
+    void copySettings (InsertProcessor*);
+    bool hasCopied() const noexcept               { return clipState.isNotEmpty(); }
+    juce::String copiedName() const               { return clipName; }
+    /** Are the copied settings from the same plug-in as this one (the same file and kind: an EQ's settings mean nothing to a reverb)? */
+    bool canPaste (InsertProcessor*) const;
+    /** Paste: gives the copied settings to this plug-in, which is running (as choosing one of its own presets does). False when they are not its kind. */
+    bool pasteSettings (InsertProcessor*);
+    /** Paste into an EMPTY slot: a new instance of the copied plug-in with the copied settings. Null (with the reason) when it cannot be started. */
+    std::unique_ptr<InsertProcessor> createFromCopied (double sampleRate, int blockSize, juce::String& error);
+    /** Tells a plug-in the name (and colour, ARGB; 0 = none) of the channel it sits on - "Piano - The Egg Man EDIT": a plug-in that lists its
+        instances across the project (FabFilter Pro-Q's instance list) shows them by this name instead of 1, 2, 3. Only passed on when it has
+        changed since the last call. Message thread. */
+    void setTrackName (InsertProcessor*, const juce::String& name, juce::uint32 argb);
+    /** The name last told (for the window's own top row). */
+    juce::String trackNameOf (InsertProcessor*) const;
+
     juce::PopupMenu buildPluginMenu (int baseId, std::vector<juce::PluginDescription>& outDescs) const;
 
     // ---- the plug-in manager (Audio settings > Plug-ins...). It works on plug-in FILES: a file that holds several plug-ins (a shell) goes with all of them.
@@ -74,6 +96,7 @@ private:
     mutable juce::CriticalSection statusLock;
     juce::String status;
     juce::File listFile, ignoredFile;
+    juce::String clipIdentifier, clipDescription, clipState, clipName;        // the copied settings (message thread)
     std::vector<std::unique_ptr<EditorWindow>> editors;
 };
 } // namespace td

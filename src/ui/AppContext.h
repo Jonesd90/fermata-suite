@@ -456,6 +456,10 @@ public:
         int overruns = 0; juce::int64 lostSamples = 0; bool writeFailed = false;     // the main drive, this take
         int deviceStops = 0; bool deviceDown = false; bool deviceQuiet = false;      // the device: stopped during the take (count), down / not delivering right now
         int copiesBinned = 0; bool copyKept = false; double worstLagSeconds = 0.0;  // the second drive, this take
+        // 3.53.0: dropouts of this take (the audio thread's late blocks, and what the driver itself reports), each marked on the take where it
+        // happened (at most kMaxTakeMarks marks); the driver's count as last seen (-1: not looked at yet); the tick the take's notes are kept safe on
+        int dropouts = 0, takeMarks = 0, driverXruns = -1, notesTick = 0;
+        static constexpr int kMaxTakeMarks = 40;
         bool everRecorded = false;                   // (a take has run since the program started: the lamps show its outcome, not "idle")
         static constexpr size_t kMaxEvents = 200;
     } recordMonitor;
@@ -533,6 +537,10 @@ private:
     int minuteSeconds = 0;
     bool loadWasRecording = false;
     void tickLoad();
+    /** 3.53.0: every insert slot of the project - the strips' and the buses', of every mixer - with the name of its channel, its mixer and the
+        channel's colour (ARGB, 0 = none). fn returns true to stop. */
+    void forEachInsertSlot (const std::function<bool (InsertSlot&, const juce::String& channel, const MixerState&, juce::uint32 argb)>& fn);
+    void tellPluginsTheirChannels();                  // once a second: "Piano - The Egg Man EDIT" to every plug-in (PluginHost::setTrackName)
     void tickRecordMonitor();                        // the watcher, 10 Hz: samples the engine for the recording monitor and raises its notices
     /** The takes whose files the engine has finished on the disk are taken in: their real waveforms are drawn, and a take whose file refused its last
         moments is marked cut short. tellPerson: with a message (the watcher); without, only the log (closing). */

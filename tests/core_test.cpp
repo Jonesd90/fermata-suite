@@ -10866,6 +10866,220 @@ int main()
         e.audioDeviceStopped();
     }
 
+    SECTION ("3.53.0 recording reliability: silence owed without an overrun; the device's stop in the take as silence, with its event; a late block's event; the take's notes kept safe and given back; stay awake");
+    {
+        {   // TakeWriter::addSilence: silence in its place, the file as long as the time that passed, and nothing counted as lost
+            juce::TimeSliceThread tst ("test writer gap");
+            auto f = tmp.getChildFile ("gap-silence.wav");
+            {
+                juce::WavAudioFormat fmt; std::unique_ptr<juce::OutputStream> os (new juce::FileOutputStream (f, 1024));
+                auto w = fmt.createWriterFor (os, juce::AudioFormatWriterOptions().withSampleRate (48000.0).withNumChannels (1).withBitsPerSample (24));
+                TakeWriter tw (std::move (w), tst, 1 << 16, 0);
+                std::vector<float> a (1000, 0.5f), b (1000, -0.25f);
+                const float* pa[1] = { a.data() }; const float* pb[1] = { b.data() };
+                CHECK (tw.write (pa, 1000));
+                tw.addSilence (100000);                                       // (more than the buffer holds: it never goes through the buffer)
+                CHECK (tw.write (pb, 1000));
+                tw.addSilence (300);                                          // at the very end too
+                CHECK (tw.overruns() == 0 && tw.samplesLost() == 0 && tw.firstOverrunAt() < 0);
+                CHECK (tw.finish());
+            }
+            juce::AudioFormatManager afm; afm.registerBasicFormats();
+            std::unique_ptr<juce::AudioFormatReader> rd (afm.createReaderFor (f));
+            CHECK (rd != nullptr && rd->lengthInSamples == 1000 + 100000 + 1000 + 300);
+            if (rd != nullptr && rd->lengthInSamples == 102300)
+            {
+                juce::AudioBuffer<float> b (1, 102300); rd->read (&b, 0, 102300, 0, true, false);
+                CHECK (std::abs (b.getSample (0, 999) - 0.5f) < 1e-5f && b.getMagnitude (0, 1000, 100000) == 0.0f && std::abs (b.getSample (0, 101000) + 0.25f) < 1e-5f
+                       && std::abs (b.getSample (0, 101999) + 0.25f) < 1e-5f && b.getMagnitude (0, 102000, 300) == 0.0f);
+            }
+        }
+        {   // the engine: a device that stops for a third of a second in the middle of a take
+            struct FakeDevice : juce::AudioIODevice
+            {
+                FakeDevice (double r, int b) : juce::AudioIODevice ("Fake", "Test"), rate (r), block (b) {}
+                juce::StringArray getOutputChannelNames() override { return { "Out 1", "Out 2" }; }
+                juce::StringArray getInputChannelNames() override { return { "In 1", "In 2" }; }
+                juce::Array<double> getAvailableSampleRates() override { return { rate }; }
+                juce::Array<int> getAvailableBufferSizes() override { return { block }; }
+                int getDefaultBufferSize() override { return block; }
+                juce::String open (const juce::BigInteger&, const juce::BigInteger&, double, int) override { return {}; }
+                void close() override {}
+                bool isOpen() override { return true; }
+                void start (juce::AudioIODeviceCallback*) override {}
+                void stop() override {}
+                bool isPlaying() override { return false; }
+                juce::String getLastError() override { return {}; }
+                int getCurrentBufferSizeSamples() override { return block; }
+                double getCurrentSampleRate() override { return rate; }
+                int getCurrentBitDepth() override { return 24; }
+                juce::BigInteger getActiveOutputChannels() const override { juce::BigInteger b; b.setRange (0, 2, true); return b; }
+                juce::BigInteger getActiveInputChannels() const override { juce::BigInteger b; b.setRange (0, 2, true); return b; }
+                int getOutputLatencyInSamples() override { return 0; }
+                int getInputLatencyInSamples() override { return 0; }
+                double rate; int block;
+            };
+            for (int ringMode = 0; ringMode < 2; ++ringMode)                  // 0: straight into the files; 1: session mode, through the pre-record ring
+            {
+                Project q;
+                q.projectFile = tmp.getChildFile (ringMode ? "DevGapRing" : "DevGap").getChildFile ("DevGap.fermata");
+                q.projectFile.getParentDirectory().createDirectory();
+                q.setInputCount (2); q.setOutputCount (2);
+                q.tracks.clear();
+                q.addTrack ("solo", TrackFormat::Mono, 0).setArmed (true);
+                q.retireAllMixers(); q.addMixer ("M");
+                auto& qw = *q.takeWindows.front(); qw.name = "Rec";
+                AudioEngine e (q);
+                e.setMixerThreads (0);
+                FakeDevice d48 (48000.0, 256);
+                e.audioDeviceAboutToStart (&d48);
+                if (ringMode) { e.setPreRollSeconds (1); e.setSessionMode (true); CHECK (e.waitForPreRoll (3000)); }
+                auto feed = [&] (int blocks, float level)
+                {
+                    std::vector<float> i0 (256, level), i1 (256, 0.0f), o0 (256, 0.0f), o1 (256, 0.0f);
+                    const float* in[2] = { i0.data(), i1.data() }; float* out[2] = { o0.data(), o1.data() };
+                    for (int b = 0; b < blocks; ++b) e.process (in, 2, out, 2, 256);
+                };
+                if (ringMode) feed (400, 0.125f);                             // (the ring full of what came before Record)
+                CHECK (e.startRecording (qw).isEmpty());
+                CHECK (e.takeRecEvents().empty());
+                e.noteLateBlock();                                            // (no block of the take yet: nothing to mark)
+                CHECK (e.takeRecEvents().empty());
+                feed (100, 0.25f);
+                // a late block: one event at the block it was, and a run of them is one event
+                e.noteLateBlock(); e.noteLateBlock();
+                auto ev = e.takeRecEvents();
+                CHECK (ev.size() == 1 && ev[0].kind == AudioEngine::RecEvent::lateBlock && ev[0].at >= 0 && ev[0].at <= (ringMode ? 48000 : 0) + 100 * 256);
+                if (! ringMode && ev.size() == 1) CHECK (ev[0].at == 99 * 256);
+                // the device stops, is away for a third of a second, and starts again at the same rate
+                e.audioDeviceStopped();
+                juce::Thread::sleep (330);
+                e.audioDeviceAboutToStart (&d48);
+                CHECK (e.takeDeviceNote().contains ("STOPPED AND STARTED AGAIN"));
+                feed (100, 0.5f);
+                ev = e.takeRecEvents();
+                CHECK (ev.size() == 1 && ev[0].kind == AudioEngine::RecEvent::gapFilled && ev[0].amount > (juce::int64) (0.3 * 48000.0) && ev[0].amount < (juce::int64) (3.0 * 48000.0));
+                const juce::int64 gap = ev.size() == 1 ? ev[0].amount : 0, gapAt = ev.size() == 1 ? ev[0].at : 0;
+                const juce::int64 pre = ringMode ? 48000 : 0;                 // (session mode: the second before Record is in front)
+                CHECK (gapAt == pre + 100 * 256);
+                {
+                    std::atomic<bool> go { true };
+                    std::thread pretendAudio ([&] { while (go.load()) { feed (1, 0.5f); juce::Thread::sleep (1); } });
+                    e.stopRecording();
+                    go.store (false); pretendAudio.join();
+                    CHECK (e.waitForFinishedTakes (5000)); e.reapFinishedTakes();
+                }
+                CHECK (qw.groups.size() == 1);
+                if (qw.groups.size() == 1 && ! qw.groups[0].files.empty())
+                {
+                    const auto& g = qw.groups[0];
+                    CHECK (g.overruns == 0 && g.lostSamples == 0 && ! g.writeFailed);                   // a stopped device is not a slow disk
+                    CHECK (g.lengthSamples >= pre + 200 * 256 + gap && g.lengthSamples < pre + 200 * 256 + gap + 48000);
+                    juce::AudioFormatManager fm; fm.registerBasicFormats();
+                    std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (g.files[0].file));
+                    CHECK (rd != nullptr && rd->lengthInSamples == g.lengthSamples);                    // the file is as long as the time that passed
+                    if (rd != nullptr && rd->lengthInSamples == g.lengthSamples)
+                    {
+                        juce::AudioBuffer<float> b (1, (int) rd->lengthInSamples); rd->read (&b, 0, (int) rd->lengthInSamples, 0, true, false);
+                        const int a0 = (int) pre, a1 = a0 + 100 * 256, a2 = a1 + (int) gap;
+                        CHECK (std::abs (b.getSample (0, a0 + 10) - 0.25f) < 1e-5f && std::abs (b.getSample (0, a1 - 1) - 0.25f) < 1e-5f);
+                        CHECK (b.getMagnitude (0, a1, (int) gap) == 0.0f);                              // the time it was away: silence, exactly there
+                        CHECK (std::abs (b.getSample (0, a2) - 0.5f) < 1e-5f && std::abs (b.getSample (0, a2 + 100 * 256 - 1) - 0.5f) < 1e-5f);
+                        if (ringMode) CHECK (std::abs (b.getSample (0, 100) - 0.125f) < 1e-5f);         // (what the ring held before Record)
+                    }
+                }
+                // a take with no stop in it: no event, and a stop BEFORE the take's first block puts nothing in
+                CHECK (e.startRecording (qw).isEmpty());
+                e.audioDeviceStopped(); juce::Thread::sleep (40); e.audioDeviceAboutToStart (&d48); (void) e.takeDeviceNote();
+                feed (50, 0.25f);
+                CHECK (e.takeRecEvents().empty());
+                {
+                    std::atomic<bool> go { true };
+                    std::thread pretendAudio ([&] { while (go.load()) { feed (1, 0.25f); juce::Thread::sleep (1); } });
+                    e.stopRecording();
+                    go.store (false); pretendAudio.join();
+                    CHECK (e.waitForFinishedTakes (5000)); e.reapFinishedTakes();
+                }
+                CHECK (qw.groups.size() == 2 && qw.groups[1].lengthSamples >= pre + 50 * 256 && qw.groups[1].lengthSamples < pre + 50 * 256 + 48000);
+                e.audioDeviceStopped();
+            }
+        }
+        {   // what is written on a take while it records: kept in a small file, given back to a take that never got its Stop
+            Project p;
+            p.projectFile = tmp.getChildFile ("TakeNotes").getChildFile ("TakeNotes.fermata");
+            p.projectFile.getParentDirectory().createDirectory();
+            auto& w = *p.takeWindows.front(); w.name = "Session";
+            TakeGroup g; g.id = juce::Uuid(); g.number = 1; g.startSeconds = 10.0; g.lengthSamples = 0; g.sampleRate = 48000.0;       // (length 0: recording)
+            w.groups.push_back (g);
+            Marker before; before.id = juce::Uuid(); before.name = "before"; before.seconds = 3.0; w.markers.push_back (before);
+            const auto file = p.takeNotesFile (g.id);
+            CHECK (file.getParentDirectory().getFileName() == "Recovery" && file.isAChildOf (p.projectFolder()));
+            CHECK (p.saveTakeNotes (w, w.groups[0]) && ! file.existsAsFile());                // nothing written on it yet: no file
+            const auto m1 = addMarker (w.markers, 12.5);
+            w.groups[0].barIn = 5; w.groups[0].barOut = 9;
+            CHECK (p.saveTakeNotes (w, w.groups[0]) && file.existsAsFile());
+            const auto stamp = file.getLastModificationTime();
+            juce::String err; CHECK (p.save (err));                                           // (as Record saves: the take with length 0, the first marker, the bars)
+            CHECK (p.saveTakeNotes (w, w.groups[0]) && file.getLastModificationTime() == stamp);   // nothing changed: not written again
+            const auto m2 = addMarker (w.markers, 14.0);                                      // made later in the take: only in the notes file
+            if (auto* mk = findMarker (w.markers, m2)) mk->name = "Dropout? (driver)";
+            w.groups[0].notes = "horn cracks at the top";
+            CHECK (p.saveTakeNotes (w, w.groups[0]));
+            {   // the program stopped here. The project opens: the take still has length 0, so its notes come back
+                Project q; juce::String e2; CHECK (q.load (p.projectFile, e2));
+                auto* qw = q.findTakeWindow (w.id); CHECK (qw != nullptr);
+                if (qw != nullptr && qw->groups.size() == 1)
+                {
+                    CHECK (qw->markers.size() == 3 && findMarker (qw->markers, m1) != nullptr && findMarker (qw->markers, m2) != nullptr);     // (the saved one is not doubled)
+                    if (auto* mk = findMarker (qw->markers, m2)) CHECK (mk->name == "Dropout? (driver)" && std::abs (mk->seconds - 14.0) < 1e-9);
+                    CHECK (qw->groups[0].barIn == 5 && qw->groups[0].barOut == 9 && qw->groups[0].notes == "horn cracks at the top");
+                    CHECK (q.loadNotes.joinIntoString ("\n").contains ("still recording") && q.loadNotes.joinIntoString ("\n").contains ("1 marker") && q.dirty.load());
+                    CHECK (file.existsAsFile());                                              // kept until the take is whole
+                    // opened again without a save in between: the same again, nothing doubled
+                    Project q2; CHECK (q2.load (p.projectFile, e2));
+                    if (auto* w2 = q2.findTakeWindow (w.id)) CHECK (w2->markers.size() == 3);
+                    // the take mended and saved (it has its length), a marker deleted since: the file is removed and brings nothing back
+                    qw->groups[0].lengthSamples = 48000;
+                    removeMarker (qw->markers, m2);
+                    CHECK (q.save (e2));
+                    Project q3; CHECK (q3.load (p.projectFile, e2));
+                    if (auto* w3 = q3.findTakeWindow (w.id)) CHECK (w3->markers.size() == 2 && findMarker (w3->markers, m2) == nullptr);
+                    CHECK (! file.existsAsFile());
+                }
+            }
+            // a render's copy of a project never touches the files
+            CHECK (p.saveTakeNotes (w, w.groups[0]) || true);
+            w.groups[0].notes = "changed again"; CHECK (p.saveTakeNotes (w, w.groups[0]) && file.existsAsFile());
+            { Project ro; ro.readOnlyLoads = true; juce::String e3; CHECK (ro.load (p.projectFile, e3)); CHECK (file.existsAsFile()); }
+            // the next take starts: the files of the takes before it go
+            const juce::Uuid next;
+            p.forgetTakeNotes (next);
+            CHECK (! file.existsAsFile());
+        }
+        {   // a reply written in a version that was then taken away belongs to the version the edit is in now (it was left out of every listening copy)
+            using namespace editversions;
+            EditDef e; e.id = juce::Uuid(); e.name = "P"; e.sampleRate = 48000.0;
+            EditRegion q; q.id = juce::Uuid(); q.takeId = juce::Uuid(); q.takeName = "t"; q.sampleRate = 48000.0; q.srcIn = 0; q.srcOut = 48000 * 10; q.sourceLength = 48000 * 120;
+            RegionFile rf; rf.trackId = juce::Uuid(); rf.file = tmp.getChildFile ("t.wav"); q.files.push_back (rf);
+            e.insertRegion (q);
+            auto note = [] (const char* key, double sec, bool editor = false, int madeIn = 0) { FeedbackNote n; n.key = key; n.who = editor ? "Ed" : ""; n.text = key; n.seconds = sec; n.editor = editor; n.madeIn = madeIn; return n; };
+            e.feedback = { note ("c", 4.0) }; freeze (e, juce::var());                              // Edit 1, with the listener's comment
+            freeze (e, juce::var());                                                                // Edit 2 frozen by mistake: the edit is in Edit 3
+            e.versions[0].edit->feedback.push_back (note ("r", 4.0, true, 3));                      // the reply, written in Edit 3, kept with its comment
+            CHECK (e.versionNumber() == 3 && reviewpage::historyFor (e, 0.0).size() == 1 && reviewpage::historyFor (e, 0.0)[0].notes.size() == 2);
+            CHECK (unfreezeLast (e) && e.versionNumber() == 2 && e.versions[0].edit->feedback.size() == 2 && e.versions[0].edit->feedback[1].madeIn == 2);     // the extra freeze taken away
+            auto h = reviewpage::historyFor (e, 0.0);
+            CHECK (h.size() == 1 && h[0].notes.size() == 2 && h[0].notes[1].id == "r" && h[0].notes[1].editor);       // in the copy of Edit 2: the comment and the reply
+            // a project saved before this was put right still says 3: the copy has the reply all the same, and opening the project puts the number right
+            e.versions[0].edit->feedback[1].madeIn = 3;
+            CHECK (reviewpage::historyFor (e, 0.0)[0].notes.size() == 2);
+            CHECK (settleMadeIn (e) && e.versions[0].edit->feedback[1].madeIn == 2 && ! settleMadeIn (e));
+            CHECK (reviewpage::historyFor (e, 1, 0.0).size() == 1 && reviewpage::historyFor (e, 1, 0.0)[0].notes.size() == 1);     // (a copy of Edit 1 still leaves out what was written later)
+        }
+        // Windows asked to stay awake: said once per change
+        CHECK (CoreReservation::keepAwake (true) && ! CoreReservation::keepAwake (true) && CoreReservation::keepAwake (false) && ! CoreReservation::keepAwake (false));
+    }
+
     SECTION ("3.2.0 export for video edit: the gating rule, a generator that starts mid-frame, the timecode read at a sample, and the three files");
     {
         using namespace videoexport;

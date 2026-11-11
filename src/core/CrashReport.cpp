@@ -380,6 +380,10 @@ void nameThisThreadW (const wchar_t* name) noexcept
 #endif
 }
 
+static std::atomic<bool>& closedFlag() noexcept { static std::atomic<bool> f { false }; return f; }
+void closingFinished() noexcept { closedFlag().store (true); }
+bool closingHasFinished() noexcept { return closedFlag().load(); }
+
 void endThisProcess() noexcept
 {
 #if FERMATA_CRASH_WINDOWS

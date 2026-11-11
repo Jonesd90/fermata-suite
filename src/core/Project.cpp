@@ -1513,11 +1513,93 @@ void Project::refreshCommentsCopy (const EditDef& e) const
     juce::String err;
     if (! filesync::writeTextChecked (json, juce::JSON::toString (feedbackToVar (e.feedback)), &err)) juce::Logger::writeToLog ("Comments copy: " + err);
 }
+// ---- 3.53.0: what is written about a take while it records -------------------------------------------------------------------------------------
+juce::File Project::takeNotesFile (const juce::Uuid& takeId) const
+{
+    const auto folder = projectFolder();
+    return folder == juce::File() ? juce::File() : folder.getChildFile ("Recovery").getChildFile ("take-" + takeId.toString() + ".json");
+}
+
+bool Project::saveTakeNotes (const TakeWindowDef& w, const TakeGroup& g)
+{
+    const auto file = takeNotesFile (g.id);
+    if (file == juce::File()) return true;
+    std::vector<Marker> mine;                                  // the markers on this take: everything from its start on (it is the last on the timeline while it records)
+    for (auto& m : w.markers) if (m.seconds >= g.startSeconds - 1.0e-3) mine.push_back (m);
+    const bool nothing = mine.empty() && g.barIn == 0 && g.barOut == 0 && g.label.isEmpty() && g.notes.isEmpty() && ! g.dud;
+    auto* o = new juce::DynamicObject();
+    o->setProperty ("fermata", "take notes");
+    o->setProperty ("take", g.id.toString()); o->setProperty ("window", w.id.toString());
+    o->setProperty ("markers", markersToVar (mine));
+    o->setProperty ("barIn", g.barIn); o->setProperty ("barOut", g.barOut);
+    o->setProperty ("label", g.label); o->setProperty ("notes", g.notes); o->setProperty ("dud", g.dud);
+    const auto text = g.id.toString() + "\n" + juce::JSON::toString (var (o), false);
+    if (text == lastTakeNotes) return true;                    // as it was last written
+    if (nothing && ! lastTakeNotes.startsWith (g.id.toString())) { lastTakeNotes = text; return true; }      // (nothing to keep yet, and no file of this take to bring up to date)
+    file.getParentDirectory().createDirectory();
+    juce::String error;
+    if (! filesync::replaceTextSafely (file, text.fromFirstOccurrenceOf ("\n", false, false), false, &error))
+    {
+        juce::Logger::writeToLog ("The take's markers could not be kept safe (" + file.getFullPathName() + "): " + error);
+        return false;                                          // (tried again the next time: lastTakeNotes is as it was)
+    }
+    lastTakeNotes = text;
+    return true;
+}
+
+void Project::forgetTakeNotes (const juce::Uuid& keep)
+{
+    const auto folder = projectFolder();
+    if (folder == juce::File()) return;
+    const auto mine = takeNotesFile (keep);
+    for (auto& f : folder.getChildFile ("Recovery").findChildFiles (juce::File::findFiles, false, "take-*.json"))
+        if (f != mine) f.deleteFile();
+    if (! lastTakeNotes.startsWith (keep.toString())) lastTakeNotes.clear();
+}
+
+int Project::recoverTakeNotes()
+{
+    const auto folder = projectFolder();
+    if (folder == juce::File() || readOnlyLoads) return 0;
+    const auto dir = folder.getChildFile ("Recovery");
+    if (! dir.isDirectory()) return 0;
+    int takes = 0;
+    for (auto& f : dir.findChildFiles (juce::File::findFiles, false, "take-*.json"))
+    {
+        const auto v = juce::JSON::parse (f.loadFileAsString());
+        TakeWindowDef* w = v.isObject() ? findTakeWindow (juce::Uuid (v["window"].toString())) : nullptr;
+        TakeGroup* g = w != nullptr ? w->findGroup (juce::Uuid (v["take"].toString())) : nullptr;
+        // only a take that was still recording when the program stopped (saved with length 0: Stop writes the length). One that ended as it should has
+        // everything in the project already - and a marker deleted since must not come back: its file is simply removed.
+        if (g == nullptr || g->lengthSamples > 0) { f.deleteFile(); continue; }
+        std::vector<Marker> kept;
+        markersFromVar (v["markers"], kept);
+        int added = 0;
+        for (auto& m : kept) if (findMarker (w->markers, m.id) == nullptr) { w->markers.push_back (m); ++added; }
+        bool other = false;
+        if (g->barIn == 0 && (int) v["barIn"] > 0) { g->barIn = (int) v["barIn"]; g->barOut = (int) v["barOut"]; other = true; }
+        if (g->label.isEmpty() && v["label"].toString().isNotEmpty()) { g->label = v["label"].toString(); other = true; }
+        if (g->notes.isEmpty() && v["notes"].toString().isNotEmpty()) { g->notes = v["notes"].toString(); other = true; }
+        if (! g->dud && (bool) v["dud"]) { g->dud = true; other = true; }
+        if (added == 0 && ! other) continue;                   // (already given back at an earlier opening that was never saved: the file stays until the take is whole)
+        ++takes;
+        markDirty();
+        loadNotes.add (w->name + " - take " + w->displayName (*g) + " was still recording when Fermata stopped. What was written on it during the take was kept: "
+                       + (added > 0 ? String (added) + (added == 1 ? " marker" : " markers") : String ()) + (added > 0 && other ? " and " : "") + (other ? "its bars / name / note" : "") + ".");
+    }
+    return takes;
+}
+
 void Project::restoreSavedComments()
 {
     for (auto& e : edits)
     {
         if (e == nullptr) continue;
+        if (editversions::settleMadeIn (*e))                   // 3.53.0: replies stamped with a version the edit no longer has (see settleMadeIn)
+        {
+            if (! readOnlyLoads) markDirty();
+            juce::Logger::writeToLog ("Comments: replies on \"" + e->name + "\" were marked as written in a version it no longer has - put right (they are in its listening copies again)");
+        }
         // 3.52.0 (found on 10 November 2026, from a listening copy that showed Edit 1's comments again under Edit 3): the copy is the comments as
         // they were IMPORTED - and after a freeze the edit has no comments on purpose (they went to the frozen version's lane with it), so at the
         // next opening of the project the copy was "given back" to the edit: the comments about Edit 1 stood on Edit 2 or 3 as well, and went
@@ -3258,6 +3340,7 @@ bool Project::load (const juce::File& f, juce::String& error)
     }
     projectFile = f;
     restoreSavedComments();
+    recoverTakeNotes();                              // (3.53.0; before the application mends the take's files and gives it its length)
     const auto t3 = juce::Time::getMillisecondCounterHiRes();
     quickPluginState = true; refreshWindowFileHashes(); quickPluginState = false;      // (the plug-ins' states as just loaded, not asked for again)
     tHashes = juce::Time::getMillisecondCounterHiRes() - t3;

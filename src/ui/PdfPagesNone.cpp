@@ -8,6 +8,7 @@ namespace pdfpages
 {
 struct Doc {};
 bool available() { return false; }
+bool everUsed() { return false; }
 Doc* open (const std::wstring&, std::string& error) { error = "This build of fermata has no PDF reader in it."; return nullptr; }
 int  pageCount (Doc*) { return 0; }
 bool pageSize (Doc*, int, double&, double&) { return false; }

@@ -2537,6 +2537,89 @@ the message thread held ~290 times for 150 to 470 ms by "drawing the edit window
 
 **The reply box.** `feedbackui::ReplyEditor`: Return = Add (`onEnter`), Shift + Return inserts a line break.
 
+## 3.53.0: recording reliability (awake, dropouts and device stops marked, take notes kept), the plug-in window's keys, channel names to plug-ins, the report at closing (11 November 2026, with Claude Fable)
+
+**Where the review of 11 November left the recording path** (asked: "any improvements for recording reliability and low latency?"). Built
+here: items 1 to 4 below. NOT built, and still true: the second-drive backup is a copy that TRAILS the main file (`BackupCopier`), so it
+stops when the main drive does - a second writer fed straight from the audio thread would survive that; a plug-in crash still takes the
+program down (in-process hosting); a plug-in with delay in a cue mixer delays the whole of that mixer (delay compensation) - a
+low-latency monitoring switch for live inputs, and two buffer sizes (live inputs small, playback large on the helper threads), are the
+two latency jobs. All four touch the heart of the engine.
+
+1. **Awake.** `CoreReservation::keepAwake (bool)` - `SetThreadExecutionState (ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED)`,
+   looked up by name. Windows keeps the request with the THREAD that made it: always the message thread (fermata:
+   `AppContext::tickRecordMonitor`, every tick, a no-op unless it changed; fermata:Live: `RecorderService::timerCallback`, while a session
+   exists or a merge runs). JUCE's `Desktop::setScreenSaverEnabled (false)` is not this: it fakes a mouse move every few seconds and only
+   while the program is in front.
+2. **Dropouts located.** `AudioEngine::RecEvent` {kind, at (samples from the take's start), amount} in a 64-slot `AbstractFifo` - one
+   writer (the audio thread), one reader (`takeRecEvents()`, message thread). `noteLateBlock()` is called by the callback when a block
+   took longer than it lasts (`lastRecAt` = where the block began, -1 when the block was not a take's; a run of late blocks within half
+   a second is one event). The driver's own count (`getXRunCount`: JUCE's ASIO counts `kAsioOverload`) is polled by the watcher at
+   10 Hz, so its place is right to a tenth of a second. The watcher (`tickRecordMonitor`) turns each into a Recording-monitor line and an
+   ordinary marker on the take window (`RecordMonitor::dropouts`, `takeMarks`, at most `kMaxTakeMarks`). **Not done on purpose:** judging
+   a dropout from the time between callbacks - drivers that deliver in bursts would mark every block.
+3. **A device that stops in a take** (`fillDeviceGap`). `audioDeviceStopped` with a session sets `recGapPending`; the take's next block
+   measures the time since the take's last block (`lastRecTicks`, the high-resolution clock, stamped in `process()` so the tests'
+   direct calls work), less the block that was due, and - when it is no more than `RecordingSession::gapFillMax` - gives every file that
+   much silence with `TakeWriter::addSilence` (the overrun's "silence owed" path, without counting an overrun) and every live waveform
+   the same (`LivePeaks::addSilence`, by bins: no samples are looked at). Ring (session) mode first delivers everything up to the stop,
+   and its length is `delivered - first + gapSamples` (three places). **Why a cap:** the silence is written by the disk thread BEFORE the
+   sound that follows it, which waits in the files' 8-second buffers meanwhile. `gapFillMax` is what a 100 MB/s drive writes in half that
+   time, between 2 s and 10 min (set in `startRecording` from the take's bytes per second). Longer: `gapNotFilled`, nothing added, the
+   marker says how much is missing. Never end the take for it. A different rate at the restart still ends the take, as since 3.1.5.
+4. **A take's notes** (`Project::saveTakeNotes` / `recoverTakeNotes` / `forgetTakeNotes`; `<project>/Recovery/take-<id>.json`). Written
+   by the watcher every 3 s when the text changed (`lastTakeNotes`), through `replaceTextSafely`: the window's markers from the take's
+   start on, the take's bars, label, note, Dud. Given back in `Project::load` (before the application mends the files and gives the take
+   its length) ONLY to a take saved with length 0 - still recording when the program stopped; markers by id, the rest where the take has
+   none. The file of a take that has its length is removed without being read into anything: a marker the person deleted since must not
+   come back. A merged file stays until the take is whole (a second opening without a save merges the same again: nothing doubles).
+   `readOnlyLoads` (a render's copy) touches nothing. The files of earlier takes go when the next take starts.
+
+Tests (core_test "3.53.0 recording reliability"): `addSilence` (more than the buffer, and at the very end); a device away for a third of
+a second in both modes - the event, the silence exactly in place, the length, no overrun counted; a stop before the take's first block;
+the late-block event; the notes file through save / stop / load / load again / mended / read-only / next take; `keepAwake`'s answers.
+**Not tried with a real device**: a real driver's stop and start, and whether `getXRunCount` ever moves on the Ravenna driver.
+
+**The plug-in window's keys** (`PluginHost::EditorWindow::Holder`, `BarKey`). Bypass is the SLOT's `bypass` flag (found through
+`PluginHost::slotOf`, which the application sets: `AppContext::forEachInsertSlot`), not the plug-in's own bypass parameter - so it is
+what the mixer shows, what is saved, and the plug-in still hears the music (see `InsertSlot::process`). The window polls 5 times a second
+(`syncBar`) so it follows the mixer. Copy / Paste: `copySettings` keeps the description, the identifier
+(`PluginDescription::createIdentifierString`) and the base64 state; `pasteSettings` calls `setStateInformation` on the RUNNING instance
+(message thread, as a preset change in any host; the slot is not locked for it - locking would pass the sound round the plug-in dry for
+that moment); `createFromCopied` is the project's factory with the copied state, for an empty slot. The keys never take the keyboard.
+A plug-in narrower than the keys keeps the pin and Bypass.
+
+**Tried here with a plug-in built into fermata** (`src/ui/TestPlugin.h`, only with `FERMATA_TEST_PLUGIN=1`: a `juce::AudioPluginFormat`
+of its own with two kinds, "Test plug-in A" and "B" - a gain, a second control, and a window that shows the channel name it was told;
+`PluginHost` takes its types out of the known list at every start without the variable). In the Linux build under Xvfb: inserted from a
+slot's menu; the top row and its keys; Bypass from the window lights the key and colours the mixer's slot, and from the mixer's menu
+puts the key out; Copy, then "Paste Test plug-in A with the copied settings" on an empty slot made a second one already set (1.74 /
+0.62); its controls changed and its Paste key put them back; Paste is dim in a window of plug-in B with the tip that says why; both
+were told "PnC - LV08 - Tender" / "PnR - LV08 - Tender"; the project closed cleanly. **Not tried: a real VST3**, and Pro-Q's list.
+
+**Channel names.** `Vst3Insert::tellTrack` -> `AudioProcessor::updateTrackProperties` (JUCE passes it to a VST3 as
+`IInfoListener::setChannelContextInfos`), only when name or colour changed; `AppContext::tellPluginsTheirChannels` once a second from
+the load ticker. The name is "channel - mixer name" exactly as the mixer is called. Not checked against Pro-Q 4 here (no plug-ins on
+Linux): the user's own look at its instance list is the test.
+
+**`madeIn` after a freeze is undone** (the user's four edits of 11 November: Edit 1 frozen, the edit in Edit 2, every reply in Edit 1's
+list stamped `madeIn` 3). `historyFor` leaves out an editor's note with `madeIn` above the copy's version; `unfreezeLast` did not bring
+the stamps down, so after "Edit 3 -> take the extra freeze away -> Edit 2" every copy of Edit 2 dropped the replies.
+`editversions::settleMadeIn` (no stamp above the live version's number) is called by `unfreezeLast` and, for every edit, when a
+project is read (`Project::restoreSavedComments`); `historyFor` also takes a stamp above the live number as the live number.
+`removeVersion`'s own renumbering (3.52.0) was right. **The page** no longer draws a done comment's flag at 40%: a tick and full
+strength; a nameless listener's flag says "Note" (it was "?").
+
+**The report at closing** (the dump of 10 November 2026, 22:59:33). One thread left in the dump; at the bottom of its stack the C
+runtime's exit, then Windows' loader unloading libraries, then `Windows.Data.Pdf.dll` -> `d3d11.dll` -> `dxgi.dll` -> RaiseException
+0x87A with 0x887A0001 (DXGI_ERROR_INVALID_CALL): Windows' PDF reader letting go of its Direct3D objects during process exit, after
+fermata's `shutdown()` and its static destructors. Our unhandled-exception filter was still installed and wrote a report.
+- `crashreport::closingFinished()` at the end of `shutdown()`; the crash handler asks `closingHasFinished()` first, writes one log line
+  and `endThisProcess()`.
+- `pdfpages::everUsed()` (set when a document is first opened): `shutdown()` then ends the process itself (`TerminateProcess`, code 0)
+  right after closing the log, so the PDF reader's unload code never runs. Everything is saved and closed by then.
+(The symbols of Windows' own libraries were not available here: the reading rests on the single thread and the order of the modules.)
+
 ## 3.46.1: the fourth sweep, areas A, B and C; the list number in "Number the files" (9 November 2026, with Claude Fable)
 
 **The sweep.** `docs/SWEEP-4-FINDINGS.md` is the record: per area the files read line by line, and every finding as FIXED (with its test), HELD

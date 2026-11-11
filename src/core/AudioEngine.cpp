@@ -213,7 +213,8 @@ void AudioEngine::deviceRestartedWhileRecording (double newRate)
         stopRecording();
         return;
     }
-    deviceNote = "THE AUDIO DEVICE STOPPED AND STARTED AGAIN DURING THE TAKE: the sound while it was stopped is missing from the take (" + juce::String (secondsSoFar, 1) + " s recorded so far). The take goes on.";
+    deviceNote = "THE AUDIO DEVICE STOPPED AND STARTED AGAIN DURING THE TAKE (" + juce::String (secondsSoFar, 1) + " s recorded so far). The take goes on. "
+                 "The time it was stopped is in the take as silence when it is short enough to write at once; a marker on the take shows where it happened and how long for.";
     juce::Logger::writeToLog ("Recording: " + deviceNote);
 }
 
@@ -221,6 +222,7 @@ void AudioEngine::audioDeviceStopped()
 {
     juce::Logger::writeToLog (session != nullptr ? juce::String ("Engine: device stopped WHILE RECORDING (the take gets no sound until it starts again)") : juce::String ("Engine: device stopped"));
     running = false;
+    if (session != nullptr) recGapPending.store (true, std::memory_order_release);      // (3.53.0: the take's next block measures how long it was away: fillDeviceGap)
 }
 
 void AudioEngine::audioDeviceIOCallbackWithContext (const float* const* in, int numIn, float* const* out, int numOut,
@@ -247,8 +249,64 @@ void AudioEngine::audioDeviceIOCallbackWithContext (const float* const* in, int 
         loadSpan.store (loadSpan.load (std::memory_order_relaxed) + span, std::memory_order_relaxed);
         if (pct > loadPeakPct.load (std::memory_order_relaxed)) loadPeakPct.store (pct, std::memory_order_relaxed);
         loadBlocks.fetch_add (1, std::memory_order_relaxed);
-        if (busy > span) loadLate.fetch_add (1, std::memory_order_relaxed);
+        if (busy > span) { loadLate.fetch_add (1, std::memory_order_relaxed); noteLateBlock(); }
     }
+}
+
+// ---- 3.53.0: the take's events ----------------------------------------------------------------------------------------------------------------
+void AudioEngine::pushRecEvent (int kind, juce::int64 at, juce::int64 amount) noexcept
+{
+    int s1, z1, s2, z2;
+    recEventFifo.prepareToWrite (1, s1, z1, s2, z2);
+    if (z1 < 1) return;                                        // (64 waiting and no one reading: the newest is dropped - the log has the counts)
+    recEvents[s1].kind = kind; recEvents[s1].at = at; recEvents[s1].amount = amount;
+    recEventFifo.finishedWrite (1);
+}
+
+std::vector<AudioEngine::RecEvent> AudioEngine::takeRecEvents()
+{
+    std::vector<RecEvent> out;
+    int s1, z1, s2, z2;
+    recEventFifo.prepareToRead (recEventFifo.getNumReady(), s1, z1, s2, z2);
+    for (int i = 0; i < z1; ++i) out.push_back (recEvents[s1 + i]);
+    for (int i = 0; i < z2; ++i) out.push_back (recEvents[s2 + i]);
+    recEventFifo.finishedRead (z1 + z2);
+    return out;
+}
+
+void AudioEngine::noteLateBlock() noexcept
+{
+    const auto at = lastRecAt.load (std::memory_order_relaxed);
+    if (at < 0) return;                                        // this block was not part of a take
+    if (lastLateAt >= 0 && at >= lastLateAt && at - lastLateAt < (juce::int64) (0.5 * sampleRate)) return;      // (a run of late blocks is one event)
+    lastLateAt = at;
+    pushRecEvent (RecEvent::lateBlock, at, 0);
+}
+
+/** The first block of the take after the device stopped and started again. The time between the take's last block and this one, less the block
+    that was due anyway, is how long the device was away: that much silence goes into every file (and the live waveforms), so the take is as long as
+    the time that passed and what follows is where it belongs against a clock, timecode or a second recorder. Only when it is short enough to write
+    at once (gapFillMax); a longer stop is left out and said so. Measured with the computer's clock: right to a few milliseconds. */
+void AudioEngine::fillDeviceGap (RecordingSession& rs, PreRoll* pr, juce::int64 ringPos, juce::int64 nowTicks)
+{
+    const auto last = lastRecTicks.load (std::memory_order_relaxed);
+    if (last <= 0 || nowTicks <= last || sampleRate <= 0.0) return;                      // the take had no block before the stop: nothing to keep in time
+    const double away = juce::Time::highResolutionTicksToSeconds (nowTicks - last) - (double) lastRecLen / sampleRate;
+    const auto n = (juce::int64) std::llround (away * sampleRate);
+    if (n <= 0) return;
+    const bool ring = rs.useRing && pr != nullptr && pr == rs.ring;
+    if (ring)
+    {
+        if (rs.startPos < 0) return;
+        deliverFromRing (rs, rs.delivered, ringPos);                                     // everything from before the stop first: the silence goes after it
+        rs.delivered = juce::jmax (rs.delivered, ringPos);
+    }
+    const juce::int64 at = ring ? rs.delivered - rs.first + rs.gapSamples : rs.samples.load (std::memory_order_relaxed);
+    if (n > rs.gapFillMax) { pushRecEvent (RecEvent::gapNotFilled, at, n); return; }
+    for (auto& rt : rs.tracks) { rt.writer->addSilence (n); rt.peaks->addSilence (n); }
+    rs.gapSamples += n;
+    if (! ring) rs.samples.fetch_add (n);
+    pushRecEvent (RecEvent::gapFilled, at, n);
 }
 
 AudioEngine::LoadStats AudioEngine::takeLoadStats() noexcept
@@ -912,6 +970,16 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
         }
 
     // recording
+    if (rs != nullptr)
+    {
+        // 3.53.0: when each block of the take arrived and where in the take it begins (a late block is marked there; a device that stops and
+        // starts again is measured from the last of them)
+        const auto nowTicks = juce::Time::getHighResolutionTicks();
+        if (recGapPending.exchange (false, std::memory_order_acq_rel)) fillDeviceGap (*rs, pr, wp, nowTicks);
+        lastRecTicks.store (nowTicks, std::memory_order_relaxed); lastRecLen = numSamples;
+        lastRecAt.store (rs->samples.load (std::memory_order_relaxed), std::memory_order_relaxed);
+    }
+    else lastRecAt.store (-1, std::memory_order_relaxed);
     if (rs != nullptr && rs->useRing && pr != nullptr && pr == rs->ring)
     {
         // the files are fed from the ring: first the seconds before Record was pressed, then everything since, always in order
@@ -921,7 +989,7 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
         deliverFromRing (*rs, rs->delivered, limit);
         rs->delivered = limit;
         rs->livePos.store (end, std::memory_order_release);
-        rs->samples.store (rs->delivered - rs->first);
+        rs->samples.store (rs->delivered - rs->first + rs->gapSamples);
     }
     else if (rs != nullptr)
     {
@@ -2023,6 +2091,11 @@ juce::String AudioEngine::startRecording (TakeWindowDef& window)
     window.nextNumber++;
     project.undoAbsorb (window.id);
 
+    // 3.53.0: how much silence one stop of the device may put into the files (see RecordingSession::gapFillMax): what a slow drive (100 MB a second)
+    // writes in half the time the files' buffers hold, between 2 seconds and 10 minutes. 8 mono tracks at 48 kHz: nearly 6 minutes; 40 at 96 kHz: 35 s.
+    rs->gapFillMax = (juce::int64) std::llround (sampleRate * juce::jlimit (2.0, 600.0, 0.5 * kRecordBufferSeconds * 100.0e6 / juce::jmax (1.0, bytesPerSecond)));
+    (void) takeRecEvents();                                    // (nothing of the take before)
+    recGapPending.store (false); lastRecTicks.store (0); lastRecAt.store (-1); lastLateAt = -1;
     session = std::move (rs);
     recFolder = folder;
     recBytesPerSecond.store (bytesPerSecond, std::memory_order_relaxed);
@@ -2055,7 +2128,7 @@ juce::Uuid AudioEngine::stopRecording()
     {
         deliverFromRing (*session, session->delivered, session->livePos.load());
         session->delivered = session->livePos.load();
-        session->samples.store (session->delivered - session->first);
+        session->samples.store (session->delivered - session->first + session->gapSamples);
     }
     const auto length = session->samples.load();
     const auto gid = session->groupId;
@@ -2188,10 +2261,26 @@ juce::String AudioEngine::recordingProblem() const
     return juce::String (bad) + (bad == 1 ? " file has" : " files have") + " stopped taking data: the recording drive is full, or has gone";
 }
 
+void AudioEngine::LivePeaks::closeBin() noexcept
+{
+    const int cap = kBinsPerSecond * kMaxSeconds;
+    const int b = bins.load (std::memory_order_relaxed);
+    if (b < cap)
+    {
+        for (int c = 0; c < numCh; ++c)
+        {
+            const auto i = ((size_t) b * (size_t) numCh + (size_t) c) * 2;
+            data[i]     = (juce::int16) juce::jlimit (-32767, 32767, (int) std::lround (curMin[c] * 32767.0f));
+            data[i + 1] = (juce::int16) juce::jlimit (-32767, 32767, (int) std::lround (curMax[c] * 32767.0f));
+        }
+        bins.store (b + 1, std::memory_order_release);
+    }
+    count = 0;
+}
+
 void AudioEngine::LivePeaks::add (const float* const* chans, int numChans, int n) noexcept
 {
     int done = 0;
-    const int cap = kBinsPerSecond * kMaxSeconds;
     const int nc = juce::jmin (numChans, numCh);
     while (done < n)
     {
@@ -2203,21 +2292,22 @@ void AudioEngine::LivePeaks::add (const float* const* chans, int numChans, int n
             else { curMin[c] = juce::jmin (curMin[c], mm.getStart()); curMax[c] = juce::jmax (curMax[c], mm.getEnd()); }
         }
         count += take; done += take;
-        if (count >= binSamples)
+        if (count >= binSamples) closeBin();
+    }
+}
+
+void AudioEngine::LivePeaks::addSilence (juce::int64 n) noexcept
+{
+    while (n > 0)
+    {
+        const int take = (int) juce::jmin<juce::int64> (n, binSamples - count);
+        for (int c = 0; c < numCh; ++c)
         {
-            const int b = bins.load (std::memory_order_relaxed);
-            if (b < cap)
-            {
-                for (int c = 0; c < numCh; ++c)
-                {
-                    const auto i = ((size_t) b * (size_t) numCh + (size_t) c) * 2;
-                    data[i]     = (juce::int16) juce::jlimit (-32767, 32767, (int) std::lround (curMin[c] * 32767.0f));
-                    data[i + 1] = (juce::int16) juce::jlimit (-32767, 32767, (int) std::lround (curMax[c] * 32767.0f));
-                }
-                bins.store (b + 1, std::memory_order_release);
-            }
-            count = 0;
+            if (count == 0) curMin[c] = curMax[c] = 0.0f;
+            else { curMin[c] = juce::jmin (curMin[c], 0.0f); curMax[c] = juce::jmax (curMax[c], 0.0f); }
         }
+        count += take; n -= take;
+        if (count >= binSamples) closeBin();
     }
 }
 

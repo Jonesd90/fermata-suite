@@ -749,6 +749,20 @@ juce::String SystemLoad::powerText()
 #endif
 }
 
+bool CoreReservation::keepAwake (bool on) noexcept
+{
+    static std::atomic<bool> asked { false };
+    if (asked.exchange (on) == on) return false;
+#if FERMATA_CPU_WINDOWS
+    // SetThreadExecutionState: ES_CONTINUOUS (0x80000000) holds the request until it is taken back; ES_SYSTEM_REQUIRED (1) no sleep; ES_DISPLAY_REQUIRED (2)
+    // the screen stays on (the meters and the take's clock are what the person looks at). Looked up by name like the other calls here.
+    using Fn = unsigned long (WINAPI*) (unsigned long);
+    static const Fn fn = [] { auto k = GetModuleHandleW (L"kernel32.dll"); return k != nullptr ? reinterpret_cast<Fn> ((void*) GetProcAddress (k, "SetThreadExecutionState")) : (Fn) nullptr; }();
+    if (fn != nullptr) fn (on ? 0x80000003ul : 0x80000000ul);
+#endif
+    return true;
+}
+
 void CoreReservation::makeThisThreadBackground() noexcept
 {
 #if FERMATA_CPU_WINDOWS

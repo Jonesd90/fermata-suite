@@ -6,6 +6,54 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.53.0
+Built 11 November 2026 (the conversation for both programs), with Claude Fable. Recording reliability - Windows kept awake, dropouts and
+device stops marked on the take, a take's markers kept safe while it records; the plug-in window's Bypass, Copy and Paste keys;
+plug-ins told the name of their channel; the false crash report when closing after a score was open.
+- **Shared: Windows stays awake while a take records.** An ASIO driver does not keep Windows awake by itself, so with a power plan that
+  allows sleep a long take that nobody touched the mouse during could end with the computer asleep. From Record to Stop fermata now asks
+  Windows not to sleep and not to switch the screen off (the log says when it asks and when it lets go).
+- **Shared: a dropout is marked where it happened.** fermata counted late blocks and the driver's own dropout reports, but nothing said
+  WHERE in the take. Now each one puts a marker on the take at that moment - **Dropout? (late block)** when fermata's audio thread took
+  longer over a block than the block lasts, **Dropout? (driver)** when the driver itself reported one - and a line in the Recording
+  monitor with the time. The device lamp turns amber ("2 DROPOUTS?") and "Recording stopped" says how many. The question mark is
+  honest: these are the moments a dropout is likely, to go and listen to. At most 40 marks a take.
+- **Shared: a device that stops and starts again in a take no longer leaves a hidden join.** The time it was away is now written into
+  every track as **silence**, so the take is as long as the time that really passed and what follows is still where it belongs against
+  a clock, timecode or a second recorder; a marker - **Device stopped: 2.3 s of silence** - shows the place. It is measured with the
+  computer's clock (right to a few milliseconds). Only up to a length that can be written at once without holding up the sound that
+  follows (about 6 minutes for 8 tracks at 48 kHz, 35 seconds for 40 tracks at 96 kHz): a longer stop is left out as before and the
+  marker says **... missing here**. A stopped device is not counted as a disk overrun.
+- **Shared: what you write on a take while it records is kept safe.** The project is not saved during a take (the disk is the
+  recording's), so if the program stopped before Stop the sound was kept but the markers made during the take, its bars, its name, its
+  note and Dud were lost. They are now written to a small file every three seconds (only when something changed), and given back when
+  the project is opened and the take is found cut off. The dropout and device marks above are markers, so they are kept this way too.
+- **The plug-in window has Bypass, Copy and Paste keys** (asked for on 11 November 2026), on the top row beside the pin.
+  - **Bypass** is the slot's own bypass, the same switch as in the mixer's slot menu: amber while the plug-in is bypassed, and it
+    follows when you switch it in the mixer.
+  - **Copy** keeps the plug-in's settings; **Paste** gives them to the same plug-in on any other channel, in any mixer. Paste is only
+    live in a window of the same plug-in (an EQ's settings mean nothing to a reverb), and its tip says what is copied.
+  - The slot's menu in the mixer has **Copy settings** and **Paste settings** too, and on an **empty** slot **Paste (plug-in) with the
+    copied settings**, which inserts the plug-in already set.
+  - The top row now also says where the plug-in sits: "Pro-Q 4   |   Piano - The Egg Man EDIT".
+- **Plug-ins are told the name of their channel** (asked for on 11 November 2026): "channel - mixer", as in "Piano - The Egg Man EDIT",
+  and the channel's colour. A plug-in that lists its instances across the project (FabFilter Pro-Q's instance list) shows them by that
+  name instead of 1, 2, 3. It follows when a channel or a mixer is renamed (within a second).
+- **Shared: fixed - your replies were left out of a listening copy after an extra freeze had been taken away** (found on 11 November
+  2026 from four of the user's edits). A reply remembers which version was being made when it was written, and a copy leaves out what
+  was written for a LATER version than the copy is of. Replies written in Edit 3 kept that "3" when the extra freeze was removed and the
+  edit was in Edit 2 again - so every copy of Edit 2 left them out. The number now follows when a freeze is undone, a project that has
+  the wrong numbers is put right when it opens (the log says so), and the copy no longer trusts a number the edit does not have.
+- **Shared: in the listening copy a comment ticked done is as clear as any other.** Its flag above the picture was drawn faint; with a
+  listener who gave no name it was a faint "?" that was easy to miss. A done comment now has a tick on a full-strength flag, and a
+  comment with no name says "Note".
+- **Fixed: a crash report was written when fermata closed after a score had been open** (found from the report of 10 November 2026).
+  Nothing had crashed: fermata had finished closing, and Windows' own PDF reader failed in its tidying-up as Windows unloaded it. Now,
+  when a score was shown in that run, fermata ends itself the moment its own closing is complete; and anything Windows reports after
+  that point is written as one line in the log, not as a crash.
+- For developers: `FERMATA_TEST_PLUGIN=1` offers two plug-ins built into fermata ("fermata (test)" in the slots' menus; `TestPlugin.h`),
+  so the slot, the plug-in window's keys, copy and paste and the channel name can be tried on a machine with no plug-ins.
+
 ## 3.52.0
 Built 10 November 2026 (the conversation for both programs), with Claude Fable. The comments workflow as the user set it out: the next
 edit starts when the comments on this one come in; the listening copy shows each round's comments with the editor's replies under them.

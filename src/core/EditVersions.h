@@ -138,6 +138,20 @@ private:
     double fixIn = -1.0, fixOut = -1.0, playhead = 0.0;
 };
 
+/** 3.53.0: no note can have been written while a version was being made that the edit does not have. 'madeIn' above the live version's number
+    is brought down to it; true when something changed. (Found on 11 November 2026 in the user's project: replies written in Edit 3, the
+    extra freeze taken away so that the edit was in Edit 2 again - and every listening copy of Edit 2 left the replies out as "written for a
+    later version". Called when a freeze is undone and when a project is opened, which puts right the projects that have it.) */
+inline bool settleMadeIn (EditDef& live)
+{
+    const int top = live.versionNumber();
+    bool changed = false;
+    auto settle = [&] (std::vector<FeedbackNote>& list) { for (auto& f : list) if (f.madeIn > top) { f.madeIn = top; changed = true; } };
+    settle (live.feedback);
+    for (auto& v : live.versions) if (v.edit != nullptr) settle (v.edit->feedback);
+    return changed;
+}
+
 /** The last freeze undone: the newest frozen version comes off the list, its subheading comes back, and its comments come onto the live edit again
     (at the same music). False when there is none. */
 inline bool unfreezeLast (EditDef& live)
@@ -151,6 +165,7 @@ inline bool unfreezeLast (EditDef& live)
         for (auto& n : notes) n.seconds = mapSeconds (*v.edit, live, n.seconds);
         feedback::merge (live.feedback, notes);
     }
+    settleMadeIn (live);                                       // (what was written in the version that is gone was written in this one)
     return true;
 }
 

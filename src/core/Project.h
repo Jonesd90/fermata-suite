@@ -464,6 +464,17 @@ public:
     /** 3.52.0: the copy made to match the edit's comments as they are now - after they were taken away, or went to a frozen version: gone when
         the edit has none (so they are not "given back" at the next opening), rewritten otherwise. Nothing is done when no copy was ever kept. */
     void refreshCommentsCopy (const EditDef& e) const;
+    /** 3.53.0: what is written ABOUT a take while it records - the markers made on it, its bars, its name, its note, Dud - kept safe during the
+        take. The project is not saved while a take records (the disk is the recording's), so until now these were lost with the program if it
+        stopped before Stop, though the sound was kept. saveTakeNotes writes them to <project folder>/Recovery/take-<id>.json (a small file, and
+        only when something changed since it was last written; false when a write failed). When a project is opened, recoverTakeNotes gives
+        them back to a take that was still recording when the program stopped (saved with length 0) - markers by their id, the other things
+        where the take has none - and removes the files of takes that ended as they should. Returns how many takes got something back. */
+    juce::File takeNotesFile (const juce::Uuid& takeId) const;
+    bool saveTakeNotes (const TakeWindowDef&, const TakeGroup&);
+    int recoverTakeNotes();
+    /** Removes the files of every take but this one (a take that has just started: the ones before it are whole in the project). */
+    void forgetTakeNotes (const juce::Uuid& keep);
     juce::File processingFolder() const;            // Processing Media: audio sent out with "Export for Processing"
     juce::File bouncedFolder() const;                // Bounced Media
     /** 3.51.0: the scores. Each edit can have one PDF (EditDef::score); the file is COPIED into the project's "PDFs" folder when it is chosen, so
@@ -525,6 +536,7 @@ public:
     std::function<void()> onNewWindow;                   // the program sets this: called when an edit, take window or mixer is made, so its file is written at once
     std::function<void (MixerState&)> beforeInsertsReplaced;   // 3.27.1: the program sets this: called before applyMix replaces a mixer's plug-ins (their windows must close first)
     juce::StringArray loadNotes;                         // things to tell the person after the project was opened
+    juce::String lastTakeNotes;                          // message thread: what saveTakeNotes last wrote (take id, then the text)
     /** The program sets this while a project opens: called now and then with what is being read and how far it has got (0..1, < 0 = not known),
         so a "please wait" window can show it. Nothing else depends on it. */
     std::function<void (const juce::String& what, double progress)> loadProgress;

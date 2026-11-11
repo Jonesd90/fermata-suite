@@ -8,6 +8,16 @@ fermata:Live is the live-concert recorder that goes with fermata (see `docs/LIVE
 
 A line that starts with **Shared:** is a change to the code fermata shares (see `COMPATIBILITY.md`), so fermata's next build mentions it too.
 
+## 0.10.3
+Built 11 November 2026 (the conversation for both programs), with Claude Fable.
+- **Windows stays awake while the recorder runs.** An ASIO driver does not keep Windows awake by itself, so with a power plan that
+  allows sleep a concert that nobody touched the mouse during could end with the computer asleep. While a session is recording, and
+  while a take is being merged, the recorder asks Windows not to sleep and not to switch the screen off (its log says when).
+- **Shared (fermata 3.53.0):** the listening page shows a comment ticked done at full strength with a tick; a reply's version number
+  follows when a freeze is undone and is put right when a project opens (`editversions::settleMadeIn`).
+- **Shared (fermata 3.53.0):** the engine's take events, the silence for a stopped device and the take-notes file are in the shared
+  code for fermata's own recording; fermata:Live's recorder is its own and is not changed by them.
+
 ## 0.10.2
 Built 10 November 2026 (the conversation for both programs), with Claude Fable. No change to the recorder and none to fermata:Live's own
 code: what the shared code brings.

@@ -1,4 +1,5 @@
 #include "PluginHost.h"
+#include "TestPlugin.h"
 #include "StallWatch.h"
 #include "../core/CrashReport.h"
 #include "WinOwner.h"
@@ -185,6 +186,18 @@ public:
     }
 
     juce::AudioPluginInstance& getPlugin() { return *plugin; }
+    const juce::PluginDescription& desc() const noexcept { return description; }
+    /** 3.53.0: the channel this plug-in sits on, by name and colour, passed on to it when it changed (see PluginHost::setTrackName). */
+    void tellTrack (const juce::String& name, juce::uint32 argb)
+    {
+        if (name == trackName && argb == trackArgb) return;
+        trackName = name; trackArgb = argb;
+        juce::AudioProcessor::TrackProperties tp;
+        tp.name = name;
+        if (argb != 0) tp.colour = juce::Colour (argb);
+        plugin->updateTrackProperties (tp);
+    }
+    juce::String trackName; juce::uint32 trackArgb = 0;
     /** The state was set from outside (a project load, a copy): what is cached is no longer it. */
     void stateWasSet() noexcept { stateChanged.store (true); }
 
@@ -250,6 +263,28 @@ public:
         over the editor as it is over the program's own windows: a plug-in's editor is a window of its own and would cover it.)
         The editor decides its own size (many change it when a panel is opened, and some refuse the size they are given), so this follows the
         editor; when the window itself is resized (a resizable editor) the editor is given the room under the bar. */
+    /** A small key of the top row, drawn like the pin beside it. Lit (amber) while it is on. */
+    struct BarKey : public juce::Button
+    {
+        BarKey (const juce::String& text, int width) : juce::Button (text)
+        {
+            setMouseCursor (juce::MouseCursor::PointingHandCursor);
+            setWantsKeyboardFocus (false);                        // (the keyboard stays with the plug-in)
+            setClickingTogglesState (false);
+            setSize (width, 22);
+        }
+        void paintButton (juce::Graphics& g, bool over, bool down) override
+        {
+            auto b = getLocalBounds().toFloat().reduced (0.5f);
+            const bool on = getToggleState(), live = isEnabled();
+            g.setColour ((on ? juce::Colour (0xffc98a1b) : down && live ? theme::grid : over && live ? theme::button.brighter (0.15f) : theme::button).withAlpha (live ? 0.92f : 0.45f));
+            g.fillRoundedRectangle (b, 4.0f);
+            g.setColour (on ? juce::Colour (0xffffd98a) : theme::border); g.drawRoundedRectangle (b, 4.0f, 1.0f);
+            g.setColour ((on ? juce::Colours::white : theme::inkOn (theme::button)).withAlpha (live ? 1.0f : 0.45f));
+            g.setFont (juce::FontOptions (11.5f, on ? juce::Font::bold : juce::Font::plain));
+            g.drawText (getName(), getLocalBounds(), juce::Justification::centred, false);
+        }
+    };
     struct Holder : public juce::Component, private juce::ComponentListener
     {
         static constexpr int kBarH = 26;
@@ -257,6 +292,9 @@ public:
         {
             setOpaque (true);
             addAndMakeVisible (*editor); addAndMakeVisible (pin);
+            addAndMakeVisible (bypass); addAndMakeVisible (copy); addAndMakeVisible (paste);
+            bypass.setTooltip ("Bypass: the sound goes past this plug-in unchanged (the same switch as Bypass in the mixer's slot menu). Click again to bring it back.");
+            copy.setTooltip ("Copy this plug-in's settings, to Paste into the same plug-in on any other channel, in any mixer.");
             editor->addComponentListener (this);
             setSize (juce::jmax (60, editor->getWidth()), editor->getHeight() + kBarH);
         }
@@ -267,11 +305,20 @@ public:
             g.setColour (theme::panel); g.fillRect (0, 0, getWidth(), kBarH);
             g.setColour (theme::border); g.fillRect (0, kBarH - 1, getWidth(), 1);
             g.setColour (theme::dimText); g.setFont (juce::FontOptions (12.5f));
-            g.drawText (name, 8, 0, juce::jmax (0, pin.getX() - 14), kBarH - 1, juce::Justification::centredLeft, true);
+            g.drawText (place.isNotEmpty() ? name + "   |   " + place : name, 8, 0, juce::jmax (0, bypass.getX() - 14), kBarH - 1, juce::Justification::centredLeft, true);
         }
+        void setPlace (const juce::String& p) { if (p != place) { place = p; repaint (0, 0, getWidth(), kBarH); } }
         void resized() override
         {
-            pin.setTopLeftPosition (getWidth() - pin.getWidth() - 4, (kBarH - 1 - pin.getHeight()) / 2);
+            const int y = (kBarH - 1 - pin.getHeight()) / 2;
+            pin.setTopLeftPosition (getWidth() - pin.getWidth() - 4, y);
+            // left to right: Bypass, Copy, Paste, the pin. A very narrow plug-in keeps the pin and Bypass (Copy and Paste are in the slot's menu too)
+            const bool roomForAll = pin.getX() - (paste.getWidth() + copy.getWidth() + bypass.getWidth() + 19) >= 4;
+            paste.setVisible (roomForAll); copy.setVisible (roomForAll);
+            paste.setTopLeftPosition (pin.getX() - paste.getWidth() - 8, y);
+            copy.setTopLeftPosition (paste.getX() - copy.getWidth() - 3, y);
+            bypass.setTopLeftPosition ((roomForAll ? copy.getX() : pin.getX()) - bypass.getWidth() - 8, y);
+            bypass.setVisible (bypass.getX() >= 2);
             if (fitting) return;
             const juce::ScopedValueSetter<bool> s (fitting, true);
             editor->setBounds (0, kBarH, getWidth(), juce::jmax (1, getHeight() - kBarH));
@@ -286,8 +333,9 @@ public:
             if (wasResized) setSize (juce::jmax (60, editor->getWidth()), editor->getHeight() + kBarH);
         }
         std::unique_ptr<juce::AudioProcessorEditor> editor;
-        juce::String name;
+        juce::String name, place;                 // the plug-in's name, and the channel and mixer it sits on
         PinButton pin;
+        BarKey bypass { "Bypass", 56 }, copy { "Copy", 44 }, paste { "Paste", 46 };
         bool fitting = false;
     };
     EditorWindow (PluginHost& h, Vst3Insert* i, juce::AudioProcessorEditor* editor)
@@ -299,6 +347,24 @@ public:
         const bool resizable = editor->isResizable();
         auto* holder = new Holder (editor, i->getName());
         holder->pin.onClick = [this, holder] { const bool on = ! holder->pin.getToggleState(); Pins::get().set (*this, on); holder->pin.setToggleState (on, juce::dontSendNotification); };
+        // 3.53.0: Bypass, Copy and Paste beside the pin
+        holder->bypass.onClick = [this]
+        {
+            if (auto* slot = host.slotOf ? host.slotOf (insert) : nullptr)
+            {
+                slot->bypass.set (! slot->bypass.get());
+                if (host.slotChanged) host.slotChanged();
+            }
+            syncBar();
+        };
+        holder->copy.onClick = [this] { host.copySettings (insert); host.forEachEditor ([] (juce::Component& c) { if (auto* w = dynamic_cast<EditorWindow*> (&c)) w->syncBar(); }); };
+        holder->paste.onClick = [this]
+        {
+            if (host.pasteSettings (insert) && host.slotChanged) host.slotChanged();
+            syncBar();
+        };
+        bar = holder;
+        syncBar();
         setContentOwned (holder, true);
         setResizable (resizable, false);
         centreWithSize (getWidth(), getHeight());
@@ -318,10 +384,33 @@ public:
     }
     PluginHost& host;
     Vst3Insert* insert;
+    /** The top row as things are now: Bypass lit while the slot is bypassed (it can be switched in the mixer too), Paste live while the copied
+        settings are this plug-in's kind, and the channel and mixer after the plug-in's name. */
+    void syncBar()
+    {
+        if (bar == nullptr) return;
+        auto* slot = host.slotOf ? host.slotOf (insert) : nullptr;
+        bar->bypass.setEnabled (slot != nullptr);
+        bar->bypass.setToggleState (slot != nullptr && slot->bypass.get(), juce::dontSendNotification);
+        const bool can = host.canPaste (insert);
+        if (bar->paste.isEnabled() != can || pasteTipFor != host.copiedName())
+        {
+            pasteTipFor = host.copiedName();
+            bar->paste.setEnabled (can);
+            bar->paste.setTooltip (can ? "Paste the settings copied from " + host.copiedName() + " into this plug-in. Its settings as they are now are replaced."
+                                       : host.hasCopied() ? "The copied settings are from " + host.copiedName() + ", another plug-in: they can only be pasted into the same plug-in."
+                                                          : juce::String ("Nothing copied yet: press Copy in a plug-in's window (or Copy settings in a slot's menu) first."));
+        }
+        bar->setPlace (host.trackNameOf (insert));
+    }
 private:
+    juce::Component::SafePointer<Holder> bar;
+    juce::String pasteTipFor { "\x01" };
+    int barTick = 0;
     bool spaceWasDown = false;
     void timerCallback() override
     {
+        if (++barTick >= 8) { barTick = 0; syncBar(); }                                     // (five times a second)
         const bool down = juce::KeyPress::isKeyCurrentlyDown (juce::KeyPress::spaceKey) && ! juce::ModifierKeys::getCurrentModifiersRealtime().isAnyModifierKeyDown();
         if (down && ! spaceWasDown && isVisible() && isForegroundWindow (*this))           // pressed (not held) while this window is the one in front
             if (auto* t = ToolWindow::lastTransportWindow())                                // (one down in the bar too, as from any other window)
@@ -337,6 +426,14 @@ PluginHost::PluginHost() : juce::Thread ("Plug-in scanner")
     ignoredFile = listFile.getSiblingFile ("plugins-ignored.txt");          // one line per ignored file: the file, a tab, the names of its plug-ins
     if (auto xml = juce::XmlDocument::parse (listFile))
         known.recreateFromXml (*xml);
+    // 3.53.0, for developers: the built-in test plug-ins (TestPlugin.h), only with FERMATA_TEST_PLUGIN=1. Without it nothing of them is offered -
+    // also not from a list saved by a run that had it.
+    for (auto& t : known.getTypes()) if (t.pluginFormatName == "FermataTest") known.removeType (t);
+    if (testplugin::wanted())
+    {
+        formats.addFormat (new testplugin::Format());
+        for (auto& k : testplugin::Format::kinds()) known.addType (k);
+    }
     for (auto& line : juce::StringArray::fromLines (ignoredFile.loadFileAsString()))
         if (const auto f = line.upToFirstOccurrenceOf ("\t", false, false).trim(); f.isNotEmpty() && ! ignored.contains (f, true))
         {
@@ -571,6 +668,57 @@ void PluginHost::closeEditorsFor (InsertProcessor* p)
 }
 
 void PluginHost::closeAllEditors() { editors.clear(); }
+
+// ---- 3.53.0: copy and paste of a plug-in's settings; the channel's name -----------------------------------------------------------------------
+void PluginHost::copySettings (InsertProcessor* p)
+{
+    auto* v = dynamic_cast<Vst3Insert*> (p);
+    if (v == nullptr) return;
+    clipIdentifier = v->desc().createIdentifierString();
+    clipDescription = v->getDescription();
+    clipName = v->getName();
+    clipState = v->getStateBase64();
+}
+
+bool PluginHost::canPaste (InsertProcessor* p) const
+{
+    auto* v = dynamic_cast<Vst3Insert*> (p);
+    return v != nullptr && clipState.isNotEmpty() && v->desc().createIdentifierString() == clipIdentifier;
+}
+
+bool PluginHost::pasteSettings (InsertProcessor* p)
+{
+    if (! canPaste (p)) return false;
+    auto* v = static_cast<Vst3Insert*> (p);
+    juce::MemoryBlock mb;
+    if (! mb.fromBase64Encoding (clipState)) return false;
+    const PluginStartLabel starting (v->getName());
+    const auto t0 = juce::Time::getMillisecondCounterHiRes();
+    v->getPlugin().setStateInformation (mb.getData(), (int) mb.getSize());
+    v->stateWasSet();
+    logSlowStart (v->getName(), t0, "to take the pasted settings");
+    return true;
+}
+
+std::unique_ptr<InsertProcessor> PluginHost::createFromCopied (double sampleRate, int blockSize, juce::String& error)
+{
+    if (clipState.isEmpty()) { error = "Nothing has been copied."; return nullptr; }
+    auto factory = makeFactory ([sampleRate] { return sampleRate; }, [blockSize] { return blockSize; });
+    auto p = factory (clipDescription, clipState);
+    if (p == nullptr) error = lastFactoryError;
+    return p;
+}
+
+void PluginHost::setTrackName (InsertProcessor* p, const juce::String& name, juce::uint32 argb)
+{
+    if (auto* v = dynamic_cast<Vst3Insert*> (p)) v->tellTrack (name, argb);
+}
+
+juce::String PluginHost::trackNameOf (InsertProcessor* p) const
+{
+    auto* v = dynamic_cast<Vst3Insert*> (p);
+    return v != nullptr ? v->trackName : juce::String();
+}
 
 void PluginHost::forEachEditor (const std::function<void (juce::Component&)>& fn) { for (auto& e : editors) fn (*e); }
 

@@ -115,6 +115,11 @@ public:
     /** The calling thread's disk and CPU work gets Windows' "background" priority (the copy to the second recording drive), so the main drive's
         writes always come first. Does nothing on other systems. */
     static void makeThisThreadBackground() noexcept;
+    /** 3.53.0: asks Windows not to go to sleep and not to switch the screen off (on = true), or lets it again (false). Asked for while a take
+        records: an ASIO driver does not keep Windows awake by itself, so a long take that nobody touched the mouse during could end with the
+        computer asleep. ALWAYS from the same thread (the message thread): Windows keeps the request with the thread that made it. Does nothing
+        when it is already as asked, and nothing on other systems. Returns true when the request changed. */
+    static bool keepAwake (bool on) noexcept;
 
 private:
     CoreReservation();

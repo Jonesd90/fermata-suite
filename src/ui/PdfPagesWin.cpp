@@ -16,6 +16,7 @@
 #include <winrt/Windows.Storage.h>
 #include <winrt/Windows.Storage.Streams.h>
 #include <winrt/Windows.Data.Pdf.h>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 
@@ -49,12 +50,15 @@ struct Doc
 };
 
 bool available() { return true; }
+static std::atomic<bool> used { false };
+bool everUsed() { return used.load(); }
 
 Doc* open (const std::wstring& path, std::string& error)
 {
     try
     {
         joinApartment();
+        used.store (true);
         const auto file = winrt::Windows::Storage::StorageFile::GetFileFromPathAsync (winrt::hstring (path)).get();
         auto d = std::make_unique<Doc>();
         d->pdf = winrt::Windows::Data::Pdf::PdfDocument::LoadFromFileAsync (file).get();

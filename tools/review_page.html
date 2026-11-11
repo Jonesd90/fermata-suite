@@ -391,7 +391,12 @@ function renderPeaks(){
 }
 function css(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim();}
 function flagRect(n,idx){var x=n.t*pps,w=(String(idx).length>1?30:24);return {x:x,w:w,y:TOP+2,h:FLAGH-4};}
-function hText(th){var f=th.notes[0];return initials(f.who)+(th.notes.length>1?' +'+(th.notes.length-1):'');}
+function hText(th){
+  var f=th.notes[0],done=true,j;
+  for(j=0;j<th.notes.length;j++)if(!th.notes[j].done)done=false;
+  /* (a listener who gave no name: "Note", not a question mark; a comment the editor ticked as done carries the tick, at full strength) */
+  return ((done&&!th.ed)?'\u2713 ':'')+(String(f.who||'').trim()?initials(f.who):(th.ed?'Ed':'Note'))+(th.notes.length>1?' +'+(th.notes.length-1):'');
+}
 function hRect(th){
   ctx.font='bold 11px system-ui,sans-serif';
   var w=Math.ceil(ctx.measureText(hText(th)).width)+12,x=hTime(th)*pps;
@@ -413,7 +418,7 @@ function drawHistory(){
     var th=ms[i],f=th.notes[0],r=hRect(th),sel=false,done=true,j,col=th.ed?GOLD:f.colour;
     for(j=0;j<th.notes.length;j++){if(th.notes[j].id===selH)sel=true;if(!th.notes[j].done)done=false;}
     if(sel){ctx.fillStyle=col;ctx.globalAlpha=.8;ctx.fillRect(Math.round(hTime(th)*pps),r.y+r.h,1.5,H-RULER-r.y-r.h);ctx.globalAlpha=1;}
-    rrect(r,4);ctx.fillStyle=col;ctx.globalAlpha=(done&&!th.ed)?.4:1;ctx.fill();ctx.globalAlpha=1;
+    rrect(r,4);ctx.fillStyle=col;ctx.fill();
     if(f.adrift){rrect(r,4);ctx.setLineDash([3,2]);ctx.strokeStyle=css('--ink');ctx.lineWidth=1;ctx.stroke();ctx.setLineDash([]);}
     if(sel){rrect({x:r.x-1.5,y:r.y-1.5,w:r.w+3,h:r.h+3},5);ctx.strokeStyle=css('--ink');ctx.lineWidth=1.5;ctx.stroke();}
     ctx.fillStyle=INK;ctx.font='bold 11px system-ui,sans-serif';ctx.textBaseline='middle';ctx.fillText(hText(th),r.x+6,r.y+r.h/2+.5);

@@ -40,7 +40,9 @@ inline std::vector<PastLane> historyFor (const EditDef& live, int version, doubl
             for (int i : th)
             {
                 const auto& f = notes[(size_t) i];
-                if (f.editor && f.madeIn > now) continue;                 // (written while a later version was being made)
+                // (written while a later version was being made: not in a copy of this one. A number above the live version's cannot be - see
+                // editversions::settleMadeIn - and counts as the live version's)
+                if (f.editor && juce::jmin (f.madeIn, live.versionNumber()) > now) continue;
                 PastNote p;
                 p.id = f.key; p.who = f.who.trim(); p.bar = f.bar; p.text = f.text; p.replyTo = f.replyTo;
                 p.seconds = at; p.argb = feedback::personArgb (f); p.editor = f.editor; p.done = f.done; p.adrift = adrift;

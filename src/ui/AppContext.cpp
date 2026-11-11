@@ -81,7 +81,15 @@ AppContext::AppContext()
     watcher.startTimer (100);
     liveAutoTicker.fn = [this] { followAutomation(); };
     liveAutoTicker.startTimer (50);
-    loadTicker.fn = [this] { tickLoad(); matchEngineRate(); };
+    loadTicker.fn = [this] { tickLoad(); matchEngineRate(); tellPluginsTheirChannels(); };
+    // 3.53.0: the plug-in windows' Bypass key works on the slot the plug-in sits in
+    plugins.slotOf = [this] (InsertProcessor* p) -> InsertSlot*
+    {
+        InsertSlot* found = nullptr;
+        if (p != nullptr) forEachInsertSlot ([&] (InsertSlot& s, const juce::String&, const MixerState&, juce::uint32) { if (s.getProcessorUnsafe() == p) found = &s; return found != nullptr; });
+        return found;
+    };
+    plugins.slotChanged = [this] { project.markDirty(); engine.checkLatency(); };
     loadTicker.startTimer (1000);
     undoTicker.fn = [this] { if (undoHold <= 0) { BusyLabel busy ("making an undo step"); anchorEdits(); project.undoTick (engine.isRecording()); } };
     undoTicker.startTimer (250);
@@ -650,6 +658,9 @@ void AppContext::tickRecordMonitor()
         m.events.push_back ({ clockNow(), text, bad });
     };
     const bool rec = engine.isRecording();
+    // 3.53.0: Windows is asked to stay awake, with the screen on, for as long as a take records (an ASIO driver does not keep it awake by itself)
+    if (CoreReservation::keepAwake (rec))
+        juce::Logger::writeToLog (rec ? "Recording: Windows is asked not to sleep or switch the screen off until the take stops" : "Recording: Windows may sleep again");
     if (rec && ! m.recording)                                                  // a take has just started: the monitor starts afresh for it
     {
         takeMatch.recordingStarted();                                          // (any take analysis stops: the disk is the recording's)
@@ -658,6 +669,7 @@ void AppContext::tickRecordMonitor()
         for (auto& w : project.takeWindows)
             if (auto* g = w->findGroup (engine.currentTakeId())) { m.windowId = w->id; m.takeId = g->id; m.takeName = w->labelFor (*g) + " " + juce::String (g->number) + " - " + w->name; }
         if (m.takeName.isEmpty()) m.takeName = "Take";
+        project.forgetTakeNotes (m.takeId);                                    // (the takes before this one ended as they should: the project has all of theirs)
         event ("Recording started: " + m.takeName + (engine.getBackupFolder() != juce::File() ? "  (second drive on)" : "  (no second drive)"), false);
     }
     // the main drive: overruns, lost time, a file that stopped taking data
@@ -674,6 +686,61 @@ void AppContext::tickRecordMonitor()
         {
             m.writeFailed = true;
             event ("FILE STOPPED TAKING DATA: " + problem, true);
+        }
+        // 3.53.0: dropouts and device stops, each said here and marked on the take at the place it happened, so it can be listened to afterwards
+        {
+            const double rate = engine.getSampleRate();
+            auto clockAt = [] (double s) { const int mins = (int) (s / 60.0); return juce::String (mins) + ":" + juce::String (s - 60.0 * mins, 1).paddedLeft ('0', 4); };
+            auto markTake = [&] (double seconds, const juce::String& name)
+            {
+                if (m.takeMarks >= RecordMonitor::kMaxTakeMarks) return;
+                if (auto* w = project.findTakeWindow (m.windowId))
+                    if (auto* g = w->findGroup (m.takeId))
+                    {
+                        Marker mk; mk.id = juce::Uuid(); mk.seconds = g->startSeconds + juce::jmax (0.0, seconds);
+                        mk.name = ++m.takeMarks == RecordMonitor::kMaxTakeMarks ? juce::String ("More dropouts: see the Recording monitor") : name;
+                        w->markers.push_back (mk);
+                        project.markDirty();
+                    }
+            };
+            for (auto& ev : engine.takeRecEvents())
+            {
+                const double at = rate > 0.0 ? (double) ev.at / rate : 0.0;
+                if (ev.kind == AudioEngine::RecEvent::lateBlock)
+                {
+                    ++m.dropouts;
+                    event ("LATE BLOCK at " + clockAt (at) + " of the take: the audio thread took longer than a block lasts, so a dropout is likely there (marked on the take)", true);
+                    markTake (at, "Dropout? (late block)");
+                }
+                else if (ev.kind == AudioEngine::RecEvent::gapFilled)
+                {
+                    event ("THE DEVICE WAS STOPPED FOR " + lostText (ev.amount, rate) + " at " + clockAt (at) + " of the take: that time is in the take as silence, so the take is still in real time (marked on the take)", true);
+                    markTake (at, "Device stopped: " + lostText (ev.amount, rate) + " of silence");
+                }
+                else if (ev.kind == AudioEngine::RecEvent::gapNotFilled)
+                {
+                    event ("THE DEVICE WAS STOPPED FOR " + lostText (ev.amount, rate) + " at " + clockAt (at) + " of the take: too long to put in as silence, so that time is MISSING from the take there (marked on the take)", true);
+                    markTake (at, "Device stopped: " + lostText (ev.amount, rate) + " missing here");
+                }
+            }
+            if (auto* dev = devices.getCurrentAudioDevice())
+            {
+                const int x = dev->getXRunCount();                              // (ASIO: the driver's own "overload" reports; -1 or 0 from a driver that reports none)
+                if (m.driverXruns < 0 || x < m.driverXruns) m.driverXruns = x;      // the first look, or the device started again and counts from 0
+                else if (x > m.driverXruns)
+                {
+                    const int n = x - m.driverXruns; m.driverXruns = x; m.dropouts += n;
+                    const double at = juce::jmax (0.0, engine.recordedSeconds() - 0.1);
+                    event ("DRIVER DROPOUT at about " + clockAt (at) + " of the take: the audio driver reported " + (n == 1 ? juce::String ("one") : juce::String (n)) + " (marked on the take)", true);
+                    markTake (at, "Dropout? (driver)");
+                }
+            }
+            // what is written on the take while it records, kept safe every three seconds (when it changed): see Project::saveTakeNotes
+            if (++m.notesTick >= 30)
+            {
+                m.notesTick = 0;
+                if (auto* w = project.findTakeWindow (m.windowId)) if (auto* g = w->findGroup (m.takeId)) project.saveTakeNotes (*w, *g);
+            }
         }
         // the device: stopped, or running but delivering nothing (see MainWindow's status line for the same test)
         const bool down = ! engine.isRunning(), quiet = engine.isRunning() && quietSeconds >= 2;
@@ -708,7 +775,8 @@ void AppContext::tickRecordMonitor()
         double secs = 0.0;
         if (auto* w = project.findTakeWindow (m.windowId)) if (auto* g = w->findGroup (m.takeId); g != nullptr && g->sampleRate > 0.0) secs = (double) g->lengthSamples / g->sampleRate;
         event ("Recording stopped" + (secs > 0.0 ? " after " + juce::String (secs, 1) + " s" : juce::String())
-               + (m.overruns == 0 && ! m.writeFailed && m.deviceStops == 0 && m.copiesBinned == 0 ? ": no problems" : ""), false);
+               + (m.overruns == 0 && ! m.writeFailed && m.deviceStops == 0 && m.copiesBinned == 0 && m.dropouts == 0 ? ": no problems" : "")
+               + (m.dropouts > 0 ? ": " + juce::String (m.dropouts) + (m.dropouts == 1 ? " likely dropout, marked on the take" : " likely dropouts, marked on the take") : juce::String()), false);
     }
 }
 
@@ -774,12 +842,42 @@ AppContext::Lamp AppContext::deviceLamp() const
     const juce::String name = dev->getName() + ", " + juce::String (dev->getCurrentSampleRate(), 0) + " Hz, buffer " + juce::String (dev->getCurrentBufferSizeSamples());
     if (! engine.isRunning()) { l.level = 2; l.word = "STOPPED"; l.detail = "The audio device has stopped: no sound is reaching Fermata. " + name; return l; }
     if (quietSeconds >= 2) { l.level = 2; l.word = "NOT DELIVERING"; l.detail = "The device says it is running but has delivered no sound for " + juce::String (quietSeconds) + " s (the driver has stalled?). " + name; return l; }
-    if (m.recording && m.deviceStops > 0) { l.level = 1; l.word = juce::String (m.deviceStops) + (m.deviceStops == 1 ? " RESTART" : " RESTARTS"); l.detail = "The device stopped and started again during this take: the sound while it was down is missing. " + name; return l; }
+    if (m.recording && m.deviceStops > 0) { l.level = 1; l.word = juce::String (m.deviceStops) + (m.deviceStops == 1 ? " RESTART" : " RESTARTS"); l.detail = "The device stopped and started again during this take: a marker on the take shows where, and how long for. " + name; return l; }
+    if (m.dropouts > 0 && (m.recording || m.everRecorded))                     // 3.53.0
+    {
+        l.level = 1; l.word = juce::String (m.dropouts) + (m.dropouts == 1 ? " DROPOUT?" : " DROPOUTS?");
+        l.detail = juce::String (m.recording ? "This take" : "The last take") + " has " + juce::String (m.dropouts) + (m.dropouts == 1 ? " likely dropout" : " likely dropouts")
+                   + " (a late block, or one the driver reported): each is marked on the take. " + name;
+        return l;
+    }
     if (! m.recording && m.everRecorded && m.deviceStops > 0) { l.level = 1; l.word = "RESTARTED"; l.detail = "The device stopped and started again during the last take. " + name; return l; }
     if (engine.isConverting()) { l.level = 1; l.word = "CONVERTING"; l.detail = "Running: " + name + ". " + converterNote(); return l; }      // (3.8.0: it plays, but cannot record)
     l.level = 0; l.word = juce::String (dev->getCurrentSampleRate() / 1000.0, dev->getCurrentSampleRate() == std::floor (dev->getCurrentSampleRate() / 1000.0) * 1000.0 ? 0 : 1) + " KHZ";
     l.detail = "Running: " + name + (lastLoad.late > 0 ? ". " + juce::String (lastLoad.late) + " late blocks in the last second" : juce::String()) + ".";
     return l;
+}
+
+void AppContext::forEachInsertSlot (const std::function<bool (InsertSlot&, const juce::String&, const MixerState&, juce::uint32)>& fn)
+{
+    for (auto& m : project.mixers)
+    {
+        if (m == nullptr) continue;
+        for (auto& s : m->stripPool)
+            if (auto* t = project.findTrack (s->trackId))                    // (a strip whose track is gone stays in the pool: it is nobody's channel)
+                for (auto& slot : s->slots) if (fn (slot, t->name, *m, t->colour)) return;
+        for (auto& b : m->busPool)
+            if (auto* d = project.findBus (b->busId))
+                for (auto& slot : b->slots) if (fn (slot, d->name, *m, d->colour)) return;
+    }
+}
+
+void AppContext::tellPluginsTheirChannels()
+{
+    forEachInsertSlot ([this] (InsertSlot& s, const juce::String& channel, const MixerState& m, juce::uint32 argb)
+    {
+        if (auto* p = s.getProcessorUnsafe()) plugins.setTrackName (p, channel + " - " + m.name, argb);
+        return false;
+    });
 }
 
 void AppContext::tickLoad()

@@ -127,6 +127,18 @@ public:
     /** Message thread: what the audio device did to a take (it stopped and started again during it; it came back at another sample rate, which
         ends the take), said once - the text is returned and cleared. Empty: nothing to say. See audioDeviceAboutToStart. */
     juce::String takeDeviceNote()                     { auto n = deviceNote; deviceNote.clear(); return n; }
+    /** 3.53.0: something that happened to the take being recorded, with its place in the take ('at', samples from the take's start), for the
+        recording monitor to say and to mark on the take:
+          lateBlock     the audio thread took longer over a block than the block lasts: the driver has probably dropped sound here;
+          gapFilled     the audio device stopped and started again: the 'amount' samples it was stopped for are in the files as silence, so the
+                        take is still in real time;
+          gapNotFilled  the same, but it was stopped for too long to write that much silence at once without losing sound after it (see
+                        RecordingSession::gapFillMax): nothing was added, 'amount' samples of time are missing from the take at this place. */
+    struct RecEvent { enum Kind { lateBlock = 1, gapFilled = 2, gapNotFilled = 3 }; int kind = 0; juce::int64 at = 0, amount = 0; };
+    /** Message thread: the events since the last call, oldest first. */
+    std::vector<RecEvent> takeRecEvents();
+    /** Audio thread (public for the tests): a block of the take was late. Said at most twice a second. */
+    void noteLateBlock() noexcept;
     /** How fast the current recording grows on the disk (bytes per second, all its files together); 0 when not recording. */
     double recordingBytesPerSecond() const noexcept   { return recBytesPerSecond.load (std::memory_order_relaxed); }
     /** The folder the current recording's files are in (message thread; a null File when not recording). */
@@ -443,6 +455,10 @@ private:
             data.assign ((size_t) kBinsPerSecond * kMaxSeconds * 2 * (size_t) numCh, 0);
         }
         void add (const float* const* chans, int numCh, int n) noexcept;
+        /** n samples of silence, as add() of that many zeros but without looking at any (3.53.0: the time a stopped device was away). */
+        void addSilence (juce::int64 n) noexcept;
+    private:
+        void closeBin() noexcept;
     };
     struct RecTrack
     {
@@ -474,6 +490,10 @@ private:
         PreRoll* ring = nullptr;
         juce::int64 startPos = -1, first = 0, delivered = 0;
         std::atomic<juce::int64> livePos { 0 };
+        /** 3.53.0: silence put into the files for the time the device was stopped (audio thread; Stop reads it once that thread has left), and
+            the most that is written for one stop: silence is written by the disk thread before the sound that follows it, which waits in the
+            files' buffers meanwhile - so only as much as a slow drive writes in half the buffer's time (see startRecording). */
+        juce::int64 gapSamples = 0, gapFillMax = 0;
     };
 
     void processMixer (const Plan& pl, MixerPlan&, const float* const* in, int numIn, int offset, int n, float* const* out, int numOut, bool playing,
@@ -536,6 +556,17 @@ private:
     std::atomic<juce::uint64> blockCounter { 0 };
     std::atomic<bool> running { false };
     juce::String deviceNote;                                   // message thread: see takeDeviceNote
+    // 3.53.0: the take's events (see RecEvent). One writer - the audio thread - and one reader, the message thread.
+    static constexpr int kRecEvents = 64;
+    juce::AbstractFifo recEventFifo { kRecEvents };
+    RecEvent recEvents[kRecEvents];
+    void pushRecEvent (int kind, juce::int64 at, juce::int64 amount) noexcept;
+    std::atomic<bool> recGapPending { false };                 // the device stopped during the take: the next block of the take measures how long for
+    std::atomic<juce::int64> lastRecTicks { 0 };               // when the take's last block arrived (the high-resolution clock)
+    std::atomic<juce::int64> lastRecAt { -1 };                 // where in the take that block began (-1: the last block was not a recording one)
+    int lastRecLen = 0;                                        // audio thread: its length
+    juce::int64 lastLateAt = -1;                               // audio thread: where the last late block was said
+    void fillDeviceGap (RecordingSession&, PreRoll*, juce::int64 ringPos, juce::int64 nowTicks);
     void deviceRestartedWhileRecording (double newRate);       // message thread: the take goes on, or ends if the rate changed (see audioDeviceAboutToStart)
     std::atomic<juce::int64> samplePosition { 0 };
     std::atomic<float> inputPeak[kMaxInputs];

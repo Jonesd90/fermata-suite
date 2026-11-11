@@ -52,6 +52,12 @@ namespace crashreport
     void nameThisThreadW (const wchar_t* name) noexcept;
     /** (3.17.0) Ends this program at once (the closing safety net: only once everything is saved). */
     [[noreturn]] void endThisProcess() noexcept;
+    /** 3.53.0: the program has finished closing - everything saved, every window and the audio device gone. What Windows reports after this is
+        not a crash of anything the person had open: a library that fails in its own tidying-up while it is unloaded (Windows' PDF reader did,
+        on 10 November 2026: it let go of its Direct3D objects when the graphics layer no longer took the call) used to leave a crash report.
+        The crash handler asks closingHasFinished() and then ends the program quietly instead. */
+    void closingFinished() noexcept;
+    bool closingHasFinished() noexcept;
     /** True when these are the helper's arguments. */
     inline bool isHelperCall (const juce::StringArray& args) { return args.contains ("--fermata-dump"); }
 }

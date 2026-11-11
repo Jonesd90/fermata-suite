@@ -1,6 +1,7 @@
 #include "RecorderService.h"
 #include "TestSignalDevice.h"
 #include "../core/Project.h"
+#include "../core/CoreReservation.h"
 #include "../ui/ClosingLog.h"
 
 namespace td::live
@@ -937,6 +938,10 @@ void RecorderService::timerCallback()
     {
         const auto now = juce::Time::currentTimeMillis();
         if (hub.takeNewConnection()) { keepRunning(); send (statusEvent()); }      // (0.3.1: a window that connects wants this recorder: no Close everything)
+        // 0.10.3: Windows is asked to stay awake, with the screen on, for as long as a session is recording or a take is being merged (an ASIO driver
+        // does not keep it awake by itself: a concert that nobody touched the mouse during could end with the computer asleep)
+        if (const bool busyNow = session() != nullptr || merging(); CoreReservation::keepAwake (busyNow))
+            juce::Logger::writeToLog (busyNow ? "Recorder: Windows is asked not to sleep or switch the screen off while the recording runs" : "Recorder: Windows may sleep again");
         monitor.service();
         if (deviceRunning.load() && now - lastMeterMs >= 50 && hub.connections() > 0)
         {

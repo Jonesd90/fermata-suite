@@ -633,6 +633,11 @@ private:
             m.addItem (2, "Bypass", true, slot.bypass.get());
             m.addItem (3, "Remove");
             m.addSeparator();
+            // 3.53.0: a plug-in's settings copied, and pasted into the same plug-in on any channel of any mixer (the plug-in's window has the same two keys)
+            m.addItem (4, "Copy settings");
+            m.addItem (5, app.plugins.canPaste (slot.getProcessorUnsafe()) ? "Paste settings (copied from " + app.plugins.copiedName() + ")" : juce::String ("Paste settings"),
+                       app.plugins.canPaste (slot.getProcessorUnsafe()));
+            m.addSeparator();
             m.addSubMenu ("Replace with...", app.plugins.buildPluginMenu (1000, *descs));
         }
         else
@@ -643,6 +648,7 @@ private:
                 m.addItem (3, "Remove it (its settings go with it)");
                 m.addSeparator();
             }
+            if (app.plugins.hasCopied()) { m.addItem (6, "Paste " + app.plugins.copiedName() + " with the copied settings"); m.addSeparator(); }      // 3.53.0
             if (app.plugins.getKnownPlugins().getNumTypes() == 0) m.addItem (-1, "No plug-ins known yet", false);
             else m.addSubMenu (slot.savedName.isNotEmpty() ? "Replace it with..." : "Insert VST3 plug-in", app.plugins.buildPluginMenu (1000, *descs));
         }
@@ -692,6 +698,25 @@ private:
             return;
         }
         if (r == 10) { showPluginManager (app); return; }
+        if (r == 4) { app.plugins.copySettings (slot.getProcessorUnsafe()); return; }
+        if (r == 5)
+        {
+            if (app.plugins.pasteSettings (slot.getProcessorUnsafe())) { app.project.markDirty(); app.engine.checkLatency(); refresh(); }
+            return;
+        }
+        if (r == 6)                                                                     // an empty slot: the copied plug-in, with the copied settings
+        {
+            auto& a = app;                                                              // (a plug-in that shows a window while it loads: see below)
+            juce::Component::SafePointer<SlotButtons> safe (this);
+            const auto what = a.plugins.copiedName();
+            juce::String err;
+            auto p = a.plugins.createFromCopied (a.engine.getSampleRate(), a.engine.getMaxBlock(), err);
+            if (p == nullptr) { showError ("Plug-in", "Could not load " + what + ":\n" + err); return; }
+            if (! slot.set (std::move (p), a.engine.getSampleRate(), a.engine.getMaxBlock(), 2)) { showError ("Plug-in", stuckText (slot)); if (safe != nullptr) refresh(); return; }
+            a.project.markDirty(); a.engine.checkLatency(); if (safe != nullptr) refresh();
+            a.project.structure.sendChangeMessage();                                    // (a strip may need another slot row)
+            return;
+        }
         if (r >= 1000 && (size_t) (r - 1000) < descs.size())
         {
             // A plug-in that shows a window while it loads runs a modal loop, in which this row of slots can be rebuilt and deleted: after a load only what

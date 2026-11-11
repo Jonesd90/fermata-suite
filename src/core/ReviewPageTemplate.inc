@@ -397,7 +397,12 @@ function renderPeaks(){
 }
 function css(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim();}
 function flagRect(n,idx){var x=n.t*pps,w=(String(idx).length>1?30:24);return {x:x,w:w,y:TOP+2,h:FLAGH-4};}
-function hText(th){var f=th.notes[0];return initials(f.who)+(th.notes.length>1?' +'+(th.notes.length-1):'');}
+function hText(th){
+  var f=th.notes[0],done=true,j;
+  for(j=0;j<th.notes.length;j++)if(!th.notes[j].done)done=false;
+  /* (a listener who gave no name: "Note", not a question mark; a comment the editor ticked as done carries the tick, at full strength) */
+  return ((done&&!th.ed)?'\u2713 ':'')+(String(f.who||'').trim()?initials(f.who):(th.ed?'Ed':'Note'))+(th.notes.length>1?' +'+(th.notes.length-1):'');
+}
 function hRect(th){
   ctx.font='bold 11px system-ui,sans-serif';
   var w=Math.ceil(ctx.measureText(hText(th)).width)+12,x=hTime(th)*pps;
@@ -419,7 +424,7 @@ function drawHistory(){
     var th=ms[i],f=th.notes[0],r=hRect(th),sel=false,done=true,j,col=th.ed?GOLD:f.colour;
     for(j=0;j<th.notes.length;j++){if(th.notes[j].id===selH)sel=true;if(!th.notes[j].done)done=false;}
     if(sel){ctx.fillStyle=col;ctx.globalAlpha=.8;ctx.fillRect(Math.round(hTime(th)*pps),r.y+r.h,1.5,H-RULER-r.y-r.h);ctx.globalAlpha=1;}
-    rrect(r,4);ctx.fillStyle=col;ctx.globalAlpha=(done&&!th.ed)?.4:1;ctx.fill();ctx.globalAlpha=1;
+    rrect(r,4);ctx.fillStyle=col;ctx.fill();
     if(f.adrift){rrect(r,4);ctx.setLineDash([3,2]);ctx.strokeStyle=css('--ink');ctx.lineWidth=1;ctx.stroke();ctx.setLineDash([]);}
     if(sel){rrect({x:r.x-1.5,y:r.y-1.5,w:r.w+3,h:r.h+3},5);ctx.strokeStyle=css('--ink');ctx.lineWidth=1.5;ctx.stroke();}
     ctx.fillStyle=INK;ctx.font='bold 11px system-ui,sans-serif';ctx.textBaseline='middle';ctx.fillText(hText(th),r.x+6,r.y+r.h/2+.5);
@@ -445,12 +450,12 @@ function draw(){
   for(var i=0;i<step.length;i++){if(step[i]*pps>=90){st=step[i];break;}}
   ctx.fillStyle=css('--dim');ctx.strokeStyle=css('--line');ctx.font='11px system-ui,sans-serif';ctx.textBaseline='middle';ctx.lineWidth=1;
   ctx.beginPath();ctx.moveTo(0,H-RULER+.5);ctx.lineTo(W,H-RULER+.5);ctx.stroke();
-  for(var t=0;t<=dur;t+=st){var x=Math.round(t*pps)+.5;ctx.beginPath();ctx.moveTo(x,H-RULER);ctx.lineTo(x,H-RULER+5);ctx.stroke();ctx.fillText(fmt(t),x+3,H-8);}
+)HTMLX",
+R"HTMLX(  for(var t=0;t<=dur;t+=st){var x=Math.round(t*pps)+.5;ctx.beginPath();ctx.moveTo(x,H-RULER);ctx.lineTo(x,H-RULER+5);ctx.stroke();ctx.fillText(fmt(t),x+3,H-8);}
   // flags (this piece's comments)
   var list=sorted(cur),flag=myColour();
   for(var j=0;j<list.length;j++){
-)HTMLX",
-R"HTMLX(    var n=list[j],r=flagRect(n,j+1),sel=n.id===selId;
+    var n=list[j],r=flagRect(n,j+1),sel=n.id===selId;
     ctx.fillStyle=flag;ctx.globalAlpha=sel?1:.55;ctx.fillRect(Math.round(r.x),TOP+FLAGH-2,1.5,H-RULER-TOP-FLAGH+2);ctx.globalAlpha=1;
     ctx.beginPath();ctx.moveTo(r.x,r.y);ctx.lineTo(r.x+r.w,r.y);ctx.lineTo(r.x+r.w-5,r.y+r.h/2);ctx.lineTo(r.x+r.w,r.y+r.h);ctx.lineTo(r.x,r.y+r.h);ctx.closePath();
     ctx.fillStyle=flag;ctx.fill();if(sel){ctx.strokeStyle=css('--ink');ctx.lineWidth=2;ctx.stroke();}
@@ -528,10 +533,10 @@ function renderHist(){
     ph+='<label title="'+esc('The comments on '+(lanes[i].label||('Edit '+lanes[i].version))+' and the editor\'s replies to them')+'"><input type="checkbox" data-v="'+esc(lanes[i].version)+'"'+(laneOn(i)?' checked':'')+'> '+esc(laneName(lanes[i]))+'</label>';
   for(i=0;i<rows.length;i++){
     var RL=lanes[rows[i].lane];
-    gh+='<div style="height:'+LANEH+'px;line-height:'+LANEH+'px'+(rows[i].ed?';color:#a8842f':'')+'" title="'+esc(rows[i].ed?'What the editor wrote back about the comments on Edit '+RL.version:'The comments made on '+(RL.label||('Edit '+RL.version)))+'">Edit '+esc(RL.version)+(rows[i].ed?' editor':' comments')+'</div>';
-  }
 )HTMLX",
-R"HTMLX(  gh+='<div style="height:'+FLAGH+'px;line-height:'+FLAGH+'px;color:var(--ink)" title="The comments you add now, on this version">'+(T[cur].version?'Edit '+esc(T[cur].version)+': yours':'Your comments')+'</div>';
+R"HTMLX(    gh+='<div style="height:'+LANEH+'px;line-height:'+LANEH+'px'+(rows[i].ed?';color:#a8842f':'')+'" title="'+esc(rows[i].ed?'What the editor wrote back about the comments on Edit '+RL.version:'The comments made on '+(RL.label||('Edit '+RL.version)))+'">Edit '+esc(RL.version)+(rows[i].ed?' editor':' comments')+'</div>';
+  }
+  gh+='<div style="height:'+FLAGH+'px;line-height:'+FLAGH+'px;color:var(--ink)" title="The comments you add now, on this version">'+(T[cur].version?'Edit '+esc(T[cur].version)+': yours':'Your comments')+'</div>';
   g.innerHTML=gh;pk.innerHTML=lanes.length?'<span>Show:</span>'+ph:'';
   var any=false;for(i=0;i<T.length;i++)if(HT[i].lanes.length)any=true;
   g.classList.toggle('on',rows.length>0);pk.classList.toggle('on',lanes.length>0);$('histcard').classList.toggle('on',any);document.body.classList.toggle('hashist',any);
@@ -599,13 +604,13 @@ function openComposer(existing,reply){
   $('ctitle').textContent=(isRe?(existing?'Change your reply to '+toWho:'Reply to '+toWho):(existing?'Change this comment':'New comment'))+(multi?' ('+(draft.k+1)+'. '+T[draft.k].piece+')':'');
   $('csave').textContent=existing?'Save changes':(isRe?'Add reply':'Add comment');
   $('ctime').value=draft.txt;$('cbar').value=existing?existing.bar:'';$('ctext').value=existing?existing.text:'';
-  $('composer').classList.add('on');draw();
+)HTMLX",
+R"HTMLX(  $('composer').classList.add('on');draw();
   setTimeout(function(){$('ctext').focus();$('composer').scrollIntoView&&$('composer').scrollIntoView({block:'nearest'});},30);
 }
 function closeComposer(resume){
   $('composer').classList.remove('on');draft=null;editing=null;draw();
-)HTMLX",
-R"HTMLX(  if(resume&&wasPlaying&&$('pausetype').checked){var p=audio.play();if(p&&p.catch)p.catch(function(){});}
+  if(resume&&wasPlaying&&$('pausetype').checked){var p=audio.play();if(p&&p.catch)p.catch(function(){});}
   wasPlaying=false;
 }
 $('addbtn').onclick=function(){openComposer(null);};
@@ -689,12 +694,12 @@ $('openfile').addEventListener('change',function(){
 
 /* ---------- keys ---------- */
 document.addEventListener('keydown',function(e){
-  var tg=e.target&&e.target.tagName;if(tg==='INPUT'||tg==='TEXTAREA'||e.ctrlKey||e.metaKey||e.altKey)return;
+)HTMLX",
+R"HTMLX(  var tg=e.target&&e.target.tagName;if(tg==='INPUT'||tg==='TEXTAREA'||e.ctrlKey||e.metaKey||e.altKey)return;
   if(e.key===' '){e.preventDefault();toggle();}
   else if(e.key==='ArrowLeft'){e.preventDefault();seek(now()-5);}
   else if(e.key==='ArrowRight'){e.preventDefault();seek(now()+5);}
-)HTMLX",
-R"HTMLX(  else if(e.key==='c'||e.key==='C'){e.preventDefault();if(!$('composer').classList.contains('on'))openComposer(null);}
+  else if(e.key==='c'||e.key==='C'){e.preventDefault();if(!$('composer').classList.contains('on'))openComposer(null);}
   else if(e.key==='Escape'&&$('composer').classList.contains('on'))closeComposer(true);
 });
 $('ctext').addEventListener('keydown',function(e){if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){$('csave').click();}});

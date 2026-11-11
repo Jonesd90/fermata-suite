@@ -50,6 +50,18 @@ static juce::File logFolder() { return juce::File::getSpecialLocation (juce::Fil
     then the kind of crash, where, and the stack trace into the log file. */
 static void crashHandler (void* exceptionPointers)
 {
+    // 3.53.0: after the program has finished closing nothing of the person's is open any more. A library that fails while Windows unloads it
+    // (see crashreport::closingFinished) is noted in the log and the program is ended: no crash report, no "stopped working" box.
+    if (crashreport::closingHasFinished())
+    {
+        juce::String what;
+#if JUCE_WINDOWS
+        what = crashreport::describeException (exceptionPointers);
+#endif
+        logFolder().getChildFile ("fermata-log.txt").appendText ("After closing had finished, Windows reported an error while unloading the program"
+                                                                 + (what.isNotEmpty() ? " (" + what + ")" : juce::String()) + ". Nothing was open any more: this is not a crash.\n");
+        crashreport::endThisProcess();
+    }
     const auto report = crashreport::write (exceptionPointers, "crash");
     auto f = logFolder().getChildFile ("fermata-log.txt");
     juce::String text ("\n*** CRASH ***");
@@ -571,8 +583,13 @@ public:
         lookAndFeel.reset();
         closing::end();
         ClosingWatchdog::finished();
+        CoreReservation::keepAwake (false);
+        crashreport::closingFinished();                                          // 3.53.0: from here on nothing Windows reports is a crash (see the crash handler)
+        const bool endHere = pdfpages::everUsed();
+        if (endHere) juce::Logger::writeToLog ("Closing: a score was shown in this run, so the program ends here (Windows' PDF reader fails in its own tidying-up when it is unloaded the ordinary way)");
         juce::Logger::setCurrentLogger (nullptr);
         fileLogger.reset();
+        if (endHere) crashreport::endThisProcess();
     }
 
     void systemRequestedQuit() override

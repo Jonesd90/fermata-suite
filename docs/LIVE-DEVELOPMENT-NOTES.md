@@ -759,3 +759,11 @@ No change to fermata:Live's own code. From the shared files:
   `MasterItem::formVersion`, `editversions::removeVersion`, `Project::refreshCommentsCopy` and the repair in `restoreSavedComments`,
   `reviewpage::historyFor`'s lanes, the page template.
 Checked here: the recorder core's tests (`tools/live-check.sh`) and a build of the program on Linux.
+
+## 0.10.3: awake while the recorder runs (11 November 2026, with Claude Fable)
+
+`RecorderService::timerCallback` calls `CoreReservation::keepAwake` (shared, new in fermata 3.53.0) with "a session exists or a merge is
+running": Windows is asked not to sleep or switch the screen off. The request belongs to the thread that made it, and the timer is the
+recorder process's message thread. The windows' process (Primary / Fixer) asks nothing: it is the recorder that must not stop.
+Not built for fermata:Live: the engine's take events and the silence for a stopped device (fermata 3.53.0) are in `AudioEngine`, which
+the recorder does not use - its own handling of a device that goes away ("NO AUDIO for ..." flags) is as it was.

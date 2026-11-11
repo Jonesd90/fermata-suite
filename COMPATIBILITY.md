@@ -190,3 +190,11 @@ copies it like everything else, which is fine.
     frozen version rendered in the render's own copy of the project), `editversions::removeVersion`, `src/ui/BusyLabel.h`,
     `ProcessWindows` in `src/ui/Uikit.h`. The listening copy's page changed (two lines for each version, tabs); its `"history"` and the
     notes file that comes back did not.
+  - Still contract 3 (fermata 3.53.0, fermata:Live 0.10.3): recording reliability. Nothing in the project file changed. New beside it:
+    `<project folder>/Recovery/take-<id>.json`, what was written on a take while it recorded (`Project::saveTakeNotes`), read back by
+    `Project::load` only for a take saved with length 0 and removed otherwise - either program opening the project does the same. New
+    in the shared code: `CoreReservation::keepAwake` (both programs call it, each from its own message thread),
+    `AudioEngine::RecEvent` / `takeRecEvents` / `noteLateBlock` and the silence for a stopped device (`TakeWriter::addSilence`), and
+    `crashreport::closingFinished` / `closingHasFinished`. A take a stopped device left silence in is an ordinary take to both programs.
+    Also: `"madeIn"` of a reply is never above the edit's live version number - brought down when a freeze is undone and when a project
+    is read (`editversions::settleMadeIn`), so a project either program opens may be marked changed for that once.

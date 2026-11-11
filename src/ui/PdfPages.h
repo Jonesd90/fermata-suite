@@ -21,6 +21,9 @@ namespace pdfpages
 struct Doc;                                                                // an open PDF
 
 bool available();                                                          // false: this build has nothing that can draw a PDF's pages
+/** 3.53.0: true once Windows' PDF reader has been used in this run (any thread). The program then ends itself the moment it has finished closing
+    (Main.cpp): left to unload in the ordinary way, the reader failed in its own tidying-up and Windows reported that as a crash. */
+bool everUsed();
 /** Opens the file. Returns nullptr and an error text when it cannot be read (or is locked with a password). */
 Doc* open (const std::wstring& path, std::string& error);
 int  pageCount (Doc*);
