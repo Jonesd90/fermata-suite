@@ -321,6 +321,26 @@ public:
     /** 3.42.0: plays a frozen earlier version of the edit ("Edit 2": version 2) from 'fromSec' on THAT version's timeline, through the edit's mixer as it is
         now - to hear how a passage went before it was changed. The same arguments and rules as playEdit; the live version number plays the edit itself. */
     juce::String playEditVersion (const juce::Uuid& editId, int version, double fromSec, double toSec = -1.0);
+
+    // ---- 3.54.0: look and listen (asked for on 11 November 2026). The Edit window's version keys show and play a frozen version without touching the
+    //      edit being worked on: 'pieces' is the frozen version the window shows and every play of the edit plays (0 = the working edit), 'mixer'
+    //      the frozen version whose settings the edit's mixer has for now (0 = the working mixer). The two are chosen separately: a key's left
+    //      half sets the pieces and leaves the mixer, its "+ Mixer" half sets both.
+    struct VersionView { int pieces = 0, mixer = 0; juce::var workingMixer; };
+    std::map<juce::Uuid, VersionView> versionViews;
+    int shownVersion (const juce::Uuid& editId) const { const auto it = versionViews.find (editId); return it != versionViews.end() ? it->second.pieces : 0; }
+    int shownMixer (const juce::Uuid& editId) const   { const auto it = versionViews.find (editId); return it != versionViews.end() ? it->second.mixer : 0; }
+    /** Shows version 'version' of the edit (its live number, or 0: the working edit), with its own mixer too when withMixer. An edit that is
+        playing goes on from the same music in what is shown now. Returns what went wrong ("" = done). */
+    juce::String showVersion (const juce::Uuid& editId, int version, bool withMixer);
+    /** Every edit back to its working pieces and its working mixer (the program closes, another project is opened, the Edit window closes: one edit). */
+    void endVersionViews();
+    void endVersionView (const juce::Uuid& editId);
+    /** After a project is opened: a mixer that was left with an older version's settings (the program stopped meanwhile) is put back as it was worked on. */
+    void restoreStashedMixers();
+private:
+    juce::String setShownMixer (const juce::Uuid& editId, int version);
+public:
     /** The edit window's visual guide on its own (its S button, 2.102): plays only the guide, where it stands on the edit's timeline, through the
         edit's own mixer on the guide's track - the same arguments and rules as playEdit. */
     juce::String playEditGuide (const juce::Uuid& editId, double fromSec, double toSec = -1.0, bool loop = false, bool goOnAfterLoop = false);

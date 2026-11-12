@@ -198,3 +198,11 @@ copies it like everything else, which is fine.
     `crashreport::closingFinished` / `closingHasFinished`. A take a stopped device left silence in is an ordinary take to both programs.
     Also: `"madeIn"` of a reply is never above the edit's live version number - brought down when a freeze is undone and when a project
     is read (`editversions::settleMadeIn`), so a project either program opens may be marked changed for that once.
+  - Still contract 3 (fermata 3.54.0, fermata:Live 0.10.4): look and listen. Nothing in the project file changed (`"laneShown"` of a
+    frozen version is still written; fermata no longer uses it). New beside the project: `<project folder>/Recovery/mixer-<mixer id>.json`,
+    an edit's working mixer while fermata has an older version's settings in that mixer (`Project::stashMixer`). Only fermata's window
+    code reads it back (`AppContext::restoreStashedMixers`, when a project opens); fermata:Live leaves it alone.
+    Also new beside the project, and fermata's alone: `PDFs/<the PDF's name>.bars.json`, the bars fermata found on a score's pages and
+    what the user put right (new header `src/core/ScoreBars.h`, header only, included by fermata's score window and the core tests;
+    fermata:Live does not build it). It is made again from the PDF if it is missing, so a program that does not copy it loses only the
+    corrections made by hand. The takes' bars the brackets are drawn from are the same `"barIn"` / `"barOut"` as before.

@@ -475,6 +475,13 @@ public:
     int recoverTakeNotes();
     /** Removes the files of every take but this one (a take that has just started: the ones before it are whole in the project). */
     void forgetTakeNotes (const juce::Uuid& keep);
+    /** 3.54.0: an edit's mixer as the person has it, kept in a file for as long as the mixer is showing an older version's settings instead
+        ("+ Mixer" on a frozen version's key in the Edit window: look and listen). If the program stops meanwhile - or the project is saved
+        with the older settings in the mixer - the file is what the working mixer is put back from when the project is next opened
+        (AppContext::restoreStashedMixers). <project folder>/Recovery/mixer-<mixer id>.json; false when it could not be written. */
+    juce::File mixerStashFile (const juce::Uuid& mixerId) const;
+    bool stashMixer (const MixerState&, const juce::var& workingState);
+    void dropMixerStash (const juce::Uuid& mixerId);
     juce::File processingFolder() const;            // Processing Media: audio sent out with "Export for Processing"
     juce::File bouncedFolder() const;                // Bounced Media
     /** 3.51.0: the scores. Each edit can have one PDF (EditDef::score); the file is COPIED into the project's "PDFs" folder when it is chosen, so

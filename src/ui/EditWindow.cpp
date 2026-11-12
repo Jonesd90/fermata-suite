@@ -151,7 +151,45 @@ public:
     double cursorSeconds = -1.0;
     juce::String selectedFeedback;              // the key of the first comment of the flag that was clicked last
 
-    EditDef* edit() const { return app.project.findEdit (editId); }
+    // ---- 3.54.0: look and listen (asked for on 11 November 2026). The window can show a FROZEN version of its edit instead of the edit being
+    //      worked on: 'viewing' is that version's number (0 = the working edit). Everything here draws edit() - which is then a COPY of the frozen
+    //      version, made when the view begins. A copy on purpose: nothing in this window can then alter the frozen version itself, whatever
+    //      code path is reached. And nothing is meant to be reached: while viewing, the mouse only moves the playhead (viewClick) and the
+    //      window lets through only the keys that look and listen (EditWindowComponent::keyPressed, applyViewLock).
+    //      The edit's playhead (EditDef::playheadSeconds of the LIVE edit, which is what the application moves) is the view's playhead meanwhile.
+    int viewing = 0;
+    std::unique_ptr<EditDef> viewCopy;
+    EditDef* liveEdit() const { return app.project.findEdit (editId); }
+    EditDef* edit() const { return viewing > 0 && viewCopy != nullptr ? viewCopy.get() : liveEdit(); }
+    void setViewing (int version)
+    {
+        auto* live = liveEdit();
+        const EditDef* src = live != nullptr && version > 0 ? live->versionEdit (version) : nullptr;
+        if (src == nullptr) version = 0;
+        if (version == viewing && (version == 0 || viewCopy != nullptr)) return;
+        viewing = version;
+        if (version > 0)
+        {
+            viewCopy = std::make_unique<EditDef> (*src);
+            viewCopy->versions.clear(); viewCopy->compareWith = 0;
+            viewCopy->feedback.clear();                       // (every version's comments are in the lanes above the timeline)
+            viewCopy->fixIn = -1.0; viewCopy->fixOut = -1.0; viewCopy->fixTracks.clear(); viewCopy->insertIndex = -1;
+            viewCopy->playheadSeconds = live->playheadSeconds;
+        }
+        else viewCopy.reset();
+        selectedRegion = juce::Uuid::null(); moveRegion = juce::Uuid(); selectedRegions.clear(); selectedJoin = -1; selectedFeedback.clear();
+        if (glueMode) setGlueMode (false);
+        if (live != nullptr) { cursorSeconds = live->playheadSeconds; lastHead = live->playheadSeconds; }
+        updateSize(); repaint();
+    }
+    /** While a frozen version is shown: a click along the timeline puts the playhead there. Nothing else. */
+    void viewClick (const juce::MouseEvent& e)
+    {
+        grabKeyboardFocus();
+        if (e.mods.isPopupMenu() || e.x <= viewport.getViewPositionX() + kNameW) return;
+        const double sec = juce::jmax (0.0, (double) (e.x - kNameW) / pixelsPerSecond);
+        if (auto* w = findParentComponentOfClass<EditWindowComponent>()) w->goToSeconds (sec);
+    }
 
     // ---- the visual guide (2.102): a lane of its own under the top band, above the tracks. It belongs to the band, so it stays in view however
     //      far down the tracks are scrolled. Drag anywhere along it to slide it; its S plays it on its own instead of the edit.
@@ -930,7 +968,7 @@ public:
         paintLevelLines (g, *e, tracks, rate, clip);                 // 3.49.0: the level each track really plays at (3.50.0: drawn over the boxes, so no edge runs through a figure)
 
         // where the next take will be placed: a flag in its own strip under the markers (drag it; it snaps to the starts and ends of the pieces)
-        if (app.showInsertFlag)
+        if (app.showInsertFlag && viewing == 0)                      // (3.54.0: nothing is placed into a frozen version)
         {
             const juce::int64 at = e->insertIndex < 0 || e->insertIndex >= (int) e->regions.size()
                                        ? (e->regions.empty() ? 0 : e->regions.back().endSample()) : e->regions[(size_t) e->insertIndex].startSample;
@@ -1089,16 +1127,25 @@ public:
         g.setFont (juce::FontOptions (10.5f, juce::Font::bold));                                                       // what each line of the band is
         g.setColour (e->showMarkers ? markerui::flagColour() : theme::dimText.withAlpha (0.6f));
         g.drawText (e->showMarkers ? "Markers" : "Markers (hidden)", sx + 6, 0, kNameW - 12, markerui::kStripH, juce::Justification::centredLeft, true);
-        g.setColour (e->showFeedback ? juce::Colour (0xff35b7c9) : theme::dimText.withAlpha (0.6f));
-        g.drawText (e->showFeedback ? "Feedback" : "Feedback (hidden)", sx + 6, markerui::kStripH, kNameW - 12, kFbH, juce::Justification::centredLeft, true);
+        if (viewing > 0)                                                                                               // 3.54.0: a frozen version is shown
+        {
+            g.setColour (theme::accent);
+            g.drawText ("Edit " + juce::String (viewing) + " (frozen): look and listen", sx + 6, markerui::kStripH, kNameW - 12, kFbH, juce::Justification::centredLeft, true);
+        }
+        else
+        {
+            g.setColour (e->showFeedback ? juce::Colour (0xff35b7c9) : theme::dimText.withAlpha (0.6f));
+            g.drawText (e->showFeedback ? "Feedback" : "Feedback (hidden)", sx + 6, markerui::kStripH, kNameW - 12, kFbH, juce::Justification::centredLeft, true);
+        }
         if (shownMods != 0 && (headerPass || viewport.getViewPositionY() == 0))         // the keys being held: what they do here (under those two lines)
             modhint::paint (g, { sx, markerui::kStripH + kFbH, kNameW, kGuideTop - markerui::kStripH - kFbH }, shownMods, modifierHints (shownMods));
     }
 
-    void mouseDown (const juce::MouseEvent& e0) override { noteClickedRow (e0); hdrShift = stickyShift (e0); mouseDownImpl (shifted (e0, hdrShift)); }
-    void mouseDrag (const juce::MouseEvent& e0) override { mouseDragImpl (shifted (e0, hdrShift)); }
-    void mouseUp (const juce::MouseEvent& e0) override { const int by = hdrShift; hdrShift = 0; mouseUpImpl (shifted (e0, by)); }
-    void mouseMove (const juce::MouseEvent& e0) override { const auto e = shifted (e0, stickyShift (e0)); updateHoverRow (e.y); mouseMoveImpl (e); }
+    // (3.54.0: a frozen version is shown - the mouse moves the playhead and does nothing else)
+    void mouseDown (const juce::MouseEvent& e0) override { if (viewing > 0) { viewClick (e0); return; } noteClickedRow (e0); hdrShift = stickyShift (e0); mouseDownImpl (shifted (e0, hdrShift)); }
+    void mouseDrag (const juce::MouseEvent& e0) override { if (viewing > 0) return; mouseDragImpl (shifted (e0, hdrShift)); }
+    void mouseUp (const juce::MouseEvent& e0) override { if (viewing > 0) return; const int by = hdrShift; hdrShift = 0; mouseUpImpl (shifted (e0, by)); }
+    void mouseMove (const juce::MouseEvent& e0) override { if (viewing > 0) { setMouseCursor (juce::MouseCursor::NormalCursor); return; } const auto e = shifted (e0, stickyShift (e0)); updateHoverRow (e.y); mouseMoveImpl (e); }
     void mouseExit (const juce::MouseEvent&) override { setHoverRow (-1); }
 
     // ---- 3.32.0: the automation lane under the mouse is lit (the row and its name), so on a wide screen it is clear which lane a click will draw in
@@ -2897,6 +2944,7 @@ private:
             shownMods = keysHeld;
             repaint (viewport.getViewPositionX(), viewport.getViewPositionY(), kNameW, bandH());
         }
+        if (viewing > 0 && viewCopy != nullptr) if (auto* lv = liveEdit()) viewCopy->playheadSeconds = lv->playheadSeconds;      // (3.54.0: see 'viewing')
         if (auto* ed = edit())                      // the playhead moved by itself (Stop leaves it where playback got to): the cursor follows
             if (std::abs (ed->playheadSeconds - lastHead) > 1.0e-9) { lastHead = ed->playheadSeconds; cursorSeconds = ed->playheadSeconds; repaint(); }
         // Waveforms being read (after an import, or the first time a project is shown) report every little step. Redrawing the whole window for each
@@ -3072,6 +3120,8 @@ static int freezeLiveVersion (AppContext& app, EditDef& e)
 {
     juce::var mix;
     if (auto* m = app.project.mixerOfEdit (e.id)) mix = app.project.mixSnapshot (*m, true);
+    // (3.54.0: while the mixer holds an OLDER version's settings to listen with, the version is frozen with the working mixer - the one it was made with)
+    if (app.shownMixer (e.id) != 0) if (const auto it = app.versionViews.find (e.id); it != app.versionViews.end() && ! it->second.workingMixer.isVoid()) mix = it->second.workingMixer;
     const int frozen = editversions::freeze (e, mix);
     app.project.refreshCommentsCopy (e);                  // (its comments went to the frozen version - the copy kept at their import must not bring them back onto this edit)
     e.compareWith = frozen;
@@ -3082,17 +3132,65 @@ static int freezeLiveVersion (AppContext& app, EditDef& e)
     the Freeze button - then one lane for each frozen version's listeners' comments (shown where their music is now; each lane can be closed from its
     version's tab) and, when a version is being compared with, the changes lane: that version's pieces as a picture on its own timeline, and a flag
     for every change this version made since it, with Put back and Hear in each flag's menu. The lanes scroll and zoom with the timeline. */
+/** 3.54.0 (asked for on 11 November 2026): a version's key, in two halves. "Edit N" shows and plays that version and leaves the mixer as it
+    is; "+ Mixer" shows it and gives the mixer that version's settings too. Each half is lit for what is in use now: the pieces on show, and
+    whose mixer. A right-click on either half opens the version's menu. */
+struct VersionKey : public juce::Component, public juce::TooltipClient
+{
+    static constexpr int kEditW = 52, kMixW = 58, kW = kEditW + kMixW;
+    int number = 0;
+    bool piecesOn = false, mixerOn = false, mixerThere = true;
+    juce::String tipEdit, tipMixer;
+    std::function<void (bool withMixer)> onChoose;
+    std::function<void()> onMenu;
+    explicit VersionKey (int n) : number (n)
+    {
+        setWantsKeyboardFocus (false); setMouseClickGrabsKeyboardFocus (false);
+        setMouseCursor (juce::MouseCursor::PointingHandCursor);
+        setSize (kW, 22);
+    }
+    juce::String getTooltip() override { return overMixer ? tipMixer : tipEdit; }
+    void paint (juce::Graphics& g) override
+    {
+        const auto all = getLocalBounds().toFloat().reduced (0.5f);
+        auto half = [&] (juce::Rectangle<float> r, bool on, bool live, bool over, const juce::String& text, bool left)
+        {
+            juce::Path p; p.addRoundedRectangle (r.getX(), r.getY(), r.getWidth(), r.getHeight(), 4.0f, 4.0f, left, ! left, left, ! left);
+            g.setColour ((on ? theme::accent : over && live ? theme::button.brighter (0.18f) : theme::button).withAlpha (live ? 1.0f : 0.5f)); g.fillPath (p);
+            g.setColour (theme::border); g.strokePath (p, juce::PathStrokeType (1.0f));
+            g.setColour ((on ? juce::Colours::white : theme::inkOn (theme::button)).withAlpha (live ? 1.0f : 0.45f));
+            g.setFont (juce::FontOptions (12.0f, on ? juce::Font::bold : juce::Font::plain));
+            g.drawText (text, r.toNearestInt(), juce::Justification::centred, false);
+        };
+        half (all.withWidth ((float) kEditW), piecesOn, true, hover == 1, "Edit " + juce::String (number), true);
+        half (all.withTrimmedLeft ((float) kEditW - 1.0f), mixerOn, mixerThere, hover == 2, "+ Mixer", false);
+    }
+    void mouseMove (const juce::MouseEvent& e) override { setHover (e.x >= kEditW ? 2 : 1); }
+    void mouseExit (const juce::MouseEvent&) override   { setHover (0); }
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (e.mods.isPopupMenu()) { if (onMenu) onMenu(); return; }
+        const bool mixer = e.x >= kEditW;
+        if (mixer && ! mixerThere) return;
+        if (onChoose) onChoose (mixer);
+    }
+private:
+    int hover = 0; bool overMixer = false;
+    void setHover (int h) { overMixer = h == 2; if (h != hover) { hover = h; repaint(); } }
+};
+
 class VersionStrip : public juce::Component, private juce::Timer
 {
 public:
     static constexpr int kTabsH = 26, kLaneH = 18, kGhostH = 20;
     std::function<void (double)> goTo;                       // the window's goTo (seconds on the live timeline)
     std::function<void()> layoutChanged;                     // the strip's height or its keys changed: the window lays out again
+    std::function<void()> viewChanged;                       // 3.54.0: another version is on show (or the working edit again): the window locks / unlocks its keys
     /** 3.48.0: the keys share their line with the window's line of text and its lead-in box (see EditWindowComponent::resized). The window says how
         much of the line's right end to keep clear of keys, and asks where the keys end and how little room they can do with. */
     int rightReserve = 0;
-    int keysRight() const { return changesButton.getRight(); }
-    int keysNeed() const  { return 4 + 66 * tabs.size() + 6 + 80 + 8 + 134 + 90 + 4; }
+    int keysRight() const { return timeline.viewing > 0 ? bannerRight : changesButton.getRight(); }
+    int keysNeed() const  { return 4 + (VersionKey::kW + 4) * tabs.size() + 6 + 80 + 8 + 134 + 90 + 4; }
     VersionStrip (AppContext& a, const juce::Uuid& eid, EditTimeline& t, juce::Viewport& vp) : app (a), editId (eid), timeline (t), viewport (vp)
     {
         addAndMakeVisible (subheading);
@@ -3120,44 +3218,62 @@ public:
     int idealHeight() const
     {
         auto* e = edit(); if (e == nullptr) return 0;
-        int h = kTabsH;
-        for (auto& v : e->versions) if (v.laneShown) h += kLaneH;
-        if (e->compareWith > 0 && e->version (e->compareWith) != nullptr) h += kGhostH + kLaneH;
+        int h = kTabsH + kLaneH * (int) lanes (*e).size();
+        if (timeline.viewing == 0 && e->compareWith > 0 && e->version (e->compareWith) != nullptr) h += kGhostH + kLaneH;
         return h + 2;
     }
     void rebuildTabs()
     {
         auto* e = edit(); if (e == nullptr) return;
         tabs.clear();
-        for (int n = 1; n <= e->versionNumber(); ++n)
+        const int top = e->versionNumber(), shown = app.shownVersion (editId), mixerOf = app.shownMixer (editId);
+        const bool ownMixer = app.project.mixerOfEdit (editId) != nullptr;
+        for (int n = 1; n <= top; ++n)
         {
-            auto* b = tabs.add (new juce::TextButton ("Edit " + juce::String (n)));
-            const bool live = n == e->versionNumber();
-            b->setTooltip (live ? "This version (the one you are editing). Its name: " + e->versionTitle (n)
-                                : e->versionTitle (n) + ", frozen " + e->version (n)->frozenAt.toString (true, true, false) + ". Click for what can be done with it.");
-            b->setColour (juce::TextButton::buttonOnColourId, theme::accent);
-            b->setToggleState (live, juce::dontSendNotification);
-            b->setWantsKeyboardFocus (false);
-            b->onClick = [this, n] { tabMenu (n); };
+            auto* b = tabs.add (new VersionKey (n));
+            const bool live = n == top;
+            auto* v = live ? nullptr : e->version (n);
+            b->piecesOn = live ? shown == 0 : shown == n;
+            b->mixerOn  = live ? mixerOf == 0 : mixerOf == n;
+            b->mixerThere = ownMixer && (live || (v != nullptr && ! v->mixer.isVoid()));
+            if (live)
+            {
+                b->tipEdit = "Edit " + juce::String (n) + ", the one you are working on" + (shown > 0 ? ": click to come back to it (the mixer stays as it is)." : ".") + " Right-click for more.  " + e->versionTitle (n);
+                b->tipMixer = mixerOf > 0 ? "Back to the edit you are working on AND your own mixer (it has been kept as you left it)."
+                                          : juce::String ("The edit you are working on, with your own mixer.");
+            }
+            else
+            {
+                b->tipEdit = "Show and play " + e->versionTitle (n) + " as it was frozen (" + (v != nullptr ? v->frozenAt.toString (true, true, false) : juce::String()) + "), through the mixer as it is now. "
+                             "Look and listen: nothing in it can be changed, and your working edit is untouched - click Edit " + juce::String (top) + " to come back. Right-click for more.";
+                b->tipMixer = ! ownMixer ? juce::String ("This edit has no mixer of its own.")
+                            : ! b->mixerThere ? "Edit " + juce::String (n) + " was frozen without its mixer."
+                            : "Show and play Edit " + juce::String (n) + " through ITS mixer, as that was when it was frozen. Your own mixer is kept, and comes back with + Mixer on Edit " + juce::String (top) + ".";
+            }
+            b->onChoose = [this, n] (bool withMixer) { choose (n, withMixer); };
+            b->onMenu = [this, n] { tabMenu (n); };
             addAndMakeVisible (b);
         }
+        const bool look = timeline.viewing > 0;                    // (a frozen version on show: the working edit's own keys make way for a line that says so)
+        subheading.setVisible (! look); freezeButton.setVisible (! look); changesButton.setVisible (! look);
         subheading.setText (e->subheading, false);
         freezeButton.setButtonText ("Freeze as Edit " + juce::String (e->versionNumber()));
-        freezeButton.setEnabled (! e->isEmpty());
+        freezeButton.setEnabled (! e->isEmpty() && mixerOf == 0);      // (not while an older version's mixer is in use)
         changesButton.setButtonText (e->compareWith > 0 ? "Changes since Edit " + juce::String (e->compareWith) : juce::String ("Changes..."));
         changesButton.setEnabled (! e->versions.empty());
         changesButton.setToggleState (e->compareWith > 0, juce::dontSendNotification);
         changesButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffc28a00));
-        lastVersionCount = (int) e->versions.size(); lastCompare = e->compareWith;
+        lastVersionCount = (int) e->versions.size(); lastCompare = e->compareWith; lastLanes = (int) lanes (*e).size();
         resized(); repaint();
     }
     void resized() override
     {
         auto r = getLocalBounds().removeFromTop (kTabsH).reduced (0, 2);
         int x = 4;
-        for (auto* b : tabs) { b->setBounds (x, r.getY(), 64, r.getHeight()); x += 66; }
+        for (auto* b : tabs) { b->setBounds (x, r.getY(), VersionKey::kW, r.getHeight()); x += VersionKey::kW + 4; }
         x += 6;
         const int w = getWidth() - rightReserve;                  // (the keys' part of the line)
+        bannerLeft = x; bannerRight = juce::jmax (x, juce::jmin (w, x + 470));
         subheading.setBounds (x, r.getY(), juce::jmin (260, juce::jmax (80, w - x - 330)), r.getHeight()); x = subheading.getRight() + 8;
         freezeButton.setBounds (x, r.getY(), 128, r.getHeight()); x += 134;
         changesButton.setBounds (x, r.getY(), juce::jmin (170, juce::jmax (90, w - x - 4)), r.getHeight());
@@ -3172,24 +3288,31 @@ public:
         int y = kTabsH;
         g.setColour (theme::grid.withAlpha (0.6f)); g.fillRect (0, y - 1, getWidth(), 1);
         laneRects.clear();
-        for (auto& v : e->versions)
+        auto* shown = timeline.edit();                              // (what the timeline shows: the working edit, or the frozen version being looked at)
+        if (shown == nullptr) return;
+        if (timeline.viewing > 0)                                   // 3.54.0: the line beside the keys says what is on show
         {
-            if (! v.laneShown || v.edit == nullptr) continue;
+            g.setColour (theme::accent); g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
+            g.drawText ("Edit " + juce::String (timeline.viewing) + " is frozen: look and listen only. Click Edit " + juce::String (e->versionNumber()) + " to carry on working.",
+                        bannerLeft, 0, juce::jmax (0, bannerRight - bannerLeft), kTabsH, juce::Justification::centredLeft, true);
+        }
+        for (auto& ln : lanes (*e))
+        {
             const auto lane = juce::Rectangle<int> (0, y, getWidth(), kLaneH);
-            laneRects.push_back ({ v.number, lane, false });
+            laneRects.push_back ({ ln.number, lane, false });
             g.setColour (theme::ruler.withAlpha (0.55f)); g.fillRect (lane);
             g.setColour (theme::grid.withAlpha (0.6f)); g.fillRect (0, y + kLaneH - 1, getWidth(), 1);
-            const auto& notes = v.edit->feedback;
+            const auto& notes = ln.from->feedback;
             int open = 0, said = 0; for (auto& n : notes) if (! n.editor) { ++said; if (! n.done) ++open; }      // (the editor's own answers are not comments to deal with)
             g.setColour (juce::Colour (0xff35b7c9));
             g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
-            g.drawText ("Edit " + juce::String (v.number) + " comments" + (notes.empty() ? juce::String ("  (none yet)") : "  (" + juce::String (open) + " open of " + juce::String (said) + ")"), 6, y, kNameW - 12, kLaneH, juce::Justification::centredLeft, true);
+            g.drawText ("Edit " + juce::String (ln.number) + " comments  (" + juce::String (open) + " open of " + juce::String (said) + ")", 6, y, kNameW - 12, kLaneH, juce::Justification::centredLeft, true);
             g.setFont (feedbackui::flagFont());
             for (auto& th : feedback::threads (notes))
             {
                 const auto& first = notes[(size_t) th.front()];
                 bool floating = false;
-                const double sec = editversions::mapSeconds (*v.edit, *e, first.seconds, &floating);
+                const double sec = editversions::mapSeconds (*ln.from, *shown, first.seconds, &floating);
                 const int x = xOf (sec);
                 if (x < kNameW) continue;
                 const bool done = feedbackui::allDone (notes, th);
@@ -3205,7 +3328,7 @@ public:
             }
             y += kLaneH;
         }
-        if (e->compareWith > 0)
+        if (e->compareWith > 0 && timeline.viewing == 0)            // (the changes are changes of the working edit: not drawn over a frozen version)
             if (auto* v = e->version (e->compareWith); v != nullptr && v->edit != nullptr)
             {
                 const auto& ve = *v->edit;
@@ -3271,20 +3394,30 @@ public:
                 for (auto& cr : changeRects) if (cr.rect.contains (ev.getPosition())) { changeMenu (cr.index); return; }
                 return;
             }
-            auto* v = e->version (lr.number); if (v == nullptr || v->edit == nullptr) return;
-            if (ev.x < kNameW || ev.mods.isPopupMenu()) { tabMenu (lr.number); return; }
-            const int vx = viewport.getViewPositionX();
-            auto* ve = v->edit.get();
-            auto xOfNote = [&, ve, e] (double sec) { return timeline.xOf (editversions::mapSeconds (*ve, *e, sec)) - vx; };
-            const auto thread = feedbackui::threadAt (ve->feedback, ev.x, xOfNote);
-            if (thread.empty()) return;
-            const double liveSec = editversions::mapSeconds (*ve, *e, ve->feedback[(size_t) thread.front()].seconds);
+            // the lane of a frozen version's comments - or, while a frozen version is on show, of the working edit's own
             const int number = lr.number;
+            const bool ofLive = number == e->versionNumber();
+            auto* v = ofLive ? nullptr : e->version (number);
+            EditDef* src = ofLive ? e : (v != nullptr ? v->edit.get() : nullptr);
+            auto* shown = timeline.edit();
+            if (src == nullptr || shown == nullptr) return;
+            if (ev.x < kNameW || ev.mods.isPopupMenu()) { tabMenu (number); return; }
+            const int vx = viewport.getViewPositionX();
+            auto xOfNote = [&, src, shown] (double sec) { return timeline.xOf (editversions::mapSeconds (*src, *shown, sec)) - vx; };
+            const auto thread = feedbackui::threadAt (src->feedback, ev.x, xOfNote);
+            if (thread.empty()) return;
+            const double shownSec = editversions::mapSeconds (*src, *shown, src->feedback[(size_t) thread.front()].seconds);
             juce::Component::SafePointer<VersionStrip> safe (this);
-            feedbackui::showThread ([safe, number] () -> EditDef* { if (safe == nullptr) return nullptr; auto* ed = safe->edit(); auto* vv = ed ? ed->version (number) : nullptr; return vv ? vv->edit.get() : nullptr; },
+            feedbackui::showThread ([safe, number] () -> EditDef*
+                                    {
+                                        if (safe == nullptr) return nullptr;
+                                        auto* ed = safe->edit(); if (ed == nullptr) return nullptr;
+                                        if (number == ed->versionNumber()) return ed;
+                                        auto* vv = ed->version (number); return vv ? vv->edit.get() : nullptr;
+                                    },
                                     thread, localAreaToGlobal (juce::Rectangle<int> (ev.x, lr.rect.getY(), 1, lr.rect.getHeight())),
                                     [safe] { if (safe != nullptr) { safe->app.project.markDirty(); safe->repaint(); } },
-                                    [safe, liveSec] (double) { if (safe != nullptr && safe->goTo) safe->goTo (liveSec); },
+                                    [safe, shownSec] (double) { if (safe != nullptr && safe->goTo) safe->goTo (shownSec); },
                                     editorHand (app, getTopLevelComponent(), e->versionNumber()),
                                     [safe] (const juce::String& key) { auto* le = safe != nullptr ? safe->edit() : nullptr; return le != nullptr ? commentWriter (*le, key) : juce::String(); });
             return;
@@ -3293,7 +3426,7 @@ public:
     void refreshFromEdit()                                    // (the window: after an import, a freeze from Mastering, an undo)
     {
         auto* e = edit(); if (e == nullptr) return;
-        if ((int) e->versions.size() != lastVersionCount || e->compareWith != lastCompare || tabs.size() != e->versionNumber()) { rebuildTabs(); if (layoutChanged) layoutChanged(); }
+        if ((int) e->versions.size() != lastVersionCount || e->compareWith != lastCompare || tabs.size() != e->versionNumber() || (int) lanes (*e).size() != lastLanes) { rebuildTabs(); if (layoutChanged) layoutChanged(); }
         if (! subheading.hasKeyboardFocus (true) && subheading.getText() != e->subheading) subheading.setText (e->subheading, false);
         repaint();
     }
@@ -3302,7 +3435,70 @@ private:
     struct LaneRect { int number; juce::Rectangle<int> rect; bool changes; };
     struct ChangeRect { int index; juce::Rectangle<int> rect; };
     EditDef* edit() const { return app.project.findEdit (editId); }
-    void timerCallback() override { refreshFromEdit(); }
+    void timerCallback() override { syncView(); refreshFromEdit(); }
+    // ---- 3.54.0: the comments' lanes. Every version that has comments has its lane, whichever version is on show, for as long as the Feedback
+    //      key at the top of the window is on (EditDef::showFeedback - the per-version "show its comments lane" of 3.42.0 is gone). While a
+    //      frozen version is on show, the working edit's own comments have a lane here too (the timeline's own Feedback line belongs to the
+    //      working edit). Each flag stands where its music is in what the timeline shows.
+    struct Lane { int number; EditDef* from; };
+    std::vector<Lane> lanes (EditDef& e) const
+    {
+        std::vector<Lane> out;
+        if (! e.showFeedback) return out;
+        for (auto& v : e.versions) if (v.edit != nullptr && ! v.edit->feedback.empty()) out.push_back ({ v.number, v.edit.get() });
+        if (timeline.viewing > 0 && ! e.feedback.empty()) out.push_back ({ e.versionNumber(), &e });
+        return out;
+    }
+    /** A key was clicked: that version on show (with its mixer too, or not). */
+    void choose (int n, bool withMixer)
+    {
+        commitSubheading();
+        const auto err = app.showVersion (editId, n, withMixer);
+        if (err.isNotEmpty()) showError ("Edit " + juce::String (n), err);
+        syncView();
+    }
+    /** What the application says is on show, brought to the timeline and the keys. Ten times a second too: the view can end from elsewhere (the
+        version is removed, the working edit is changed from a take window, another project is opened). */
+    void syncView()
+    {
+        auto* e = edit(); if (e == nullptr) return;
+        int want = app.shownVersion (editId);
+        if (want > 0)
+        {
+            const auto hash = piecesSignature (*e);
+            if (e->versionEdit (want) == nullptr) { app.showVersion (editId, 0, false); want = 0; }
+            else if (timeline.viewing == want && hash != liveHashAtView)       // the working edit was changed meanwhile (a take put into it from a take window, an undo): it is what must be seen
+            {
+                app.showVersion (editId, 0, false); want = 0;
+                app.setNotice ("The edit you are working on was changed: showing it again.");
+            }
+            else if (timeline.viewing != want) liveHashAtView = hash;
+        }
+        const int mixer = app.shownMixer (editId);
+        if (timeline.viewing != want) timeline.setViewing (want);
+        if (want != lastShown || mixer != lastMixer)
+        {
+            lastShown = want; lastMixer = mixer;
+            rebuildTabs();
+            if (layoutChanged) layoutChanged();
+            if (viewChanged) viewChanged();
+        }
+    }
+    int lastShown = 0, lastMixer = 0, lastLanes = 0, bannerLeft = 0, bannerRight = 0;
+    juce::uint64 liveHashAtView = 0;
+    /** The working edit's pieces, as a number: changes when a piece is added, removed, moved or trimmed (not for comments, markers or the playhead). */
+    static juce::uint64 piecesSignature (const EditDef& e)
+    {
+        juce::uint64 h = 1469598103934665603ull;
+        auto add = [&h] (juce::uint64 v) { h = (h ^ v) * 1099511628211ull; };
+        add ((juce::uint64) e.regions.size()); add ((juce::uint64) e.overdubs.size()); add ((juce::uint64) e.lanes.size());
+        for (auto& r : e.regions)
+        {
+            add ((juce::uint64) r.id.hash()); add ((juce::uint64) r.srcIn); add ((juce::uint64) r.srcOut); add ((juce::uint64) r.startSample);
+            add ((juce::uint64) r.files.size()); add ((juce::uint64) r.gains.size());
+        }
+        return h;
+    }
     void commitSubheading()
     {
         auto* e = edit(); if (e == nullptr) return;
@@ -3369,22 +3565,22 @@ private:
         if (n == e->versionNumber())
         {
             m.addSectionHeader (e->versionTitle (n) + "  (this version)");
-            m.addItem (1, "Freeze as Edit " + juce::String (n) + " and carry on in Edit " + juce::String (n + 1) + "...", ! e->isEmpty());
-            m.addItem (2, "Subheading...", true);
+            m.addItem (1, "Freeze as Edit " + juce::String (n) + " and carry on in Edit " + juce::String (n + 1) + "...", ! e->isEmpty() && timeline.viewing == 0 && app.shownMixer (editId) == 0);
+            m.addItem (2, "Subheading...", timeline.viewing == 0);
         }
         else
         {
             auto* v = e->version (n); if (v == nullptr || v->edit == nullptr) return;
             m.addSectionHeader (e->versionTitle (n) + "  (frozen " + v->frozenAt.toString (true, true, false) + ")");
-            m.addItem (10, v->laneShown ? "Hide its comments lane" : "Show its comments lane  (" + juce::String ((int) v->edit->feedback.size()) + " comments)");
-            m.addItem (11, e->compareWith == n ? "Close the changes lane" : "Changes since Edit " + juce::String (n) + "  (the changes lane)");
+            // (3.54.0: showing and hearing the version are the key's two halves now; its comments lane follows the Feedback key at the top of the window)
+            m.addItem (11, e->compareWith == n ? "Close the changes lane" : "Changes since Edit " + juce::String (n) + "  (the changes lane)", timeline.viewing == 0);
             m.addSeparator();
-            m.addItem (12, "Hear Edit " + juce::String (n) + " from here  (the same music as at the playhead)");
-            m.addItem (13, "Put back everything from Edit " + juce::String (n) + "...  (the pieces, fades, levels and automation)");
-            m.addItem (14, "Put back its mixer settings...", ! v->mixer.isVoid() && app.project.mixerOfEdit (editId) != nullptr);
+            m.addItem (13, "Make the working edit as Edit " + juce::String (n) + " was...  (its pieces, fades, levels and automation: Ctrl+Z undoes it)", timeline.viewing == 0);
+            m.addItem (14, "Make the working mixer as Edit " + juce::String (n) + "'s was...", timeline.viewing == 0 && app.shownMixer (editId) == 0 && ! v->mixer.isVoid() && app.project.mixerOfEdit (editId) != nullptr);
             m.addSeparator();
             m.addItem (15, n == (int) e->versions.size() ? "Remove this frozen version...  (the freeze undone: its comments come back onto this edit)"
-                                                         : "Remove this frozen version...  (the later ones move down a number)");      // 3.52.0: any of them, not only the newest
+                                                         : "Remove this frozen version...  (the later ones move down a number)",      // 3.52.0: any of them, not only the newest
+                       timeline.viewing == 0 && app.shownMixer (editId) == 0);
         }
         juce::Component::SafePointer<VersionStrip> safe (this);
         m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (n - 1 < tabs.size() ? tabs[n - 1] : nullptr), [safe, n] (int r)
@@ -3395,14 +3591,7 @@ private:
             if (r == 1) { self.askFreeze(); return; }
             if (r == 2) { self.subheading.grabKeyboardFocus(); return; }
             auto* v = ed->version (n); if (v == nullptr || v->edit == nullptr) return;
-            if (r == 10) { v->laneShown = ! v->laneShown; app.project.markDirty(); self.rebuildTabs(); if (self.layoutChanged) self.layoutChanged(); }
-            else if (r == 11) { ed->compareWith = ed->compareWith == n ? 0 : n; app.project.markDirty(); self.rebuildTabs(); if (self.layoutChanged) self.layoutChanged(); }
-            else if (r == 12)
-            {
-                const double here = self.timeline.cursorSeconds >= 0 ? self.timeline.cursorSeconds : ed->playheadSeconds;
-                const auto err = app.playEditVersion (self.editId, n, editversions::mapSeconds (*ed, *v->edit, here));
-                if (err.isNotEmpty()) showError ("Hear Edit " + juce::String (n), err);
-            }
+            if (r == 11) { ed->compareWith = ed->compareWith == n ? 0 : n; app.project.markDirty(); self.rebuildTabs(); if (self.layoutChanged) self.layoutChanged(); }
             else if (r == 13)
             {
                 juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::QuestionIcon)
@@ -3530,7 +3719,7 @@ private:
     }
 
     AppContext& app; juce::Uuid editId; EditTimeline& timeline; juce::Viewport& viewport;
-    juce::OwnedArray<juce::TextButton> tabs;
+    juce::OwnedArray<VersionKey> tabs;
     juce::TextEditor subheading;
     juce::TextButton freezeButton, changesButton;
     std::vector<LaneRect> laneRects; std::vector<ChangeRect> changeRects;
@@ -3552,6 +3741,7 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     versionStrip = std::make_unique<VersionStrip> (app, editId, *timeline, *vp);          // 3.42.0: the versions
     versionStrip->goTo = [this] (double s) { goTo (s); };
     versionStrip->layoutChanged = [this] { resized(); };
+    versionStrip->viewChanged = [this] { applyViewLock(); };                // 3.54.0: a frozen version on show - or the working edit again
     addAndMakeVisible (*versionStrip);
 
     nameCaption.setText ("Piece / Edit Window Name:", juce::dontSendNotification);
@@ -3610,10 +3800,15 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     scoreButton.setWantsKeyboardFocus (false);
     addAndMakeVisible (scoreButton);
     markersToggle.setTooltip ("Show or hide your own markers (the amber flags on the top line). Right-click that line to add one.");
-    feedbackToggle.setTooltip ("Show or hide the comment flags (on the line under the markers: one colour for each person, a gold ring where you have written).");
+    feedbackToggle.setTooltip ("Show or hide the comments: this edit's flags on the line under the markers, and the lane of every frozen version's comments above the timeline "
+                               "(one colour for each person, a gold ring where you have written).");
     if (auto* e0 = edit()) { markersToggle.setToggleState (e0->showMarkers, juce::dontSendNotification); feedbackToggle.setToggleState (e0->showFeedback, juce::dontSendNotification); }
     markersToggle.onClick = [this] { if (auto* e1 = edit()) { e1->showMarkers = markersToggle.getToggleState(); app.project.markDirty(); timeline->repaint(); } };
-    feedbackToggle.onClick = [this] { if (auto* e1 = edit()) { e1->showFeedback = feedbackToggle.getToggleState(); app.project.markDirty(); timeline->repaint(); } };
+    feedbackToggle.onClick = [this]
+    {
+        if (auto* e1 = edit()) { e1->showFeedback = feedbackToggle.getToggleState(); app.project.markDirty(); timeline->repaint(); }
+        if (versionStrip != nullptr) { versionStrip->refreshFromEdit(); resized(); }      // (3.54.0: every version's comments lane goes with it)
+    };
     for (auto* b : { &markersToggle, &feedbackToggle }) { addAndMakeVisible (b); b->setWantsKeyboardFocus (false); }
     addAndMakeVisible (tracksButton);
     juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<EditWindowComponent> (this)] { if (safe != nullptr) safe->checkMixerStrips(); });
@@ -3784,7 +3979,25 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     setSize (juce::jlimit (900, 1700, juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea.getWidth() - 60), 420);
 }
 
-EditWindowComponent::~EditWindowComponent() { versionStrip.reset(); app.clearTransportHandler (this); app.project.removeChangeListener (this); }
+EditWindowComponent::~EditWindowComponent()
+{
+    app.endVersionView (editId);                           // 3.54.0: a frozen version on show, or its mixer in use, ends with the window
+    versionStrip.reset(); app.clearTransportHandler (this); app.project.removeChangeListener (this);
+}
+
+/** 3.54.0: while a frozen version is on show (look and listen) every key of this window that changes the edit is dim; they come back with the
+    working edit. Left alone: the transport, the zoom and view keys, the score, the mixer, the markers' and the comments' keys. */
+void EditWindowComponent::applyViewLock()
+{
+    const bool work = timeline == nullptr || timeline->viewing == 0;
+    for (juce::Component* c : std::initializer_list<juce::Component*> { &trimButton, &snipButton, &glueButton, &deleteButton, &leftButton, &rightButton, &bounceButton, &videoButton, &aafButton,
+                                 &automationButton, &pitchButton, &repairButton, &reharmoniserButton, &retimerButton, &undoFixButton, &tracksButton, &endButton, &exportProcButton,
+                                 &importButton, &alignButton, &roomToneButton, &noiseModeButton, &slipLeftToggle, &slipRightToggle, &shuffleToggle, &insertFlagToggle, &guideToggle,
+                                 &loopToggle, &ltcButton, &leadInBox, &leadInSecs, &nameEditor })
+        c->setEnabled (work);
+    if (work) { if (auto* e = edit()) leadInSecs.setEnabled (e->leadIn); refreshGuideButton(); }
+    resized(); repaint();
+}
 
 void EditWindowComponent::resized()
 {
@@ -3862,6 +4075,7 @@ bool EditWindowComponent::isInterestedInFileDrag (const juce::StringArray& files
 
 void EditWindowComponent::filesDropped (const juce::StringArray& files, int, int)
 {
+    if (timeline->viewing > 0) { app.setNotice ("A frozen version is on show: look and listen only. Click the newest Edit key to carry on working."); return; }
     juce::Array<juce::File> list; for (auto& f : files) list.add (juce::File (f));
     fixtools::importTakes (app, juce::Uuid::null(), list, this, editId);
 }
@@ -3939,7 +4153,7 @@ void EditWindowComponent::refreshGuideButton()
     guideToggle.setToggleState (has && e->showGuide, juce::dontSendNotification);
 }
 
-void EditWindowComponent::goToEnd() { if (auto* e = edit()) goTo (e->lengthSeconds()); }
+void EditWindowComponent::goToEnd() { if (auto* e = timeline->edit()) goTo (e->lengthSeconds()); }      // (what is on show: the working edit, or a frozen version)
 
 void EditWindowComponent::transportKey (AppContext::TransportKey k)
 {
@@ -4194,7 +4408,7 @@ void EditWindowComponent::importFeedbackFiles (juce::Array<juce::File> files, do
             int updated = 0;
             const int added = feedback::merge (versionEdit->feedback, p.notes, &updated);     // added to what is there: another listener's comments are never replaced
             if (versionEdit == target) { kept[target->id.toString()].push_back (in.file); target->showFeedback = true; }
-            else { toLanes = true; if (auto* v = target->version (version)) v->laneShown = true; }
+            else { toLanes = true; target->showFeedback = true; if (auto* v = target->version (version)) v->laneShown = true; }
             total += added;
             if (target != self.edit()) toOthers = true;
             report += in.label + ": " + juce::String (added) + " new comment" + (added == 1 ? "" : "s") + " from " + juce::String ((int) p.notes.size()) + " in the file" + in.where + versionNote + (in.several ? " (on the edit '" + target->name + "')" : juce::String())
@@ -4385,6 +4599,7 @@ void EditWindowComponent::togglePlay()
 bool EditWindowComponent::loopRange (double& from, double& to) const
 {
     auto* e = app.project.findEdit (editId);
+    if (timeline != nullptr && timeline->viewing > 0) return false;       // (3.54.0: marks 1 and 2 are the working edit's)
     if (e == nullptr || e->fixIn < 0.0 || e->fixOut <= e->fixIn) return false;
     from = e->fixIn; to = e->fixOut;
     return true;
@@ -4407,6 +4622,7 @@ int EditWindowComponent::deskActState (const juce::String& what) const
 
 void EditWindowComponent::deskAct (const juce::String& what)
 {
+    if (timeline->viewing > 0 && what != "markers" && what != "feedback") { app.setNotice ("A frozen version is on show: look and listen only. Click the newest Edit key to carry on working."); return; }
     if (what == "mark1") setFixMark (true);
     else if (what == "mark2") setFixMark (false);
     else if (what == "align") { if (app.showAlign) app.showAlign (true, editId); }
@@ -4458,6 +4674,7 @@ void EditWindowComponent::trimSelected()
     Shift + 4 (insert): cut what is there in two and push everything after it later. */
 void EditWindowComponent::placeFromTakeWindow (bool insert)
 {
+    if (timeline->viewing > 0) { app.setNotice ("A frozen version is on show: look and listen only. Click the newest Edit key to carry on working."); return; }
     TakeWindowDef* best = nullptr;
     for (auto& w : app.project.takeWindows)
         if (w->targetEdit == editId && w->findGroup (w->editTake) != nullptr && w->editIn >= 0.0 && w->editOut > w->editIn)
@@ -4623,6 +4840,25 @@ bool EditWindowComponent::keyPressed (const juce::KeyPress& k)
     const auto c = juce::CharacterFunctions::toLowerCase (k.getTextCharacter());
     if (k == juce::KeyPress::homeKey) { goTo (0.0); return true; }
     if (k == juce::KeyPress::endKey)  { goToEnd();  return true; }
+    if (timeline->viewing > 0)                                           // 3.54.0: a frozen version is on show - only the keys that look and listen
+    {
+        if (k == juce::KeyPress::escapeKey)                              // Esc: back to the working edit (the mixer stays as it is)
+        {
+            const auto err = app.showVersion (editId, 0, false);
+            if (err.isNotEmpty()) showError ("Edit", err);
+            return true;
+        }
+        if (c == '.' || c == '>') { app.changeWaveZoom (1.4f);        return true; }
+        if (c == ',' || c == '<') { app.changeWaveZoom (1.0f / 1.4f); return true; }
+        if (k == juce::KeyPress::spaceKey) { if (! spaceIsForRecording()) togglePlay(); return true; }
+        if (k == juce::KeyPress::leftKey)  { timeline->zoom (1.0 / 1.4);          return true; }
+        if (k == juce::KeyPress::rightKey) { timeline->zoom (1.4);                return true; }
+        if (k == juce::KeyPress::upKey)    { timeline->zoomVertical (1.0 / 1.25); return true; }
+        if (k == juce::KeyPress::downKey)  { timeline->zoomVertical (1.25);       return true; }
+        if (c == 'c' && ! k.getModifiers().isAnyModifierKeyDown()) { timeline->centreOnPlayhead(); return true; }
+        app.setNotice ("Edit " + juce::String (timeline->viewing) + " is frozen: look and listen only. Click the newest Edit key (or press Esc) to carry on working.");
+        return true;
+    }
     if (c == 'p') { markWholeSelected(); return true; }
     if ((c == '1' || c == '2') && ! k.getModifiers().isAnyModifierKeyDown()) { setFixMark (c == '1'); return true; }
     if (k == juce::KeyPress::F1Key && ! k.getModifiers().isAnyModifierKeyDown()) { snipAtPlayhead(); return true; }
@@ -4687,6 +4923,7 @@ void EditWindowComponent::timerCallback()
     if (timeline != nullptr) timeline->followRestLines();                  // 3.48.0: the dashed line of a lane with no points lies where its control stands
     if (auto* e = edit())                                                  // (an undo, or another window, may have changed the lead-in)
     {
+        if (feedbackToggle.getToggleState() != e->showFeedback) feedbackToggle.setToggleState (e->showFeedback, juce::dontSendNotification);      // (3.54.0: an import switches the comments on)
         if (leadInBox.getToggleState() != e->leadIn) { leadInBox.setToggleState (e->leadIn, juce::dontSendNotification); leadInSecs.setEnabled (e->leadIn); }
         if (! leadInSecs.hasKeyboardFocus (true) && std::abs (leadInSecs.getText().getDoubleValue() - e->leadInSeconds) > 0.004) leadInSecs.setText (juce::String (e->leadInSeconds, 2), false);
     }

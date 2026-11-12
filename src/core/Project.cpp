@@ -1547,6 +1547,34 @@ bool Project::saveTakeNotes (const TakeWindowDef& w, const TakeGroup& g)
     return true;
 }
 
+// ---- 3.54.0: the working mixer, kept while an older version's is in it ---------------------------------------------------------------------------
+juce::File Project::mixerStashFile (const juce::Uuid& mixerId) const
+{
+    if (projectFile == juce::File()) return {};                // (never saved: there is no project to open again, so nothing is kept - projectFolder() would be the Documents folder)
+    return projectFolder().getChildFile ("Recovery").getChildFile ("mixer-" + mixerId.toString() + ".json");
+}
+
+bool Project::stashMixer (const MixerState& m, const juce::var& workingState)
+{
+    const auto file = mixerStashFile (m.id);
+    if (file == juce::File()) return true;                     // (a project with no folder yet has nothing to open again)
+    auto* o = new juce::DynamicObject();
+    o->setProperty ("fermata", "working mixer");
+    o->setProperty ("mixer", m.id.toString()); o->setProperty ("name", m.name);
+    o->setProperty ("state", workingState);
+    file.getParentDirectory().createDirectory();
+    juce::String error;
+    if (filesync::replaceTextSafely (file, juce::JSON::toString (var (o), false), false, &error)) return true;
+    juce::Logger::writeToLog ("The working mixer could not be kept in a file (" + file.getFullPathName() + "): " + error);
+    return false;
+}
+
+void Project::dropMixerStash (const juce::Uuid& mixerId)
+{
+    const auto file = mixerStashFile (mixerId);
+    if (file != juce::File()) file.deleteFile();
+}
+
 void Project::forgetTakeNotes (const juce::Uuid& keep)
 {
     const auto folder = projectFolder();

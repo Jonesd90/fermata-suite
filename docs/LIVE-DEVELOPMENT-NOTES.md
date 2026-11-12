@@ -767,3 +767,13 @@ running": Windows is asked not to sleep or switch the screen off. The request be
 recorder process's message thread. The windows' process (Primary / Fixer) asks nothing: it is the recorder that must not stop.
 Not built for fermata:Live: the engine's take events and the silence for a stopped device (fermata 3.53.0) are in `AudioEngine`, which
 the recorder does not use - its own handling of a device that goes away ("NO AUDIO for ..." flags) is as it was.
+
+## 0.10.4: what fermata 3.54.0's shared code brings (11 November 2026, with Claude Fable)
+
+No change to fermata:Live's own code. `Project` gained `mixerStashFile` / `stashMixer` / `dropMixerStash` (fermata's look-and-listen
+keeps an edit's working mixer in `Recovery/mixer-<id>.json` while an older version's settings are in it). fermata:Live does not use
+them; a project that has such a file is put right by fermata when it opens it.
+
+`src/core/ScoreBars.h` is new in the shared folder (fermata's score window: where the bars are on the pages of a PDF, and the takes'
+brackets). It is a header only and nothing in `src/live` includes it. The file it keeps, `PDFs/<name>.pdf.bars.json`, is fermata's
+own; the recorder never sees it.

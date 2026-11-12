@@ -74,6 +74,7 @@ private:
     /** If the edit's audio belongs to tracks that are no longer in the project (so there is no mixer strip for them) asks whether to add them back. */
     void checkMixerStrips();
     void refreshGuideButton();                    // the Guide button: lit when the guide is shown, dim when the edit has none
+    void applyViewLock();                         // 3.54.0: the keys that change the edit are dim while a frozen version is on show
 
     bool stripAskOpen = false, skipStripAsk = false;     // the "more tracks than strips" question is open / was answered No (not asked again at every Play)
     AppContext& app;

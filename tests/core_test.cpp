@@ -25,6 +25,7 @@
 #include "../src/core/AafWrite.h"
 #include "../src/core/AafExport.h"
 #include "../src/core/TakeMatch.h"
+#include "../src/core/ScoreBars.h"
 #include "../src/core/Consonants.h"
 #include "../src/core/Aaf.h"
 #include "../src/core/SpectralPicture.h"
@@ -11080,6 +11081,198 @@ int main()
         CHECK (CoreReservation::keepAwake (true) && ! CoreReservation::keepAwake (true) && CoreReservation::keepAwake (false) && ! CoreReservation::keepAwake (false));
     }
 
+    SECTION ("3.54.0 the working mixer kept in a file while an older version's settings are in it");
+    {
+        Project p;
+        p.projectFile = tmp.getChildFile ("MixerStash").getChildFile ("MixerStash.fermata");
+        p.projectFile.getParentDirectory().createDirectory();
+        p.setInputCount (2); p.setOutputCount (2); p.tracks.clear();
+        const auto tid = p.addTrack ("violin", TrackFormat::Mono, 0).id;
+        p.retireAllMixers();
+        auto& m = p.addMixer ("Edit mixer");
+        p.syncMixers();
+        auto* strip = m.stripFor (tid);
+        CHECK (strip != nullptr);
+        if (strip != nullptr)
+        {
+            strip->gainDb.set (-7.5f);
+            const auto working = p.mixSnapshot (m, true);
+            const auto file = p.mixerStashFile (m.id);
+            CHECK (file.getParentDirectory().getFileName() == "Recovery" && file.getFileName() == "mixer-" + m.id.toString() + ".json" && ! file.existsAsFile());
+            CHECK (p.stashMixer (m, working) && file.existsAsFile());
+            strip->gainDb.set (3.0f);                                      // (an older version's settings are in the mixer now)
+            // what the application does when the project is next opened: the file's state goes back into the mixer it names
+            const auto v = juce::JSON::parse (file.loadFileAsString());
+            CHECK (v.isObject() && v["mixer"].toString() == m.id.toString() && v["name"].toString() == "Edit mixer" && ! v["state"].isVoid());
+            MixParts all; all.clearEmptySlots = true;
+            p.applyMix (m, v["state"], 48000.0, 512, all);
+            CHECK (std::abs (strip->gainDb.get() + 7.5f) < 1.0e-4f);
+            p.dropMixerStash (m.id);
+            CHECK (! file.existsAsFile());
+            p.dropMixerStash (m.id);                                       // (none there: nothing happens)
+        }
+        Project none;                                                      // a project with no folder yet: nothing to write, and that is not a failure
+        none.retireAllMixers(); auto& nm = none.addMixer ("M");
+        CHECK (none.mixerStashFile (nm.id) == juce::File() && none.stashMixer (nm, juce::var()));
+    }
+
+    SECTION ("3.54.0 the score's bars: staves, systems and barlines found on a drawn page (stems are not barlines), counted and put right, kept in a file; one start and one end bracket at a barline");
+    {
+        // ---- a page drawn here: a piano system (two staves, barlines through both) and a single line ----
+        const int W = 1000, H = 1400;
+        std::vector<unsigned char> px ((size_t) W * H, 255);
+        auto hline = [&] (int x0, int x1, int y, int thick = 2) { for (int t = 0; t < thick; ++t) for (int x = x0; x <= x1; ++x) px[(size_t) (y + t) * W + (size_t) x] = 0; };
+        auto vline = [&] (int x, int y0, int y1, int thick = 2) { for (int t = 0; t < thick; ++t) for (int y = y0; y <= y1; ++y) px[(size_t) y * W + (size_t) (x + t)] = 0; };
+        auto blob = [&] (int cx, int cy, int rx, int ry) { for (int y = -ry; y <= ry; ++y) for (int x = -rx; x <= rx; ++x) if (x * x * ry * ry + y * y * rx * rx <= rx * rx * ry * ry) px[(size_t) (cy + y) * W + (size_t) (cx + x)] = 0; };
+        auto staff = [&] (int y) { for (int l = 0; l < 5; ++l) hline (100, 900, y + l * 12); };
+        // system A: staves at 200 and 320, joined at the left; barlines through both at 300, 520, 760 and the end
+        staff (200); staff (320);
+        vline (100, 200, 369);
+        for (int x : { 300, 520, 760, 899 }) vline (x, 200, 369);
+        vline (400, 180, 249); blob (392, 249, 9, 6);                         // a stem that crosses the whole upper staff - and sticks out above it
+        vline (640, 200, 249);                                                // a stroke exactly the height of the upper staff, with nothing in the lower one: not a barline of the system
+        hline (430, 500, 190, 6);                                             // a beam above the staff
+        // system B: one staff at 600, nothing at its left end; barlines at 350, a double bar at 600, a thin and a thick line at the end
+        staff (600);
+        vline (350, 600, 649); vline (594, 600, 649); vline (600, 600, 649); vline (886, 600, 649); vline (892, 600, 649, 8);
+        vline (470, 600, 649); blob (480, 606, 9, 5);                         // a note in the top space with its stem down: the stem ends exactly on the bottom line
+        vline (700, 600, 649); blob (690, 642, 9, 5);                         // ... and one in the bottom space with its stem up
+        for (int x = 330; x <= 372; ++x) for (int t = 0; t < 2; ++t) px[(size_t) (634 + t - (int) (4.0 * std::sin ((x - 330) * 3.14159 / 42.0))) * W + (size_t) x] = 0;       // a tie across the barline at 350 (ink on both sides of it)
+        hline (120, 200, 700, 3);                                             // a line of something else under the system (too short to be a staff's)
+        const auto found = scorebars::findSystems (px.data(), W, H, W);
+        CHECK (found.size() == 2);
+        auto nearly = [] (double a, double b, double tol = 0.004) { return std::abs (a - b) <= tol; };
+        auto linesAre = [&] (const scorebars::System& sys, std::initializer_list<int> xs)
+        {
+            if (sys.lines.size() != xs.size()) return false;
+            size_t i = 0; for (int x : xs) if (! nearly (sys.lines[i++], x / (double) W, 0.006)) return false;
+            return true;
+        };
+        if (found.size() == 2)
+        {
+            for (auto& sys : found) { std::printf ("  (system: %d staves, edges at", (int) sys.staves.size()); for (double x : sys.lines) std::printf (" %.0f", x * W); std::printf (")\n"); }
+            CHECK (found[0].staves.size() == 2 && nearly (found[0].top, 200.5 / H) && nearly (found[0].bottom, 368.5 / H) && nearly (found[0].space, 12.0 / H, 0.0006));
+            CHECK (linesAre (found[0], { 100, 300, 520, 760, 900 }));                                  // (not the two stems)
+            CHECK (found[1].staves.size() == 1 && nearly (found[1].top, 600.5 / H) && nearly (found[1].x0, 0.1) && nearly (found[1].x1, 0.9));
+            CHECK (linesAre (found[1], { 100, 350, 597, 892 }));                                       // (the tied barline is one; the double bar is one; the two notes' stems are none)
+        }
+        CHECK (scorebars::findSystems (nullptr, W, H, W).empty());
+        { std::vector<unsigned char> blank ((size_t) W * H, 255); CHECK (scorebars::findSystems (blank.data(), W, H, W).empty()); }
+        // the same page on grey paper, and with the finder given a wider row (stride): the same bars
+        {
+            const int stride = W + 24;
+            std::vector<unsigned char> grey ((size_t) stride * H, 0);
+            for (int y = 0; y < H; ++y) for (int x = 0; x < W; ++x) grey[(size_t) y * stride + (size_t) x] = px[(size_t) y * W + (size_t) x] == 0 ? 40 : 215;
+            const auto again = scorebars::findSystems (grey.data(), W, H, stride);
+            CHECK (again.size() == 2 && again[0].lines.size() == 5 && again[1].lines.size() == 4);
+        }
+        { int w = 0, h = 0; scorebars::analysisSize (793.7, 1122.5, w, h); CHECK (std::abs (w - 2067) <= 1 && std::abs (h - 2923) <= 1); scorebars::analysisSize (3000.0, 2000.0, w, h); CHECK (w == 3600 && h == 2400); }
+
+        // ---- the whole score's bars: counted, put right, kept ----
+        scorebars::Map map;
+        map.pages.resize (2);
+        CHECK (! map.complete() && map.pagesDone() == 0);
+        if (found.size() == 2) { map.pages[0].systems = found; map.pages[0].done = true; map.pages[1].systems = { found[1] }; map.pages[1].done = true; }
+        CHECK (map.complete());
+        auto numbersOf = [] (const std::vector<scorebars::Bar>& bars) { juce::String t; for (auto& b : bars) t << b.number << " "; return t.trim(); };
+        auto bars = map.bars();
+        CHECK (numbersOf (bars) == "1 2 3 4 5 6 7 8 9 10");
+        CHECK (bars.size() == 10 && bars[4].page == 0 && bars[4].system == 1 && bars[4].index == 0 && bars[7].page == 1 && nearly (bars[5].x0, 0.35) && nearly (bars[5].x1, 0.597, 0.006));
+        CHECK (map.systemNear (0, 0.1) == 0 && map.systemNear (0, 0.2) == 0 && map.systemNear (0, 0.44) == 1 && map.systemNear (0, 0.95) == 1 && map.systemNear (5, 0.5) == -1);
+        CHECK (scorebars::Map::indexAt (map.pages[0].systems[0], 0.31) == 1 && scorebars::Map::indexAt (map.pages[0].systems[0], 0.05) == 0 && scorebars::Map::indexAt (map.pages[0].systems[0], 0.99) == 3);
+        map.setNumber (0, 1, 0, 29);                                           // "this bar is number 29": the count goes on from it
+        CHECK (numbersOf (map.bars()) == "1 2 3 4 29 30 31 32 33 34");
+        map.setNumber (0, 1, 0, 9);                                            // said again for the same bar: the one fix is replaced
+        CHECK (map.numbers.size() == 1 && numbersOf (map.bars()) == "1 2 3 4 9 10 11 12 13 14");
+        map.setNumber (1, 0, 0, 1);                                            // a second movement that starts at 1 again
+        CHECK (numbersOf (map.bars()) == "1 2 3 4 9 10 11 1 2 3");
+        CHECK (map.splitAt (0, 0, 0.41) && numbersOf (map.bars()) == "1 2 3 4 5 9 10 11 1 2 3");          // a barline the picture did not show
+        CHECK (! map.splitAt (0, 0, 0.05) && ! map.splitAt (0, 7, 0.5));
+        CHECK (map.joinToBefore (0, 0, 2) && numbersOf (map.bars()) == "1 2 3 4 9 10 11 1 2 3");           // ... and taken off again
+        CHECK (! map.joinToBefore (0, 0, 0) && ! map.joinToBefore (0, 0, 4));                             // (a system's two ends are not barlines to take off)
+        CHECK (map.joinToBefore (1, 0, 1) && numbersOf (map.bars()) == "1 2 3 4 9 10 11 1 2");             // the fix on the bar before the joined one stays
+        bars = map.bars();
+        CHECK (scorebars::findBar (bars, 2) == 1 && scorebars::findBar (bars, 2, 5) == 8 && scorebars::findBar (bars, 10, 8) == 5 && scorebars::findBar (bars, 77) == -1);
+        const juce::String editA = juce::Uuid().toString(), editB = juce::Uuid().toString();
+        CHECK (scorebars::startOrdinal (map, bars, editA) == 0);
+        map.editStarts[editA] = map.anchorOf (1, 0, 0);                        // this edit's music is the second movement
+        CHECK (scorebars::startOrdinal (map, bars, editA) == 7 && scorebars::startOrdinal (map, bars, editB) == 0);
+        // a bar carried over a line end: two pieces with one number
+        map.setNumber (0, 1, 0, 4);
+        bars = map.bars();
+        CHECK (numbersOf (bars) == "1 2 3 4 4 5 6 1 2" && scorebars::lastPiece (bars, 3) == 4 && scorebars::lastPiece (bars, 4) == 4 && scorebars::lastPiece (bars, 0) == 0);
+        // kept in a file and read back; not taken for another PDF's
+        {
+            map.piecesGiven[editB] = 38;
+            const auto text = juce::JSON::toString (scorebars::toVar (map, 123456), true);
+            scorebars::Map back;
+            CHECK (scorebars::fromVar (back, juce::JSON::parse (text), 123456, 2));
+            CHECK (back.piecesGiven.size() == 1 && back.piecesGiven[editB] == 38);
+            CHECK (numbersOf (back.bars()) == numbersOf (bars) && back.pages[0].systems.size() == 2 && back.pages[0].systems[0].staves.size() == 2 && back.numbers.size() == map.numbers.size());
+            CHECK (nearly (back.pages[0].systems[1].lines[2], map.pages[0].systems[1].lines[2], 0.00002) && nearly (back.pages[0].systems[0].space, map.pages[0].systems[0].space, 0.00002));
+            CHECK (scorebars::startOrdinal (back, back.bars(), editA) == 7);
+            CHECK (! scorebars::fromVar (back, juce::JSON::parse (text), 123457, 2) && ! scorebars::fromVar (back, juce::JSON::parse (text), 123456, 3));
+            CHECK (! scorebars::fromVar (back, juce::var(), 123456, 2) && ! scorebars::fromVar (back, juce::JSON::parse ("{\"fermata\":\"score bars\",\"finder\":0,\"pdfBytes\":123456,\"pages\":[{},{}]}"), 123456, 2));
+            CHECK (numbersOf (back.bars()) == numbersOf (bars));               // (a refused file leaves what was there)
+            scorebars::Map part; part.pages.resize (3); part.pages[1].done = true;                       // half found when the window was closed: the rest is found the next time
+            scorebars::Map partBack;
+            CHECK (scorebars::fromVar (partBack, juce::JSON::parse (juce::JSON::toString (scorebars::toVar (part, 9), true)), 9, 3) && partBack.pagesDone() == 1 && partBack.pages[1].done && ! partBack.complete());
+        }
+
+        // ---- the brackets: the user's own page - takes 6 to 10 stopped at the beginning of bar 30, takes 11 to 13 started there ----
+        std::vector<scorebars::Bar> line;                                      // bars 25 - 28 on one system, 29 - 32 on the next
+        for (int i = 0; i < 8; ++i) line.push_back ({ 0, i / 4, i % 4, 25 + i, 0.1 + 0.2 * (i % 4), 0.3 + 0.2 * (i % 4) });
+        auto span = [] (int number, int in, int out, bool dud = false) { scorebars::TakeSpan t; t.take = juce::Uuid(); t.number = number; t.barIn = in; t.barOut = out; t.dud = dud; return t; };
+        std::vector<scorebars::TakeSpan> spans { span (13, 30, 32), span (8, 25, 29), span (6, 25, 29), span (11, 30, 32), span (10, 27, 29, true), span (7, 26, 29), span (12, 30, 0), span (9, 25, 29) };
+        auto takesOf = [&] (const scorebars::Bracket& b) { juce::String t; for (int i : b.takes) t << spans[(size_t) i].number << " "; return t.trim(); };
+        auto marks = scorebars::brackets (line, spans);
+        const scorebars::Bracket* endAt30 = nullptr; const scorebars::Bracket* startAt30 = nullptr; int ends = 0, starts = 0;
+        for (auto& b : marks) { if (b.start) ++starts; else ++ends; if (! b.start && b.bar == 29) endAt30 = &b; if (b.start && b.bar == 30) startAt30 = &b; }
+        CHECK (endAt30 != nullptr && startAt30 != nullptr);
+        if (endAt30 != nullptr && startAt30 != nullptr)
+        {
+            CHECK (takesOf (*endAt30) == "6 7 8 9 10" && takesOf (*startAt30) == "11 12 13");            // ONE bracket of each kind, the numbers in order
+            CHECK (nearly (endAt30->x, 0.3) && nearly (startAt30->x, 0.3) && endAt30->system == 1 && startAt30->system == 1);     // both at the barline 29 | 30
+            CHECK (&*endAt30 < &*startAt30);                                   // (in the score's order: at one barline the end bracket first)
+        }
+        CHECK (starts == 4 && ends == 2);                                      // starts at 25, 26, 27 and 30; ends after 29 and after 32 (take 12's end is not known: none for it)
+        for (auto& b : marks) if (! b.start && b.bar == 32) CHECK (takesOf (b) == "11 13" && nearly (b.x, 0.9) && b.system == 1);
+        // a take that stops at the last bar of a line: its bracket is at that line's end, not at the start of the next
+        spans = { span (1, 25, 28), span (2, 29, 30) };
+        marks = scorebars::brackets (line, spans);
+        CHECK (marks.size() == 4 && ! marks[1].start && marks[1].bar == 28 && marks[1].system == 0 && nearly (marks[1].x, 0.9) && marks[2].start && marks[2].bar == 29 && marks[2].system == 1 && nearly (marks[2].x, 0.1));
+        // bars from the sound join a bracket of typed bars that is within a bar of them; on their own they get one of their own
+        spans = { span (1, 30, 31), span (2, 0, 0), span (3, 0, 0), span (4, 26, 0) };
+        spans[1].barIn = 31; spans[1].inGuessed = true; spans[1].barOut = 32; spans[1].outGuessed = true;       // a start one bar late: with take 1's; an end one bar late: with take 1's
+        spans[2].barIn = 27; spans[2].inGuessed = true;                                                           // within a bar of take 4's typed start
+        marks = scorebars::brackets (line, spans);
+        starts = ends = 0; for (auto& b : marks) { if (b.start) ++starts; else ++ends; }
+        CHECK (starts == 2 && ends == 1);
+        for (auto& b : marks) { if (b.start && b.bar == 30) CHECK (takesOf (b) == "1 2"); if (b.start && b.bar == 26) CHECK (takesOf (b) == "3 4"); if (! b.start) CHECK (b.bar == 31 && takesOf (b) == "1 2"); }
+        // bars the score does not have: left out; the edit's own starting place: the second movement's bar 2, not the first's
+        spans = { span (1, 99, 120), span (2, 2, 2) };
+        CHECK (scorebars::brackets (line, spans).empty());
+        bars = map.bars();
+        marks = scorebars::brackets (bars, spans, scorebars::startOrdinal (map, bars, editA));
+        CHECK (marks.size() == 2 && marks[0].start && marks[0].page == 1 && marks[0].ordinal == 8 && ! marks[1].start && marks[1].ordinal == 8);
+        marks = scorebars::brackets (bars, spans);
+        CHECK (marks.size() == 2 && marks[0].page == 0 && marks[0].ordinal == 1);
+        // a take logged in the bar that is carried over the line end ("1 2 3 4 4 5 ..."): it starts at the first piece and ends after the second
+        spans = { span (1, 4, 4) };
+        marks = scorebars::brackets (bars, spans);
+        CHECK (marks.size() == 2 && marks[0].start && marks[0].ordinal == 3 && ! marks[1].start && marks[1].ordinal == 4 && marks[1].system == 1);
+
+        // ---- how many bars the piece has, for the take window's "bars in the piece" ----
+        CHECK (scorebars::pieceLength (line) == 32 && scorebars::pieceLength (line, 5) == 32 && scorebars::pieceLength (line, 99) == 0 && scorebars::pieceLength ({}) == 0);
+        CHECK (numbersOf (bars) == "1 2 3 4 4 5 6 1 2" && scorebars::pieceLength (bars) == 6 && scorebars::pieceLength (bars, 7) == 2);      // (a movement ends where the numbers start again)
+        CHECK (scorebars::pieceBarsToGive (38, 0, 0) == 38);                    // the window has none and was never given one: the score's count
+        CHECK (scorebars::pieceBarsToGive (38, 40, 0) == 40);                   // the user had typed one before the score was there: it stays
+        CHECK (scorebars::pieceBarsToGive (39, 38, 38) == 39);                  // it still has what fermata gave it, and the score's count has been put right
+        CHECK (scorebars::pieceBarsToGive (39, 40, 38) == 40);                  // the user typed over what fermata gave: theirs stays
+        CHECK (scorebars::pieceBarsToGive (39, 0, 38) == 0);                    // ... and so does a box the user emptied
+        CHECK (scorebars::pieceBarsToGive (0, 12, 12) == 12 && scorebars::pieceBarsToGive (0, 0, 0) == 0);        // (no bars found: nothing is given)
+    }
+
     SECTION ("3.2.0 export for video edit: the gating rule, a generator that starts mid-frame, the timecode read at a sample, and the three files");
     {
         using namespace videoexport;
@@ -11435,6 +11628,22 @@ int main()
             const auto al = takematch::align (ff, fps[1]);
             const auto m = takematch::locate (al, 40.5);
             CHECK (m.found && std::abs (m.seconds - 42.525) < 0.25);
+        }
+        {
+            // 3.54.0: a take's bars from its sound (the score's brackets): the full take is logged as bars 1 - 60; the take "from bar 16"
+            // and the faster "bars 10 - 40" are laid over it and their first and last bar read off - within a bar, which is all a bracket needs
+            const auto late = scorebars::guessBars (fps[2], fps[0], 1, 60, takematch::align (fps[2], fps[0]));
+            std::printf ("  (bars from the sound: \"from bar 16\" %d - %d (%.2f), \"bars 10 - 40\" ", late.barIn, late.barOut, late.confidence);
+            CHECK (std::abs (late.barIn - 16) <= 1 && std::abs (late.barOut - 60) <= 1 && late.confidence >= takematch::kMinConfidence);
+            const auto mid = scorebars::guessBars (fps[3], fps[0], 1, 60, takematch::align (fps[3], fps[0]));
+            std::printf ("%d - %d (%.2f); against a take that has only bars 16 - 60: ", mid.barIn, mid.barOut, mid.confidence);
+            CHECK (std::abs (mid.barIn - 10) <= 1 && std::abs (mid.barOut - 40) <= 1);
+            // the reference has only bars 16 - 60: the start of "bars 10 - 40" is before its first bar, so only the end is given
+            const auto half = scorebars::guessBars (fps[3], fps[2], 16, 60, takematch::align (fps[3], fps[2]));
+            std::printf ("%d - %d)\n", half.barIn, half.barOut);
+            CHECK (half.barIn == 0 && std::abs (half.barOut - 40) <= 1);
+            CHECK (scorebars::guessBars (fps[3], fps[0], 0, 0, takematch::align (fps[3], fps[0])).barIn == 0);              // (a reference with no bars says nothing)
+            CHECK (scorebars::guessBars (takematch::Fingerprint(), fps[0], 1, 60, takematch::Alignment()).barOut == 0);
         }
     }
 

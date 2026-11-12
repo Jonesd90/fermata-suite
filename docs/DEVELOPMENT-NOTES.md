@@ -2620,6 +2620,166 @@ fermata's `shutdown()` and its static destructors. Our unhandled-exception filte
   right after closing the log, so the PDF reader's unload code never runs. Everything is saved and closed by then.
 (The symbols of Windows' own libraries were not available here: the reading rests on the single thread and the order of the modules.)
 
+## 3.54.0: look and listen - the version keys in two halves (11 November 2026, with Claude Fable)
+
+**What was asked** (11 November 2026): each Edit N key in two areas - the left "reverts the edit back to that edit but keeps the current
+mixer settings", the right, "+ Mixer", also "reverts the mixer back to the state of the mixer at that time"; every version's feedback
+in its own lane, all visible whatever edit is in focus, switched by the button at the top of the window. Asked whether "reverts" meant
+A, look and listen with the working edit untouched, or B, really replace the working edit: **the user chose A.** Do not turn a key's
+click into something that changes the working edit; that is "Make the working edit as Edit N was..." on the right-click menu.
+
+**The state** is the application's: `AppContext::versionViews[editId]` = { pieces, mixer, workingMixer }. `pieces` (0 = the working
+edit) and `mixer` (0 = the working mixer) are separate: the left half sets `pieces` only, "+ Mixer" sets both
+(`AppContext::showVersion`). Not saved with the project: a project opens on the working edit.
+
+**Listening** needed almost nothing: `playEditVersion` (3.42.0) already plays a frozen version through the edit's mixer.
+`AppContext::playEdit` now goes there whenever a version is on show, so every play of the edit - the window's, the mixer's transport
+row - plays what the window shows. `showVersion` maps the play position to the same music (`editversions::mapSeconds`) and, if the
+edit was playing, starts it again there.
+
+**Looking**: `EditTimeline::edit()` returns a COPY of the frozen version while `viewing > 0` (`setViewing`, `viewCopy`), so the whole
+window draws it with the code it has. A copy, so that no code path in a 4,900-line window can alter the frozen version itself. And no
+path should be reached: the timeline's mouse handlers go to `viewClick` (playhead only), `EditWindowComponent::keyPressed` lets
+through Home / End / Space / the zoom keys / C / Esc, `applyViewLock` dims every key that changes an edit, and `deskAct`,
+`placeFromTakeWindow` and `filesDropped` refuse. `EditWindowComponent::edit()` is still the LIVE edit (title, comments, import); the
+few things that must follow what is on show use `timeline->edit()` (`goToEnd`). The LIVE edit's `playheadSeconds` is the view's
+playhead meanwhile (it is what the application moves); the copy's is kept equal to it in the timeline's timer.
+`VersionStrip::syncView` (10 Hz and on every click) brings the application's state to the timeline and the keys, and ends the view by
+itself when the version is gone or the working edit's pieces changed (`piecesSignature`: a take put in from a take window, Ctrl+Z).
+The view also ends when the Edit window closes, a project is opened or made, and the program closes (`endVersionViews`).
+
+**The mixer** (`AppContext::setShownMixer`) is the real one - there is no second mixer to play through: the working mixer's snapshot
+(`mixSnapshot (m, true)`) is taken when it is first covered, the version's is applied (`applyMix`, `clearEmptySlots`), and the working
+one is applied again on the way back. **Because a save or a crash in between would leave the older settings as the edit's mixer**, the
+working snapshot is also written to `<project>/Recovery/mixer-<mixer id>.json` (`Project::stashMixer`), removed when the working mixer
+is back, and `AppContext::restoreStashedMixers` applies any that are found when a project opens (with a note for the person). Changes
+made in the mixer while it holds an older version's settings are lost on the way back: the notice says so. Freeze, Remove and the
+menu's "make the working mixer as..." are closed while it does.
+
+**The lanes**: `VersionStrip::lanes()` - every version with comments, when `EditDef::showFeedback` is on, plus the working edit's own
+while a frozen version is on show. `EditVersion::laneShown` is still read and written by the project file and no longer used.
+
+Also: a version frozen (the Freeze key is closed, an import's "Start Edit N+1" is not) while the mixer holds an older version's settings
+is frozen with the WORKING mixer (`freezeLiveVersion`); the insert flag is not drawn over a frozen version.
+
+Tried in the Linux build under Xvfb with the test project (Edit 1 and Edit 2 frozen, working in Edit 3): Edit 1's left half - the
+pieces of Edit 1 on show, the line that says so, the editing keys dim, the lanes of both versions' comments in place; a click moved
+the playhead, Delete did nothing; Edit 1's "+ Mixer" - both halves lit, the file in Recovery written; Edit 3's left half - the working
+edit with Edit 1's mixer still lit; Edit 3's "+ Mixer" - everything as before, the file gone; Esc from a view; the right-click menu;
+the Feedback key hiding and showing every lane; the program killed while Edit 1's mixer was in use and the project opened again - the
+working mixer put back from the file (the log line), the file removed. **No sound here**: playing a version, and the carry-on from the
+same music, were not heard; the "Your mixer is back" box was added after that run and not seen.
+
+## 3.54.0: the takes marked on the score (11 November 2026, with Claude Fable)
+
+**What was asked** (11 November 2026, in four messages and a photograph of the user's own pen marks on a choir score): fermata is to
+"analyse the score and see where the bars are (I will usually have a PDF export from a proper program) and ... both analyse the recorded
+sound AND take note of what bar numbers the operator puts in for each take, and annotate the score". The marks: a bracket with its
+bar going LEFT is the end of takes ("take 6,7,8,9 and 10 finished at the beginning of bar 30"), one with its bar going RIGHT is the
+start ("11,12 and 13. These start at the beginning of bar 30"), both drawn above the system at the barline, the takes' numbers beside
+them. "The markings do not need to be 100% accurate. So long as the takes land within about a bar then it can go where the rest of
+them are (e.g. do not do multiple end or multiple start brackets within the same bar)." The numbers need not pile up leftwards as the
+pen's do: in order. Then: takes imported from another program are to be placed the same way from their sound once the user has typed
+bars (and Dud marks) for some; and the count of the score's bars is to go to the take window as the piece's length, the user's own
+number winning. (The bigger idea of the same day - reading notes, dynamics and tempo, an automatic first edit - was put aside by the
+user: "Let's leave that idea for a while".)
+
+**Where it is.** `src/core/ScoreBars.h` (new, header only, no drawing and no files of its own; tested in `tests/core_test.cpp`) and
+`src/ui/ScoreWindow.h`. fermata:Live does not include the header.
+
+**Finding the bars** (`scorebars::findSystems`, on a grey picture of one page). The score window's one PDF thread draws each page for
+it at about 250 dots to the inch (`analysisSize`; always the same size, whatever the zoom), when no page picture is waiting
+(`barPages`, the pages in view first). Then:
+- *Ink*: anything clearly darker than the paper (the commonest light grey x 0.78), so a thin line that falls between two rows of dots
+  still counts.
+- *Staff lines* (`levelLines`): rows whose long runs of ink add up to a fifth of the page's width. Runs, not one run: a time
+  signature or bar number printed on a patch of white breaks the line. Five of them the same distance apart are a staff (`stavesOf`).
+- *Systems* (`joinedAtLeft`): staves joined by an upright line at their left edge. A single line of music is a system of one staff.
+- *Barlines* (`strokesOf`): an upright stroke the whole height of a staff that stops at the staff's outer lines, or runs on all the
+  way to the next staff of the system. In a system of several staves a barline is a stroke that most of them have at the same place
+  (both, of two; six in ten, of more; one fewer if it runs through to the next staff). **Stems are the trap.** A stem that crosses the
+  whole staff usually sticks out of it, and that test removes it; but a note in the top space with its stem down ends *exactly* on the
+  bottom line, and one in the bottom space with its stem up on the top line. In a single staff nothing but the note's head tells
+  such a stem from a barline: ink right beside the stroke in one of the four spaces, on ONE side (ink on both sides is a tie or slur
+  crossing a real barline, and says nothing). The stroke's exact columns have to be known for that test (the full-height test also
+  passes the column either side): they are the columns with the most ink of their own. Strokes within a staff space of each other
+  are one barline (double bar, final bar, repeat).
+- *Bars*: the system's start, each barline, its end. A line within 2.5 spaces of the start is the system's own edge (or an alto
+  clef). Staff left over after the last barline is a bar carried over the line end - unless it is short (under 8 spaces and under
+  0.4 of the usual bar): that is the room for the next line's time or key signature.
+Everything is kept as fractions of the page. It takes about 10 ms a page here; the drawing of the page is the slow part. Made-up
+scores (`mkscore.js` in the session's scratch folder: a choir with separate barlines, a piano with barlines through, single lines,
+nine small staves in groups; stems crossing staves, open heads that break the lines, a repeat, a double bar, a volta, a stub for the
+next line's time signature) came out right at fifteen picture sizes from 120 to 400 dots to the inch and with thirteen different
+sets of notes. **No real engraved score was to hand** (none on the machine, and no way to fetch one): the first real PDF is the real
+test. The user's photograph finds nothing - a photographed page is tilted and shaded, and that is expected.
+
+**What it does not do: read the printed bar numbers.** That needs the reading of print (OCR), which fermata has none of. The bars
+are COUNTED (`Map::bars`), and the user puts the count right with `NumberFix`es ("this bar's number is N", the bars after it count
+on): a pick-up bar, a second movement starting at 1 again, a multi-bar rest in a part, a bar carried over a line end (give the second
+piece the same number: `lastPiece` then treats the two as one bar). `joinToBefore` takes off a barline that is not one, `splitAt`
+adds one. Fixes and the per-edit starting bar are anchored by where they are on the paper (`Anchor`: page, system, x), not by a
+bar's index, so they survive a barline being added or taken off. `editStarts[editId]`: when one PDF has several movements with the
+same bar numbers, the edit's takes are looked for from that bar on (`findBar (bars, number, from)`).
+
+**The file**: `<project>/PDFs/<pdf name>.bars.json` (`toVar` / `fromVar`): the pages' systems, the fixes, the edits' starts,
+`piecesGiven`. It is refused, and the bars found again, if it is of another PDF (its size in bytes), another page count or another
+`kAnalysisVersion` - raise that when `findSystems` changes what it finds (the hand corrections are then lost: say so in the history).
+Written when all pages are done, on every correction, and - half done - when the window closes (`Page::done`: the rest is found the
+next time).
+
+**The brackets** (`scorebars::brackets`; drawn by `ScoreComponent::drawTakes`). The takes are those of the take windows tied to the
+edit (`tiedWindows`: `targetEdit`, the edit's `windowId`, its pieces' windows), or of all take windows when none is tied yet
+(`windowsOf`); not the room tone, not a take still recording. A take logged "Bar 12 - 29" starts at bar 12's left edge and ends at
+bar 29's right edge - which is the barline 29|30, "the beginning of bar 30". A take with `barOut` 0 has no known end (it is NOT taken
+to be one bar long). One bracket of each kind per barline; typed bars first, then bars from the sound, which join a bracket of the
+same kind one bar either side if there is one. Numbers ascending. Drawn in red (`0xffd3202f`), Dud takes grey, "?" after a number
+whose bar came from the sound; sized by the staff space but never smaller than on a normal-sized staff (a full score's staves are
+small); many numbers wrap onto rows (the upright grows upward); a bracket whose numbers would land on another's (many short takes of
+the same bars) is moved up above it (`placed`). An end and a start at one barline stand side by side, as in the photograph.
+`hits` (by page, rebuilt as each page is painted) is where each number is, for the mouse: click plays the take
+(`AppContext::playTake`; from 0 at a start bracket, its last 8 s at an end bracket), right-click is its menu ("Set its bars...",
+"Keep these bars for the take"). `marksKey` is everything the brackets were made from; they are made again (twice a second at most)
+only when it changes, so a take that has just been recorded and has its bars appears by itself.
+
+**Bars from the sound** (`scorebars::guessBars`, called from `ScoreComponent::hearBars`). Only for take windows with take matching
+on (the fingerprints are the take matching service's). A take missing a bar is laid over the takes that have both bars typed
+(`TakeMatchService::alignmentFor`), the ones with the most of the piece first: six of them, up to sixteen for a take those do not
+reach; no more than 25 ms of this per half second, on the message thread. The take's first and last second of music are found in the
+reference and read off its bars spread evenly over its music (`takematch::BarMap`) - so "within about a bar", which is what was
+asked for and why the guessed ones join neighbouring brackets. The best guess per take is kept in `heard` and thrown away when the
+set of reference takes changes (a bar typed on another take). Guessed bars are never written to the take by themselves: "Keep these
+bars for the take" (one) and the Takes key's "Write the bars found from the sound onto their takes" (all, only empty bars) do that.
+This is the whole of "imported takes": takes brought in from another program are takes like any other.
+
+**The piece's length to the take window** (`givePieceBars`, `scorebars::pieceLength`, `pieceBarsToGive`). The last bar number of the
+music that begins at the edit's start (it ends where the numbers start again) goes to `TakeWindowDef::pieceBars` of the TIED windows
+(never "all of them") when the window has none and was never given one, or still has exactly what fermata gave it
+(`Map::piecesGiven`) and the score's count has changed. A number typed in the take window, or a box emptied there, stays. It is done
+when the bars have just been found, when they are put right in the score window, and when the score window opens - **never on a
+timer**: it is `Project::changed()` (an undo step, as typing the number is), and a timer would put the number back after every
+undo and wipe the redo list.
+
+**Tried in the Linux build under Xvfb** with a made-up three-page score and sixteen takes of a made-up 38-bar piece (their bars typed
+in the project file, three with a bar or both missing): the bars found and saved, and read from the file the next time; the Bars
+view; the brackets on all three pages - including an end and a start side by side at one barline, a Dud take in grey, a take ending
+at a line's end; the two takes with no bars placed from their sound at the right bars (20 - 30 and 19 - 27) and the one with no end
+given its end (33); a guessed start one bar off joining the bracket beside it; the tooltip; a number's menu, "Keep these bars",
+"Set its bars..."; a click reaching the player ("The audio device has not been started" here); a bar's menu - its number set (the
+bars after counting on, the brackets following), counted from 1 again, a barline taken off and added back; twenty-four more takes at
+one barline wrapping onto three rows and the brackets stepping clear of each other. Then the same project made to look like an
+import - sixteen takes, the bars typed on the one full take only, take matching off, no "bars in the piece": on opening the score the
+log said "has 38 bars - given to the take window" and the number was in the saved take window; the Takes key's menu said "1 with both
+bars typed, 0 placed from their sound, 15 not placed" and offered "Listen to the takes of ..."; a quarter of a minute after choosing
+it fourteen takes were on the score with a ? (the fifteenth, four bars and eight seconds long, was not placed surely: the menu says
+to type such a take's bars); "Write the bars found from the sound onto their takes" wrote them, and the saved file had all fourteen
+takes' bars exactly as the takes had been made. **Not tried here**: sound (no audio device), a real score from a notation program,
+Windows' own PDF drawing feeding the finder (here a stand-in draws the pages), long takes (the layings-over were of takes up to
+80 s), a take window's number typed over fermata's and kept (that rule is in the core tests, `pieceBarsToGive`).
+
+**Left out, said to the user**: printing or saving the marked score as a PDF; dragging a bracket to another barline; reading the
+printed bar numbers; scanned scores.
+
 ## 3.46.1: the fourth sweep, areas A, B and C; the list number in "Number the files" (9 November 2026, with Claude Fable)
 
 **The sweep.** `docs/SWEEP-4-FINDINGS.md` is the record: per area the files read line by line, and every finding as FIXED (with its test), HELD

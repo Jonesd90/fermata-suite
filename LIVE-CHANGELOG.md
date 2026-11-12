@@ -8,6 +8,14 @@ fermata:Live is the live-concert recorder that goes with fermata (see `docs/LIVE
 
 A line that starts with **Shared:** is a change to the code fermata shares (see `COMPATIBILITY.md`), so fermata's next build mentions it too.
 
+## 0.10.4
+Built 11 November 2026 (the conversation for both programs), with Claude Fable. No change to the recorder and none to fermata:Live's own
+code: what the shared code brings.
+- **Shared (fermata 3.54.0):** `Project::stashMixer` / `dropMixerStash` (an edit's working mixer kept in
+  `Recovery/mixer-<id>.json` while fermata has an older version's settings in it). fermata:Live never writes or reads one.
+- **Shared (fermata 3.54.0):** a new header in the shared folder, `src/core/ScoreBars.h` (the bars of a score's pages and the takes'
+  brackets on them). fermata:Live does not include it, so nothing of it is built into the recorder.
+
 ## 0.10.3
 Built 11 November 2026 (the conversation for both programs), with Claude Fable.
 - **Windows stays awake while the recorder runs.** An ASIO driver does not keep Windows awake by itself, so with a power plan that

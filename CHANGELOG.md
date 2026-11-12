@@ -6,6 +6,62 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.54.0
+Built 11 November 2026 (the conversation for both programs), with Claude Fable. The takes marked on the score; the Edit window's
+version keys: look and listen.
+- **The score shows where every take started and stopped** (asked for on 11 November 2026, with a photograph of the user's own pen
+  marks: "annotate the score ... the score will have markings on that show the bar range that each take covered").
+  - **fermata finds the bars.** The first time a PDF is opened in the score window, fermata looks at every page (in the background, the
+    pages you are looking at first), finds the staves, which staves belong together as a system, and the barlines, and counts the bars
+    through the whole score. That is kept in a small file beside the PDF, so the next time the bars are there at once. It is made for a
+    score exported from a notation program; a scanned or photographed score is not level enough for it.
+  - **The brackets.** Above the music, at the barline: a bracket with its bar going off to the **right** where takes **started**, one
+    with its bar going off to the **left** where takes **stopped**, each with the takes' numbers - in a red pen colour, the numbers in
+    order (lowest first) on both. There is **one** start bracket and **one** end bracket at a barline, however many takes began or
+    stopped there. They come from the bars typed for each take: "Bar 12 - 29" starts at the barline before bar 12 and stops at the
+    barline after bar 29 (the beginning of bar 30). A new take's numbers appear as soon as it has stopped and has its bars.
+    A **Dud** take's number is grey. Many takes at one barline wrap onto more rows; brackets that would write over each other step up.
+  - **A bar that was not typed comes from the sound**, when take matching is on for the take window: the take is laid over a take whose
+    bars were typed and its first and last bar read off. Those numbers carry a **?**, and they join a bracket that is within a bar of
+    them instead of making one of their own. Right-click such a number, "Keep these bars for the take", to make them the take's own.
+  - **Click a take's number** to hear that take: from its start at a start bracket, its last seconds at an end bracket.
+    **Right-click** it to set the take's bars (the take window and the edit's pieces follow).
+  - **The Takes key** (top of the score window) shows and hides the brackets. **The Bars key** shows the bars fermata found, each in
+    a box with its number - to check them. The printed bar numbers are **not read**: the bars are counted from 1, so where the score's
+    own numbering differs, **right-click a bar** and give it its number ("This bar's number is...": the bars after it count on from
+    it - a pick-up bar, a second movement that starts again at 1, a bar carried over a line end, which is given the same number
+    twice). The same menu takes off a barline that is not one, adds one that was missed, says "this edit's music begins at this bar"
+    (when one PDF holds several movements with the same bar numbers), and finds the bars of the whole score again.
+  - **Takes brought in from another program are placed the same way** (asked for on 11 November 2026: "50 takes of a piece ... this
+    system could then analyse the audio files and then cross reference with the users bar numbering and dud markings once they have
+    added them"). Switch take matching on for their take window (or right-click the **Takes** key, "Listen to the takes of ..."),
+    type the bars of one take that has the whole piece - or of a few that cover it between them - and every other take is laid over
+    those and put on the score from its sound, with a ?. Each take whose bars you type afterwards is used as well. The Takes key's
+    right-click says how many takes are placed, and "Write the bars found from the sound onto their takes" makes them the takes' own
+    bars in one go (only bars that are empty are filled), so the take window, the bar strip and the take chart have them too.
+  - **The take window is told how many bars the piece has.** When the score's bars have been found, their count goes to the take
+    window as its "bars in the piece" (the bar strip and the take chart run to there) - if the window had no number. A number you type
+    in the take window is yours and is never replaced; if you leave fermata's number alone and later put the score's count right, the
+    take window follows.
+  - Not in this build: printing or saving the marked score as a PDF; dragging a bracket; reading the printed numbers.
+- **The Edit 1 / Edit 2 / Edit 3 keys have two halves** (asked for on 11 November 2026: "can we make it a bit simpler").
+  - **Edit N** shows and plays that version in the window, through the mixer as it is now.
+  - **+ Mixer** shows it and gives the mixer that version's settings too - the mixer as it was when the version was frozen.
+  - Each half is lit for what is in use: the pieces on show, and whose mixer. The newest key is the edit you are working on: its
+    **Edit N** brings you back to it, its **+ Mixer** brings your own mixer back as well.
+  - A frozen version is **look and listen only**. While one is on show the window says so, the keys that change an edit are dim, a
+    click along the timeline moves the playhead and nothing else, and **Esc** takes you back. **Your working edit is never touched** -
+    nothing is replaced, so there is nothing to undo.
+  - If the edit is playing when you click a key, it carries on from the same music in the other version: a straight comparison.
+  - Your own mixer is kept safe while an older one is in use, in the program and in a file: if fermata stops meanwhile, it is put back
+    when the project opens. Changes made in the mixer while an older version's settings are in it are not kept.
+  - The other things a key's menu had are on a **right-click**: the changes lane, "Make the working edit as Edit N was..." (the old
+    "Put back everything", which does replace your work, with Ctrl+Z), "Make the working mixer as Edit N's was...", Remove, Freeze.
+- **Every version's comments lane is always there**, whichever version is on show, and the **Feedback key** at the top of the window
+  shows or hides them all together with this edit's own flags. (Each version's lane used to be switched on its own, from its key's
+  menu.) While a frozen version is on show the working edit's own comments have a lane too. Every flag stands where its music is in
+  what the window is showing.
+
 ## 3.53.0
 Built 11 November 2026 (the conversation for both programs), with Claude Fable. Recording reliability - Windows kept awake, dropouts and
 device stops marked on the take, a take's markers kept safe while it records; the plug-in window's Bypass, Copy and Paste keys;

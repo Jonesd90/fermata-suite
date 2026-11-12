@@ -1,5 +1,6 @@
 #include "AppContext.h"
 #include "../core/FileSync.h"
+#include "../core/EditVersions.h"
 #include "../core/Ravenna.h"
 #include "TakeDisplay.h"
 #include "TalkbackGlow.h"
@@ -1357,6 +1358,7 @@ bool AppContext::newProject (const juce::File& file, double rate)
     if (saveHold > 0) { showError ("A fix is being tried out", "A ReTouch or Pitch window is still trying something out. Write it back or close it first."); return false; }   // (3.27.1: a preview must not be saved as the project)
     if (const auto problem = newProjectProblem (file); problem.isNotEmpty()) { showError ("New project", problem); return false; }
     stopPlayback();
+    endVersionViews();                               // (3.54.0: the old project is saved with its working mixers)
     engine.auxSounds().click.setRunning (false); engine.auxSounds().pipe.allOff();     // (the click and the pitch pipe belong to the old project's outputs)
     plugins.closeAllEditors();                       // (the old project's plug-ins go with it)
     // the project that is open is saved first; if that fails nothing is changed (its unsaved changes would be lost with it: the person saves it
@@ -1395,6 +1397,7 @@ bool AppContext::openBackupProject (const juce::File& bak)
     juce::var v;
     if (juce::JSON::parse (bakText, v).failed() || ! v.isObject()) { showError ("Open", bak.getFileName() + " could not be read as a Fermata project, so nothing was changed."); return false; }
     stopPlayback();
+    endVersionViews();
     if (hasProject())                              // the open project is saved first; if that fails nothing is touched (its unsaved changes would be lost)
     {
         juce::String serr;
@@ -1418,6 +1421,7 @@ bool AppContext::openProject (const juce::File& file)
     busy::begin ("Opening project", file.getFileNameWithoutExtension());
     struct Closer { ~Closer() { busy::endAfterPendingMessages(); } } closer;
     stopPlayback();
+    endVersionViews();                               // (3.54.0: the old project is saved with its working mixers)
     plugins.closeAllEditors();                       // (the old project's plug-ins go with it)
     if (project.projectFile != juce::File()) busy::step ("Saving " + project.name + " first");
     // (as in newProject: a project that cannot be saved stays open, nothing is changed)
@@ -1477,6 +1481,7 @@ bool AppContext::openProject (const juce::File& file)
     }
     openStep ("messages about unread files and plug-ins prepared");
     project.slowTakeLog = [this] (const juce::String& what) { openStep (what); };     // (a take that takes long to check is named)
+    restoreStashedMixers();                                          // 3.54.0: a mixer left with an older version's settings
     const auto mended = project.repairInterruptedRecordings();      // the program or the computer stopped while recording: keep everything that was recorded
     project.slowTakeLog = nullptr;
     const auto tChecked = juce::Time::getMillisecondCounterHiRes();
@@ -1968,6 +1973,9 @@ juce::String AppContext::playTake (const juce::Uuid& windowId, const juce::Uuid&
 
 juce::String AppContext::playEdit (const juce::Uuid& editId, double fromSec, double toSec, bool loop, bool goOnAfterLoop)
 {
+    // 3.54.0: the Edit window is showing a frozen version of this edit (look and listen): every play of the edit plays that version
+    if (const int shown = shownVersion (editId); shown > 0)
+        if (auto* liveEdit = project.findEdit (editId); liveEdit != nullptr && shown < liveEdit->versionNumber()) return playEditVersion (editId, shown, fromSec, toSec);
     PlayStartTimer timing (*this);
     auto* e = project.findEdit (editId);
     if (e == nullptr) return "That edit no longer exists";
@@ -1993,6 +2001,109 @@ juce::String AppContext::playEdit (const juce::Uuid& editId, double fromSec, dou
     return err;
 }
 
+// ---- 3.54.0: look and listen ---------------------------------------------------------------------------------------------------------------------
+juce::String AppContext::setShownMixer (const juce::Uuid& editId, int version)
+{
+    auto* live = project.findEdit (editId);
+    auto* m = project.mixerOfEdit (editId);
+    if (live == nullptr) return "That edit no longer exists";
+    if (m == nullptr) return "This edit has no mixer of its own";
+    auto& vv = versionViews[editId];
+    if (vv.mixer == version) return {};
+    juce::var target;
+    if (version > 0)
+    {
+        auto* v = live->version (version);
+        if (v == nullptr || v->mixer.isVoid()) return "Edit " + juce::String (version) + " was frozen without its mixer";
+        target = v->mixer;
+    }
+    if (vv.mixer == 0)                                         // the working mixer is about to be covered: kept here and - in case the program stops - in a file
+    {
+        vv.workingMixer = project.mixSnapshot (*m, true);
+        project.stashMixer (*m, vv.workingMixer);
+    }
+    if (version == 0) target = vv.workingMixer;
+    const double sr = engine.getSampleRate() > 0.0 ? engine.getSampleRate() : 48000.0;
+    MixParts all; all.clearEmptySlots = true;
+    project.applyMix (*m, target, sr, engine.getMaxBlock(), all);
+    engine.rebuildPlan(); engine.checkLatency(); project.structure.sendChangeMessage();
+    vv.mixer = version;
+    if (version == 0) { vv.workingMixer = juce::var(); project.dropMixerStash (m->id); }
+    juce::Logger::writeToLog ("Versions: the mixer of \"" + live->name + "\" " + (version > 0 ? "has the settings of Edit " + juce::String (version) + " for now (the working mixer is kept)" : juce::String ("is the working mixer again")));
+    return {};
+}
+
+juce::String AppContext::showVersion (const juce::Uuid& editId, int version, bool withMixer)
+{
+    auto* live = project.findEdit (editId);
+    if (live == nullptr) return "That edit no longer exists";
+    if (engine.isRecording()) return "Not while recording";
+    const int top = live->versionNumber();
+    const int pieces = (version <= 0 || version >= top) ? 0 : version;
+    if (pieces > 0 && live->versionEdit (pieces) == nullptr) return "Edit " + juce::String (pieces) + " is not there any more";
+    const int before = shownVersion (editId);
+    // where the music is now, on what is shown now - to go on (or stand) at the same music in what is shown next
+    const bool wasPlaying = isPlaying() && playInfo.kind == PlayInfo::Kind::Edit && playInfo.id == editId;
+    double at = wasPlaying ? juce::jmax (0.0, playheadSeconds()) : juce::jmax (0.0, live->playheadSeconds);
+    const EditDef* from = before > 0 ? live->versionEdit (before) : live;
+    const EditDef* to = pieces > 0 ? live->versionEdit (pieces) : live;
+    if (from != nullptr && to != nullptr && from != to) at = juce::jmax (0.0, editversions::mapSeconds (*from, *to, at));
+    if (wasPlaying) stopPlayback (true);
+    juce::String err;
+    if (withMixer) err = setShownMixer (editId, pieces);
+    versionViews[editId].pieces = pieces;
+    if (const auto it = versionViews.find (editId); it != versionViews.end() && it->second.pieces == 0 && it->second.mixer == 0) versionViews.erase (it);
+    live->playheadSeconds = at;
+    if (wasPlaying) { const auto perr = playEdit (editId, at); if (err.isEmpty()) err = perr; }
+    const int mixerNow = shownMixer (editId);
+    setNotice (pieces > 0 ? "Showing " + live->versionTitle (pieces) + " (frozen: look and listen only)" + (mixerNow > 0 ? ", through the mixer of Edit " + juce::String (mixerNow) + "." : juce::String (", through the mixer as it is now."))
+                            + " Click Edit " + juce::String (top) + " to carry on working."
+                          : mixerNow > 0 ? "The working edit, through the mixer of Edit " + juce::String (mixerNow) + ". Changes made in the mixer now are not kept: click + Mixer on Edit " + juce::String (top) + " for your own mixer."
+                                         : juce::String ("Back in " + live->versionTitle (top) + ", the edit you are working on."));
+    return err;
+}
+
+void AppContext::endVersionView (const juce::Uuid& editId)
+{
+    if (versionViews.find (editId) == versionViews.end()) return;
+    if (project.findEdit (editId) != nullptr && project.mixerOfEdit (editId) != nullptr) setShownMixer (editId, 0);
+    versionViews.erase (editId);
+}
+
+void AppContext::endVersionViews()
+{
+    std::vector<juce::Uuid> ids;
+    for (auto& kv : versionViews) ids.push_back (kv.first);
+    for (auto& id : ids) endVersionView (id);
+}
+
+void AppContext::restoreStashedMixers()
+{
+    const auto folder = project.projectFolder();
+    if (folder == juce::File()) return;
+    juce::StringArray back;
+    for (auto& f : folder.getChildFile ("Recovery").findChildFiles (juce::File::findFiles, false, "mixer-*.json"))
+    {
+        const auto v = juce::JSON::parse (f.loadFileAsString());
+        MixerState* m = nullptr;
+        if (v.isObject()) for (auto& mx : project.mixers) if (mx != nullptr && mx->id.toString() == v["mixer"].toString()) m = mx.get();
+        if (m != nullptr && ! v["state"].isVoid())
+        {
+            const double sr = engine.getSampleRate() > 0.0 ? engine.getSampleRate() : 48000.0;
+            MixParts all; all.clearEmptySlots = true;
+            project.applyMix (*m, v["state"], sr, engine.getMaxBlock(), all);
+            project.markDirty();
+            back.add ("\"" + m->name + "\"");
+            juce::Logger::writeToLog ("Versions: the working mixer \"" + m->name + "\" put back from " + f.getFileName());
+        }
+        f.deleteFile();
+    }
+    if (back.isEmpty()) return;
+    const juce::String text = "When Fermata stopped, the mixer " + back.joinIntoString (", ") + (back.size() == 1 ? " was" : " were") + " showing an older version's settings (+ Mixer on a frozen version's key).\n\n"
+                              + (back.size() == 1 ? "It is" : "They are") + " back as you were working with " + (back.size() == 1 ? "it." : "them.");
+    juce::MessageManager::callAsync ([text] { juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::InfoIcon).withTitle ("Your mixer is back").withMessage (text).withButton ("OK"), nullptr); });
+}
+
 juce::String AppContext::playEditVersion (const juce::Uuid& editId, int version, double fromSec, double toSec)
 {
     auto* live = project.findEdit (editId);
@@ -2012,6 +2123,7 @@ juce::String AppContext::playEditVersion (const juce::Uuid& editId, int version,
     if (err.isEmpty())
     {
         playInfo = { PlayInfo::Kind::Edit, e->windowId, editId, (double) a / rate }; playInfo.loopLen = 0.0;
+        if (shownVersion (editId) != version)                    // (the window that shows the version says so by itself)
         setNotice ("Playing " + live->versionTitle (version) + " from " + juce::String (fromSec, 1) + " s (on that version's timeline), through the edit's mixer as it is now.");
     }
     return err;
@@ -2360,6 +2472,7 @@ void AppContext::shutdown()
     takeDisplayHub.reset();
     if (engine.isRecording()) engine.stopRecording();
     stopPlayback();
+    endVersionViews();                                 // 3.54.0: every mixer is the working one again before the last save
     closing::step ("playback stopped");
     finishTakesBeforeClosing();                        // 3.46.1: before the last save, and before the closing safety net starts to count
     closing::step ("recordings made sure of on the disk");
