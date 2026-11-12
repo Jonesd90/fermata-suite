@@ -6,6 +6,44 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.55.0
+Built 12 November 2026 (the conversation for both programs), with Claude Fable. The score: scans, the printed bar numbers read, the
+brackets on clear paper and moved by hand, the marked score saved as a PDF. Tried on three real scores the user sent for the purpose
+(kept out of the repository): a choir score from a notation program, a 52-page orchestral score from another, and a scanned score.
+- **Scanned scores work.** A scanned page is first turned upright (by its barlines and stems) and each of its staves is laid level
+  (a book's page bends on the glass), the paper's own grey is allowed for (a shadow no longer counts as ink), and then the bars are
+  found as on any page. fermata's log says which pages it took for scans. On the scanned score sent, every bar of every line was
+  found. A photograph taken square-on of a flat page should do as well; a close-up at an angle, or a curling page, will still miss
+  things - the Bars view and the right-click corrections are there for those.
+- **The bar numbers printed in the score are read.** fermata looks above the start of each bar for a small number standing alone,
+  reads its digits, and believes it only when it makes sense with another number near it (two numbers eight bars apart that differ
+  by eight are bar numbers; a tempo's 88, a tuplet's 3 and a page number never are). The count then follows the print:
+  - a **new movement** that starts again at 1 is found by itself (its first line prints no number: fermata counts back from the next
+    line's number), and so is a **pick-up bar** (it becomes bar 0);
+  - in the **Bars** view a **green** number was read from the print, a **blue** one is counted on from there, and an **orange one
+    with a !** is where the print and the count disagreed - look just before it for a barline too many or too few;
+  - your own "This bar's number is..." always wins, and "Use the bar numbers printed in the score" on a bar's right-click switches
+    the reading off for a score where it does harm.
+  On the orchestral score sent, 54 of its 55 printed numbers were read and all four movements numbered themselves; on the scan, 10
+  of 11. The take window is told the piece's length from these numbers (the first movement's, unless "this edit's music begins at
+  this bar" says another).
+- **A "4 over 4" is no longer taken for a barline** (the two 4s' uprights, one above the other, are a stroke the whole height of
+  the staff - found on the first real score tried; it made every number after bar 1 one too high).
+- **The brackets keep off the music.** fermata now knows what is on the paper above each system, and puts a bracket where it covers
+  no staff, note, stem, beam or slur - and off the words where it can, climbing a little to find clear paper. Where the page is
+  crowded it covers words rather than music, and then you can move it:
+- **Drag a bracket to move it** (anywhere; a click on a number still plays the take). **Right-click a bracket** for "This bracket
+  bigger / smaller" and "Put this bracket back where fermata had it". The **a** and **A** keys at the top make all the brackets
+  smaller or bigger. All of it is kept with the score's bars.
+- **Save the marked score as a new PDF** (the PDF key's menu). Each page is a picture of the score at 300 dots to the inch with the
+  brackets and numbers drawn sharp on top, exactly where the window shows them. The score's own PDF is not touched. (The music in
+  the new PDF is a picture: it prints the same, but its text cannot be searched. About a quarter of a megabyte a page.)
+- The bars of a score opened in 3.54.0 are found again the first time it is opened in this build (the finder changed): a barline
+  taken off or a number given by hand in 3.54.0 has to be given again - though the reading of the printed numbers should now do
+  most of that.
+- Not in this build: photographs as files (a scan or photograph has to be inside a PDF, as agreed); keeping the original PDF's own
+  sharp music under the marks; reading anything but the bar numbers.
+
 ## 3.54.0
 Built 11 November 2026 (the conversation for both programs), with Claude Fable. The takes marked on the score; the Edit window's
 version keys: look and listen.

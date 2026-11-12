@@ -26,6 +26,7 @@
 #include "../src/core/AafExport.h"
 #include "../src/core/TakeMatch.h"
 #include "../src/core/ScoreBars.h"
+#include "../src/core/PdfWrite.h"
 #include "../src/core/Consonants.h"
 #include "../src/core/Aaf.h"
 #include "../src/core/SpectralPicture.h"
@@ -11271,6 +11272,272 @@ int main()
         CHECK (scorebars::pieceBarsToGive (39, 40, 38) == 40);                  // the user typed over what fermata gave: theirs stays
         CHECK (scorebars::pieceBarsToGive (39, 0, 38) == 0);                    // ... and so does a box the user emptied
         CHECK (scorebars::pieceBarsToGive (0, 12, 12) == 12 && scorebars::pieceBarsToGive (0, 0, 0) == 0);        // (no bars found: nothing is given)
+    }
+
+    SECTION ("3.55.0 the score: a scanned page laid level, a 4 over 4 that is not a barline, printed bar numbers read and believed only when they make sense, marks on clear paper, a PDF written");
+    {
+        // ---- a page drawn here: two piano systems; above each system's start a printed bar number, drawn from the digit shapes themselves ----
+        const int W = 1200, H = 1500;
+        std::vector<unsigned char> px ((size_t) W * H, 255);
+        auto dot = [&] (int x, int y) { if (x >= 0 && y >= 0 && x < W && y < H) px[(size_t) y * W + (size_t) x] = 0; };
+        auto hline = [&] (int x0, int x1, int y, int thick = 2) { for (int t = 0; t < thick; ++t) for (int x = x0; x <= x1; ++x) dot (x, y + t); };
+        auto vline = [&] (int x, int y0, int y1, int thick = 2) { for (int t = 0; t < thick; ++t) for (int y = y0; y <= y1; ++y) dot (x + t, y); };
+        auto blob = [&] (int cx, int cy, int rx, int ry) { for (int y = -ry; y <= ry; ++y) for (int x = -rx; x <= rx; ++x) if (x * x * ry * ry + y * y * rx * rx <= rx * rx * ry * ry) dot (cx + x, cy + y); };
+        auto staff = [&] (int y) { for (int l = 0; l < 5; ++l) hline (150, 1050, y + l * 12); };
+        auto shapeFor = [] (int digit, int which) { int seen = 0; for (auto& k : scoredigits::detail::known()) if (k.digit == digit && seen++ == which) return k.shape; return scoredigits::Shape(); };
+        auto printDigit = [&] (int digit, int x, int y, int which = 0)                // a shape of the table, two dots a cell: 24 x 36 dots
+        {
+            const auto shape = shapeFor (digit, which);
+            for (int gy = 0; gy < scoredigits::kH; ++gy) for (int gx = 0; gx < scoredigits::kW; ++gx)
+                if (shape.v[gy * scoredigits::kW + gx] >= 8) { dot (x + gx * 2, y + gy * 2); dot (x + gx * 2 + 1, y + gy * 2); dot (x + gx * 2, y + gy * 2 + 1); dot (x + gx * 2 + 1, y + gy * 2 + 1); }
+        };
+        auto printNumber = [&] (int value, int x, int y) { const auto text = juce::String (value); for (int i = 0; i < text.length(); ++i) printDigit (text[i] - '0', x + i * 26, y); };
+        auto pianoSystem = [&] (int y, std::initializer_list<int> barlines)
+        {
+            staff (y); staff (y + 110);
+            vline (150, y, y + 159);
+            for (int x : barlines) vline (x, y, y + 159);
+        };
+        pianoSystem (300, { 400, 650, 900, 1049 });                                  // bars 5 - 8, says its number
+        printNumber (5, 156, 240);
+        pianoSystem (800, { 370, 600, 830, 1049 });                                  // bars 9 - 12
+        printNumber (9, 156, 740);
+        // things that are not bar numbers: a tempo's "88" over the second bar; a "word" of five digit-sized shapes; a digit beside a letter-sized blob
+        printNumber (88, 412, 235);
+        for (int i = 0; i < 5; ++i) printDigit (i + 1, 700 + i * 26, 740);
+        printDigit (7, 955, 740); blob (1005, 762, 9, 11);
+        // a "4 over 4": in both staves of the first system a fat stroke the whole height of the staff, with ink both sides of it in every space
+        for (int y : { 300, 410 }) { vline (230, y, y + 49, 8); for (int sp = 0; sp < 4; ++sp) { hline (222, 229, y + sp * 12 + 5, 3); hline (238, 245, y + sp * 12 + 5, 3); } }
+        // music standing up out of the second system (a high note on its stem) and a word well above it
+        vline (700, 772, 800, 2); blob (694, 772, 8, 6);
+        auto found = scorebars::analysePage (px.data(), W, H, W);
+        auto linesAre = [&] (const scorebars::System& sys, std::initializer_list<int> xs, double tol = 0.006)
+        {
+            if (sys.lines.size() != xs.size()) return false;
+            size_t i = 0; for (int x : xs) if (std::abs (sys.lines[i++] - x / (double) W) > tol) return false;
+            return true;
+        };
+        CHECK (found.systems.size() == 2 && ! found.levelled && found.tilt == 0.0);
+        if (found.systems.size() == 2)
+        {
+            CHECK (linesAre (found.systems[0], { 150, 400, 650, 900, 1050 }));       // (the 4 over 4 at 230 is not a barline - and is further in than a system's own edge)
+            CHECK (linesAre (found.systems[1], { 150, 370, 600, 830, 1050 }));
+            juce::String seen; for (auto& r : found.reads) seen << r.system << ":" << r.bar << "=" << r.value << " ";
+            std::printf ("  (numbers seen on the drawn page: %s)\n", seen.toRawUTF8());
+            auto has = [&] (int system, int bar, int value) { for (auto& r : found.reads) if (r.system == system && r.bar == bar && r.value == value && r.sure > 0.6f) return true; return false; };
+            CHECK (has (0, 0, 5) && has (1, 0, 9));
+            CHECK (has (0, 1, 88));                                                  // (seen - a number is a number; what it is is decided over the whole score)
+            for (auto& r : found.reads) CHECK (r.value != 12345 && r.value != 7);    // a word is not a number; nor is a digit with a letter beside it
+            // the paper above the second system: music where the stem stands up, other ink where its number is printed, the system above over its top edge
+            const auto& band = found.systems[1].above;
+            CHECK (! band.empty() && ! band.under && ! found.systems[0].above.empty() && ! found.systems[0].above.under);     // (the system above is further off than the band is tall)
+            {
+                // a band hard under the system above: a mark may not climb out of its top
+                scorebars::System tight = found.systems[1];
+                tight.above.under = true; tight.above.h = 6; tight.above.cells.assign ((size_t) tight.above.w * 6, 0); tight.above.y0 = tight.top - 6 * tight.above.cy;
+                const double tall = 12 * tight.above.cy;                             // twice the room there is
+                const double at = scorebars::placeAbove (tight, 0.4, 0.05, tall, {});
+                CHECK (at + tall <= tight.top + 1.0e-9);                             // it has to cover music either way: it stays by its own system
+                tight.above.under = false;
+                CHECK (scorebars::placeAbove (tight, 0.4, 0.05, tall, {}) < tight.top - tall - 1.0 * tight.space);       // the page is clear above: it goes up into it
+            }
+            auto cellAt = [&] (int x, int y) { return band.at ((int) ((x / (double) W - band.x0) / band.cx), (int) ((y / (double) H - band.y0) / band.cy)); };
+            CHECK (cellAt (700, 785) == 2 && cellAt (700, 795) == 2);                // the stem
+            CHECK (cellAt (160, 755) == 1);                                          // the printed 9
+            CHECK (cellAt (500, 700) == 0);                                          // clear paper
+            // a mark there goes on clear paper: not on the stem, not on the number
+            const double cw = 60.0 / W, ch = 40.0 / H;
+            const double overStem = scorebars::placeAbove (found.systems[1], 690.0 / W, cw, ch, {});
+            CHECK (overStem + ch <= 766.0 / H + band.cy && overStem > 600.0 / H);    // above the note's head
+            const double clear = scorebars::placeAbove (found.systems[1], 480.0 / W, cw, ch, {});
+            CHECK (clear + ch <= 800.0 / H - 1.2 * found.systems[1].space + band.cy && clear + ch > 770.0 / H);       // nothing there: as low as it goes, a little above the top line
+            const double overNumber = scorebars::placeAbove (found.systems[1], 150.0 / W, cw, ch, {});
+            CHECK (overNumber + ch <= 742.0 / H + band.cy);                          // above the printed 9, not on it
+            const double second = scorebars::placeAbove (found.systems[1], 480.0 / W, cw, ch, { { 480.0 / W, clear, cw, ch } });
+            const scorebars::PageRect firstMark { 480.0 / W, clear, cw, ch }, secondMark { 480.0 / W, second, cw, ch };
+            CHECK (! secondMark.meets (firstMark));                                  // ... and not on a mark that is already there
+            scorebars::System bare = found.systems[1]; bare.above = {};
+            CHECK (std::abs (scorebars::placeAbove (bare, 0.4, cw, ch, {}) - (bare.top - 1.6 * bare.space - ch)) < 1.0e-9);     // (no band: where the first build put it)
+        }
+
+        // ---- the same page as a scanner gives it: turned 1.5 degrees; and bent, as a book's page lies on the glass ----
+        {
+            std::vector<unsigned char> turned ((size_t) W * H, 255);
+            const double a = 1.5 * 3.14159265358979 / 180.0, c = std::cos (a), sn = std::sin (a);
+            for (int y = 0; y < H; ++y) for (int x = 0; x < W; ++x)
+            {
+                const int sx = (int) std::lround (W * 0.5 + (x - W * 0.5) * c + (y - H * 0.5) * sn), sy = (int) std::lround (H * 0.5 - (x - W * 0.5) * sn + (y - H * 0.5) * c);
+                if (sx >= 0 && sy >= 0 && sx < W && sy < H) turned[(size_t) y * W + (size_t) x] = px[(size_t) sy * W + (size_t) sx];
+            }
+            const auto t = scorebars::analysePage (turned.data(), W, H, W);
+            std::printf ("  (the page turned 1.5 degrees: found turned %.2f; ", t.tilt);
+            CHECK (t.levelled && std::abs (std::abs (t.tilt) - 1.5) < 0.2 && t.systems.size() == 2);
+            if (t.systems.size() == 2)
+            {
+                CHECK (t.systems[0].bars() == 4 && t.systems[1].bars() == 4 && t.systems[0].staves.size() == 2);
+                CHECK (std::abs (t.systems[0].lines[1] - 400.0 / W) < 0.02 && std::abs (t.systems[0].top - 300.0 / H) < 0.02);       // put back where they are on the turned page (within its lean)
+                bool five = false, nine = false; for (auto& r : t.reads) { five = five || (r.system == 0 && r.bar == 0 && r.value == 5); nine = nine || (r.system == 1 && r.bar == 0 && r.value == 9); }
+                CHECK (five && nine);                                                // the numbers are still read
+            }
+            std::vector<unsigned char> bent ((size_t) W * H, 255);
+            for (int y = 0; y < H; ++y) for (int x = 0; x < W; ++x)
+            {
+                const int sy = y - (int) std::lround (7.0 * std::sin (x / 380.0) + 0.006 * (x - 600));
+                if (sy >= 0 && sy < H) bent[(size_t) y * W + (size_t) x] = px[(size_t) sy * W + (size_t) x];
+            }
+            const auto b = scorebars::analysePage (bent.data(), W, H, W);
+            std::printf ("bent: %d systems, levelled %d)\n", (int) b.systems.size(), (int) b.levelled);
+            CHECK (b.levelled && b.systems.size() == 2);
+            if (b.systems.size() == 2) CHECK (linesAre (b.systems[0], { 150, 400, 650, 900, 1050 }, 0.008) && linesAre (b.systems[1], { 150, 370, 600, 830, 1050 }, 0.008) && b.systems[0].staves.size() == 2);
+        }
+
+        // ---- the digits ----
+        {
+            int right = 0, all = 0;
+            for (auto& k : scoredigits::detail::known()) { const auto g = scoredigits::classify (k.shape); ++all; if (g.digit == k.digit && g.score > 0.999f) ++right; }
+            CHECK (all >= 100 && right == all);                                      // every known shape is its own digit
+            CHECK (scoredigits::classify (scoredigits::Shape()).digit == -1);
+            // a shape cut from dots comes to the grid as the table's shapes do: a 3 drawn 4 dots a cell, cut out and read
+            const auto three = shapeFor (3, 0);
+            const int cw = scoredigits::kW * 4, chh = scoredigits::kH * 4;
+            std::vector<unsigned char> bits ((size_t) (cw + 10) * (size_t) (chh + 10), 0);
+            int x0 = 1 << 30, x1 = -1, y0 = 1 << 30, y1 = -1;
+            for (int y = 0; y < chh; ++y) for (int x = 0; x < cw; ++x)
+                if (three.v[(y / 4) * scoredigits::kW + x / 4] >= 8) { bits[(size_t) (y + 5) * (size_t) (cw + 10) + (size_t) (x + 5)] = 1; x0 = juce::jmin (x0, x + 5); x1 = juce::jmax (x1, x + 5); y0 = juce::jmin (y0, y + 5); y1 = juce::jmax (y1, y + 5); }
+            const auto g = scoredigits::classify (scoredigits::shapeOf (bits.data(), cw + 10, x0, y0, x1 - x0 + 1, y1 - y0 + 1));
+            CHECK (g.digit == 3 && g.score > 0.75f && g.margin > 0.1f);
+            CHECK (scoredigits::alike (three, three) == 1.0f && scoredigits::alike (three, shapeFor (1, 0)) < 0.6f);
+        }
+
+        // ---- the count put right by the printed numbers ----
+        auto scoreOf = [] (std::initializer_list<int> barsPerSystem)
+        {
+            scorebars::Map m; m.pages.resize (1); m.pages[0].done = true;
+            int s = 0;
+            for (int n : barsPerSystem)
+            {
+                scorebars::System sys; sys.top = 0.1 + 0.1 * s; sys.bottom = sys.top + 0.05; sys.space = 0.006; sys.x0 = 0.1; sys.x1 = 0.9;
+                for (int i = 0; i <= n; ++i) sys.lines.push_back (0.1 + 0.8 * i / n);
+                m.pages[0].systems.push_back (sys); ++s;
+            }
+            return m;
+        };
+        auto numbersOf = [] (const std::vector<scorebars::Bar>& bars) { juce::String t; for (auto& b : bars) t << b.number << (b.jump ? "! " : " "); return t.trim(); };
+        auto seenAt = [] (scorebars::Map& m, int system, int bar, int value) { m.pages[0].reads.push_back ({ system, bar, value, 0.9f }); };
+        {
+            auto m = scoreOf ({ 4, 4, 4 });
+            seenAt (m, 1, 0, 5); seenAt (m, 2, 0, 9);
+            auto bars = m.bars();
+            CHECK (numbersOf (bars) == "1 2 3 4 5 6 7 8 9 10 11 12" && bars[4].read && bars[8].read && ! bars[0].read && ! bars[5].read);
+            seenAt (m, 1, 2, 88); seenAt (m, 0, 1, 3);                                  // a tempo's 88 and a tuplet's 3: seen, and believed by nothing
+            CHECK (numbersOf (m.bars()) == "1 2 3 4 5 6 7 8 9 10 11 12");
+        }
+        {
+            auto m = scoreOf ({ 5, 4, 4 });                                           // the first line begins with a pick-up bar: the second line prints 5 where the count says 6
+            seenAt (m, 1, 0, 5); seenAt (m, 2, 0, 9);
+            CHECK (numbersOf (m.bars()) == "0 1 2 3 4 5 6 7 8 9 10 11 12");
+        }
+        {
+            auto m = scoreOf ({ 4, 4, 4, 4, 4 });                                     // two movements: 8 bars, then 12 that start again at 1 (no number is printed on a movement's first line)
+            seenAt (m, 1, 0, 5); seenAt (m, 3, 0, 5); seenAt (m, 4, 0, 9);
+            const auto bars = m.bars();
+            CHECK (numbersOf (bars) == "1 2 3 4 5 6 7 8 1 2 3 4 5 6 7 8 9 10 11 12");
+            CHECK (scorebars::pieceLength (bars) == 8 && scorebars::pieceLength (bars, 8) == 12);
+            m.useReads = false;                                                       // the printed numbers not used: counted straight through
+            CHECK (numbersOf (m.bars()) == "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20");
+        }
+        {
+            auto m = scoreOf ({ 4, 4, 4 });                                           // the print is one ahead of the count from the second line on (a barline was missed in the first): the count takes the print, and says so
+            seenAt (m, 1, 0, 6); seenAt (m, 2, 0, 10);
+            const auto bars = m.bars();
+            CHECK (numbersOf (bars) == "1 2 3 4 6! 7 8 9 10 11 12 13" && bars[4].jump && ! bars[8].jump);
+        }
+        {
+            auto m = scoreOf ({ 4, 4, 4 });                                           // a misread number (31 read as 11) agrees with nothing: left alone
+            seenAt (m, 1, 0, 5); seenAt (m, 2, 0, 11);
+            CHECK (numbersOf (m.bars()) == "1 2 3 4 5 6 7 8 9 10 11 12");
+            m.setNumber (0, 1, 0, 50);                                                // the user's own number wins where it is given
+            const auto bars = m.bars();
+            CHECK (bars[4].number == 50 && bars[7].number == 53);
+        }
+        // kept in the file: the numbers seen, the band, the looks, the marks' size, whether the print is used
+        {
+            scorebars::Map m; m.pages.resize (1); m.pages[0].done = true; m.pages[0].systems = found.systems; m.pages[0].reads = found.reads;
+            m.markScale = 1.25; m.useReads = false;
+            auto& look = m.lookToSet (0, 1, 2, false); look.moved = true; look.dx = 0.01; look.dy = -0.05; look.scale = 1.3;
+            CHECK (m.lookOf (0, 1, 2, false) == &m.looks[0] && m.lookOf (0, 1, 2, true) == nullptr && m.lookOf (0, 1, 1, false) == nullptr);
+            m.lookToSet (0, 0, 0, true).scale = 0.8;
+            scorebars::Map back;
+            CHECK (scorebars::fromVar (back, juce::JSON::parse (juce::JSON::toString (scorebars::toVar (m, 77), true)), 77, 1));
+            CHECK (back.pages[0].reads.size() == m.pages[0].reads.size() && back.pages[0].reads[0].value == m.pages[0].reads[0].value && std::abs (back.pages[0].reads[0].sure - m.pages[0].reads[0].sure) < 0.011f);
+            CHECK (std::abs (back.markScale - 1.25) < 1.0e-9 && ! back.useReads && back.looks.size() == 2);
+            const auto* l = back.lookOf (0, 1, 2, false);
+            CHECK (l != nullptr && l->moved && std::abs (l->dx - 0.01) < 1.0e-6 && std::abs (l->dy + 0.05) < 1.0e-6 && std::abs (l->scale - 1.3) < 1.0e-9);
+            if (! m.pages[0].systems.empty() && ! back.pages[0].systems.empty())
+            {
+                const auto& a = m.pages[0].systems[1].above; const auto& b = back.pages[0].systems[1].above;
+                CHECK (b.w == a.w && b.h == a.h && b.cells == a.cells && b.under == a.under && std::abs (b.x0 - a.x0) < 1.0e-5 && std::abs (b.cy - a.cy) < 1.0e-12);
+            }
+            back.forgetLook (0, 1, 2, false);
+            CHECK (back.looks.size() == 1 && back.lookOf (0, 1, 2, false) == nullptr);
+            juce::var old = juce::JSON::parse (juce::JSON::toString (scorebars::toVar (m, 77), true));
+            old.getDynamicObject()->setProperty ("finder", 1);                        // a map made by the first build's finder: made again
+            CHECK (! scorebars::fromVar (back, old, 77, 1));
+        }
+
+        // ---- a PDF written from nothing: two pages, each a grey picture with shapes on top ----
+        {
+            juce::MemoryOutputStream file;
+            std::vector<unsigned char> grey (40 * 30); for (size_t i = 0; i < grey.size(); ++i) grey[i] = (unsigned char) (i * 7);
+            pdfwrite::Writer writer (file);
+            pdfwrite::Drawing drawing (842.0);
+            CHECK (drawing.isEmpty());
+            drawing.fillRect (100.0, 50.0, 2.0, 30.0, 0.83f, 0.13f, 0.18f);
+            drawing.begin (1.0f, 1.0f, 1.0f, 0.78f); drawing.moveTo (10.0, 10.0); drawing.curveTo (20.0, 10.0, 30.0, 20.0, 30.0, 30.0); drawing.lineTo (10.0, 30.0); drawing.close(); drawing.fill();
+            CHECK (! drawing.isEmpty());
+            CHECK (writer.addPage (595.0, 842.0, grey.data(), 40, 30, 40, &drawing));
+            CHECK (writer.addPage (842.0, 595.0, grey.data(), 30, 40, 30, nullptr));
+            CHECK (! writer.addPage (595.0, 842.0, nullptr, 40, 30, 40, nullptr));
+            CHECK (writer.finish ("A (marked) score") && writer.pageCount() == 2);
+            const juce::String text = juce::String::createStringFromData (file.getData(), (int) file.getDataSize());     // (Latin-1 enough for the parts looked at)
+            const std::string raw ((const char*) file.getData(), file.getDataSize());
+            CHECK (raw.rfind ("%PDF-1.4\n", 0) == 0 && raw.size() > 9 && raw.substr (raw.size() - 6) == "%%EOF\n");
+            CHECK (raw.find ("/Type /Pages /Count 2") != std::string::npos && raw.find ("/MediaBox [0 0 595 842]") != std::string::npos && raw.find ("/MediaBox [0 0 842 595]") != std::string::npos);
+            CHECK (raw.find ("/A78 << /ca 0.78 >>") != std::string::npos && raw.find ("/Title (A _marked_ score)") != std::string::npos);
+            // the table at the end says where every object starts
+            const auto startx = raw.rfind ("startxref\n");
+            CHECK (startx != std::string::npos);
+            if (startx != std::string::npos)
+            {
+                const size_t table = (size_t) std::atoll (raw.c_str() + startx + 10);
+                CHECK (raw.compare (table, 5, "xref\n") == 0);
+                const int count = std::atoi (raw.c_str() + table + 7);
+                CHECK (count == 10);                                                  // 0, the catalog, the page list, three objects a page, the title
+                bool allThere = true;
+                for (int n = 1; n < count; ++n)
+                {
+                    const size_t entry = raw.find ('\n', table + 5) + 1 + (size_t) n * 20;
+                    const size_t at = (size_t) std::atoll (raw.substr (entry, 10).c_str());
+                    const std::string head = std::to_string (n) + " 0 obj\n";
+                    allThere = allThere && raw.compare (at, head.size(), head) == 0;
+                }
+                CHECK (allThere);
+            }
+            // the first picture comes back out of the file as it went in
+            const auto streamAt = raw.find ("stream\n");
+            const auto lengthAt = raw.find ("/Length ");
+            CHECK (streamAt != std::string::npos && lengthAt != std::string::npos && lengthAt < streamAt);
+            if (streamAt != std::string::npos && lengthAt != std::string::npos)
+            {
+                const int length = std::atoi (raw.c_str() + lengthAt + 8);
+                CHECK (raw.compare (streamAt + 7 + (size_t) length, 11, "\nendstream\n") == 0);
+                juce::MemoryInputStream packed (raw.data() + streamAt + 7, (size_t) length, false);
+                juce::GZIPDecompressorInputStream z (packed);
+                std::vector<unsigned char> back (grey.size() + 8);
+                CHECK (z.read (back.data(), (int) back.size()) == (int) grey.size() && std::equal (grey.begin(), grey.end(), back.begin()));
+            }
+            juce::ignoreUnused (text);
+        }
     }
 
     SECTION ("3.2.0 export for video edit: the gating rule, a generator that starts mid-frame, the timecode read at a sample, and the three files");

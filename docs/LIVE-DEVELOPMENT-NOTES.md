@@ -768,6 +768,12 @@ recorder process's message thread. The windows' process (Primary / Fixer) asks n
 Not built for fermata:Live: the engine's take events and the silence for a stopped device (fermata 3.53.0) are in `AudioEngine`, which
 the recorder does not use - its own handling of a device that goes away ("NO AUDIO for ..." flags) is as it was.
 
+## 0.10.5: what fermata 3.55.0 added to the shared folder (12 November 2026, with Claude Fable)
+
+No change to fermata:Live's own code, and no shared .cpp file changed. New or grown headers in `src/core`, all fermata's score
+window's alone: `ScoreBars.h`, `ScoreDigits.h` with `ScoreDigitShapes.inc` (generated: `tools/make_digit_shapes.py`), `PdfWrite.h`.
+Nothing in `src/live` includes them. The version was raised because the shared folder changed, as before.
+
 ## 0.10.4: what fermata 3.54.0's shared code brings (11 November 2026, with Claude Fable)
 
 No change to fermata:Live's own code. `Project` gained `mixerStashFile` / `stashMixer` / `dropMixerStash` (fermata's look-and-listen

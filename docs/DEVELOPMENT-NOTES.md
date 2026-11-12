@@ -2620,6 +2620,117 @@ fermata's `shutdown()` and its static destructors. Our unhandled-exception filte
   right after closing the log, so the PDF reader's unload code never runs. Everything is saved and closed by then.
 (The symbols of Windows' own libraries were not available here: the reading rests on the single thread and the order of the modules.)
 
+## 3.55.0: the score - scans, printed bar numbers, clear paper, moving the marks, the marked PDF (12 November 2026, with Claude Fable)
+
+**What was asked** (11 and 12 November 2026, after 3.54.0's list of what it did not do): "I'd really like to have the scan or
+photographed in feature"; "the program can interpret bar numbers (it should be able to see the numbers and guess that they are
+bars, see the context of the bar lines and deduce that they are the size, font and regularity that means they are the bar
+numbers)"; "I don't mind the markers going over a bit of the text but it needs to be clear of the stave and notes. Ideally away from
+any text though, but maybe not always possible"; "I DO want to be able to print the score to a new PDF AND I want to be able to
+adjust the placement and size of the added markings". Agreed before building: the new PDF's pages are 300-dpi pictures with the
+marks sharp on top; a scan or photograph always arrives inside a PDF (no JPG / PNG scores).
+
+**The three real scores.** The user sent three scores to try it on, asking that they not be made public (copyright). They were
+used from a private folder of the session only and are **not in the repository, the tests or these notes** - do not add them, or
+anything cut from them, ever. What they were: (1) a choir score with a solo instrument, 8 pages, one nine-staff system a page, from
+MuseScore; (2) a four-movement orchestral score, 52 pages, 59 systems of up to 32 staves, from Sibelius; (3) a five-page scan (a
+title page and four of music, four and five staves a system) carrying the user's own pen marks. What they taught is in the
+sections below; the figures quoted are from them. The made-up scores of 3.54.0 (`mkscore.js`, thirteen sets of notes) stayed as
+the check that nothing drawn got worse, and a second script put them through what a scanner does (turned 0.7, 1.8 and 3 degrees,
+blurred, grey and speckled, bent like a book's page, bent and turned, scanned small and blown up, a shadow across the page, black
+and white only): 25 of 27 such pages came out right - the two that did not are the same case, an OPEN note in the top space of a
+SINGLE staff on a page both bent, turned and blurred, whose stem is taken for a barline.
+
+**A drawn page is left exactly as it comes** (`analysePage`: `trackStaves` on the page as it is, `isDrawnPage`). Its staves are
+level, so it is not turned and not flattened and the finder works on the very same dots as in 3.54.0. This matters: the scan code
+must never be able to harm a clean export. (The staff-following first read clean pages as slightly bent - a tie or a beam lying
+along a staff line makes that "line" fatter in a strip and moves its middle by a dot. The staff's middle is now the middle one of
+its five lines' answers, each strip's reading is the median of five strips, and a page where six tenths of the staves are level is
+a drawn page whatever the rest say.)
+
+**A scanned page** is one whose staves are not level:
+- *Ink* is judged against the paper round about (`Ink`: the page in squares, each square's paper its own light grey), so a shadow
+  or grey paper is not ink. On a drawn page that is the one threshold it always was.
+- *Turned upright* (`tiltOf`, `levelled`): by the angle at which its UPRIGHT strokes - barlines, stems - fall most sharply into
+  single columns. Not by its staff lines: a bent page's staff lines climb without its barlines leaning, and turning it by the
+  staff lines' climb made every barline lean (a nine-pixel smear down a system; that was the first version, and it broke bent
+  pages). On the scan sent, four of the five pages needed no turn at all - only their staves bend.
+- *Each staff laid level* (`trackStaves`, `Warp`, `flattened`): the page is read in upright strips; in a strip a staff is five
+  level lines the same distance apart; a staff is followed from strip to strip (`StaffTrack`), and the dots of the page are moved up
+  or down so that each staff lies at its own middle height, the paper between two staves moving with them. Only up and down: the
+  barlines stay where they are across the page. Traps met: a staff lost for a stretch comes back as a new track (joined if it
+  carries on from where the first was going - and only then: five hairpins above one another are a "staff" in a strip, and a
+  hairpin's line one staff-space above a staff makes a second five with the staff's top four lines, which is why the staves already
+  being followed take their five first); beyond a track's two ends the staff goes on as it was going (else the first centimetre of
+  every staff stays crooked and the system's left edge is found late).
+- *After that it is the same finder*, with three allowances on a levelled page (`strokesOf (..., flattened)`): each side of a stroke
+  is looked at from where the five lines really are just there (they still step a row here and there); a blurred stroke's grey edges
+  are not "ink beside it" (its skirt); the line that joins a system's staves is followed down from row to row (`joinedAtLeft`).
+- What is found is put back where it is on the page as it came (`Turn::toPage`, `Warp::dyAt`).
+
+**Stems, again.** The stem test of 3.54.0 (ink beside the stroke on ONE side) now also applies in systems of several staves - only
+strokes with clear paper beside them, or that run on to the next staff, vote for a barline. That is what removes the **4 over 4**:
+on real score (1) the two 4s' uprights, one above the other, made a stroke the whole height of all nine staves at one place, and
+every number after it was one too high. A 4 has ink on BOTH sides in every space (`crossed`) and is fat (`fat`); a tie has ink on
+both sides in one space. A note's head is told from a tie by how much of the space it fills (`heavy`: a tie's end beside a barline
+climbs through half the space - at 55 % real barlines with ties lost their votes; it is 80 %), and an open head on a blurred page
+by its two arcs hard against the lines above and below (`arcs`).
+
+**The printed bar numbers** (`readNumbers`, `ScoreDigits.h`, `Map::bars`).
+- *Seen*: above a system's top staff, every separate shape of a digit's size (0.8 to 3.4 staff-spaces tall); one to four in a
+  row, level, with nothing of a letter's size beside them (a word has letters either side; a boxed number has its box), standing
+  over the start of a bar. Each shape is brought to a 12 x 18 grid and laid over 206 drawn digits (`ScoreDigitShapes.inc`, made by
+  `tools/make_digit_shapes.py` from 92 free fonts - TeX Gyre Schola for Century Schoolbook, Termes for Times, Pagella, Bonum,
+  Heros and others, upright, italic and bold; near-duplicates left out). `Page::reads` keeps what was seen.
+- *Believed* (`Map::bars`): a number seen is a bar number when it is what the count says there anyway, or when another number seen
+  within 80 bars differs from it by exactly the bars between them. Nothing else is. That is the whole defence against a tempo's 88,
+  a tuplet's 3, a page number and a misread digit, and on the real scores it was enough: score (2) gave 54 of its 55 printed
+  numbers right and two stray numbers, both ignored; the scan gave ten of eleven, one misread (31 as 11) and one of the user's own
+  pen marks read as a 9, both ignored.
+- *What a believed number does* where it differs from the count: lower, and counting back reaches 1 at a system's start - a new
+  movement (score (2)'s four movements numbered themselves: a movement's first line prints no number); the same but 1 falls on a
+  system's second bar - a pick-up bar, numbered 0; otherwise the count takes the print from there and the bar is marked
+  (`Bar::jump`, the orange "!" in the Bars view). The user's `NumberFix` wins at its bar; `Map::useReads` switches the reading off.
+- The digit table is DATA, generated: change the script and run it, never the .inc by hand. If a score's bar numbers are in a type
+  the table does not know, the answer is another font in the script's list.
+
+**The paper above a system** (`Band`, `bandAbove`, `placeAbove`). A grid of cells a third of a staff-space wide, from the system's
+top line up to the system above (or 16 spaces): 2 = music - what stands up out of the top staff, followed up each column of dots
+until there is clear paper for 1.25 spaces, and what hangs down from the system above; 1 = other ink (words, numbers); 0 = clear.
+`placeAbove` puts a mark's block as low as it can go where it covers no music and no block already placed, a cell of other ink
+costing as much as six cells of climbing, up to eleven spaces up. Never on music; over words only when clear paper is out of reach.
+The band is kept in the bars file (packed with zlib, then base64: about 1 kB a system).
+
+**The marks are laid out in the page's own measure** (`ScoreComponent::layoutOf` -> `MarkDrawn`; x as a part of the page's width, y
+of its height; text widths from a 100-pixel font, scaled). That is what makes the window at any zoom and the saved PDF agree.
+`laid` holds a page's layout until the brackets, the bars or a look change. The user's changes are `Map::looks` (`MarkLook`: the
+bar's anchor and kind; `moved` with `dx`, `dy` from the top of the bar's barline; `scale`) and `Map::markScale`; moved brackets take
+their places first and the others are placed clear of them. The mouse: a press on a bracket sets
+`pages.setViewportIgnoreDragFlag (true)` so that the drag is the bracket's and not the page's (the viewport looks at that flag on
+every drag event); under four pixels of movement it is still a click.
+
+**The marked PDF** (`saveMarkedPdf` -> `startExport` on the message thread, `runExport` on the worker; `src/core/PdfWrite.h`). The
+shapes are made first, on the message thread, because they need the fonts: each bracket's rectangles, the pale patches, and each
+number as the OUTLINES of its glyphs (`GlyphArrangement::createPath`) - so the PDF needs no font and looks as the window does.
+The worker (the one thread that may use the PDF reader) draws each page at 300 dots to the inch (less for a page so big that the
+picture would pass 4200 dots), and `pdfwrite::Writer` writes it: PDF 1.4, per page a grey picture packed with Deflate, a drawing
+and the page; the file is written beside its place and moved there when whole (`TemporaryFile`). 52 pages: 11 MB, well under a
+minute here. `PdfWrite.h` knows nothing of juce's drawing (the core tests link without it): the window turns paths into its
+`moveTo / lineTo / curveTo`. Checked here with `pdfinfo` and `qpdf --check`, and by drawing the result again.
+
+**Tried in the Linux build under Xvfb**, the three real scores each put on a trial project's edit: (1) 44 bars, the seven printed
+numbers read, 44 given to the take window; the brackets clear of the fermatas, the tempo mark and the running title; a bracket
+dragged, the A key pressed twice, a bracket's menu, "This bracket smaller"; the marked PDF saved (8 pages, 0.9 MB), the dragged
+bracket and the sizes in it as on the screen. (2) 52 pages in about 40 seconds (with the slow stand-in page drawer), 509 bars, 54
+numbers read, the four movements numbered from 1 by themselves, 57 given to the take window; the marked PDF. (3) every page taken
+for a scan, 54 bars, ten numbers read, fermata's brackets beside the user's own pen marks.
+**Not tried here**: Windows' own PDF drawing feeding any of this (a stand-in draws the pages here - its greys and edges differ); a
+photograph; a score that numbers every bar or every fifth; a part with multi-bar rests; sound.
+
+**Known weak places**: a single staff (a part, a solo line) has no other staves to vote, so everything rests on the stem test - the
+open-note case above is in it; a close-up photograph at an angle (staff spaces growing down the page) is found only in part; the
+count cannot know a repeat's bars counted twice or a multi-bar rest (the print, where read, puts it right with a "!").
+
 ## 3.54.0: look and listen - the version keys in two halves (11 November 2026, with Claude Fable)
 
 **What was asked** (11 November 2026): each Edit N key in two areas - the left "reverts the edit back to that edit but keeps the current
@@ -2714,7 +2825,7 @@ next line's time signature) came out right at fifteen picture sizes from 120 to 
 sets of notes. **No real engraved score was to hand** (none on the machine, and no way to fetch one): the first real PDF is the real
 test. The user's photograph finds nothing - a photographed page is tilted and shaded, and that is expected.
 
-**What it does not do: read the printed bar numbers.** That needs the reading of print (OCR), which fermata has none of. The bars
+**What it did not do in 3.54.0: read the printed bar numbers (3.55.0 does - see that build's notes).** The bars
 are COUNTED (`Map::bars`), and the user puts the count right with `NumberFix`es ("this bar's number is N", the bars after it count
 on): a pick-up bar, a second movement starting at 1 again, a multi-bar rest in a part, a bar carried over a line end (give the second
 piece the same number: `lastPiece` then treats the two as one bar). `joinToBefore` takes off a barline that is not one, `splitAt`

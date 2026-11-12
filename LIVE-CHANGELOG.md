@@ -8,6 +8,13 @@ fermata:Live is the live-concert recorder that goes with fermata (see `docs/LIVE
 
 A line that starts with **Shared:** is a change to the code fermata shares (see `COMPATIBILITY.md`), so fermata's next build mentions it too.
 
+## 0.10.5
+Built 12 November 2026 (the conversation for both programs), with Claude Fable. No change to the recorder and none to fermata:Live's own
+code: what the shared folder gained.
+- **Shared (fermata 3.55.0):** `src/core/ScoreBars.h` grew (scanned pages, the printed bar numbers, the paper above a system), and
+  three files are new beside it: `src/core/ScoreDigits.h`, `src/core/ScoreDigitShapes.inc` (made by `tools/make_digit_shapes.py`)
+  and `src/core/PdfWrite.h`. All are headers that only fermata's score window includes: nothing of them is built into the recorder.
+
 ## 0.10.4
 Built 11 November 2026 (the conversation for both programs), with Claude Fable. No change to the recorder and none to fermata:Live's own
 code: what the shared code brings.

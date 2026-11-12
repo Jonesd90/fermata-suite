@@ -3,6 +3,7 @@
 #include "Uikit.h"
 #include "PdfPages.h"
 #include "../core/ScoreBars.h"
+#include "../core/PdfWrite.h"
 #include <map>
 #include <set>
 
@@ -28,7 +29,13 @@ namespace td
     of its bars typed, or none, gets the missing one from its sound when take matching is on for its window (scorebars::guessBars: laid over
     a take whose bars were typed); those numbers carry a "?". The Takes key shows and hides the brackets; the Bars key shows the bars that
     were found, numbered, for checking - a right-click on a bar puts its number right, takes a barline off or adds one. A click on a take's
-    number plays that take (from its start at a start bracket, its last seconds at an end bracket); a right-click sets its bars. */
+    number plays that take (from its start at a start bracket, its last seconds at an end bracket); a right-click sets its bars.
+
+    3.55.0 (asked for on 11 and 12 November 2026): scanned scores, and the bar numbers printed in the score read (both in ScoreBars.h);
+    the brackets laid out in the PAGE's own measure (layoutOf: the same at any zoom and in the saved PDF), each put on clear paper above
+    its system - never on the staves or the notes, off the words where it can be (scorebars::placeAbove); a bracket is dragged to move it
+    and made bigger or smaller from its right-click, the a / A keys size them all, and all of that is kept with the bars; the PDF key's
+    menu saves the marked score as a new PDF (saveMarkedPdf: the pages as pictures, the brackets as sharp shapes, written by pdfwrite). */
 namespace score
 {
 inline juce::String windowKey (const juce::Uuid& editId) { return "score:" + editId.toString(); }
@@ -76,9 +83,14 @@ public:
     {
         setOpaque (true);
         setWantsKeyboardFocus (true);
-        for (auto* b : { &prevButton, &nextButton, &zoomOutButton, &zoomInButton, &fitButton, &barsButton, static_cast<juce::TextButton*> (&takesButton), &fileButton }) { addAndMakeVisible (b); b->setWantsKeyboardFocus (false); }
+        for (auto* b : { &prevButton, &nextButton, &zoomOutButton, &zoomInButton, &fitButton, &barsButton, static_cast<juce::TextButton*> (&takesButton), &smallerButton, &biggerButton, &fileButton }) { addAndMakeVisible (b); b->setWantsKeyboardFocus (false); }
+        smallerButton.setButtonText ("a"); biggerButton.setButtonText ("A");
+        smallerButton.setTooltip ("The takes' brackets and numbers smaller, all of them. (One bracket on its own: right-click it. To move one: drag it.)");
+        biggerButton.setTooltip ("The takes' brackets and numbers bigger, all of them. (One bracket on its own: right-click it. To move one: drag it.)");
+        smallerButton.onClick = [this] { setMarkScale (bars.markScale / 1.12); };
+        biggerButton.onClick = [this] { setMarkScale (bars.markScale * 1.12); };
         barsButton.setButtonText ("Bars"); takesButton.setButtonText ("Takes");
-        barsButton.setTooltip ("Shows the bars fermata found on the pages, with the numbers it counted - to check them. Right-click a bar to put its number right (the bars after it count on from there), to take a barline off or to add one.");
+        barsButton.setTooltip (barsTip());
         takesButton.setTooltip ("Shows where every take started and stopped: a bracket above the music at the barline, with the takes' numbers. They come from the bars typed for each take (and, with take matching on, from the sound when a bar was not typed: those have a ?). Click a number to hear that take; right-click it to set its bars. Right-click this key: how many takes are placed, listening to takes that have no bars, and writing the bars found from the sound onto the takes.");
         takesButton.onMenu = [this] { takesMenu(); };
         barsButton.setClickingTogglesState (true); takesButton.setClickingTogglesState (true);
@@ -140,7 +152,7 @@ public:
         put (prevButton, 30, 2); put (nextButton, 30, 8);
         put (pageLabel, 104, 8);
         put (zoomOutButton, 28, 2); put (zoomInButton, 28, 6); put (fitButton, 74, 10);
-        put (barsButton, 84, 2); put (takesButton, 56, 10);
+        put (barsButton, 84, 2); put (takesButton, 56, 2); put (smallerButton, 24, 2); put (biggerButton, 24, 10);
         fileButton.setBounds (bar.removeFromRight (juce::jmin (64, juce::jmax (0, bar.getWidth()))));
         viewport.setBounds (getLocalBounds().withTrimmedTop (kBarH));
         auto mid = getLocalBounds().withTrimmedTop (kBarH).reduced (30);
@@ -171,15 +183,37 @@ public:
 
 private:
     static constexpr int kBarH = 34, kGap = 10, kEdge = 10;
-    struct Hit { juce::Rectangle<int> r; int span = 0; bool start = true; };              // a take's number as drawn on a page: which take, and at which kind of bracket
+    /** A take bracket as it is drawn on a page (3.55.0): everything in parts of the page - x of its width, y of its height - so that it is
+        the same at any zoom and in the PDF that is saved. Made by layoutOf from the brackets, the paper (scorebars::placeAbove) and what
+        the user has moved or resized. */
+    struct MarkItem { juce::Rectangle<double> box; juce::String text; int span = 0; bool dud = false; };
+    struct MarkDrawn
+    {
+        int mark = 0;                                       // which of 'marks'
+        int page = 0, system = 0, index = 0; bool start = true;      // its bar (for the look the user gives it)
+        juce::Rectangle<double> upright, arm, bounds;
+        std::vector<juce::Rectangle<double>> backs;         // the pale patch behind each row of numbers
+        std::vector<MarkItem> items;                        // the takes' numbers
+        double fontH = 0.0;                                 // the numbers' height
+        double baseX = 0.0, sysTop = 0.0;                   // where fermata's own place for it is measured from
+    };
+    struct MarkHit { const MarkDrawn* mark = nullptr; const MarkItem* item = nullptr; };
+    /** The marked score being written as a PDF: per page, the shapes to draw on it (in points, from the page's top left). */
+    struct ExportFill { juce::Path path; juce::Colour colour; float opacity = 1.0f; };
+    struct ExportJob { juce::File to; std::vector<std::vector<ExportFill>> pages; };
 
     // ------------------------------------------------------------------------------------------------ the pages (inside the viewport)
     struct Pages : public juce::Component, public juce::TooltipClient
     {
         explicit Pages (ScoreComponent& o) : owner (o) { setOpaque (true); }
         juce::String getTooltip() override { return owner.tipAt (getMouseXYRelative()); }
-        void mouseMove (const juce::MouseEvent& e) override { setMouseCursor (owner.hitAt (e.getPosition()) != nullptr ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor); }
-        void mouseUp (const juce::MouseEvent& e) override { if (! e.mouseWasDraggedSinceMouseDown()) owner.pageClicked (e); }      // (a drag moves the page about)
+        void mouseMove (const juce::MouseEvent& e) override
+        {
+            const auto hit = owner.hitAt (e.getPosition());
+            setMouseCursor (hit.item != nullptr ? juce::MouseCursor::PointingHandCursor : (hit.mark != nullptr ? juce::MouseCursor::DraggingHandCursor : juce::MouseCursor::NormalCursor));
+        }
+        void mouseDrag (const juce::MouseEvent& e) override { owner.pageDragged (e); }
+        void mouseUp (const juce::MouseEvent& e) override { owner.pageReleased (e); }
         void paint (juce::Graphics& g) override
         {
             g.fillAll (theme::manuscript() ? juce::Colour (0xff0b1220) : juce::Colour (0xff2b333d));
@@ -202,7 +236,7 @@ private:
                     g.drawText ("Page " + juce::String (i + 1), r, juce::Justification::centred, false);
                 }
                 if (owner.barsButton.getToggleState()) owner.drawBars (g, i, r);
-                if (owner.takesButton.getToggleState()) owner.drawTakes (g, i, r); else owner.hits.erase (i);
+                if (owner.takesButton.getToggleState()) owner.drawTakes (g, i, r);
             }
         }
         void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override
@@ -210,7 +244,7 @@ private:
             if (e.mods.isCtrlDown() || e.mods.isCommandDown()) { owner.zoomBy (w.deltaY > 0 ? 1.1 : 1.0 / 1.1); return; }
             juce::Component::mouseWheelMove (e, w);                                         // (the viewport scrolls)
         }
-        void mouseDown (const juce::MouseEvent&) override { owner.grabKeyboardFocus(); }
+        void mouseDown (const juce::MouseEvent& e) override { owner.grabKeyboardFocus(); owner.pagePressed (e); }
         ScoreComponent& owner;
     };
 
@@ -279,7 +313,7 @@ private:
         zoom = e != nullptr ? e->scoreZoom : 0.0; top = e != nullptr ? e->scoreTop : 0.0; restoreTop = true;
         layoutPages();
         const auto file = e != nullptr ? app.project.scoreFileFor (*e) : juce::File();
-        bars = {}; barList.clear(); spans.clear(); marks.clear(); hits.clear(); heard.clear(); marksKey.clear(); barsDirty = false;
+        bars = {}; barList.clear(); spans.clear(); marks.clear(); laid.clear(); heard.clear(); marksKey.clear(); barsDirty = false; dragging = {};
         barsFile = file != juce::File() ? file.getSiblingFile (file.getFileName() + ".bars.json") : juce::File();
         pdfBytes = file.existsAsFile() ? file.getSize() : 0;
         { const juce::ScopedLock sl (lock); barPages.clear(); }
@@ -338,6 +372,8 @@ private:
         m.addItem (2, "Open it in the computer's own PDF program", has);
         m.addItem (3, "Show the project's PDFs folder");
         m.addSeparator();
+        m.addItem (5, exporting ? "Saving the marked score..." : "Save the marked score as a new PDF...   (the pages with the takes' brackets on them; this PDF is not touched)", has && ! sizes.empty() && ! exporting);
+        m.addSeparator();
         m.addItem (4, "Take the score off this edit  (the file stays in the PDFs folder)", has);
         juce::Component::SafePointer<ScoreComponent> safe (this);
         m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&fileButton), [safe] (int r)
@@ -346,6 +382,7 @@ private:
             if (r == 1) safe->chooseAnother();
             else if (r == 2) safe->openOutside();
             else if (r == 3) { auto dir = safe->app.project.pdfsFolder(); dir.createDirectory(); dir.revealToUser(); }
+            else if (r == 5) safe->saveMarkedPdf();
             else if (r == 4) { if (auto* ed = safe->edit()) { ed->score.clear(); ed->scoreTop = 0.0; ed->scoreZoom = 0.0; safe->app.project.markDirty(); safe->loadFromEdit(); } }
         });
     }
@@ -410,10 +447,12 @@ private:
         while (! threadShouldExit())
         {
             juce::File toOpen; bool doOpen = false; Want job; bool haveJob = false; int gen = 0, barPage = -1;
+            std::shared_ptr<ExportJob> exportNow;
             {
                 const juce::ScopedLock sl (lock);
                 gen = generation;
                 if (openWanted) { openWanted = false; doOpen = true; toOpen = openFile; }
+                else if (exportWanted != nullptr && docGeneration == generation) { exportNow = std::move (exportWanted); exportWanted = nullptr; }
                 else if (! wanted.empty() && docGeneration == generation && busyPage < 0) { job = wanted.front(); wanted.erase (wanted.begin()); haveJob = true; busyPage = job.page; busyW = job.w; }
                 else if (wanted.empty() && ! barPages.empty() && docGeneration == generation && ! app.engine.isRecording()) { barPage = barPages.front(); barPages.erase (barPages.begin()); }    // (the pages to look at come first; and never while a take records - it waits)
             }
@@ -446,20 +485,27 @@ private:
                 juce::MessageManager::callAsync ([safe, gen, page, w, img] { if (safe != nullptr) safe->drawn (gen, page, w, img); });
                 continue;
             }
+            if (exportNow != nullptr)
+            {
+                runExport (doc, *exportNow, gen);
+                continue;
+            }
             if (barPage >= 0)
             {
-                // 3.54.0: this page's bars, from a picture of it drawn for the purpose (always the same size, whatever the zoom)
-                std::vector<scorebars::System> systems;
+                // 3.54.0: this page's bars, from a picture of it drawn for the purpose (always the same size, whatever the zoom); 3.55.0:
+                // and the numbers printed on it, and the paper above each system
+                scorebars::PageFound found;
                 double uw = 0.0, uh = 0.0;
                 if (doc != nullptr && pdfpages::pageSize (doc, barPage, uw, uh))
                 {
                     int w = 0, h = 0; scorebars::analysisSize (uw, uh, w, h);
                     std::vector<unsigned char> png, grey; std::string err; int gw = 0, gh = 0;
                     if (pdfpages::render (doc, barPage, w, h, png, err) && ! png.empty() && greyOf (juce::ImageFileFormat::loadFrom (png.data(), png.size()), grey, gw, gh))
-                        systems = scorebars::findSystems (grey.data(), gw, gh, gw);
+                        found = scorebars::analysePage (grey.data(), gw, gh, gw);
                 }
                 const int page = barPage;
-                juce::MessageManager::callAsync ([safe, gen, page, systems] { if (safe != nullptr) safe->barsFound (gen, page, systems); });
+                auto shared = std::make_shared<scorebars::PageFound> (std::move (found));
+                juce::MessageManager::callAsync ([safe, gen, page, shared] { if (safe != nullptr) safe->barsFound (gen, page, *shared); });
                 wait (20);                                                 // (a breath between pages: this is never urgent)
                 continue;
             }
@@ -516,6 +562,12 @@ private:
         }
         return true;
     }
+    static juce::String barsTip()
+    {
+        return "Shows the bars fermata found on the pages and their numbers - to check them. A green number was read from the print and agrees; a blue one is counted on from there; "
+               "an orange one with a ! is where the print and the count disagreed (look at the bars just before it for a barline too many or too few). "
+               "Right-click a bar to give it its number (the bars after it count on), to take a barline off or to add one.";
+    }
     void rememberKeys()
     {
         if (auto* st = app.props.getUserSettings()) { st->setValue ("scoreShowBars", barsButton.getToggleState()); st->setValue ("scoreShowTakes", takesButton.getToggleState()); app.props.saveIfNeeded(); }
@@ -548,7 +600,9 @@ private:
         if (! barsFile.replaceWithText (juce::JSON::toString (scorebars::toVar (bars, pdfBytes), true)))
             juce::Logger::writeToLog ("Score: the bars could not be kept in " + barsFile.getFullPathName() + " (they are found again the next time)");
     }
-    void recount() { barList = bars.bars(); marksKey = "?"; hits.clear(); pages.repaint(); }
+    void recount() { barList = bars.bars(); marksKey = "?"; laid.clear(); pages.repaint(); }
+    void looksChanged() { barsDirty = true; laid.clear(); pages.repaint(); }
+    void setMarkScale (double v) { bars.markScale = juce::jlimit (0.4, 3.0, v); looksChanged(); saveBars(); }
     void barsChanged() { barsDirty = true; recount(); givePieceBars(); saveBars(); refreshMarks(); }
     /** "Fermata could also find the number of bars in the PDF and automatically tell the take window how many bars there are in the piece
         (the user should be able to overwrite it)" (11 November 2026): the score's count goes to the take windows tied to this edit - to
@@ -575,13 +629,13 @@ private:
             if (to == count && given != count) { bars.piecesGiven[id] = count; barsDirty = true; }
         }
         if (any) app.project.changed();
-        barsButton.setTooltip ("Shows the bars fermata found on the pages, with the numbers it counted - to check them. Right-click a bar to put its number right (the bars after it count on from there), to take a barline off or to add one. This score: "
-                               + juce::String (count) + " bars, which a take window that had no number of its own is given as the bars in the piece (type another there if it is wrong: yours stays).");
+        barsButton.setTooltip (barsTip() + " This score: " + juce::String (count) + " bars, which a take window that had no number of its own is given as the bars in the piece (type another there if it is wrong: yours stays).");
     }
-    void barsFound (int gen, int page, const std::vector<scorebars::System>& systems)
+    void barsFound (int gen, int page, const scorebars::PageFound& found)
     {
         if (gen != generation || page < 0 || page >= (int) bars.pages.size()) return;
-        bars.pages[(size_t) page].systems = systems; bars.pages[(size_t) page].done = true;
+        bars.pages[(size_t) page].systems = found.systems; bars.pages[(size_t) page].reads = found.reads; bars.pages[(size_t) page].done = true;
+        if (found.levelled) juce::Logger::writeToLog ("Score: page " + juce::String (page + 1) + " of \"" + shown + "\" is a scanned or photographed page (turned " + juce::String (found.tilt, 2) + " degrees; its staves laid level before the bars were looked for)");
         barsDirty = true;
         recount();
         if (bars.complete())
@@ -589,7 +643,9 @@ private:
             givePieceBars();
             saveBars();
             int systemsN = 0; for (auto& p : bars.pages) systemsN += (int) p.systems.size();
-            juce::Logger::writeToLog ("Score: the bars of \"" + shown + "\" found - " + juce::String ((int) bars.pages.size()) + " pages, " + juce::String (systemsN) + " systems, " + juce::String ((int) barList.size()) + " bars");
+            int seen = 0, jumps = 0; for (auto& b : barList) { seen += b.read ? 1 : 0; jumps += b.jump ? 1 : 0; }
+            juce::Logger::writeToLog ("Score: the bars of \"" + shown + "\" found - " + juce::String ((int) bars.pages.size()) + " pages, " + juce::String (systemsN) + " systems, " + juce::String ((int) barList.size()) + " bars; "
+                                      + juce::String (seen) + " printed bar numbers read" + (jumps > 0 ? ", " + juce::String (jumps) + " places where the print and the count disagree" : juce::String()));
         }
     }
     /** The page under a point of 'pages' (-1: none), and where on it (0..1 across and down). */
@@ -631,9 +687,11 @@ private:
                                               (float) ((b.x1 - b.x0) * r.getWidth()), (float) ((s->bottom - s->top) * r.getHeight()) + 2.0f * sp);
             g.setColour (ink.withAlpha ((b.number & 1) != 0 ? 0.11f : 0.04f)); g.fillRect (box);       // (every other bar a shade darker, so that two are never taken for one)
             g.setColour (ink.withAlpha (0.75f)); g.drawRect (box, 1.0f);
-            const auto text = juce::String (b.number);
+            // the number's tab: blue = counted; green = the number printed there was read and agrees; orange with a ! = the print and the
+            // count parted company on the way here (look at the bars before it)
+            const auto text = juce::String (b.number) + (b.jump ? " !" : "");
             const juce::Rectangle<float> tab (box.getX(), box.getY() - fh - 2.0f, juce::GlyphArrangement::getStringWidth (font, text) + 8.0f, fh + 2.0f);
-            g.setColour (ink); g.fillRect (tab);
+            g.setColour (b.jump ? juce::Colour (0xffd9730d) : (b.read ? juce::Colour (0xff1d8a4a) : ink)); g.fillRect (tab);
             g.setColour (juce::Colours::white); g.drawText (text, tab, juce::Justification::centred, false);
         }
         if (bars.pages[(size_t) page].systems.empty())
@@ -693,7 +751,7 @@ private:
         if (key == marksKey) return;
         marksKey = key; spans = std::move (list);
         marks = scorebars::brackets (barList, spans, scorebars::startOrdinal (bars, barList, editId.toString()));
-        hits.clear(); pages.repaint();
+        laid.clear(); pages.repaint();
     }
     /** A bar that was not typed, from the take's sound: a few layings-over of two takes each time this is called (each is a few hundredths
         of a second for long takes; no more than a fortieth of a second is spent at a time), kept. Only for take windows with take matching
@@ -745,114 +803,206 @@ private:
             }
         }
     }
-    /** The brackets of one page, and where each take's number is (for the mouse). */
+    /** A text's width at a letter height of 1 (bold, as the numbers are drawn). */
+    static double widthOf (const juce::String& text)
+    {
+        static const juce::Font font (juce::FontOptions (100.0f, juce::Font::bold));
+        return (double) juce::GlyphArrangement::getStringWidth (font, text) / 100.0;
+    }
+    /** The brackets of one page, laid out (kept until the brackets, the bars or a look change). The brackets the user has moved take
+        their places first; the others are then each put on clear paper above their system, clear of those and of each other. */
+    const std::vector<MarkDrawn>& layoutOf (int page)
+    {
+        if (const auto it = laid.find (page); it != laid.end()) return it->second;
+        auto& out = laid[page];
+        if (page < 0 || page >= (int) sizes.size() || page >= (int) bars.pages.size()) return out;
+        const double aspect = sizes[(size_t) page].x / juce::jmax (1.0, sizes[(size_t) page].y);       // the page's width over its height
+        std::vector<scorebars::PageRect> taken;
+        for (int pass = 0; pass < 2; ++pass)
+            for (int mi = 0; mi < (int) marks.size(); ++mi)
+            {
+                const auto& m = marks[(size_t) mi];
+                if (m.page != page || m.ordinal < 0 || m.ordinal >= (int) barList.size()) continue;
+                const auto* sys = bars.systemAt (page, m.system); if (sys == nullptr) continue;
+                const int index = barList[(size_t) m.ordinal].index;
+                const auto* look = bars.lookOf (page, m.system, index, m.start);
+                const bool moved = look != nullptr && look->moved;
+                if (moved != (pass == 0)) continue;
+                // sized by the staff - but never smaller than on a staff of the usual size (a full score's staves are small) - times the
+                // size chosen for all the marks, times this one's own
+                const double uY = juce::jmax (sys->space, 0.0062) * bars.markScale * (look != nullptr ? look->scale : 1.0), uX = uY / aspect;
+                const double fh = 3.0 * uY, rowH = 3.2 * uY, thickX = 0.3 * uX, thickY = 0.3 * uY, arm = 3.8 * uX;
+                bool both = false;                                                         // an end and a start at the same barline stand side by side
+                for (auto& o : marks) if (o.page == m.page && o.system == m.system && o.start != m.start && std::abs (o.x - m.x) < 1.5 * uX) both = true;
+                const double baseX = m.x + (both ? (m.start ? 0.5 : -0.5) * uX : 0.0);
+                const double x = baseX + (moved ? look->dx : 0.0);
+                // the numbers, in the takes' order, in as many rows as they need
+                struct Item { juce::String text; double w = 0.0; int span = 0; };
+                std::vector<std::vector<Item>> rows (1);
+                const double room = juce::jlimit (10.0 * uX, 42.0 * uX, (m.start ? 1.0 - x : x) - 2.0 * uX);
+                double used = 0.0, widest = 0.0;
+                for (size_t i = 0; i < m.takes.size(); ++i)
+                {
+                    const auto& t = spans[(size_t) m.takes[i]];
+                    Item it; it.span = m.takes[i];
+                    it.text = juce::String (t.number) + ((m.start ? t.inGuessed : t.outGuessed) ? "?" : "") + (i + 1 < m.takes.size() ? "," : "");
+                    it.w = widthOf (it.text) * fh / aspect + 0.5 * uX;
+                    if (used + it.w > room && ! rows.back().empty()) { rows.emplace_back(); used = 0.0; }
+                    rows.back().push_back (it); used += it.w; widest = juce::jmax (widest, used);
+                }
+                const double blockW = juce::jmax (arm, widest + 1.0 * uX), blockH = (double) rows.size() * rowH + 1.1 * uY;
+                const double left = m.start ? x - thickX * 0.5 : x + thickX * 0.5 - blockW;
+                const double top = moved ? sys->top + look->dy : scorebars::placeAbove (*sys, left, blockW, blockH, taken);
+                taken.push_back ({ left, top, blockW, blockH });
+                MarkDrawn d;
+                d.mark = mi; d.page = page; d.system = m.system; d.index = index; d.start = m.start; d.fontH = fh; d.baseX = baseX; d.sysTop = sys->top;
+                d.bounds = { left, top, blockW, blockH };
+                d.upright = { x - thickX * 0.5, top, thickX, blockH };
+                d.arm = { m.start ? x - thickX * 0.5 : x + thickX * 0.5 - arm, top, arm, thickY };
+                for (size_t k = 0; k < rows.size(); ++k)
+                {
+                    double w = 0.0; for (auto& it : rows[k]) w += it.w;
+                    double ix = m.start ? x + 0.8 * uX : x - 0.8 * uX - w;
+                    const double iy = top + 0.9 * uY + (double) k * rowH;
+                    d.backs.push_back ({ ix - 0.2 * uX, iy, w + 0.2 * uX, rowH - 0.1 * uY });
+                    for (auto& it : rows[k]) { d.items.push_back ({ { ix, iy, it.w, rowH - 0.1 * uY }, it.text, it.span, spans[(size_t) it.span].dud }); ix += it.w; }
+                }
+                out.push_back (std::move (d));
+            }
+        return out;
+    }
+    static juce::Rectangle<float> onPage (const juce::Rectangle<double>& part, juce::Rectangle<float> page)
+    {
+        return { page.getX() + (float) part.getX() * page.getWidth(), page.getY() + (float) part.getY() * page.getHeight(), (float) part.getWidth() * page.getWidth(), (float) part.getHeight() * page.getHeight() };
+    }
+    static juce::Colour penColour() { return juce::Colour (0xffd3202f); }                    // a red pen on the print
+    static juce::Colour dudColour() { return juce::Colour (0xff7f8894); }                    // a Dud take's number
     void drawTakes (juce::Graphics& g, int page, juce::Rectangle<int> r)
     {
-        auto& pageHits = hits[page];
-        pageHits.clear();
-        const auto pen = juce::Colour (0xffd3202f), dudInk = juce::Colour (0xff7f8894);       // a red pen on the print; a Dud take's number in grey
-        std::vector<std::pair<int, juce::Rectangle<float>>> placed;                          // the numbers written so far on this page, by system: the next ones are kept clear of them
-        for (auto& m : marks)
+        const auto pageRect = r.toFloat();
+        for (auto& d : layoutOf (page))
         {
-            if (m.page != page) continue;
-            const auto* s = bars.systemAt (page, m.system); if (s == nullptr) continue;
-            // the marks are sized by the staff - but never smaller than they would be on a staff of the usual size (a full score's staves are small)
-            const float pageH = (float) r.getHeight(), sp = juce::jmax (3.0f, (float) (s->space * pageH), 0.0062f * pageH);
-            const float sysTop = (float) r.getY() + (float) (s->top * pageH);
-            const float above = m.system > 0 ? (float) r.getY() + (float) (bars.pages[(size_t) page].systems[(size_t) m.system - 1].bottom * pageH) : (float) r.getY();
-            const float gap = juce::jmax (4.0f * sp, sysTop - above);
-            bool both = false;                                                             // an end and a start at the same barline stand side by side
-            for (auto& o : marks) if (o.page == m.page && o.system == m.system && o.start != m.start && std::abs (o.x - m.x) * r.getWidth() < 1.5 * sp) both = true;
-            const float x = (float) r.getX() + (float) (m.x * r.getWidth()) + (both ? (m.start ? 0.5f : -0.5f) * sp : 0.0f);
-            const float fh = 3.0f * sp, rowH = 3.2f * sp, thick = juce::jmax (1.5f, 0.3f * sp);
-            const juce::Font font (juce::FontOptions (fh, juce::Font::bold));
-
-            // the numbers, in the takes' order, in as many rows as they need
-            struct Item { juce::String text; float w = 0.0f; int span = 0; };
-            std::vector<std::vector<Item>> rows (1);
-            const float room = juce::jlimit (10.0f * sp, 42.0f * sp, (m.start ? (float) r.getRight() - x : x - (float) r.getX()) - 2.0f * sp);
-            float used = 0.0f;
-            for (size_t i = 0; i < m.takes.size(); ++i)
+            auto up = onPage (d.upright, pageRect), arm = onPage (d.arm, pageRect);
+            if (up.getWidth() < 1.5f) up = up.withSizeKeepingCentre (1.5f, up.getHeight());
+            if (arm.getHeight() < 1.5f) arm.setHeight (1.5f);
+            g.setColour (penColour()); g.fillRect (up); g.fillRect (arm);
+            const float fh = (float) d.fontH * pageRect.getHeight();
+            for (auto& b : d.backs)
             {
-                const auto& t = spans[(size_t) m.takes[i]];
-                Item it; it.span = m.takes[i];
-                it.text = juce::String (t.number) + ((m.start ? t.inGuessed : t.outGuessed) ? "?" : "") + (i + 1 < m.takes.size() ? "," : "");
-                it.w = juce::GlyphArrangement::getStringWidth (font, it.text) + 0.5f * sp;
-                if (used + it.w > room && ! rows.back().empty()) { rows.emplace_back(); used = 0.0f; }
-                rows.back().push_back (it); used += it.w;
-            }
-            const float bottom = sysTop - juce::jmin (1.6f * sp, gap * 0.25f);                // just above the system it belongs to
-            float widest = 0.0f;
-            for (auto& row : rows) { float w = 0.0f; for (auto& it : row) w += it.w; widest = juce::jmax (widest, w); }
-            // where another bracket's numbers are already (many short takes of the same few bars), this one's go above them, on a longer upright
-            float top = bottom - ((float) rows.size() * rowH + 1.1f * sp);
-            auto blockAt = [&] (float t) { return juce::Rectangle<float> (m.start ? x + 0.4f * sp : x - 0.8f * sp - widest, t, widest + 0.4f * sp, (float) rows.size() * rowH + 0.9f * sp); };
-            for (int tries = 0; tries < 8; ++tries)
-            {
-                bool moved = false;
-                for (auto& pl : placed)
-                    if (pl.first == m.system && pl.second.expanded (0.3f * sp).intersects (blockAt (top))) { top = pl.second.getY() - 0.4f * sp - blockAt (top).getHeight(); moved = true; }
-                if (! moved) break;
-            }
-            placed.push_back ({ m.system, blockAt (top) });
-            g.setColour (pen);
-            g.fillRect (juce::Rectangle<float> (x - thick * 0.5f, top, thick, bottom - top));
-            const float arm = 3.8f * sp;
-            g.fillRect (juce::Rectangle<float> (m.start ? x - thick * 0.5f : x + thick * 0.5f - arm, top, arm, thick));
-            g.setFont (font);
-            for (size_t k = 0; k < rows.size(); ++k)
-            {
-                float w = 0.0f; for (auto& it : rows[k]) w += it.w;
-                float ix = m.start ? x + 0.8f * sp : x - 0.8f * sp - w;
-                const float iy = top + 0.9f * sp + (float) k * rowH;
+                const auto back = onPage (b, pageRect);
                 g.setColour (juce::Colours::white.withAlpha (0.78f));                         // (whatever is printed there stays readable under the number, but faint)
-                g.fillRoundedRectangle (juce::Rectangle<float> (ix - 0.2f * sp, iy, w + 0.2f * sp, rowH - 0.1f * sp), 0.4f * sp);
-                for (auto& it : rows[k])
-                {
-                    const juce::Rectangle<float> box (ix, iy, it.w, rowH - 0.1f * sp);
-                    g.setColour (spans[(size_t) it.span].dud ? dudInk : pen);
-                    g.drawText (it.text, box, juce::Justification::centredLeft, false);
-                    pageHits.push_back ({ box.getSmallestIntegerContainer(), it.span, m.start });
-                    ix += it.w;
-                }
+                g.fillRoundedRectangle (back, back.getHeight() * 0.12f);
             }
+            g.setFont (juce::Font (juce::FontOptions (fh, juce::Font::bold)));
+            for (auto& it : d.items)
+            {
+                g.setColour (it.dud ? dudColour() : penColour());
+                g.drawText (it.text, onPage (it.box, pageRect).expanded (2.0f, 0.0f).translated (2.0f, 0.0f), juce::Justification::centredLeft, false);
+            }
+            if (dragging.active && dragging.page == d.page && dragging.system == d.system && dragging.index == d.index && dragging.start == d.start)
+            { g.setColour (penColour().withAlpha (0.5f)); g.drawRect (onPage (d.bounds, pageRect).expanded (3.0f), 1.0f); }
         }
     }
-    const Hit* hitAt (juce::Point<int> p) const
+    /** The bracket (and the take's number, if any) under a point of 'pages'. */
+    MarkHit hitAt (juce::Point<int> p)
     {
-        for (auto& kv : hits) for (auto& h : kv.second) if (h.r.contains (p)) return &h;
-        return nullptr;
+        if (! takesButton.getToggleState()) return {};
+        double fx = 0.0, fy = 0.0;
+        const int page = pageAt (p, fx, fy);
+        if (page < 0) return {};
+        const auto& list = layoutOf (page);
+        for (auto& d : list) for (auto& it : d.items) if (it.box.contains (fx, fy)) return { &d, &it };
+        for (auto& d : list) if (d.bounds.expanded (d.fontH * 0.1, d.fontH * 0.1).contains (fx, fy)) return { &d, nullptr };
+        return {};
     }
     TakeGroup* takeOf (const scorebars::TakeSpan& s) const { return app.project.findTake (s.window, s.take); }
-    juce::String tipAt (juce::Point<int> p) const
+    juce::String tipAt (juce::Point<int> p)
     {
-        if (const auto* h = hitAt (p); h != nullptr && h->span < (int) spans.size())
+        const auto hit = hitAt (p);
+        if (hit.item != nullptr && hit.item->span < (int) spans.size())
         {
-            const auto& s = spans[(size_t) h->span];
+            const auto& s = spans[(size_t) hit.item->span];
             juce::String t = "Take " + juce::String (s.number) + (s.dud ? " (Dud)" : "");
             if (s.barIn > 0) t << ": bar " << s.barIn << (s.inGuessed ? " (from its sound)" : "");
             if (s.barOut > 0) t << (s.barIn > 0 ? " to bar " : ": to bar ") << s.barOut << (s.outGuessed ? " (from its sound)" : "");
-            t << (h->start ? ". Click to hear it from its start" : ". Click to hear how it ended") << "; right-click to set its bars.";
+            t << (hit.mark->start ? ". Click to hear it from its start" : ". Click to hear how it ended") << "; right-click to set its bars. Drag to move the bracket.";
             return t;
         }
+        if (hit.mark != nullptr) return "Drag to move this bracket; right-click to make it bigger or smaller, or to put it back where fermata had it.";
         return {};
     }
-    void pageClicked (const juce::MouseEvent& e)
+    // ---- the mouse on the pages: a click on a number plays its take, a drag moves a bracket, anything else moves the page about ----
+    struct Dragging { bool active = false, moved = false; int page = 0, system = 0, index = 0; bool start = true; double x0 = 0.0, top0 = 0.0, baseX = 0.0, sysTop = 0.0; juce::Point<int> from; };
+    void pagePressed (const juce::MouseEvent& e)
     {
-        if (const auto* h = hitAt (e.getPosition()))
+        dragging = {};
+        const auto hit = hitAt (e.getPosition());
+        pages.setViewportIgnoreDragFlag (hit.mark != nullptr);                              // (on a bracket the drag is the bracket's, not the page's)
+        if (hit.mark == nullptr || e.mods.isPopupMenu()) return;
+        const auto& d = *hit.mark;
+        dragging.active = true; dragging.page = d.page; dragging.system = d.system; dragging.index = d.index; dragging.start = d.start;
+        dragging.x0 = d.upright.getCentreX(); dragging.top0 = d.bounds.getY(); dragging.baseX = d.baseX; dragging.sysTop = d.sysTop; dragging.from = e.getPosition();
+    }
+    void pageDragged (const juce::MouseEvent& e)
+    {
+        if (! dragging.active || dragging.page >= (int) rects.size()) return;
+        const auto moved = e.getPosition() - dragging.from;
+        if (! dragging.moved && moved.getDistanceFromOrigin() < 4) return;
+        dragging.moved = true;
+        const auto r = rects[(size_t) dragging.page];
+        auto& look = bars.lookToSet (dragging.page, dragging.system, dragging.index, dragging.start);
+        look.moved = true;
+        look.dx = dragging.x0 + (double) moved.x / juce::jmax (1, r.getWidth()) - dragging.baseX;
+        look.dy = dragging.top0 + (double) moved.y / juce::jmax (1, r.getHeight()) - dragging.sysTop;
+        looksChanged();
+    }
+    void pageReleased (const juce::MouseEvent& e)
+    {
+        pages.setViewportIgnoreDragFlag (false);
+        const bool wasMove = dragging.active && dragging.moved;
+        dragging = {};
+        if (wasMove) { saveBars(); pages.repaint(); return; }
+        if (e.mouseWasDraggedSinceMouseDown()) return;                                      // (the page was moved about)
+        const auto hit = hitAt (e.getPosition());
+        if (hit.item != nullptr)
         {
-            const auto hit = *h;
-            if (e.mods.isPopupMenu()) takeMenu (hit); else playTake (hit);
+            const int span = hit.item->span; const auto mark = *hit.mark;
+            if (e.mods.isPopupMenu()) takeMenu (span, mark); else playTake (span, mark.start);
             return;
         }
+        if (hit.mark != nullptr) { if (e.mods.isPopupMenu()) { const auto mark = *hit.mark; markMenu (mark); } return; }
         if (e.mods.isPopupMenu()) barMenu (e.getPosition());
     }
-    void playTake (const Hit& h)
+    /** What a right-click on a bracket offers for the bracket itself (ids from 50). */
+    void addMarkItems (juce::PopupMenu& m, const MarkDrawn& d)
     {
-        if (h.span >= (int) spans.size()) return;
-        const auto s = spans[(size_t) h.span];
+        const auto* look = bars.lookOf (d.page, d.system, d.index, d.start);
+        m.addItem (50, "This bracket bigger");
+        m.addItem (51, "This bracket smaller");
+        m.addItem (52, "Put this bracket back where fermata had it, at the usual size", look != nullptr);
+    }
+    bool doMarkItem (int r, const MarkDrawn& d)
+    {
+        if (r < 50 || r > 52) return false;
+        if (r == 52) bars.forgetLook (d.page, d.system, d.index, d.start);
+        else { auto& look = bars.lookToSet (d.page, d.system, d.index, d.start); look.scale = juce::jlimit (0.3, 4.0, look.scale * (r == 50 ? 1.15 : 1.0 / 1.15)); }
+        looksChanged(); saveBars();
+        return true;
+    }
+    void markMenu (const MarkDrawn& d)
+    {
+        juce::PopupMenu m;
+        m.addSectionHeader (juce::String (d.start ? "Takes that started at bar " : "Takes that stopped after bar ") + juce::String (d.mark < (int) marks.size() ? marks[(size_t) d.mark].bar : 0) + "   (drag it to move it)");
+        addMarkItems (m, d);
+        juce::Component::SafePointer<ScoreComponent> safe (this);
+        m.showMenuAsync (juce::PopupMenu::Options().withMousePosition(), [safe, d] (int r) { if (safe != nullptr && r != 0) safe->doMarkItem (r, d); });
+    }
+    void playTake (int span, bool start)
+    {
+        if (span < 0 || span >= (int) spans.size()) return;
+        const auto s = spans[(size_t) span];
         auto* g = takeOf (s); if (g == nullptr) return;
-        const double from = h.start ? 0.0 : juce::jmax (0.0, g->lengthSeconds() - 8.0);
+        const double from = start ? 0.0 : juce::jmax (0.0, g->lengthSeconds() - 8.0);
         const auto err = app.playTake (s.window, s.take, from);
         if (err.isNotEmpty()) juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::InfoIcon).withTitle ("Take " + juce::String (s.number)).withMessage (err).withButton ("OK").withAssociatedComponent (getTopLevelComponent()), nullptr);
     }
@@ -922,21 +1072,23 @@ private:
             }
         });
     }
-    void takeMenu (const Hit& h)
+    void takeMenu (int span, const MarkDrawn& mark)
     {
-        if (h.span >= (int) spans.size()) return;
-        const auto s = spans[(size_t) h.span];
-        const bool guessed = s.inGuessed || s.outGuessed;
+        if (span < 0 || span >= (int) spans.size()) return;
+        const auto s = spans[(size_t) span];
+        const bool guessed = s.inGuessed || s.outGuessed, start = mark.start;
         juce::PopupMenu m;
         m.addSectionHeader ("Take " + juce::String (s.number) + (s.barIn > 0 ? "  -  " + barsLabel (s.barIn, s.barOut) : juce::String()) + (guessed ? "  (? = from its sound)" : ""));
-        m.addItem (1, h.start ? "Play it from its start" : "Play its last seconds");
+        m.addItem (1, start ? "Play it from its start" : "Play its last seconds");
         m.addItem (2, "Set its bars...");
         if (guessed) m.addItem (3, "Keep these bars for the take  (" + barsLabel (s.barIn, s.barOut) + ")", s.barIn > 0);
+        m.addSeparator();
+        addMarkItems (m, mark);
         juce::Component::SafePointer<ScoreComponent> safe (this);
-        m.showMenuAsync (juce::PopupMenu::Options().withMousePosition(), [safe, h, s] (int r)
+        m.showMenuAsync (juce::PopupMenu::Options().withMousePosition(), [safe, span, start, mark, s] (int r)
         {
-            if (safe == nullptr || r == 0) return;
-            if (r == 1) safe->playTake (h);
+            if (safe == nullptr || r == 0 || safe->doMarkItem (r, mark)) return;
+            if (r == 1) safe->playTake (span, start);
             else if (r == 3) safe->setTakeBars (s.window, s.take, s.barIn, s.barOut);
             else if (r == 2)
             {
@@ -981,6 +1133,7 @@ private:
             m.addSeparator();
             juce::Component::SafePointer<ScoreComponent> safe (this);
             const int number = bar->number;
+            m.addItem (7, "Use the bar numbers printed in the score   (where fermata could read them: the green tabs)", true, bars.useReads);
             m.addItem (5, "Count the bars from 1 again   (take off the numbers given by hand)", ! bars.numbers.empty());
             m.addItem (6, "Find the bars of the whole score again   (what was put right by hand is lost)");
             m.showMenuAsync (juce::PopupMenu::Options().withMousePosition(), [safe, page, system, index, line, fx, number, startsHere] (int r)
@@ -1004,6 +1157,7 @@ private:
                 else if (r == 3) { if (b.splitAt (page, system, fx)) safe->barsChanged(); }
                 else if (r == 4) { if (startsHere) b.editStarts.erase (safe->editId.toString()); else b.editStarts[safe->editId.toString()] = b.anchorOf (page, system, index); safe->barsChanged(); }
                 else if (r == 5) { b.numbers.clear(); safe->barsChanged(); }
+                else if (r == 7) { b.useReads = ! b.useReads; safe->barsChanged(); }
                 else if (r == 6) safe->findBarsAgain();
             });
             return;
@@ -1019,6 +1173,152 @@ private:
         barsDirty = true;
         recount();
         queueBarPages();
+    }
+
+    // ------------------------------------------------------------------------------------------------ 3.55.0: the marked score as a new PDF
+    /** "I DO want to be able to print the score to a new PDF" (11 November 2026). Each page of the score drawn as a picture at 300 dots
+        to the inch, with the takes' brackets and numbers on top as sharp shapes (the very outlines the window draws, at the places the
+        window shows them), written by pdfwrite. The score's own PDF is not touched. The pictures are made by the worker (the one
+        thread that may use the PDF reader); the shapes are made here first, on the message thread, because they need the fonts. */
+    void saveMarkedPdf()
+    {
+        auto* e = edit();
+        if (e == nullptr || sizes.empty() || exporting) return;
+        const auto source = app.project.scoreFileFor (*e);
+        const auto suggested = source.getSiblingFile (source.getFileNameWithoutExtension() + " - takes marked.pdf");
+        auto chooser = std::make_shared<juce::FileChooser> ("Save the marked score as a new PDF", suggested, "*.pdf");
+        juce::Component::SafePointer<ScoreComponent> safe (this);
+        chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::warnAboutOverwriting, [chooser, safe, source] (const juce::FileChooser& fc)
+        {
+            auto to = fc.getResult();
+            if (safe == nullptr || to == juce::File()) return;
+            to = to.withFileExtension ("pdf");
+            if (to == source)
+            {
+                juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon).withTitle ("Marked score")
+                                                  .withMessage ("That is the score itself. Choose another name: the marked score is a new PDF, and the score stays as it is.").withButton ("OK").withAssociatedComponent (safe->getTopLevelComponent()), nullptr);
+                return;
+            }
+            safe->startExport (to);
+        });
+    }
+    void startExport (const juce::File& to)
+    {
+        if (exporting || sizes.empty()) return;
+        refreshMarks();
+        auto job = std::make_shared<ExportJob>();
+        job->to = to;
+        for (int p = 0; p < (int) sizes.size(); ++p)
+        {
+            std::vector<ExportFill> fills;
+            const juce::Rectangle<float> pageRect (0.0f, 0.0f, (float) (sizes[(size_t) p].x * 0.75), (float) (sizes[(size_t) p].y * 0.75));      // in points (the pages' own unit is 1/96 inch)
+            if (takesButton.getToggleState())
+                for (auto& d : layoutOf (p))
+                {
+                    juce::Path lines;
+                    auto up = onPage (d.upright, pageRect), arm = onPage (d.arm, pageRect);
+                    if (up.getWidth() < 0.6f) up = up.withSizeKeepingCentre (0.6f, up.getHeight());
+                    if (arm.getHeight() < 0.6f) arm.setHeight (0.6f);
+                    lines.addRectangle (up); lines.addRectangle (arm);
+                    fills.push_back ({ lines, penColour(), 1.0f });
+                    for (auto& b : d.backs) { const auto back = onPage (b, pageRect); juce::Path patch; patch.addRoundedRectangle (back, back.getHeight() * 0.12f); fills.push_back ({ patch, juce::Colours::white, 0.78f }); }
+                    const juce::Font font (juce::FontOptions ((float) d.fontH * pageRect.getHeight(), juce::Font::bold));
+                    for (auto& it : d.items)
+                    {
+                        const auto box = onPage (it.box, pageRect);
+                        juce::GlyphArrangement glyphs;
+                        glyphs.addLineOfText (font, it.text, box.getX(), box.getCentreY() + (font.getAscent() - font.getDescent()) * 0.5f);
+                        juce::Path text; glyphs.createPath (text);
+                        fills.push_back ({ text, it.dud ? dudColour() : penColour(), 1.0f });
+                    }
+                }
+            job->pages.push_back (std::move (fills));
+        }
+        exporting = true; exportDone = 0;
+        fileButton.setButtonText ("PDF 0/" + juce::String ((int) sizes.size()));
+        { const juce::ScopedLock sl (lock); exportWanted = job; }
+        notify();
+    }
+    static void addFill (pdfwrite::Drawing& drawing, const ExportFill& fill)
+    {
+        if (fill.path.isEmpty()) return;
+        drawing.begin (fill.colour.getFloatRed(), fill.colour.getFloatGreen(), fill.colour.getFloatBlue(), fill.opacity);
+        juce::Path::Iterator it (fill.path);
+        juce::Point<float> at;
+        while (it.next())
+        {
+            if (it.elementType == juce::Path::Iterator::startNewSubPath) { drawing.moveTo (it.x1, it.y1); at = { it.x1, it.y1 }; }
+            else if (it.elementType == juce::Path::Iterator::lineTo) { drawing.lineTo (it.x1, it.y1); at = { it.x1, it.y1 }; }
+            else if (it.elementType == juce::Path::Iterator::quadraticTo)                    // (a PDF has no such curve: the same curve written as a cubic one)
+            {
+                const juce::Point<float> c (it.x1, it.y1), end (it.x2, it.y2);
+                const auto c1 = at + (c - at) * (2.0f / 3.0f), c2 = end + (c - end) * (2.0f / 3.0f);
+                drawing.curveTo (c1.x, c1.y, c2.x, c2.y, end.x, end.y); at = end;
+            }
+            else if (it.elementType == juce::Path::Iterator::cubicTo) { drawing.curveTo (it.x1, it.y1, it.x2, it.y2, it.x3, it.y3); at = { it.x3, it.y3 }; }
+            else if (it.elementType == juce::Path::Iterator::closePath) drawing.close();
+        }
+        drawing.fill (! fill.path.isUsingNonZeroWinding());
+    }
+    /** (Worker thread.) Writes the PDF beside its place first and moves it there when it is whole. */
+    void runExport (pdfpages::Doc* doc, const ExportJob& job, int gen)
+    {
+        juce::String error; bool ok = false;
+        juce::TemporaryFile temp (job.to);
+        juce::Component::SafePointer<ScoreComponent> safe (this);
+        {
+            juce::FileOutputStream stream (temp.getFile());
+            if (doc == nullptr) error = "The score is not open.";
+            else if (! stream.openedOk()) error = "A file cannot be written there (" + job.to.getParentDirectory().getFullPathName() + ").";
+            else
+            {
+                stream.setPosition (0); stream.truncate();
+                pdfwrite::Writer writer (stream);
+                const int n = pdfpages::pageCount (doc);
+                ok = n > 0;
+                for (int p = 0; p < n && ok; ++p)
+                {
+                    bool stale = threadShouldExit();
+                    { const juce::ScopedLock sl (lock); stale = stale || generation != gen; }
+                    if (stale) { ok = false; error = "stopped"; break; }
+                    double uw = 0.0, uh = 0.0;
+                    if (! pdfpages::pageSize (doc, p, uw, uh)) { uw = 595.0 * 96.0 / 72.0; uh = 842.0 * 96.0 / 72.0; }
+                    double f = 300.0 / 96.0;                                             // 300 dots to the inch - less for a page so big that its picture would be unwieldy
+                    if (juce::jmax (uw, uh) * f > 4200.0) f = 4200.0 / juce::jmax (uw, uh);
+                    std::vector<unsigned char> png, grey; std::string err; int gw = 0, gh = 0;
+                    if (! (pdfpages::render (doc, p, juce::roundToInt (uw * f), juce::roundToInt (uh * f), png, err) && ! png.empty() && greyOf (juce::ImageFileFormat::loadFrom (png.data(), png.size()), grey, gw, gh)))
+                    { ok = false; error = "Page " + juce::String (p + 1) + " could not be drawn" + (err.empty() ? juce::String (".") : ": " + juce::String::fromUTF8 (err.c_str())); break; }
+                    pdfwrite::Drawing drawing (uh * 0.75);
+                    if (p < (int) job.pages.size()) for (auto& fill : job.pages[(size_t) p]) addFill (drawing, fill);
+                    ok = writer.addPage (uw * 0.75, uh * 0.75, grey.data(), gw, gh, gw, &drawing);
+                    if (! ok) error = "The drive would not take the file (is it full?).";
+                    const int done = p + 1;
+                    juce::MessageManager::callAsync ([safe, gen, done] { if (safe != nullptr && gen == safe->generation && safe->exporting) { safe->exportDone = done; safe->fileButton.setButtonText ("PDF " + juce::String (done) + "/" + juce::String ((int) safe->sizes.size())); } });
+                }
+                if (ok) { ok = writer.finish (job.to.getFileNameWithoutExtension()); if (! ok) error = "The drive would not take the file (is it full?)."; }
+                stream.flush();
+            }
+        }
+        if (ok && ! temp.overwriteTargetFileWithTemporary()) { ok = false; error = "The file could not be put in its place (is a PDF of that name open in another program?)."; }
+        const auto to = job.to;
+        juce::MessageManager::callAsync ([safe, ok, to, error] { if (safe != nullptr) safe->exportFinished (ok, to, error); });
+    }
+    void exportFinished (bool ok, const juce::File& to, const juce::String& error)
+    {
+        exporting = false;
+        fileButton.setButtonText ("PDF...");
+        if (error == "stopped") return;
+        juce::Logger::writeToLog (ok ? "Score: the marked score saved as " + to.getFullPathName() + " (" + juce::String ((int) sizes.size()) + " pages, " + juce::File::descriptionOfSizeInBytes (to.getSize()) + ")"
+                                     : "Score: the marked score could not be saved to " + to.getFullPathName() + ": " + error);
+        if (! ok)
+        {
+            juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon).withTitle ("Marked score").withMessage ("The marked score could not be saved.\n" + error).withButton ("OK").withAssociatedComponent (getTopLevelComponent()), nullptr);
+            return;
+        }
+        juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::InfoIcon).withTitle ("Marked score")
+                                          .withMessage ("Saved: " + to.getFileName() + "\n(" + to.getParentDirectory().getFullPathName() + ")\n\nIts pages are pictures of the score with the takes' brackets on top; the score's own PDF is as it was.")
+                                          .withButton ("Open it").withButton ("Show it in its folder").withButton ("Close").withAssociatedComponent (getTopLevelComponent()),
+                                      [to] (int r) { if (r == 1) to.startAsProcess(); else if (r == 2) to.revealToUser(); });
     }
 
     AppContext& app;
@@ -1045,14 +1345,17 @@ private:
     std::vector<scorebars::TakeSpan> spans;                                // the edit's takes that have a bar
     std::vector<scorebars::Bracket> marks;                                 // ... and their brackets
     juce::String marksKey;                                                 // what 'marks' was made from (made again only when it changes)
-    std::map<int, std::vector<Hit>> hits;                                  // by page: where each take's number was drawn
+    std::map<int, std::vector<MarkDrawn>> laid;                            // by page: the brackets as laid out (layoutOf)
+    Dragging dragging;                                                     // a bracket being moved with the mouse
+    std::shared_ptr<ExportJob> exportWanted;                               // (shared with the worker) the marked score to be written as a PDF
+    bool exporting = false; int exportDone = 0;
     struct Heard { juce::String key; std::vector<juce::Uuid> tried; scorebars::Guess best; };
     std::map<juce::Uuid, Heard> heard;                                     // by take: its bars as the sound gives them
     std::vector<int> barPages;                                             // (shared with the worker) the pages whose bars are still to be found
 
     Pages pages;
     juce::Viewport viewport;
-    juce::TextButton prevButton, nextButton, zoomOutButton, zoomInButton, fitButton, barsButton, fileButton, chooseButton, outsideButton;
+    juce::TextButton prevButton, nextButton, zoomOutButton, zoomInButton, fitButton, barsButton, smallerButton, biggerButton, fileButton, chooseButton, outsideButton;
     ScoreMenuKey takesButton;
     juce::Label pageLabel, message;
 };
