@@ -874,9 +874,18 @@ void MainComponent::timerCallback()
     }
     if (auto* sf = app.surface) controllerLamp.set (sf->connected() && sf->target() != SurfaceController::Target::Off, sf->statusText());
     {
+        const auto& p = app.project;
         const auto st = app.engine.ltcInStatus();
-        ltcInLamp.set (app.project.ltcInput >= 0 && st.present, fpsName (st.fps, st.drop) + " fps");
-        ltcOutLamp.set (app.project.ltcOutOn && app.engine.ltcOutActive(), LtcGenerator::formatName (app.project.ltcOutFormat));
+        // 3.56.0: timecode as MIDI. A port that is wanted but not there (rtpMIDI started after fermata, the Hapi off) is tried again every few seconds.
+        const bool midiIn = p.ltcInput == AudioEngine::kLtcFromMidi, inMissing = midiIn && ! app.engine.ltcMidiInputOpen();
+        const bool outMissing = p.ltcOutPort.isNotEmpty() && ! app.engine.ltcMidiOutputOpen();
+        if ((inMissing || outMissing) && ++ltcPortRetry >= 30) { ltcPortRetry = 0; app.applyLtc(); }
+        ltcInLamp.set (p.ltcInput >= 0 && st.present,
+                       inMissing ? "the MIDI port " + p.ltcInPort + " is not there"
+                                 : (midiIn ? "MIDI timecode from " + p.ltcInPort + ", " : juce::String()) + fpsName (st.fps, st.drop) + " fps");
+        ltcOutLamp.set (p.ltcOutOn && app.engine.ltcOutActive(),
+                        LtcGenerator::formatName (p.ltcOutFormat)
+                        + (p.ltcOutPort.isEmpty() ? juce::String() : outMissing ? ", the MIDI port " + p.ltcOutPort + " is not there" : ", also as MIDI timecode to " + p.ltcOutPort));
     }
     for (int i = 0; i < auditionButtons.size() && i + 1 < app.project.cueEnd(); ++i)
     {
@@ -1484,16 +1493,26 @@ void MainComponent::showLtcInMenu()
     juce::PopupMenu m;
     m.addSectionHeader ("LTC input (timecode as audio)");
     m.addItem (1, "None", true, app.project.ltcInput < 0);
-    const int n = (int) app.project.inputs.size();
+    const int n = juce::jmin ((int) app.project.inputs.size(), AudioEngine::kLtcFromMidi);
     for (int i = 0; i < n; ++i) m.addItem (100 + i, "Input " + juce::String (i + 1) + "  -  " + app.project.inputLabel (i), true, app.project.ltcInput == i);
+    // 3.56.0: or as MIDI timecode, on a MIDI port (a Hapi's or Horus's LTC_in, through rtpMIDI): fermata makes LTC from it for the LTC track
+    m.addSectionHeader ("Or as MIDI timecode (MTC), on a MIDI port");
+    auto ports = AudioEngine::midiInputNames();
+    const bool midiIn = app.project.ltcInput == AudioEngine::kLtcFromMidi;
+    if (midiIn && app.project.ltcInPort.isNotEmpty() && ! ports.contains (app.project.ltcInPort)) ports.add (app.project.ltcInPort);       // (chosen, not there now)
+    if (ports.isEmpty()) m.addItem (3, "(no MIDI input ports - for a Hapi, connect its LTC_in in rtpMIDI, then restart fermata)", false);
+    for (int i = 0; i < ports.size(); ++i) m.addItem (1000 + i, ports[i], true, midiIn && app.project.ltcInPort == ports[i]);
     m.addSeparator();
     m.addItem (2, "It is recorded with every take, on the track named LTC (show it with the LTC triangle in the take and edit windows)", false);
+    m.addItem (4, "MIDI timecode is made into LTC for that track, placed by when it arrives: within a millisecond or so of LTC on an audio input", false);
     juce::Component::SafePointer<MainComponent> safe (this);
-    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&ltcInLamp).withMinimumWidth (320), [safe] (int r)
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&ltcInLamp).withMinimumWidth (320), [safe, ports] (int r)
     {
         if (safe == nullptr || r == 0) return;
-        if (r == 1) safe->app.setLtcInput (-1);
-        else if (r >= 100) safe->app.setLtcInput (r - 100);
+        auto& p = safe->app.project;
+        if (r == 1) { p.ltcInPort = {}; safe->app.setLtcInput (-1); }
+        else if (r >= 1000 && r - 1000 < ports.size()) { p.ltcInPort = ports[r - 1000]; safe->app.setLtcInput (AudioEngine::kLtcFromMidi); }
+        else if (r >= 100) { p.ltcInPort = {}; safe->app.setLtcInput (r - 100); }
     });
 }
 
@@ -1512,11 +1531,20 @@ void MainComponent::showLtcOutMenu()
 {
     juce::PopupMenu m;
     m.addSectionHeader ("LTC output");
-    m.addItem (1, "Send LTC", app.project.ltcOutput >= 0, app.project.ltcOutOn);
+    m.addItem (1, "Send LTC", app.project.ltcOutput >= 0 || app.project.ltcOutPort.isNotEmpty(), app.project.ltcOutOn);
     juce::PopupMenu outs;
     outs.addItem (50, "None", true, app.project.ltcOutput < 0);
     for (int i = 0; i < (int) app.project.outputs.size(); ++i) outs.addItem (200 + i, "Output " + juce::String (i + 1) + "  -  " + app.project.outputLabel (i), true, app.project.ltcOutput == i);
     m.addSubMenu ("Output channel (route it in Aneman to the Hapi TC output)", outs);
+    // 3.56.0: and/or as MIDI timecode on a MIDI port (a Hapi's or Horus's LTC_out, through rtpMIDI, which plays it out as LTC)
+    juce::PopupMenu mo;
+    auto ports = AudioEngine::midiOutputNames();
+    if (app.project.ltcOutPort.isNotEmpty() && ! ports.contains (app.project.ltcOutPort)) ports.add (app.project.ltcOutPort);
+    mo.addItem (60, "None", true, app.project.ltcOutPort.isEmpty());
+    for (int i = 0; i < ports.size(); ++i) mo.addItem (400 + i, ports[i], true, app.project.ltcOutPort == ports[i]);
+    mo.addSeparator();
+    mo.addItem (61, "MIDI timecode has no codes for 23.976 and 29.97 non-drop: they go as 24 and 30 (the frames come at the right speed)", false);
+    m.addSubMenu ("MIDI timecode (MTC) port", mo);
     juce::PopupMenu fm;
     for (int c : { 1, 0, 3, 2, 4, 5 }) fm.addItem (10 + c, LtcGenerator::formatName (c) + (c == 2 ? "  (drop-frame)" : ""), true, app.project.ltcOutFormat == c);
     m.addSubMenu ("Frame rate", fm);
@@ -1528,12 +1556,14 @@ void MainComponent::showLtcOutMenu()
     m.addSubMenu ("Starts at", sm);
     m.addItem (3, "Restart now", app.project.ltcOutOn);
     juce::Component::SafePointer<MainComponent> safe (this);
-    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&ltcOutLamp).withMinimumWidth (260), [safe] (int r)
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&ltcOutLamp).withMinimumWidth (260), [safe, ports] (int r)
     {
         if (safe == nullptr || r == 0) return;
         auto& a = safe->app; auto& p = a.project;
         if (r == 1) p.ltcOutOn = ! p.ltcOutOn;
-        else if (r == 50) { p.ltcOutput = -1; p.ltcOutOn = false; }
+        else if (r == 50) { p.ltcOutput = -1; p.ltcOutOn = p.ltcOutOn && p.ltcOutPort.isNotEmpty(); }
+        else if (r == 60) { p.ltcOutPort = {}; p.ltcOutOn = p.ltcOutOn && p.ltcOutput >= 0; }
+        else if (r >= 400 && r - 400 < ports.size()) { p.ltcOutPort = ports[r - 400]; p.ltcOutOn = true; }
         else if (r >= 200) { p.ltcOutput = r - 200; p.ltcOutOn = true; }
         else if (r >= 10 && r < 20) p.ltcOutFormat = r - 10;
         else if (r == 20) p.ltcOutStartMode = 0;

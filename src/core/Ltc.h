@@ -75,11 +75,14 @@ public:
     void startExact (int formatCode, double seconds) noexcept;
     void stop() noexcept { running = false; }
     bool isRunning() const noexcept { return running; }
+    /** 3.56.0: where it is now, as time of day in seconds (frames / fps, as start() takes it), and the format it was started with. */
+    double positionSeconds() const noexcept { return bitLen > 0.0 && fps > 0.0 ? ((double) frameNo + ((double) bitIdx + phase / bitLen) / 80.0) / fps : 0.0; }
+    int formatCode() const noexcept { return code; }
     void fill (float* out, int count) noexcept;
 private:
     void buildFrame() noexcept;
     double rate = 48000.0, fps = 25.0, bitLen = 24.0, phase = 0.0, smooth = 0.0;
-    int nominal = 25; bool drop = false, running = false, halfDone = false;
+    int nominal = 25, code = 1; bool drop = false, running = false, halfDone = false;
     long long frameNo = 0, dayFrames = 0; int bitIdx = 0; int bits[80] = {}; float level = 1.0f;
 };
 
@@ -104,6 +107,10 @@ LtcResult scanFileForLtc (juce::AudioFormatManager&, const juce::File&, int chan
 
 /** The name of a frame rate for the screen: "25", "29.97 DF", "23.976" ... */
 juce::String fpsName (double fps, bool drop);
+
+/** 3.56.0: the hours, minutes, seconds and frames of the n-th frame since midnight (drop-frame: the numbers 29.97 DF skips are skipped), and back. */
+void timecodeFields (long long frameIndex, int nominal, bool drop, int& h, int& m, int& s, int& f);
+long long frameIndexOf (int h, int m, int s, int f, int nominal, bool drop);
 
 /** "01:02:03:04" (";" before the frames for drop-frame) for a time in seconds since midnight. */
 juce::String timecodeText (double seconds, double fps, bool drop);

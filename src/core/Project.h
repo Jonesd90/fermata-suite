@@ -166,6 +166,9 @@ public:
     int    ltcOutFormat = 1;                  // see LtcGenerator::formatInfo (1 = 25 fps)
     int    ltcOutStartMode = 0;               // 0 = starts at the time of day on this computer's clock, 1 = starts at ltcOutStartSeconds
     double ltcOutStartSeconds = 0.0;
+    // 3.56.0: timecode as MIDI (MTC) - the MIDI port it comes in on (then ltcInput is kMaxInputs - 1: the LTC the engine makes from it) and the
+    // MIDI port Fermata's own is sent on as well as, or instead of, ltcOutput. By the port's name (as rtpMIDI names its session). Empty: none.
+    juce::String ltcInPort, ltcOutPort;
     // ---- spot-mic alignment (the Align window): every piece keeps its own set (a take window's id -> its set; an edit measured in post: the edit's id)
     std::map<juce::String, AlignSet> alignSets;
     juce::String alignActive;                 // whose set the mixers use now: the piece being recorded, played or worked on (set by the program)

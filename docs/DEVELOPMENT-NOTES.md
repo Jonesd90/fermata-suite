@@ -126,7 +126,7 @@ Bounced files are never overwritten: if the name exists you get "name (2).wav".
 ## Known limits (honest list)
 
 - **Preamp control** (Hapi / Anubis / MT48 over Ravenna): the screens are there, but the link to the hardware is NOT connected yet. I need a capture of the control traffic from your rig. Use MADPanel for gains meanwhile.
-- LTC timecode chase: not built yet.
+- LTC timecode chase: not built yet. (3.56.0: LTC can come in, and go out, as MIDI timecode - the LTC fermata makes from it is recorded; nothing chases it.)
 - Each recorded file must stay under 4 GB (about 58 minutes of stereo at 192 kHz).
 - VST3 plug-ins run inside the program: one that crashes takes the program with it (autosave and the .bak files limit the loss). A plug-in that crashes the scan is skipped at the next scan (2.71).
 - Surround tracks are folded to stereo for monitoring (placeholder).
@@ -2619,6 +2619,43 @@ fermata's `shutdown()` and its static destructors. Our unhandled-exception filte
 - `pdfpages::everUsed()` (set when a document is first opened): `shutdown()` then ends the process itself (`TerminateProcess`, code 0)
   right after closing the log, so the PDF reader's unload code never runs. Everything is saved and closed by then.
 (The symbols of Windows' own libraries were not available here: the reading rests on the single thread and the order of the modules.)
+
+## 3.56.0: timecode as MIDI - the Hapi's LTC_in and LTC_out through rtpMIDI (20 November 2026, with Claude Opus)
+
+**What was asked** (20 November 2026): the user installed rtpMIDI as Merging describe ("TimeCode Setup with Merging RAVENNA / AES67
+devices", the Windows - RTP-MIDI part) and has one session, "Hapi LTC I/O", with the Hapi's `LTC_in` and `LTC_out` streams as its two
+participants. fermata's LTC IN and LTC OUT only knew audio channels; they are to use those ports. The user plans to have Claude Fable
+go over the timing part afterwards.
+
+**How it works** (`src/core/Mtc.h`, header-only):
+- `MtcReader` (MIDI thread in, any thread out through a seqlock): quarter frames in order build the timecode of each sequence (the time
+  piece 0 was sent); every quarter frame after the first whole sequence publishes a reference - the timecode it stands for
+  (`baseFrames + qf / 4` frames) and when it arrived. Out of order (a gap, running backwards) waits for a whole sequence again. A
+  full-frame SysEx is a locate (`running = false`). 23.976 / 29.97 NDF (sent with the codes of 24 / 30) are told by the frames' real speed
+  measured over 6 s or more of unbroken running (threshold 0.05% below nominal; the two are 0.1% apart).
+- `MtcChase` (audio thread): an `LtcGenerator` jammed with `startExact` to the reader's time at the block's first sample, then left to
+  run on the audio clock (the Hapi and the PC share the Ravenna / PTP clock, so there is no drift to follow). The error against the
+  reader is averaged (one-pole, 0.02 a block) and the generator jammed again only when the average is over one frame; over 0.5 s it is a
+  jump and is followed at once. No timecode for 0.25 s: the generator stops and the block is silence (as a stopped LTC source).
+- The engine: when `ltcInCh == kLtcFromMidi` (input 255) and the port is open, `process()` makes that LTC into `ltcMidiIn` and hands
+  `in` on as a 256-pointer array with it as the last input - so the LTC track (input 255), the pre-roll ring and the lamp's `LtcLive`
+  take it as any input, with nothing else changed. The block's first sample is taken as heard one block before `process()` runs.
+- `MtcOutput`: the audio thread stamps where `ltcGen` is at each block's start (`positionSeconds`) with `mtc::now()`; a 1 ms
+  `HighResolutionTimer` extrapolates and sends each quarter frame as it falls due (sequences start on even frames), and a full frame
+  when starting or after a jump. `ltcGen` now runs for a MIDI port alone (into `ltcScratch`), not only for an output channel.
+- Project: `ltcInPort`, `ltcOutPort` (port names). `AppContext::applyLtc` opens the ports; the main window's lamp update tries a missing
+  port again every 30 updates.
+
+**For the Fable pass (the timing):** where MTC arrives against the audio. Known approximations: (1) the block's capture time is taken
+as `now - block length`, without the driver's input latency or the converter's; (2) with the sample-rate converter (`RateBridge`) the
+engine's blocks are not one per device callback, so `now` jitters by up to a device block; (3) MTC out is stamped when the block is
+made, not when it is heard (output latency); (4) the rtpMIDI latency itself (2-5 ms in the user's screenshot) is not allowed for. All
+four are constant or near-constant offsets: an "offset" setting measured against LTC on an audio input would remove them.
+
+**Checked here:** the core tests' section "3.56.0 MIDI timecode": drop-frame numbering both ways; 25 fps quarter frames read back to the
+time they were sent; 30 told from 29.97 NDF by speed; 29.97 DF across a minute; a full-frame locate; LTC made from MTC with 2 ms of
+wobble decodes (with `LtcDecoder`) to within 1.5 frames of the MTC's time, every frame after the first 2 s. **Not checked:** any real
+MIDI port (none here), the Hapi itself, MTC out as a receiver sees it.
 
 ## 3.55.0: the score - scans, printed bar numbers, clear paper, moving the marks, the marked PDF (12 November 2026, with Claude Fable)
 

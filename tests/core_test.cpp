@@ -21,6 +21,7 @@
 #include "../src/core/TakeWriter.h"
 #include "../src/core/ProjectCopy.h"
 #include "../src/core/Ltc.h"
+#include "../src/core/Mtc.h"
 #include "../src/core/VideoExport.h"
 #include "../src/core/AafWrite.h"
 #include "../src/core/AafExport.h"
@@ -15805,6 +15806,84 @@ int main()
             CHECK (two.size() == 2 && two[0].version == 1 && two[0].notes.size() == 2 && two[1].version == 2 && two[1].current && two[1].notes.size() == 1);      // c1 and r1; c2 - r2 came later
             if (two.size() == 2 && two[0].notes.size() == 2 && two[1].notes.size() == 1) CHECK (two[0].notes[1].id == "r1" && std::abs (two[0].notes[1].seconds - 7.0) < 1.0e-6 && two[1].notes[0].id == "c2" && std::abs (two[1].notes[0].seconds - 9.0) < 1.0e-6);
             CHECK (one.size() == 1 && one[0].version == 1 && one[0].current && one[0].notes.size() == 1 && one[0].notes[0].id == "c1" && std::abs (one[0].notes[0].seconds - 4.0) < 1.0e-6);
+        }
+    }
+
+    SECTION ("3.56.0 MIDI timecode: quarter frames read back to the time they were sent at, 29.97 told from 30 by speed, a locate, LTC made to follow it");
+    {
+        // drop-frame numbering both ways, across the tenth-minute rule
+        bool same = true;
+        for (long long n = 0; n < 2589408LL && same; n += 997) { int h, m, s, f; timecodeFields (n, 30, true, h, m, s, f); same = frameIndexOf (h, m, s, f, 30, true) == n; }
+        CHECK (same);
+        // a run of quarter frames as MtcOutput sends them, fed to the reader at the moments they are due
+        auto run = [] (MtcReader& rd, int code, double startSeconds, double seconds, double t0)
+        {
+            double fps; int nom; bool dr; LtcGenerator::formatInfo (code, fps, nom, dr);
+            long long q = (long long) std::ceil (startSeconds * fps * 4.0); q += (8 - (q & 7)) & 7;                     // from a sequence's first
+            const long long qEnd = q + (long long) (seconds * fps * 4.0);
+            juce::uint8 bytes[8] = {};
+            for (; q < qEnd; ++q)
+            {
+                if ((q & 7) == 0) MtcOutput::quarterFrames ((q >> 3) * 2, code, bytes);
+                const juce::uint8 msg[2] = { 0xF1, bytes[q & 7] };
+                rd.feed (msg, 2, t0 + ((double) q / (fps * 4.0) - startSeconds));
+            }
+            return t0 + ((double) qEnd / (fps * 4.0) - startSeconds);
+        };
+        {
+            MtcReader rd; const double start = 36000.0;                                                    // 10:00:00:00, 25 fps
+            const double tEnd = run (rd, 1, start, 3.0, 100.0);
+            const auto r = rd.ref();
+            CHECK (r.valid && r.running && r.formatCode == 1);
+            CHECK (std::abs ((r.tc - start) - (r.at - 100.0)) < 1.0e-6);                                   // the time it says is the time it was sent at
+            CHECK (rd.isRunning (tEnd) && ! rd.isRunning (tEnd + 1.0));
+        }
+        {
+            MtcReader a, b;
+            run (a, 4, 3600.0, 10.0, 0.0); run (b, 3, 3600.0, 10.0, 0.0);                                 // 30 and 29.97 non-drop: both send the code of 30
+            CHECK (a.ref().formatCode == 4 && b.ref().formatCode == 3);
+            MtcReader d; run (d, 2, 600.0 - 2.0, 5.0, 0.0);                                                // 29.97 DF, across the minute where 00 and 01 are skipped
+            const auto r = d.ref();
+            CHECK (r.formatCode == 2 && std::abs ((r.tc - (600.0 - 2.0)) - r.at) < 0.04);
+        }
+        {
+            MtcReader rd;
+            const juce::uint8 full[] = { 0xF0, 0x7F, 0x7F, 0x01, 0x01, (juce::uint8) ((1 << 5) | 1), 2, 3, 4, 0xF7 };   // 01:02:03:04 at 25
+            rd.feed (full, (int) sizeof (full), 5.0);
+            const auto r = rd.ref();
+            CHECK (r.valid && ! r.running && std::abs (r.tc - (3723.0 + 4.0 / 25.0)) < 1.0e-6);
+        }
+        {
+            // the LTC made from it decodes to the timecode the MIDI said, at the moment it said it
+            const double sr = 48000.0; MtcReader rd; MtcChase chase; chase.prepare (sr);
+            LtcDecoder dec (sr); std::vector<float> buf (480);
+            const double start = 7200.0;
+            double fps; int nom; bool dr; LtcGenerator::formatInfo (1, fps, nom, dr);
+            juce::uint8 bytes[8] = {}; long long q = (long long) (start * fps * 4.0); q += (8 - (q & 7)) & 7;
+            const double t0 = 50.0, startQ = (double) q / (fps * 4.0);
+            for (int block = 0; block < 400; ++block)                                                      // 4 s in 10 ms blocks, with 2 ms of wobble on the MIDI
+            {
+                const double tBlock = t0 + block * 0.01;
+                for (; t0 + ((double) q / (fps * 4.0) - startQ) <= tBlock + 0.01; ++q)
+                {
+                    if ((q & 7) == 0) MtcOutput::quarterFrames ((q >> 3) * 2, 1, bytes);
+                    const juce::uint8 msg[2] = { 0xF1, bytes[q & 7] };
+                    rd.feed (msg, 2, t0 + ((double) q / (fps * 4.0) - startQ) + ((q % 3) - 1) * 0.002);
+                }
+                chase.fill (rd, tBlock, buf.data(), (int) buf.size());
+                dec.feed (buf.data(), (int) buf.size());
+            }
+            const auto& fr = dec.frames();
+            CHECK (fr.size() > 80);
+            bool close = ! fr.empty();
+            for (auto& f : fr)
+            {
+                if (f.pos < 2.0 * sr) continue;                                                            // (after it has settled)
+                const double tcAt = (f.h * 3600.0 + f.m * 60.0 + f.s + f.f / fps);                         // the frame's own time
+                const double heard = t0 + f.pos / sr;                                                       // when its first sample was
+                close = close && std::abs ((tcAt - startQ) - (heard - t0)) < 1.5 / fps;
+            }
+            CHECK (close);
         }
     }
 

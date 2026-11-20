@@ -177,6 +177,15 @@ static void fieldsOfFrame (long long n, int nominal, bool drop, int& h, int& m, 
     h = (int) (n % 24);
 }
 
+void timecodeFields (long long frameIndex, int nominal, bool drop, int& h, int& m, int& s, int& f) { fieldsOfFrame (frameIndex, nominal, drop, h, m, s, f); }
+
+long long frameIndexOf (int h, int m, int s, int f, int nominal, bool drop)
+{
+    long long n = (((long long) h * 60 + m) * 60 + s) * nominal + f;
+    if (drop) { const long long minutes = (long long) h * 60 + m; n -= 2 * (minutes - minutes / 10); }
+    return n;
+}
+
 juce::String fpsName (double fps, bool drop)
 {
     if (drop) return "29.97 DF";
@@ -299,8 +308,9 @@ juce::String LtcGenerator::formatName (int code)
 
 void LtcGenerator::prepare (double sampleRate) { rate = sampleRate; running = false; }
 
-void LtcGenerator::start (int code, double startSeconds) noexcept
+void LtcGenerator::start (int formatCode, double startSeconds) noexcept
 {
+    code = formatCode;
     formatInfo (code, fps, nominal, drop);
     bitLen = rate / (fps * 80.0);
     dayFrames = drop ? 2589408LL : (long long) nominal * 86400LL;
@@ -310,8 +320,9 @@ void LtcGenerator::start (int code, double startSeconds) noexcept
     running = true;
 }
 
-void LtcGenerator::startExact (int code, double seconds) noexcept
+void LtcGenerator::startExact (int formatCode, double seconds) noexcept
 {
+    code = formatCode;
     formatInfo (code, fps, nominal, drop);
     bitLen = rate / (fps * 80.0);
     dayFrames = drop ? 2589408LL : (long long) nominal * 86400LL;

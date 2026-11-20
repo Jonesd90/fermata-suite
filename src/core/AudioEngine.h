@@ -3,6 +3,7 @@
 #include "Dither.h"
 #include "Playback.h"
 #include "Ltc.h"
+#include "Mtc.h"
 #include "MixerWorkers.h"
 #include "BackupCopier.h"
 #include "HostTransport.h"
@@ -296,17 +297,30 @@ public:
     /** Which driver input carries LTC (-1 = none). The lamp in the top bar reads ltcInStatus(). Message thread. */
     void setLtcInput (int inputChannel) noexcept { ltcInCh.store (inputChannel); }
     LtcLive::Status ltcInStatus() const noexcept { return ltcIn.status(); }
+    /** 3.56.0: the input number that means "the LTC made from MIDI timecode" (not a driver input: the engine makes it, see Mtc.h). Its LTC is
+        made only while a MIDI port is open with setLtcMidiInput. (A driver with all 256 inputs would lose its last one to it.) */
+    static constexpr int kLtcFromMidi = kMaxInputs - 1;
+    /** Opens the MIDI port timecode comes in on (by its name; empty: none). False when it would not open. Message thread. */
+    bool setLtcMidiInput (const juce::String& portName) { if (portName.isEmpty()) { mtcIn.close(); return true; } return mtcIn.open (portName); }
+    bool ltcMidiInputOpen() const noexcept { return mtcIn.isOpen(); }
+    /** Opens the MIDI port the LTC generator's timecode is sent on as MTC (empty: none). It is sent while LTC output is on (setLtcOutput with
+        on = true; the output channel may then be -1). False when it would not open. Message thread. */
+    bool setLtcMidiOutput (const juce::String& portName) { if (portName.isEmpty()) { mtcOut.close(); return true; } return mtcOut.open (portName); }
+    bool ltcMidiOutputOpen() const noexcept { return mtcOut.isOpen(); }
+    /** The MIDI ports there are now, by name (for the menus). */
+    static juce::StringArray midiInputNames()  { juce::StringArray a; for (auto& d : juce::MidiInput::getAvailableDevices())  a.add (d.name); return a; }
+    static juce::StringArray midiOutputNames() { juce::StringArray a; for (auto& d : juce::MidiOutput::getAvailableDevices()) a.add (d.name); return a; }
     /** Makes LTC on a driver output (on = false: off). formatCode: see LtcGenerator. The timecode (re)starts at startSeconds (seconds since midnight) when
         something other than the start time changed, or when restart is true; calling it again with the same settings changes nothing. Message thread. */
     void setLtcOutput (int outputChannel, bool on, int formatCode, double startSeconds, bool restart = false) noexcept
     {
         const int ch = on ? outputChannel : -1;
-        const bool changed = restart || ch != ltcOutCh.load() || formatCode != ltcOutFormat.load();
+        const bool changed = restart || ch != ltcOutCh.load() || formatCode != ltcOutFormat.load() || on != ltcOutOnA.load();
         ltcOutStart.store (startSeconds);
-        ltcOutCh.store (ch); ltcOutFormat.store (formatCode);
+        ltcOutCh.store (ch); ltcOutFormat.store (formatCode); ltcOutOnA.store (on);
         if (changed) ltcOutRestart.fetch_add (1);
     }
-    bool ltcOutActive() const noexcept { return ltcOutCh.load() >= 0 && ltcOutRunning.load(); }
+    bool ltcOutActive() const noexcept { return ltcOutOnA.load() && ltcOutRunning.load(); }
 
     // --- how hard the audio thread works (the load meter and the timing log) ---
     /** What the audio callback did since the last call (message thread; reading starts a new count). Load = time spent in the callback as a share
@@ -582,6 +596,11 @@ private:
     std::atomic<juce::int64> scopeWrite { 0 };
 
     LtcLive ltcIn; LtcGenerator ltcGen;
+    // 3.56.0: timecode as MIDI (Mtc.h). The ports are opened on the message thread; the audio thread reads mtcIn's reader and stamps mtcOut.
+    MtcInput mtcIn; MtcOutput mtcOut; MtcChase mtcChase;
+    std::vector<float> ltcMidiIn, ltcScratch;                 // the LTC made from MIDI timecode (an input for the LTC track), and where LTC that goes only as MIDI is made
+    std::array<const float*, kMaxInputs> inWithLtc {};        // the driver's inputs with that one added (audio thread)
+    std::atomic<bool> ltcOutOnA { false };
     AuxSounds aux;
     std::atomic<int> ltcInCh { -1 }, ltcOutCh { -1 }, ltcOutFormat { 1 }, ltcOutRestart { 0 };
     std::atomic<double> ltcOutStart { 0.0 };

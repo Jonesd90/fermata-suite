@@ -460,7 +460,7 @@ Project::Project() { createDefaultDesign(); }
 
 void Project::createDefaultDesign()
 {
-    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; stageClickDb = 0.0f; stagePipeDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone(); rxSeen.clear(); consonants.clear(); preampDevices.clear(); pitchPipe = PitchPipeDef(); click = ClickDef(); alignEnabled = true; alignSets.clear(); alignActive.clear();
+    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; stageClickDb = 0.0f; stagePipeDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; ltcInPort = {}; ltcOutPort = {}; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone(); rxSeen.clear(); consonants.clear(); preampDevices.clear(); pitchPipe = PitchPipeDef(); click = ClickDef(); alignEnabled = true; alignSets.clear(); alignActive.clear();
     sampleRate = 0.0;                                                                                 // (3.9.0: chosen for the new project by the one making it)
     postFaderSlots = false;                                                                           // (3.40.0: a new project starts without the post-fader slots)
     windowFiles.clear(); missingWindowRefs.clear(); loadNotes.clear(); oldWindowFiles.clear();     // (nothing of the project that was open before: its missing files are not this one's)
@@ -526,6 +526,7 @@ void Project::setInputName (int i, const String& newName)
 
 String Project::inputLabel (int i) const
 {
+    if (i == kMaxInputs - 1 && ltcInPort.isNotEmpty()) return "LTC made from MIDI timecode (" + ltcInPort + ")";      // (3.56.0: AudioEngine::kLtcFromMidi)
     if (! juce::isPositiveAndBelow (i, (int) inputs.size())) return "(none)";
     const auto& in = inputs[(size_t) i];
     return String (i + 1) + " - " + inputShortName (i) + (in.name.isNotEmpty() ? " - " + in.name : String());
@@ -2081,6 +2082,8 @@ var Project::toVar (bool withWindows) const
     put (root, "altMixer", altMixer.toString());
     put (root, "ltcInput", ltcInput); put (root, "ltcOutput", ltcOutput); put (root, "ltcOutOn", ltcOutOn); put (root, "ltcOutFormat", ltcOutFormat);
     put (root, "ltcOutStartMode", ltcOutStartMode); put (root, "ltcOutStartSeconds", ltcOutStartSeconds);
+    if (ltcInPort.isNotEmpty()) put (root, "ltcInPort", ltcInPort);
+    if (ltcOutPort.isNotEmpty()) put (root, "ltcOutPort", ltcOutPort);
     {
         auto outList = [] (const std::vector<int>& v) { juce::Array<var> a; for (int o : v) a.add (o); return var (a); };
         var pp = obj();
@@ -2387,7 +2390,7 @@ bool Project::fromVar (const var& root)
     if (! root.isObject() || ! isProjectFormat (root.getProperty ("format", {}).toString()))
         return false;
 
-    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; stageClickDb = 0.0f; stagePipeDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone(); rxSeen.clear(); consonants.clear();
+    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; stageClickDb = 0.0f; stagePipeDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; ltcInPort = {}; ltcOutPort = {}; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone(); rxSeen.clear(); consonants.clear();
     sampleRate = juce::jmax (0.0, (double) root.getProperty ("sampleRate", 0.0));
     postFaderSlots = (bool) root.getProperty ("postFaderSlots", false);
     ignoredMissing.clear();
@@ -2463,6 +2466,7 @@ bool Project::fromVar (const var& root)
     std::sort (tbOutputs.begin(), tbOutputs.end()); tbOutputs.erase (std::unique (tbOutputs.begin(), tbOutputs.end()), tbOutputs.end());
     ltcInput = (int) root.getProperty ("ltcInput", -1); ltcOutput = (int) root.getProperty ("ltcOutput", -1); ltcOutOn = (bool) root.getProperty ("ltcOutOn", false);
     ltcOutFormat = (int) root.getProperty ("ltcOutFormat", 1); ltcOutStartMode = (int) root.getProperty ("ltcOutStartMode", 0); ltcOutStartSeconds = (double) root.getProperty ("ltcOutStartSeconds", 0.0);
+    ltcInPort = root.getProperty ("ltcInPort", juce::String()).toString(); ltcOutPort = root.getProperty ("ltcOutPort", juce::String()).toString();
     {
         auto outs = [this] (const var& v) { std::vector<int> r; if (auto* a = v.getArray()) for (auto& x : *a) { const int o = (int) x; if (o >= 0 && o < (int) outputs.size() && std::find (r.begin(), r.end(), o) == r.end()) r.push_back (o); } return r; };
         pitchPipe = PitchPipeDef();

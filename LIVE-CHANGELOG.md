@@ -8,6 +8,14 @@ fermata:Live is the live-concert recorder that goes with fermata (see `docs/LIVE
 
 A line that starts with **Shared:** is a change to the code fermata shares (see `COMPATIBILITY.md`), so fermata's next build mentions it too.
 
+## 0.10.6
+Built 20 November 2026 (the conversation for both programs), with Claude Opus. No change to the recorder and none to fermata:Live's own
+code: what the shared folder gained.
+- **Shared (fermata 3.56.0):** timecode as MIDI. New `src/core/Mtc.h`; the shared engine can make LTC from MIDI timecode on an input of its
+  own (number 256) and send MIDI timecode; `src/core/Ltc.h/.cpp` gained small helpers; the project file gained `ltcInPort` and
+  `ltcOutPort`. fermata:Live opens no MIDI timecode port: a project set in fermata to take its LTC from MIDI records silence on its LTC
+  track in fermata:Live. Rebuild and check that recording is unchanged.
+
 ## 0.10.5
 Built 12 November 2026 (the conversation for both programs), with Claude Fable. No change to the recorder and none to fermata:Live's own
 code: what the shared folder gained.

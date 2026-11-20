@@ -6,6 +6,30 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.56.0
+Built 20 November 2026 (the conversation for both programs), with Claude Opus. Timecode as MIDI: the Hapi's LTC_in and LTC_out, reached
+through rtpMIDI, as well as LTC on an audio channel.
+- **LTC IN can now come from a MIDI port.** Click the LTC IN lamp: under "Or as MIDI timecode (MTC), on a MIDI port" are the MIDI ports
+  on this PC - choose the rtpMIDI session that is connected to the Hapi's `LTC_in` (for example "Hapi LTC I/O"). fermata makes LTC from
+  the MIDI timecode and records it on the LTC track with every take, exactly as LTC from an audio input is recorded, so the takes'
+  timecode, the AAF and the video export work as before. The lamp goes green when timecode is arriving; its tooltip names the port and
+  the frame rate.
+- **LTC OUT can also be sent as MIDI timecode.** Click the LTC OUT lamp: "MIDI timecode (MTC) port" chooses the port (the session
+  connected to the Hapi's `LTC_out`, which plays it out of the Hapi as LTC). It can go to a port and an audio output at once, or to the
+  port alone. Frame rate, start time and Restart now work as before.
+- **How exact it is.** MIDI timecode arrives in small messages a quarter of a frame apart, with the network's wobble on them. fermata
+  averages that out and only moves the LTC it makes when it is more than a frame out, so it can sit a millisecond or so away from where
+  LTC on an audio input would have been. For sample-exact timecode, an audio input is still the better route.
+- **Frame rates.** MIDI timecode has codes for 24, 25, 29.97 drop-frame and 30 only. 23.976 and 29.97 non-drop are sent with the codes of
+  24 and 30; coming in, fermata tells them apart by how fast the frames arrive (after about 6 seconds of running timecode).
+- **A port that is not there** (rtpMIDI started after fermata, the Hapi switched off) is tried again every few seconds; the lamp's
+  tooltip says so meanwhile. After changing the rtpMIDI setup, restart fermata so it sees the ports (Merging's own advice).
+- **Shared:** new `src/core/Mtc.h`; the shared engine has an input of its own for the LTC made from MIDI timecode (input 256, so a
+  driver with all 256 inputs would lose its last one to it) and sends MIDI timecode; `src/core/Ltc.h/.cpp` gained small helpers; the
+  project file gained `ltcInPort` and `ltcOutPort` (see `COMPATIBILITY.md`).
+- Not tried here: there is no MIDI or Hapi in the test computer. The reading, the 29.97 / 30 telling apart, a locate and the LTC made from
+  MIDI timecode were checked in the core tests with timecode fed in by hand, including network wobble.
+
 ## 3.55.0
 Built 12 November 2026 (the conversation for both programs), with Claude Fable. The score: scans, the printed bar numbers read, the
 brackets on clear paper and moved by hand, the marked score saved as a PDF. Tried on three real scores the user sent for the purpose

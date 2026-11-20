@@ -335,6 +335,7 @@ void AudioEngine::prepare (double sr, int block)
     project.restoreBlock = maxBlock;
     zeros.assign ((size_t) juce::jmax (maxBlock * 4, 8192), 0.0f);
     ltcIn.prepare (sr); ltcGen.prepare (sr); ltcSeenRestart = -1;
+    mtcChase.prepare (sr); ltcMidiIn.assign (zeros.size(), 0.0f); ltcScratch.assign (zeros.size(), 0.0f);
     aux.prepare (sr, juce::jmax (maxBlock * 4, 8192));
     tbTap.assign (zeros.size() * 2, 0.0f);   // also the silence for the pre-roll hand-over (4096 samples at a time)
     mainCap.assign (zeros.size() * 2, 0.0f);
@@ -917,6 +918,18 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
 {
     auto* pl = plan.load (std::memory_order_acquire);
     auto* rs = rec.load (std::memory_order_acquire);
+    const double blockTime = mtc::now();                      // (3.56.0: when this block is being worked on, for MIDI timecode in and out)
+    // 3.56.0: timecode coming in as MIDI is made into LTC here and handed on as one more input (kLtcFromMidi), which the LTC track records, the
+    // pre-roll keeps and the lamp reads, as any input. The block's first sample was heard about one block before now.
+    if (ltcInCh.load (std::memory_order_relaxed) == kLtcFromMidi && mtcIn.isOpen() && numSamples <= (int) ltcMidiIn.size() && sampleRate > 0.0)
+    {
+        mtcChase.fill (mtcIn.reader(), blockTime - (double) numSamples / sampleRate, ltcMidiIn.data(), numSamples);
+        const int n = juce::jmin (numIn, kLtcFromMidi);
+        for (int c = 0; c < n; ++c) inWithLtc[(size_t) c] = in[c];
+        for (int c = n; c < kLtcFromMidi; ++c) inWithLtc[(size_t) c] = nullptr;
+        inWithLtc[(size_t) kLtcFromMidi] = ltcMidiIn.data();
+        in = inWithLtc.data(); numIn = kMaxInputs;
+    }
     if (auto* prev = lastPlanSeen.load (std::memory_order_relaxed); prev != pl)        // a new plan: what is on its way through the old one carries on
     {
         if (prev != nullptr && pl != nullptr) carryOver (*prev, *pl);
@@ -1310,15 +1323,20 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
 
     // LTC going out on the chosen output channel (replaces whatever was on that channel)
     {
+        // (3.56.0: and/or as MIDI timecode on a MIDI port - then the generator runs even with no output channel, and where it is goes to mtcOut)
         const int oc = ltcOutCh.load (std::memory_order_relaxed);
-        if (oc >= 0 && oc < numOut && out[oc] != nullptr)
+        const bool toChannel = oc >= 0 && oc < numOut && out[oc] != nullptr;
+        const bool toMidi = ltcOutOnA.load (std::memory_order_relaxed) && mtcOut.isOpen() && numSamples <= (int) ltcScratch.size();
+        if (toChannel || toMidi)
         {
             const int rq = ltcOutRestart.load (std::memory_order_relaxed);
             if (rq != ltcSeenRestart || ! ltcGen.isRunning()) { ltcSeenRestart = rq; ltcGen.start (ltcOutFormat.load (std::memory_order_relaxed), ltcOutStart.load (std::memory_order_relaxed)); }
-            ltcGen.fill (out[oc], numSamples);
+            if (toMidi) mtcOut.stamp (true, ltcGen.positionSeconds(), blockTime, ltcGen.formatCode());
+            ltcGen.fill (toChannel ? out[oc] : ltcScratch.data(), numSamples);
             ltcOutRunning.store (true, std::memory_order_relaxed);
         }
         else { if (ltcGen.isRunning()) ltcGen.stop(); ltcOutRunning.store (false, std::memory_order_relaxed); }
+        if (! toMidi) mtcOut.stamp (false, 0.0, blockTime, 1);
     }
 
     // the pitch pipe and the click, on the outputs chosen for them (after everything else: heard, never recorded; made above, before the talkback pair)

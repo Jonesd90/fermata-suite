@@ -389,9 +389,10 @@ private:
     void layoutMenuBar();                                      // everything in the bar on one line, as large as the width allows
     NextTakeBox takeBox;
     // always-visible status squares at the right end of the menu bar (they replaced the coloured borders)
-    LtcLamp ltcInLamp { "LTC IN", "LTC in: red = no timecode arriving, green = LTC is arriving (with its frame rate). Click to choose the audio input it comes in on (a Hapi TC input routed in Aneman arrives as an ordinary input channel). It is recorded with every take on the track named LTC." },
-            ltcOutLamp { "LTC OUT", "LTC out: green = Fermata is sending LTC. Click to choose the output channel (route it in Aneman to the Hapi TC output), the frame rate and the start time." };
+    LtcLamp ltcInLamp { "LTC IN", "LTC in: red = no timecode arriving, green = LTC is arriving (with its frame rate). Click to choose the audio input it comes in on (a Hapi TC input routed in Aneman arrives as an ordinary input channel), or the MIDI port it comes in on as MIDI timecode (the Hapi's LTC_in through rtpMIDI). It is recorded with every take on the track named LTC." },
+            ltcOutLamp { "LTC OUT", "LTC out: green = Fermata is sending LTC. Click to choose the output channel (route it in Aneman to the Hapi TC output) and/or a MIDI port to send it on as MIDI timecode (the Hapi's LTC_out through rtpMIDI), the frame rate and the start time." };
     void showLtcInMenu();
+    int ltcPortRetry = 0;                       // (3.56.0: counts lamp updates between tries at opening a MIDI timecode port that is not there)
     void showLtcOutMenu();
     RecPreFlag flagPre;                                       // 3.18.0: the Rec | Pre button (it was the Pre-Rec square)
     StatusFlag flagCr  { "Talkback", juce::Colour (0xffa83cff), "Talkback (purple): the talkback mic is OPEN - you are talking to the talkback speakers. Click it (or press numpad +) to open or close the mic (it stays as you leave it)." },

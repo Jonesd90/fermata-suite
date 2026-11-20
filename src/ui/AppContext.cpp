@@ -233,6 +233,9 @@ void AppContext::setTbPair (int first, bool on)
 
 void AppContext::applyLtc (bool restartOutput)
 {
+    // 3.56.0: the MIDI timecode ports (a port that is not there now - rtpMIDI not running yet - is tried again each time this runs; the lamps say)
+    engine.setLtcMidiInput (project.ltcInput == AudioEngine::kLtcFromMidi ? project.ltcInPort : juce::String());
+    engine.setLtcMidiOutput (project.ltcOutPort);
     engine.setLtcInput (project.ltcInput);
     const auto now = juce::Time::getCurrentTime();
     const double tod = now.getHours() * 3600.0 + now.getMinutes() * 60.0 + now.getSeconds() + now.getMilliseconds() / 1000.0;
@@ -255,7 +258,8 @@ void AppContext::setLtcInput (int ch)
         nt.isLtc = true; nt.colour = 0xff8a8f98; nt.setArmed (true);
         t = &nt;
     }
-    if (t != nullptr && ch >= 0) { project.assignInputsFrom (*t, ch); }
+    if (t != nullptr && ch == AudioEngine::kLtcFromMidi) { t->inputs.fill (-1); t->inputs[0] = ch; }      // (3.56.0: the LTC made from MIDI timecode)
+    else if (t != nullptr && ch >= 0) { project.assignInputsFrom (*t, ch); }
     else if (t != nullptr) t->inputs.fill (-1);
     applyLtc();
     project.markDirty();
