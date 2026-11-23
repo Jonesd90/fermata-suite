@@ -10,6 +10,11 @@ namespace td { namespace fixtools
 void importTakes (AppContext&, const juce::Uuid& takeWindowId, const juce::Array<juce::File>& files, juce::Component* parent, const juce::Uuid& intoEdit = juce::Uuid::null());
 /** Pass an edit id as intoEdit to bring the audio into that edit (one piece per take, each file on its own track) instead of into a take window. */
 void showImportMenu (AppContext&, const juce::Uuid& takeWindowId, juce::Component* source, const juce::Uuid& intoEdit = juce::Uuid::null());
+/** 3.57.0: "Move this window's takes onto the tracks of another take window": every track's clips onto the track the same mic went on in the
+    other window (whatever it is called there), a left and a right track joined into its stereo track; asks first, with the list. */
+void moveTakesOntoWindow (AppContext&, const juce::Uuid& takeWindowId, juce::Component* parent);
+/** Can that be done from this window now: it has takes, and another take window has some too. */
+bool canMoveTakesOntoWindow (const AppContext&, const juce::Uuid& takeWindowId);
 void pitchTake (AppContext&, const juce::Uuid& takeWindowId, juce::Component* parent);
 /** Export for Processing: sends the marked part of all tracks out to the Processing Media folder (to be corrected in other software) and shows it as 'Waiting for corrected audio'. */
 void exportForProcessingEdit (AppContext&, const juce::Uuid& editId, juce::Component* parent);

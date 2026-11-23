@@ -3,6 +3,8 @@
 // tools in FixToolsEdits.cpp (with their windows in FixToolsDialogs.h).
 #include "FixToolsCommon.h"
 #include "RxLink.h"
+#include "../core/TrackLayout.h"
+#include "../core/StereoJoin.h"
 
 namespace td { namespace fixtools
 {
@@ -106,6 +108,142 @@ private:
     juce::ListBox list; juce::Label intro; juce::TextButton up { "Move up" }, down { "Move down" }, ok { "OK" }, cancel { "Cancel" };
 };
 
+// ======================================================================================================== 3.57.0: where each thing goes
+/** The list in the import window when it is laid out like a take window, and in "Move this window's takes onto the tracks of another take window":
+    one row per thing to place - its name, a box saying where it goes, and a few words on how that was found (or what is wrong). */
+class PlacementList : public juce::Component
+{
+public:
+    struct Row
+    {
+        juce::String key, label;
+        int channels = 1;
+        juce::StringArray fixed;                              // the choices that are not a track (ids 1, 2 ...)
+        std::vector<tracklayout::Slot> targets;               // ids 100 + i
+        juce::StringArray targetNames;
+        int firstOther = -1;                                  // the targets from here on are the project's other tracks (a heading before them)
+        juce::String heading;                                 // before the first targets: "Tracks of 'Piece 1'"
+        int selected = 1;
+    };
+    std::function<void (int row)> onChange;
+    PlacementList() { view.setViewedComponent (&holder, false); view.setScrollBarsShown (true, false); addAndMakeVisible (view); }
+    void setRows (std::vector<Row> r)
+    {
+        rows = std::move (r);
+        combos.clear(); labels.clear(); notes.clear();
+        for (size_t i = 0; i < rows.size(); ++i)
+        {
+            auto& row = rows[i];
+            auto* l = labels.add (new juce::Label ({}, row.label));
+            l->setColour (juce::Label::textColourId, theme::text); l->setMinimumHorizontalScale (0.7f); l->setTooltip (row.label);
+            holder.addAndMakeVisible (l);
+            auto* c = combos.add (new juce::ComboBox());
+            for (int k = 0; k < row.fixed.size(); ++k) c->addItem (row.fixed[k], k + 1);
+            for (size_t k = 0; k < row.targets.size(); ++k)
+            {
+                if (k == 0 && row.firstOther != 0 && row.heading.isNotEmpty()) c->addSectionHeading (row.heading);
+                if ((int) k == row.firstOther) c->addSectionHeading ("Other tracks of the project");
+                c->addItem (row.targetNames[(int) k], 100 + (int) k);
+            }
+            c->setSelectedId (row.selected, juce::dontSendNotification);
+            const int idx = (int) i;
+            c->onChange = [this, idx] { rows[(size_t) idx].selected = combos[idx]->getSelectedId(); if (onChange) onChange (idx); };
+            holder.addAndMakeVisible (c);
+            auto* n = notes.add (new juce::Label());
+            n->setColour (juce::Label::textColourId, theme::dimText); n->setFont (juce::FontOptions (12.5f)); n->setMinimumHorizontalScale (0.75f);
+            holder.addAndMakeVisible (n);
+        }
+        resized();
+    }
+    void setNote (int row, const juce::String& text, juce::Colour colour)
+    {
+        if (! juce::isPositiveAndBelow (row, notes.size())) return;
+        notes[row]->setText (text, juce::dontSendNotification); notes[row]->setColour (juce::Label::textColourId, colour); notes[row]->setTooltip (text);
+    }
+    const std::vector<Row>& getRows() const noexcept { return rows; }
+    /** The track (and side) chosen in a row; null when one of the fixed choices is. */
+    tracklayout::Slot slotOf (int row) const
+    {
+        if (! juce::isPositiveAndBelow (row, (int) rows.size())) return {};
+        const auto& r = rows[(size_t) row];
+        const int k = r.selected - 100;
+        return juce::isPositiveAndBelow (k, (int) r.targets.size()) ? r.targets[(size_t) k] : tracklayout::Slot();
+    }
+    void resized() override
+    {
+        view.setBounds (getLocalBounds().reduced (1));
+        const int w = juce::jmax (240, view.getWidth() - view.getScrollBarThickness() - 2), h = 26;
+        holder.setSize (w, juce::jmax (1, (int) rows.size()) * h);
+        for (int i = 0; i < labels.size(); ++i)
+        {
+            auto r = juce::Rectangle<int> (0, i * h, w, h).reduced (3, 2);
+            labels[i]->setBounds (r.removeFromLeft (juce::roundToInt ((float) w * 0.28f)));
+            r.removeFromLeft (4);
+            combos[i]->setBounds (r.removeFromLeft (juce::roundToInt ((float) w * 0.38f)));
+            r.removeFromLeft (8); notes[i]->setBounds (r);
+        }
+    }
+    void paint (juce::Graphics& g) override { g.fillAll (theme::field); g.setColour (theme::border); g.drawRect (getLocalBounds()); }
+private:
+    std::vector<Row> rows;
+    juce::OwnedArray<juce::Label> labels, notes; juce::OwnedArray<juce::ComboBox> combos;
+    juce::Viewport view; juce::Component holder;
+};
+
+/** The places a file of 'channels' channels can go, for a box of the list: the tracks of the layout's window first (in the project's order),
+    then the project's other tracks - a mono file on a mono track, or on the left or the right of a stereo track; a stereo file on a stereo track.
+    'skip': tracks not to offer. */
+static void placesFor (const Project& p, const tracklayout::Layout& lay, const juce::String& windowName, int channels, PlacementList::Row& row,
+                       const std::set<juce::Uuid>& skip = {})
+{
+    std::vector<tracklayout::Slot> mine, other; juce::StringArray mineN, otherN;
+    for (auto& t : p.tracks)
+    {
+        if (t.isLtc || skip.count (t.id) != 0) continue;
+        const bool inLayout = std::find (lay.tracks.begin(), lay.tracks.end(), t.id) != lay.tracks.end();
+        auto& v = inLayout ? mine : other; auto& n = inLayout ? mineN : otherN;
+        const int ch = t.channelCount();
+        if (channels == 1 && ch == 1) { v.push_back ({ t.id, -1 }); n.add (t.name); }
+        else if (channels == 1 && ch == 2) { v.push_back ({ t.id, 0 }); n.add (t.name + "  -  left"); v.push_back ({ t.id, 1 }); n.add (t.name + "  -  right"); }
+        else if (channels == 2 && ch == 2) { v.push_back ({ t.id, -1 }); n.add (t.name); }
+    }
+    row.targets = mine; row.targetNames = mineN;
+    row.firstOther = other.empty() ? -1 : (int) mine.size();
+    for (size_t i = 0; i < other.size(); ++i) { row.targets.push_back (other[i]); row.targetNames.add (otherN[(int) i]); }
+    row.heading = "Tracks of '" + windowName + "'";
+}
+static int idOfSlot (const PlacementList::Row& row, const tracklayout::Slot& s)
+{
+    for (size_t k = 0; k < row.targets.size(); ++k) if (row.targets[k] == s) return 100 + (int) k;
+    return 1;
+}
+static juce::String howText (tracklayout::How h)
+{
+    switch (h)
+    {
+        case tracklayout::How::sameName:     return "the same mic";
+        case tracklayout::How::sideOfStereo: return "the left / right of the stereo track";
+        case tracklayout::How::numbersOff:   return "the same name without its numbers";
+        case tracklayout::How::endOfName:    return "the end of the name matches";
+        case tracklayout::How::none:         break;
+    }
+    return {};
+}
+/** The take windows with takes in them (what a layout can be read from), in the project's order, without 'except'. */
+static std::vector<juce::Uuid> windowsWithTakes (const Project& p, const juce::Uuid& except = juce::Uuid::null())
+{
+    std::vector<juce::Uuid> v;
+    for (auto& w : p.takeWindows) if (! w->groups.empty() && w->id != except) v.push_back (w->id);
+    return v;
+}
+/** The mics an import laid out like a take window placed: remembered on the tracks they went on (tracklayout::remember). */
+static void rememberMics (Project& p, const std::vector<tracklayout::Built::Mic>& mics, const std::map<juce::String, juce::Uuid>& trackFor)
+{
+    for (auto& m : mics)
+        if (auto it = trackFor.find (m.key); it != trackFor.end())
+            if (auto* t = p.findTrack (it->second)) tracklayout::remember (*t, m.side, m.names);
+}
+
 // ======================================================================================================== the import dialog
 class ImportDialog : public JobDialogBase
 {
@@ -113,7 +251,7 @@ public:
     ImportDialog (AppContext& a, const juce::Uuid& wid, const juce::Uuid& eid, std::vector<ImportSource> srcs, juce::StringArray problemNotes)
         : sources (std::move (srcs)), problems (std::move (problemNotes)), app (a), windowId (wid), editId (eid)
     {
-        setSize (680, 680);
+        setSize (780, 760);
         for (auto* x : std::initializer_list<juce::Component*> { &summary, &doIt, &cancel }) addAndMakeVisible (x);
         summary.setMultiLine (true); summary.setReadOnly (true); summary.setCaretVisible (false); summary.setScrollbarsShown (true);
         summary.setColour (juce::TextEditor::backgroundColourId, theme::field); summary.setFont (juce::FontOptions (13.0f));
@@ -139,30 +277,61 @@ public:
         joinBox.setButtonText ("Join left / right pairs into stereo tracks (one stereo strip and one stereo track each). Tick the ones you want stereo, untick the ones to keep as mono tracks:");
         joinBox.onClick = [this] { for (auto* b : pairBoxes) b->setToggleState (joinBox.getToggleState(), juce::dontSendNotification); rebuildPlan(); };
         pairView.setViewedComponent (&pairHolder, false); pairView.setScrollBarsShown (true, false);
+        // 3.57.0: fixed - these four were never added to the window, so the list of left / right pairs, the "Mic 1 + Mic 2" box and the "one take
+        // window per piece" box were never seen (they worked unseen, with their defaults: every pair joined, each piece in its own window)
+        addChildComponent (joinBox); addChildComponent (pairView); addChildComponent (numBox); addChildComponent (pieceBox);
         numBox.setButtonText ("Also join names ending in 1 and 2 (Mic 1 + Mic 2) into stereo tracks");
         numBox.onClick = [this] { buildPairList(); rebuildPlan(); };
-        setBase();
+        // which tracks the files go on (3.57.0: one choice - it was two tick boxes, "One set of tracks" and "Use the existing audio tracks", and
+        // now also "Lay it out like a take window")
+        modeCap.setText ("Tracks:", juce::dontSendNotification); modeCap.setColour (juce::Label::textColourId, theme::text);
+        addAndMakeVisible (modeCap); addAndMakeVisible (modeBox);
+        modeBox.addItem ("By name: on the project's tracks of the same names, new tracks for the rest", 1);
         // the files are one set of tracks: each goes on the track named in its file name, whatever else the name says (numbers, the piece)
-        addAndMakeVisible (byNameBox);
-        byNameBox.setButtonText ("One set of tracks: put each file on the track named in its file name (AB, SPOT1 ...) - numbers and the rest of the name are ignored");
-        byNameBox.setTooltip ("For files whose names carry the piece and the take numbers (\"Rorate Caeli SPOT4 19 18\"), which would otherwise each make new tracks. "
-                              "A file goes on the project's track whose name its name ends with, once the numbers at the end are taken off; a file with no such "
-                              "track gets a track of its own (named without the numbers, shared by the takes). The takes are still told apart by their lengths.");
-        if (auto* st = app.props.getUserSettings()) byNameBox.setToggleState (st->getBoolValue ("importByTrackName", false), juce::dontSendNotification);
-        byNameBox.onClick = [this] { if (auto* st = app.props.getUserSettings()) st->setValue ("importByTrackName", byNameBox.getToggleState()); if (byNameBox.getToggleState()) existingBox.setToggleState (false, juce::dontSendNotification); refreshSummary(); };
-        // 3.28.1: the files go on the audio tracks the project already has, in order, whatever the files are called (mixing one piece after another, each
-        // a multitrack of the same microphones: every piece used to make its own set of tracks). The project's track names are kept.
-        addAndMakeVisible (existingBox);
-        existingBox.setButtonText ("Use the existing audio tracks: the files go on the project's tracks in order, whatever they are called (no new tracks, the tracks keep their names)");
-        existingBox.setTooltip ("The first file of each take goes on the project's first audio track, the second on the second, and so on - a stereo file on the next stereo track, a mono file on the next mono one. "
-                                "The file names play no part and the tracks keep the names they have in Fermata. Only when there are more files than tracks are new tracks added for the rest. "
-                                "For mixing several pieces recorded with the same microphones: import each piece into its own edit window and they all share the one set of tracks (and the one mixer).");
-        if (auto* st = app.props.getUserSettings()) existingBox.setToggleState (st->getBoolValue ("importOntoExisting", false), juce::dontSendNotification);
-        existingBox.onClick = [this] { if (auto* st = app.props.getUserSettings()) st->setValue ("importOntoExisting", existingBox.getToggleState()); if (existingBox.getToggleState()) byNameBox.setToggleState (false, juce::dontSendNotification); refreshSummary(); };
-        existingBox.setVisible (! app.project.tracks.empty());
-        if (app.project.tracks.empty()) existingBox.setToggleState (false, juce::dontSendNotification);
-        if (existingBox.getToggleState()) byNameBox.setToggleState (false, juce::dontSendNotification);
-        refreshSummary();                                                   // (3.30.1: the summary was built by setBase() before the two boxes had their remembered states, so it described the wrong plan)
+        modeBox.addItem ("One set of tracks: each file on the track named in its file name (AB, SPOT1 ...) - numbers and the rest of the name are ignored", 2);
+        // 3.28.1: the files go on the audio tracks the project already has, in order, whatever the files are called. The project's track names are kept.
+        if (! app.project.tracks.empty()) modeBox.addItem ("The project's tracks in order, whatever they are called (no new tracks; the tracks keep their names)", 3);
+        // 3.57.0: like a take window that is already set up (tracklayout): the same tracks, names and stereo pairs, whatever the tracks are called now
+        layoutWindows = windowsWithTakes (app.project);
+        if (! layoutWindows.empty()) modeBox.addItem ("Lay it out like a take window: its tracks, its names and its stereo pairs (no new tracks)", 4);
+        modeBox.setTooltip ("Which tracks the files go on.\n\n"
+                            "By name: a file goes on the project's track of the same name; a name the project has not got makes a new track.\n\n"
+                            "One set of tracks: for files whose names carry the piece and the take numbers (\"Rorate Caeli SPOT4 19 18\"). A file goes on the project's "
+                            "track whose name its name ends with, once the numbers at the end are taken off; a file with no such track gets a track of its own.\n\n"
+                            "The project's tracks in order: the first file of each take on the first track, and so on - a stereo file on the next stereo track. "
+                            "The file names play no part.\n\n"
+                            "Lay it out like a take window: every mic's file goes on the track the same mic went on in that window - whatever you have called the track "
+                            "since - and the left and right files of a stereo track you made are joined into it. The list shows where each file goes; change any of it.");
+        {
+            int m = 0;
+            if (auto* st = app.props.getUserSettings())
+            {
+                m = st->getIntValue ("importTrackMode", 0);
+                if (m == 0) m = st->getBoolValue ("importOntoExisting", false) ? 3 : st->getBoolValue ("importByTrackName", false) ? 2 : 1;     // (the two tick boxes before 3.57.0)
+            }
+            if (modeBox.indexOfItemId (m) < 0) m = 1;
+            modeBox.setSelectedId (m, juce::dontSendNotification);
+        }
+        modeBox.onChange = [this] { if (auto* st = app.props.getUserSettings()) st->setValue ("importTrackMode", modeBox.getSelectedId()); modeChanged(); };
+        layoutCap.setText ("Like the take window:", juce::dontSendNotification); layoutCap.setColour (juce::Label::textColourId, theme::text);
+        addChildComponent (layoutCap); addChildComponent (layoutBox); addChildComponent (placeList);
+        {
+            int pick = 0;
+            for (size_t i = 0; i < layoutWindows.size(); ++i)
+                if (auto* lw = app.project.findTakeWindow (layoutWindows[i]))
+                {
+                    layoutBox.addItem (lw->name + "   (" + juce::String ((int) lw->groups.size()) + (lw->groups.size() == 1 ? " take)" : " takes)"), (int) i + 1);
+                    if (pick == 0 && layoutWindows[i] == app.project.lastImportWindow) pick = (int) i + 1;    // the window last imported into: usually the one just set up
+                }
+            if (pick == 0) for (size_t i = 0; i < layoutWindows.size(); ++i) if (layoutWindows[i] == windowId) pick = (int) i + 1;
+            if (pick == 0 && ! layoutWindows.empty()) pick = 1;
+            layoutBox.setSelectedId (pick, juce::dontSendNotification);
+        }
+        layoutBox.setTooltip ("The take window whose tracks, names and stereo pairs this import copies. Fermata offers the one you last imported into.");
+        layoutBox.onChange = [this] { layoutRefresh (true); };
+        placeList.onChange = [this] (int row) { rowChanged (row); };
+        setBase();
+        modeChanged();                                                      // (3.30.1: the summary describes the plan of the remembered choice)
         addAndMakeVisible (copyBox); addAndMakeVisible (linkBox);
         copyBox.setButtonText ("Copy the audio into this project's folder (recommended)"); linkBox.setButtonText ("Use the audio files where they are (nothing is copied)");
         copyBox.setRadioGroupId (4711); linkBox.setRadioGroupId (4711);
@@ -188,8 +357,9 @@ public:
         }
         pairBoxes.clear(); pairCands.clear();
         const bool pairs = hasStereoPairs (basePlan);
-        joinBox.setVisible (pairs); pairView.setVisible (pairs);
-        numBox.setVisible (pairs && joinStereoPairs (basePlan, true).tracks.size() < joinStereoPairs (basePlan, false).tracks.size());    // there are names ending 1 and 2 as well
+        pairsFound = pairs;
+        numbersFound = pairs && joinStereoPairs (basePlan, true).tracks.size() < joinStereoPairs (basePlan, false).tracks.size();    // there are names ending 1 and 2 as well
+        showPairs();
         if (pairs)
         {
             joinBox.setToggleState (true, juce::dontSendNotification); numBox.setToggleState (false, juce::dontSendNotification);
@@ -197,7 +367,15 @@ public:
             rebuildPlan();
         }
         else refreshSummary();
+        if (trackMode() == 4) layoutRefresh (true);                         // (3.57.0: the names were read again: the list starts again)
         resized();
+    }
+    /** The left / right pair boxes: shown when the files have pairs - but not when the import is laid out like a take window (its stereo tracks say which pairs are joined). */
+    void showPairs()
+    {
+        const bool lay = trackMode() == 4;
+        joinBox.setVisible (pairsFound && ! lay); pairView.setVisible (pairsFound && ! lay);
+        numBox.setVisible (numbersFound && ! lay);
     }
     bool numbersOn() const { return numBox.isVisible() && numBox.getToggleState(); }
     /** One tick box per left / right pair that could be a stereo track. What was kept mono last time stays unticked. */
@@ -228,6 +406,7 @@ public:
     }
     void rebuildPlan()
     {
+        if (trackMode() == 4) return;                                       // (laid out like a take window: layoutRebuild makes the plan)
         if (pairBoxes.isEmpty() && pairCands.empty() && ! joinBox.isVisible()) { plan = basePlan; refreshSummary(); return; }
         std::set<juce::String> only; int ticked = 0;
         for (int i = 0; i < pairBoxes.size(); ++i) if (pairBoxes[i]->getToggleState()) { only.insert (pairCands[(size_t) i].key); ++ticked; }
@@ -236,8 +415,98 @@ public:
         refreshSummary();
     }
     bool linking() const { return linkBox.getToggleState(); }
-    bool byName() const { return byNameBox.getToggleState() && ! ontoExisting(); }
-    bool ontoExisting() const { return existingBox.isVisible() && existingBox.getToggleState(); }
+    /** The track choice: 1 by name, 2 one set of tracks, 3 the project's tracks in order, 4 laid out like a take window (3.57.0). */
+    int trackMode() const { return modeBox.getSelectedId() > 0 ? modeBox.getSelectedId() : 1; }
+    bool byName() const { return trackMode() == 2; }
+    bool ontoExisting() const { return trackMode() == 3; }
+    bool laidOut() const { return trackMode() == 4 && ! layout.window.isNull(); }
+
+    // ---- 3.57.0: laid out like a take window ----
+    void modeChanged()
+    {
+        const bool lay = trackMode() == 4;
+        layoutCap.setVisible (lay); layoutBox.setVisible (lay); placeList.setVisible (lay);
+        orderButton.setEnabled (! lay);                                     // (the tracks of the layout keep their places)
+        showPairs();
+        if (lay) layoutRefresh (false);
+        else { doIt.setEnabled (true); status.setText ({}, juce::dontSendNotification); rebuildPlan(); refreshSummary(); }
+        resized();
+    }
+    ImportNaming naming() const
+    {
+        static const ImportNaming ways[] = { ImportNaming::Auto, ImportNaming::Pyramix, ImportNaming::ProTools, ImportNaming::Sadie, ImportNaming::ByLength };
+        return ways[juce::jlimit (0, 4, namingBox.getSelectedId() - 1)];
+    }
+    /** Reads the chosen window's layout and matches the files' tracks to it ('reset': what was chosen in the list is forgotten). */
+    void layoutRefresh (bool reset)
+    {
+        layout = tracklayout::Layout();
+        const int i = layoutBox.getSelectedId() - 1;
+        auto* x = juce::isPositiveAndBelow (i, (int) layoutWindows.size()) ? app.project.findTakeWindow (layoutWindows[(size_t) i]) : nullptr;
+        if (reset) { choices.clear(); hows.clear(); byHand.clear(); }
+        if (x == nullptr) { placeList.setRows ({}); built = tracklayout::Built(); plan = basePlan; refreshSummary(); return; }
+        layout = tracklayout::layoutOf (app.project, *x, naming());
+        juce::StringArray all; for (auto& t : basePlan.tracks) all.addIfNotAlreadyThere (tracklayout::canon (t.name));
+        const auto reduced = tracklayout::reducedNames (all);
+        std::vector<tracklayout::Item> items; namesOf.clear();
+        for (auto& t : basePlan.tracks)
+        {
+            tracklayout::Item it; it.key = t.key; it.names = tracklayout::formsOf (t.name, reduced); it.original = t.name; it.channels = t.channels;
+            namesOf[t.key] = it.names; items.push_back (it);
+        }
+        const auto found = tracklayout::match (layout, items);
+        std::vector<PlacementList::Row> rows;
+        for (size_t k = 0; k < items.size(); ++k)
+        {
+            PlacementList::Row row; row.key = items[k].key; row.channels = items[k].channels;
+            row.label = basePlan.tracks[k].name + (items[k].channels == 2 ? "   (stereo)" : "");
+            row.fixed = { "A track of its own (named as the file)", "Leave it out (not imported)" };
+            placesFor (app.project, layout, x->name, items[k].channels, row);
+            if (choices.find (row.key) == choices.end())
+            {
+                tracklayout::Choice c; c.kind = found[k].slot.isNull() ? tracklayout::Choice::ownTrack : tracklayout::Choice::slot; c.to = found[k].slot;
+                choices[row.key] = c; hows[row.key] = found[k].how;
+            }
+            const auto& c = choices[row.key];
+            row.selected = c.kind == tracklayout::Choice::leaveOut ? 2 : c.kind == tracklayout::Choice::slot ? idOfSlot (row, c.to) : 1;
+            rows.push_back (std::move (row));
+        }
+        placeList.setRows (std::move (rows));
+        layoutRebuild();
+    }
+    void rowChanged (int r)
+    {
+        const auto& rows = placeList.getRows();
+        if (! juce::isPositiveAndBelow (r, (int) rows.size())) return;
+        const auto& row = rows[(size_t) r];
+        tracklayout::Choice c;
+        if (row.selected == 2) c.kind = tracklayout::Choice::leaveOut;
+        else if (const auto sl = placeList.slotOf (r); ! sl.isNull()) { c.kind = tracklayout::Choice::slot; c.to = sl; }
+        choices[row.key] = c; byHand.insert (row.key);
+        layoutRebuild();
+    }
+    /** The plan from the choices, and what each row of the list says. */
+    void layoutRebuild()
+    {
+        auto& p = app.project;
+        built = tracklayout::build (basePlan, choices, namesOf, [&p] (const juce::Uuid& id) { auto* t = p.findTrack (id); return t != nullptr ? t->name : juce::String(); });
+        plan = built.plan;
+        const auto& rows = placeList.getRows();
+        for (int r = 0; r < (int) rows.size(); ++r)
+        {
+            const auto& key = rows[(size_t) r].key;
+            const auto& c = choices[key];
+            const bool hand = byHand.count (key) != 0;
+            if (built.clashing.count (key) != 0)       placeList.setNote (r, "Another file of a take goes there too: choose another place for one of them", theme::playhead);
+            else if (c.kind == tracklayout::Choice::leaveOut) placeList.setNote (r, "Not imported", theme::dimText);
+            else if (c.kind == tracklayout::Choice::ownTrack) placeList.setNote (r, hand ? juce::String ("Your choice") : juce::String ("No match in that window: a track of its own"), hand ? theme::dimText : theme::warn);
+            else placeList.setNote (r, hand ? juce::String ("Your choice") : howText (hows[key]), theme::dimText);
+        }
+        const bool ok = built.clashing.empty();
+        doIt.setEnabled (ok && ! running);
+        status.setText (ok ? juce::String() : "Two files of one take go on the same place: change one of the red rows.", juce::dontSendNotification);
+        refreshSummary();
+    }
     bool splitting() const { return pieceBox.isVisible() && pieceBox.getToggleState(); }
     /** The tracks in the order the person chose (anything not in that list keeps its place after the others). */
     void applyOrder (ImportPlan& pl) const
@@ -275,7 +544,30 @@ public:
               << ":  " << juce::String ((int) tk.parts.size()) << " track(s),  " << formatTimeShort ((double) tk.length / juce::jmax (1.0, tk.sampleRate), 2)
               << ",  " << juce::String (tk.sampleRate, 0) << " Hz\n";
         }
-        if (ontoExisting())
+        if (trackMode() == 4)
+        {
+            // 3.57.0: laid out like a take window - the list says where each file goes; here, how many and what to know
+            auto* x = app.project.findTakeWindow (layout.window);
+            if (x == nullptr) t << "\nThere is no take window with takes whose tracks could be copied.\n";
+            else
+            {
+                int onLayout = 0, own = 0, out = 0, pairs = 0;
+                for (auto& kv : choices)
+                {
+                    if (kv.second.kind == tracklayout::Choice::leaveOut) ++out;
+                    else if (kv.second.kind == tracklayout::Choice::ownTrack) ++own;
+                    else ++onLayout;
+                }
+                for (auto& tr : plan.tracks) if (tr.channels == 2 && tr.key.startsWithChar ('@')) { bool fromTwo = false; for (auto& tk : plan.takes) for (auto& pt : tk.parts) if (pt.trackKey == tr.key && pt.joined()) fromTwo = true; if (fromTwo) ++pairs; }
+                t << "\nTracks: laid out like the take window '" << x->name << "'. The list below says where each file goes - change any of it.\n"
+                  << "   " << onLayout << " of the " << (int) choices.size() << " mics go on its tracks"
+                  << (pairs > 0 ? " (" + juce::String (pairs) + (pairs == 1 ? " stereo track" : " stereo tracks") + " joined from left and right files)" : juce::String())
+                  << (own > 0 ? ", " + juce::String (own) + " on tracks of their own" : juce::String())
+                  << (out > 0 ? ", " + juce::String (out) + " left out" : juce::String()) << ".\n";
+                for (auto& pr : built.problems) t << "   " << pr << "\n";
+            }
+        }
+        else if (ontoExisting())
         {
             // what the tick box does: the files on the project's tracks, in order
             t << "\nTracks (the project's own, in order; the files' names play no part):\n";
@@ -323,8 +615,6 @@ public:
         orderButton.setBounds (bottom.removeFromLeft (150));
         cancel.setBounds (bottom.removeFromRight (100)); bottom.removeFromRight (8); doIt.setBounds (bottom.removeFromRight (180));
         linkBox.setBounds (r.removeFromBottom (24)); copyBox.setBounds (r.removeFromBottom (24)); r.removeFromBottom (4);
-        byNameBox.setBounds (r.removeFromBottom (24)); r.removeFromBottom (4);
-        if (existingBox.isVisible()) { existingBox.setBounds (r.removeFromBottom (24)); r.removeFromBottom (4); }
         { auto row = r.removeFromBottom (26); namingCap.setBounds (row.removeFromLeft (110)); namingBox.setBounds (row.removeFromLeft (juce::jmin (440, row.getWidth())).reduced (0, 1)); r.removeFromBottom (4); }
         if (pieceBox.isVisible()) pieceBox.setBounds (r.removeFromBottom (24));
         if (numBox.isVisible()) numBox.setBounds (r.removeFromBottom (24));
@@ -335,6 +625,15 @@ public:
             for (int i = 0; i < pairBoxes.size(); ++i) pairBoxes[i]->setBounds (0, i * 22, pairHolder.getWidth(), 22);
             joinBox.setBounds (r.removeFromBottom (24)); r.removeFromBottom (4);
         }
+        if (placeList.isVisible())                                          // (3.57.0: above the piece and naming rows: the track choice, the window, the list)
+        {
+            r.removeFromBottom (2);
+            placeList.setBounds (r.removeFromBottom (juce::jmax (150, r.getHeight() - 26 - 30 - 50 - 150)));
+            r.removeFromBottom (4);
+            auto row = r.removeFromBottom (26); layoutCap.setBounds (row.removeFromLeft (150)); layoutBox.setBounds (row.removeFromLeft (juce::jmin (460, row.getWidth())).reduced (0, 1));
+            r.removeFromBottom (4);
+        }
+        { auto row = r.removeFromBottom (26); modeCap.setBounds (row.removeFromLeft (110)); modeBox.setBounds (row.reduced (0, 1)); r.removeFromBottom (4); }
         r.removeFromBottom (6); bar.setBounds (r.removeFromBottom (22)); status.setBounds (r.removeFromBottom (22));
         summary.setBounds (r);
     }
@@ -342,7 +641,17 @@ private:
     std::vector<ImportSource> sources; juce::StringArray problems;     // the files as read (header information), and what could not be read
     ImportPlan basePlan; std::vector<juce::String> trackOrder;
     juce::Label namingCap; juce::ComboBox namingBox;
-    juce::ToggleButton joinBox, numBox, copyBox, linkBox, pieceBox, byNameBox, existingBox; juce::TextButton orderButton { "Track order..." };
+    juce::ToggleButton joinBox, numBox, copyBox, linkBox, pieceBox; juce::TextButton orderButton { "Track order..." };
+    bool pairsFound = false, numbersFound = false;
+    // 3.57.0: the track choice, and laid out like a take window
+    juce::Label modeCap, layoutCap; juce::ComboBox modeBox, layoutBox; PlacementList placeList;
+    std::vector<juce::Uuid> layoutWindows;                             // the take windows with takes (layoutBox's items, in order)
+    tracklayout::Layout layout;
+    std::map<juce::String, tracklayout::Choice> choices;                // import track key -> where it goes
+    std::map<juce::String, tracklayout::How> hows;                      // how the matching found it
+    std::map<juce::String, juce::StringArray> namesOf;                  // import track key -> its names as compared
+    std::set<juce::String> byHand;                                      // rows the person changed
+    tracklayout::Built built;
     std::vector<StereoPairCandidate> pairCands; juce::OwnedArray<juce::ToggleButton> pairBoxes; juce::Component pairHolder; juce::Viewport pairView;
     void start()
     {
@@ -360,10 +669,13 @@ private:
                 juce::StringArray keep; for (int i = 0; i < pairBoxes.size(); ++i) if (! pairBoxes[i]->getToggleState()) keep.add (pairCands[(size_t) i].key);
                 st->setValue ("importMonoPairs", keep.joinIntoString ("|"));
             }
+        if (trackMode() == 4 && ! built.clashing.empty()) return;             // (3.57.0: two files of a take on one place: the list says which)
         doIt.setEnabled (false); status.setText (linking() ? "Reading the files..." : "Copying the audio...", juce::dontSendNotification);
-        const bool link = linking(); const int named = ontoExisting() ? 2 : byName() ? 1 : 0;     // (3.28.1: 2 = the existing tracks, in order)
-        applyOrder (plan);
-        const bool reorder = ! trackOrder.empty();
+        const bool link = linking();
+        const int named = laidOut() ? 3 : ontoExisting() ? 2 : byName() ? 1 : 0;     // (3.28.1: 2 = the existing tracks, in order; 3.57.0: 3 = laid out like a take window)
+        auto mics = std::make_shared<std::vector<tracklayout::Built::Mic>> (named == 3 ? built.mics : std::vector<tracklayout::Built::Mic>());
+        if (named != 3) applyOrder (plan);
+        const bool reorder = ! trackOrder.empty() && named != 3;            // (the layout's tracks keep their places)
         if (reorder) if (auto* st = app.props.getUserSettings()) { juce::StringArray ks; for (auto& k : trackOrder) ks.add (k); st->setValue ("importTrackOrder", ks.joinIntoString ("|")); }
         if (editId.isNull() && splitting())
         {
@@ -408,7 +720,7 @@ private:
                         }
                         return {};
                     },
-                    [safe, parts, &appRef, reorder, named] (const juce::String& err)
+                    [safe, parts, &appRef, reorder, named, mics] (const juce::String& err)
                     {
                         if (err.isNotEmpty())                 // the take windows made for this import, still empty: taken away again (a window of the project's own, used by name, stays)
                             for (auto& pt : *parts)
@@ -416,7 +728,7 @@ private:
                         if (safe == nullptr) return;
                         if (err.isNotEmpty()) { safe->status.setText (err + "  Nothing was added; the files copied so far were taken away again.", juce::dontSendNotification); safe->doIt.setEnabled (true); return; }
                         busy::begin ("Adding the takes", "Putting the imported takes into their take windows");
-                        for (auto& pt : *parts) finishImport (appRef, pt.wid, pt.plan, pt.files, reorder, named);
+                        for (auto& pt : *parts) rememberMics (appRef.project, *mics, finishImport (appRef, pt.wid, pt.plan, pt.files, reorder, named));
                         busy::endAfterPendingMessages();
                         closeDialogOf (safe.getComponent());
                     });
@@ -430,12 +742,13 @@ private:
         auto& appRef = app; const auto wid = windowId; const auto eid = editId;
         juce::Component::SafePointer<ImportDialog> safe (this);
         runJob ([planCopy, folder, label, numbers, result, link] (AudioJob& j) { return copyImportFiles (formats(), *planCopy, folder, label, numbers, *result, &j, link); },
-                [safe, planCopy, result, &appRef, wid, eid, reorder, named] (const juce::String& err)
+                [safe, planCopy, result, &appRef, wid, eid, reorder, named, mics] (const juce::String& err)
                 {
                     if (safe == nullptr) return;
                     if (err.isNotEmpty()) { safe->status.setText (err, juce::dontSendNotification); safe->doIt.setEnabled (true); return; }
                     busy::begin ("Adding the takes", eid.isNull() ? "Putting the imported takes into the take window" : "Putting the imported audio into the edit");
-                    if (eid.isNull()) finishImport (appRef, wid, *planCopy, *result, reorder, named); else finishImportToEdit (appRef, eid, *planCopy, *result, reorder, named);
+                    rememberMics (appRef.project, *mics, eid.isNull() ? finishImport (appRef, wid, *planCopy, *result, reorder, named)
+                                                                      : finishImportToEdit (appRef, eid, *planCopy, *result, reorder, named));
                     busy::endAfterPendingMessages();
                     closeDialogOf (safe.getComponent());
                 });
@@ -469,7 +782,8 @@ private:
         return onto;
     }
 
-    /** mode: 0 = by name (a new track for a name the project has not got), 1 = "one set of tracks" (byName below), 2 = the existing tracks in order (3.28.1). */
+    /** mode: 0 = by name (a new track for a name the project has not got), 1 = "one set of tracks" (byName below), 2 = the existing tracks in order (3.28.1),
+        3 = laid out like a take window (3.57.0: a key "@<track id>" goes on that track - a new one of its name if it has gone meanwhile - and the rest by name). */
     static std::map<juce::String, juce::Uuid> mapTracks (AppContext& app, const ImportPlan& plan, TakeWindowDef* w, int mode = 0)
     {
         const bool byName = mode == 1;
@@ -494,6 +808,10 @@ private:
         {
             const TrackDef* found = nullptr;
             if (mode == 2) { if (auto it = existing.find (tr.key); it != existing.end()) found = p.findTrack (it->second); }     // (the next track of the project, by order alone)
+            else if (mode == 3 && tr.key.startsWithChar ('@'))
+            {
+                if (auto* t = p.findTrack (tracklayout::trackOfKey (tr.key)); t != nullptr && ! t->isLtc && t->channelCount() == tr.channels) found = t;
+            }
             else for (auto& t : p.tracks) if (t.name.equalsIgnoreCase (tr.name) && t.channelCount() == tr.channels) { found = &t; break; }
             if (found == nullptr && byName) found = p.trackNamedIn (tr.name, tr.channels);
             juce::Uuid id;
@@ -533,10 +851,11 @@ private:
                              + (folder != juce::File() ? "\n\nThe files copied for it are still in " + folder.getFullPathName() + " (nothing was deleted); import them again into another window if you want them." : juce::String()));
     }
     /** Edit window import: one piece of the edit per imported take (placed one after the other), each file on its own track. */
-    static void finishImportToEdit (AppContext& app, const juce::Uuid& eid, const ImportPlan& plan, const std::vector<std::vector<juce::File>>& files, bool reorder = false, int byName = 0)
+    /** (3.57.0: both give back which track each of the plan's tracks went on.) */
+    static std::map<juce::String, juce::Uuid> finishImportToEdit (AppContext& app, const juce::Uuid& eid, const ImportPlan& plan, const std::vector<std::vector<juce::File>>& files, bool reorder = false, int byName = 0)
     {
         auto* e = app.project.findEdit (eid);
-        if (e == nullptr) { importTargetGone ("edit", files); return; }
+        if (e == nullptr) { importTargetGone ("edit", files); return {}; }
         auto trackFor = mapTracks (app, plan, nullptr, byName);
         if (reorder) orderProjectTracks (app, plan, trackFor);
         for (size_t ti = 0; ti < plan.takes.size() && ti < files.size(); ++ti)
@@ -561,13 +880,15 @@ private:
         }
         app.project.structureChanged();
         app.project.changed();
+        return trackFor;
     }
 
-    static void finishImport (AppContext& app, const juce::Uuid& wid, const ImportPlan& plan, const std::vector<std::vector<juce::File>>& files, bool reorder = false, int byName = 0)
+    static std::map<juce::String, juce::Uuid> finishImport (AppContext& app, const juce::Uuid& wid, const ImportPlan& plan, const std::vector<std::vector<juce::File>>& files, bool reorder = false, int byName = 0)
     {
         auto* w = app.project.findTakeWindow (wid);
-        if (w == nullptr) { importTargetGone ("take window", files); return; }
+        if (w == nullptr) { importTargetGone ("take window", files); return {}; }
         auto& p = app.project;
+        p.lastImportWindow = wid;                                           // (3.57.0: offered first when the next import is laid out like a take window)
         auto trackFor = mapTracks (app, plan, w, byName);
         if (reorder) orderProjectTracks (app, plan, trackFor);
         for (size_t ti = 0; ti < plan.takes.size() && ti < files.size(); ++ti)
@@ -588,6 +909,7 @@ private:
             w->groups.push_back (std::move (g));
         }
         p.structureChanged();
+        return trackFor;
     }
 
     AppContext& app; juce::Uuid windowId, editId; ImportPlan plan;
@@ -658,8 +980,14 @@ void showImportMenu (AppContext& app, const juce::Uuid& wid, juce::Component* so
     juce::PopupMenu m;
     m.addItem (1, "Choose audio files...");
     m.addItem (2, "Choose a folder (every audio file in it)...");
+    if (intoEdit.isNull() && ! wid.isNull())                                // 3.57.0: takes already imported, onto another window's tracks
+    {
+        m.addSeparator();
+        m.addItem (3, "Move this window's takes onto the tracks of another take window...", canMoveTakesOntoWindow (app, wid));
+    }
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (source), [&app, wid, intoEdit, source = juce::Component::SafePointer<juce::Component> (source)] (int r)
     {
+        if (r == 3) { moveTakesOntoWindow (app, wid, source.getComponent()); return; }
         if (r == 1) importTakes (app, wid, {}, source.getComponent(), intoEdit);
         else if (r == 2)
         {
@@ -669,6 +997,320 @@ void showImportMenu (AppContext& app, const juce::Uuid& wid, juce::Component* so
                                   { if (fc.getResult() != juce::File()) openImportDialog (app, wid, intoEdit, { fc.getResult() }, source.getComponent()); });
         }
     });
+}
+
+// ======================================================================================================== 3.57.0: a window's takes onto another window's tracks
+/** Asks, then deletes these tracks from the whole project - only ones with no audio on them anywhere (Project::removeEmptyTracks), so nothing is
+    lost. 'lead' starts the question. (As the take window's own, for the tracks a move leaves empty.) */
+static void offerToDeleteTracks (AppContext& app, const std::vector<juce::Uuid>& ids, const juce::String& title, const juce::String& lead)
+{
+    juce::StringArray names;
+    for (auto& id : ids) if (auto* t = app.project.findTrack (id)) names.add (t->name);
+    if (names.isEmpty()) return;
+    const int n = names.size();
+    const auto list = n <= 16 ? names.joinIntoString (", ") : names.joinIntoString (", ", 0, 14) + " and " + juce::String (n - 14) + " more";
+    auto* ap = &app;
+    confirmAsync (title, lead + (n == 1 ? "Delete the track '" + names[0] + "' from the project?" : "Delete these " + juce::String (n) + " tracks from the project?\n\n" + list)
+                  + "\n\nThere is no audio on " + (n == 1 ? "it" : "them") + " in any take window or edit, so nothing is lost, and the audio files on the disk "
+                  "are not touched. Deleting tracks cannot be undone with Ctrl + Z.",
+                  n == 1 ? juce::String ("Delete the track") : "Delete " + juce::String (n) + " tracks",
+                  [ap, ids]
+                  {
+                      if (ap->engine.isRecording()) { showError ("Delete tracks", "Stop recording first."); return; }
+                      const int gone = ap->project.removeEmptyTracks (ids);
+                      ap->setNotice ("Deleted " + juce::String (gone) + (gone == 1 ? " track" : " tracks") + " from the project.");
+                  }, "Keep them");
+}
+
+/** "Move this window's takes onto the tracks of another take window": the list of this window's tracks, each with the track (or side) it goes on
+    there, found as an import laid out like that window finds it (tracklayout). */
+class MoveOntoDialog : public JobDialogBase
+{
+public:
+    MoveOntoDialog (AppContext& a, const juce::Uuid& wid) : app (a), windowId (wid)
+    {
+        setSize (780, 640);
+        auto* w = app.project.findTakeWindow (windowId);
+        intro.setText ("Every track of '" + (w != nullptr ? w->name : juce::String()) + "' goes onto the track the same mic went on in the take window chosen below - whatever "
+                       "that track is called - and a left and a right track are joined into the stereo track made from them there (a new stereo file is written for each "
+                       "take). The takes stay where they are in time, and the pieces of edits made from them go along. The list says where each track goes: change any of it.",
+                       juce::dontSendNotification);
+        intro.setJustificationType (juce::Justification::topLeft); intro.setColour (juce::Label::textColourId, theme::text);
+        windowCap.setText ("Onto the tracks of:", juce::dontSendNotification); windowCap.setColour (juce::Label::textColourId, theme::text);
+        for (auto* c : std::initializer_list<juce::Component*> { &intro, &windowCap, &windowBox, &placeList, &summary, &doIt, &cancel }) addAndMakeVisible (c);
+        summary.setMultiLine (true); summary.setReadOnly (true); summary.setCaretVisible (false); summary.setScrollbarsShown (true);
+        summary.setColour (juce::TextEditor::backgroundColourId, theme::field); summary.setFont (juce::FontOptions (13.0f));
+        others = windowsWithTakes (app.project, windowId);
+        int pick = 0;
+        for (size_t i = 0; i < others.size(); ++i)
+            if (auto* x = app.project.findTakeWindow (others[i]))
+            {
+                windowBox.addItem (x->name + "   (" + juce::String ((int) x->groups.size()) + (x->groups.size() == 1 ? " take)" : " takes)"), (int) i + 1);
+                if (pick == 0 && others[i] == app.project.lastImportWindow) pick = (int) i + 1;
+            }
+        if (pick == 0 && ! others.empty()) pick = 1;
+        windowBox.setSelectedId (pick, juce::dontSendNotification);
+        windowBox.onChange = [this] { refresh(); };
+        placeList.onChange = [this] (int r) { if (juce::isPositiveAndBelow (r, (int) placeList.getRows().size())) byHand.insert (placeList.getRows()[(size_t) r].key); validate(); };
+        doIt.setColour (juce::TextButton::buttonColourId, theme::accent);
+        doIt.onClick = [this] { start(); };
+        cancel.onClick = [this] { if (running) job.requestCancel(); else closeDialogOf (this); };
+        refresh();
+    }
+    void resized() override
+    {
+        auto r = getLocalBounds().reduced (12);
+        auto bottom = r.removeFromBottom (30);
+        cancel.setBounds (bottom.removeFromRight (100)); bottom.removeFromRight (8); doIt.setBounds (bottom.removeFromRight (200));
+        r.removeFromBottom (6); bar.setBounds (r.removeFromBottom (22)); status.setBounds (r.removeFromBottom (22));
+        summary.setBounds (r.removeFromBottom (96)); r.removeFromBottom (6);
+        intro.setBounds (r.removeFromTop (70)); r.removeFromTop (4);
+        auto row = r.removeFromTop (26); windowCap.setBounds (row.removeFromLeft (150)); windowBox.setBounds (row.removeFromLeft (juce::jmin (460, row.getWidth())).reduced (0, 1));
+        r.removeFromTop (6);
+        placeList.setBounds (r);
+    }
+private:
+    AppContext& app; juce::Uuid windowId;
+    juce::Label intro, windowCap; juce::ComboBox windowBox; PlacementList placeList; juce::TextEditor summary;
+    juce::TextButton doIt { "Move the takes" }, cancel { "Cancel" };
+    std::vector<juce::Uuid> others;                                    // the other take windows with takes (windowBox's items)
+    std::map<juce::String, tracklayout::How> hows;
+    std::set<juce::String> byHand;
+
+    juce::String nameOf (const juce::Uuid& id) { auto* t = app.project.findTrack (id); return t != nullptr ? t->name : juce::String ("?"); }
+    TakeWindowDef* chosen()
+    {
+        const int i = windowBox.getSelectedId() - 1;
+        return juce::isPositiveAndBelow (i, (int) others.size()) ? app.project.findTakeWindow (others[(size_t) i]) : nullptr;
+    }
+    /** The rows: this window's tracks that are not the other window's already, each matched to that window's layout. */
+    void refresh()
+    {
+        hows.clear(); byHand.clear();
+        auto* w = app.project.findTakeWindow (windowId);
+        auto* x = chosen();
+        if (w == nullptr || x == nullptr) { placeList.setRows ({}); validate(); return; }
+        const auto mine = tracklayout::layoutOf (app.project, *w);
+        const auto theirs = tracklayout::layoutOf (app.project, *x);
+        auto inTheirs = [&theirs] (const juce::Uuid& id) { return std::find (theirs.tracks.begin(), theirs.tracks.end(), id) != theirs.tracks.end(); };
+        std::set<juce::Uuid> skip;                                          // this window's own tracks are not offered as places
+        for (auto& id : mine.tracks) if (! inTheirs (id)) skip.insert (id);
+        std::vector<PlacementList::Row> rows;
+        for (auto& id : mine.tracks)
+        {
+            if (inTheirs (id)) continue;                                    // (already one of that window's tracks: nothing to move)
+            const auto* t = app.project.findTrack (id);
+            if (t == nullptr) continue;
+            int takes = 0;
+            for (auto& g : w->groups) for (auto& f : g.files) if (f.trackId == id) { ++takes; break; }
+            tracklayout::Item it; it.key = id.toString(); it.original = t->name; it.channels = t->channelCount();
+            if (auto* e = mine.find ({ id, -1 })) it.names = e->names;
+            auto found = tracklayout::match (theirs, { it })[0];
+            if (found.slot.isNull() && it.channels == 2)                    // a stereo track made from a left and a right file: by its two sides
+            {
+                const auto* el = mine.find ({ id, 0 }); const auto* er = mine.find ({ id, 1 });
+                if (el != nullptr && er != nullptr)
+                {
+                    tracklayout::Item l = it, r = it; l.channels = r.channels = 1; l.names = el->names; r.names = er->names; l.original = r.original = {};
+                    const auto fl = tracklayout::match (theirs, { l })[0], fr = tracklayout::match (theirs, { r })[0];
+                    if (! fl.slot.isNull() && ! fr.slot.isNull() && fl.slot.track == fr.slot.track && fl.slot.side == 0 && fr.slot.side == 1)
+                        found = { { fl.slot.track, -1 }, fl.how };
+                }
+            }
+            PlacementList::Row row; row.key = it.key; row.channels = it.channels;
+            row.label = t->name + (it.channels == 2 ? "  (stereo)" : "") + "   -  " + juce::String (takes) + (takes == 1 ? " take" : " takes");
+            row.fixed = { "Leave it where it is" };
+            placesFor (app.project, theirs, x->name, it.channels, row, skip);
+            row.selected = found.slot.isNull() ? 1 : idOfSlot (row, found.slot);
+            hows[row.key] = found.how;
+            rows.push_back (std::move (row));
+        }
+        placeList.setRows (std::move (rows));
+        validate();
+    }
+    /** What each row says, and whether the move can go ahead (no two tracks onto one place). */
+    void validate()
+    {
+        const auto& rows = placeList.getRows();
+        auto* x = chosen();
+        std::map<tracklayout::Slot, std::vector<int>> at;
+        for (int r = 0; r < (int) rows.size(); ++r) if (const auto sl = placeList.slotOf (r); ! sl.isNull()) at[sl].push_back (r);
+        std::set<int> clash;
+        for (auto& kv : at)
+        {
+            bool c = kv.second.size() > 1;
+            if (kv.first.side >= 0) c = c || at.count ({ kv.first.track, -1 }) != 0;
+            else c = c || at.count ({ kv.first.track, 0 }) != 0 || at.count ({ kv.first.track, 1 }) != 0;
+            if (c) for (auto r : kv.second) clash.insert (r);
+        }
+        int moves = 0, staying = 0; std::set<juce::Uuid> joins;
+        for (int r = 0; r < (int) rows.size(); ++r)
+        {
+            const auto sl = placeList.slotOf (r);
+            const auto& key = rows[(size_t) r].key;
+            const bool hand = byHand.count (key) != 0;
+            const auto how = hand ? juce::String ("Your choice") : howText (hows[key]);
+            if (clash.count (r) != 0) { placeList.setNote (r, "Another track goes there too: choose another place for one of them", theme::playhead); continue; }
+            if (sl.isNull())
+            {
+                ++staying;
+                placeList.setNote (r, hand ? juce::String ("Stays where it is") : juce::String ("No match in that window: stays where it is"), hand ? theme::dimText : theme::warn);
+                continue;
+            }
+            if (sl.side >= 0)
+            {
+                joins.insert (sl.track);
+                const bool both = at.count ({ sl.track, 1 - sl.side }) != 0;
+                placeList.setNote (r, how + (both ? juce::String() : juce::String (" - the ") + (sl.side == 0 ? "right" : "left") + " side will be silent"), both ? theme::dimText : theme::warn);
+            }
+            else { ++moves; placeList.setNote (r, how, theme::dimText); }
+        }
+        const bool ok = clash.empty() && (moves > 0 || ! joins.empty());
+        doIt.setEnabled (ok && ! running);
+        juce::String t;
+        if (x == nullptr) t << "There is no other take window with takes.";
+        else if (rows.empty()) t << "Every track of this window is already one of the tracks of '" << x->name << "': there is nothing to move.";
+        else
+        {
+            t << juce::String (moves) << (moves == 1 ? " track moves" : " tracks move") << " onto the tracks of '" << x->name << "'";
+            if (! joins.empty()) t << ", and " << (int) joins.size() << (joins.size() == 1 ? " left / right pair is" : " left / right pairs are") << " joined into stereo tracks (a new stereo file for each take; the mono files stay on the disk)";
+            t << "." << (staying > 0 ? " " + juce::String (staying) + (staying == 1 ? " track stays" : " tracks stay") + " where it is." : juce::String()) << "\n";
+            if (! clash.empty()) t << "Two tracks go on the same place: change one of the red rows.\n";
+            t << "Ctrl + Z puts the takes back. The tracks left empty can then be deleted from the project (Fermata asks).";
+        }
+        summary.setText (t, false);
+    }
+    void start()
+    {
+        if (running) return;
+        if (app.engine.isRecording()) { status.setText ("Stop recording first.", juce::dontSendNotification); return; }
+        auto* w = app.project.findTakeWindow (windowId);
+        auto* x = chosen();
+        if (w == nullptr || x == nullptr) return;
+        struct Move { juce::Uuid from, to; };
+        std::vector<Move> moves;
+        std::map<juce::Uuid, std::pair<juce::Uuid, juce::Uuid>> pairs;     // stereo track -> (this window's left, right) tracks
+        const auto& rows = placeList.getRows();
+        for (int r = 0; r < (int) rows.size(); ++r)
+        {
+            const auto sl = placeList.slotOf (r);
+            if (sl.isNull()) continue;
+            const juce::Uuid from (rows[(size_t) r].key);
+            if (sl.side < 0) moves.push_back ({ from, sl.track });
+            else (sl.side == 0 ? pairs[sl.track].first : pairs[sl.track].second) = from;
+        }
+        // everything is checked first: nothing changes until the stereo files are written
+        juce::StringArray cannot;
+        auto takesOn = [w] (const juce::Uuid& id) { std::vector<juce::Uuid> v; for (auto& g : w->groups) for (auto& f : g.files) if (f.trackId == id) { v.push_back (g.id); break; } return v; };
+        auto okMoves = std::make_shared<std::vector<Move>>();
+        for (auto& m : moves)
+        {
+            const auto why = app.project.canMoveTakeClips (windowId, m.from, m.to, takesOn (m.from));
+            if (why.isNotEmpty()) cannot.add (nameOf (m.from) + ": " + why.upToFirstOccurrenceOf (" Nothing was moved.", false, false));
+            else okMoves->push_back (m);
+        }
+        auto joins = std::make_shared<std::vector<stereojoin::IntoPlan>>();
+        for (auto& kv : pairs)
+        {
+            stereojoin::IntoPlan pl;
+            const auto why = stereojoin::planInto (app.project, windowId, kv.second.first, kv.second.second, kv.first, pl);
+            if (why.isNotEmpty()) cannot.add (nameOf (kv.first) + ": " + why);
+            else joins->push_back (std::move (pl));
+        }
+        if (okMoves->empty() && joins->empty()) { status.setText ("Nothing could be moved. " + cannot.joinIntoString ("  "), juce::dontSendNotification); return; }
+        if (app.isPlaying()) app.stopPlayback();
+        doIt.setEnabled (false); windowBox.setEnabled (false); placeList.setEnabled (false);
+        const auto wid = windowId; const auto xName = x->name; auto& appRef = app;
+        juce::Component::SafePointer<MoveOntoDialog> safe (this);
+        auto dropFiles = [joins] { for (auto& pl : *joins) for (auto& j : pl.jobs) j.dest.deleteFile(); };
+        auto finish = [safe, okMoves, joins, cannot, wid, xName, &appRef, dropFiles] ()
+        {
+            auto& p = appRef.project;
+            auto* w = p.findTakeWindow (wid);
+            if (w == nullptr || appRef.engine.isRecording())
+            {
+                dropFiles();
+                showError ("Move takes", w == nullptr ? "The take window has gone meanwhile: nothing was changed." : "A recording started meanwhile, so nothing was changed. Try again once it has stopped.");
+                if (safe != nullptr) closeDialogOf (safe.getComponent());
+                return;
+            }
+            if (appRef.isPlaying()) appRef.stopPlayback();
+            auto takesOn = [w] (const juce::Uuid& id) { std::vector<juce::Uuid> v; for (auto& g : w->groups) for (auto& f : g.files) if (f.trackId == id) { v.push_back (g.id); break; } return v; };
+            auto nameOf = [&p] (const juce::Uuid& id) { auto* t = p.findTrack (id); return t != nullptr ? t->name : juce::String ("?"); };
+            juce::StringArray notDone = cannot; std::vector<juce::Uuid> from;
+            int moved = 0, pieces = 0, joined = 0;
+            for (auto& m : *okMoves)
+            {
+                juce::String why; int pc = 0;
+                if (p.moveTakeClips (wid, m.from, m.to, takesOn (m.from), why, &pc) == 0) { notDone.add (nameOf (m.from) + ": " + why.upToFirstOccurrenceOf (" Nothing was moved.", false, false)); continue; }
+                ++moved; pieces += pc; from.push_back (m.from);
+            }
+            for (auto& pl : *joins)
+            {
+                juce::String why;
+                if (stereojoin::applyInto (p, pl, why)) { ++joined; pieces += (int) pl.pieces.size(); if (! pl.left.isNull()) from.push_back (pl.left); if (! pl.right.isNull()) from.push_back (pl.right); }
+                else { for (auto& j : pl.jobs) j.dest.deleteFile(); notDone.add (nameOf (pl.onto) + ": " + why); }
+            }
+            p.structureChanged();
+            const auto did = "Moved the takes of " + juce::String (moved + joined * 2) + " tracks onto the tracks of '" + xName + "'"
+                             + (joined > 0 ? " (" + juce::String (joined) + (joined == 1 ? " stereo pair joined" : " stereo pairs joined") + ")" : juce::String())
+                             + (pieces > 0 ? ", with " + juce::String (pieces) + (pieces == 1 ? " piece" : " pieces") + " of the edits made from them" : juce::String()) + ".";
+            appRef.setNotice (did + " Ctrl + Z puts them back.");
+            std::vector<juce::Uuid> emptied;
+            for (auto& id : from) if (! id.isNull() && std::find (emptied.begin(), emptied.end(), id) == emptied.end() && ! p.trackHasAudio (id)) emptied.push_back (id);
+            const auto notDoneText = notDone.isEmpty() ? juce::String() : "Not moved:\n\n" + notDone.joinIntoString ("\n");
+            if (safe != nullptr) closeDialogOf (safe.getComponent());
+            if (! emptied.empty())
+                offerToDeleteTracks (appRef, emptied, "Move takes",
+                                     did + " Ctrl + Z puts them back.\n\n" + (notDoneText.isNotEmpty() ? notDoneText + "\n\n" : juce::String())
+                                     + (emptied.size() == 1 ? "The track they came from is empty now. " : "The tracks they came from are empty now. "));
+            else if (notDoneText.isNotEmpty()) showError ("Move takes", did + "\n\n" + notDoneText);
+        };
+        if (joins->empty()) { finish(); return; }
+        status.setText ("Writing the stereo files...", juce::dontSendNotification);
+        runJob ([joins] (AudioJob& j) -> juce::String
+                {
+                    for (size_t k = 0; k < joins->size(); ++k)
+                    {
+                        const auto err = stereojoin::writeJobs (formats(), (*joins)[k].jobs, &j);
+                        if (err.isNotEmpty())
+                        {
+                            for (size_t m = 0; m < k; ++m) for (auto& fj : (*joins)[m].jobs) fj.dest.deleteFile();      // (the ones written before: taken away again)
+                            return err;
+                        }
+                    }
+                    return {};
+                },
+                [safe, finish] (const juce::String& err)
+                {
+                    if (err.isNotEmpty())
+                    {
+                        if (safe != nullptr)
+                        {
+                            safe->status.setText (err + "  Nothing was changed.", juce::dontSendNotification);
+                            safe->doIt.setEnabled (true); safe->windowBox.setEnabled (true); safe->placeList.setEnabled (true);
+                        }
+                        return;
+                    }
+                    finish();
+                },
+                [dropFiles] (const juce::String& err) { if (err.isEmpty()) dropFiles(); });          // (the window was closed meanwhile: the new files go again)
+    }
+};
+
+bool canMoveTakesOntoWindow (const AppContext& app, const juce::Uuid& wid)
+{
+    const TakeWindowDef* w = nullptr;
+    for (auto& x : app.project.takeWindows) if (x->id == wid) w = x.get();
+    return w != nullptr && ! w->groups.empty() && ! windowsWithTakes (app.project, wid).empty();
+}
+
+void moveTakesOntoWindow (AppContext& app, const juce::Uuid& wid, juce::Component* parent)
+{
+    if (heldByRec (app, "Moving takes onto another window's tracks", parent, [ap = &app, wid] (juce::Component* p) { moveTakesOntoWindow (*ap, wid, p); })) return;
+    if (app.engine.isRecording()) { showError ("Move takes", "Stop recording first."); return; }
+    if (! canMoveTakesOntoWindow (app, wid)) { say ("Move takes", "This needs takes in this window and in another take window."); return; }
+    launchDialog (std::make_unique<MoveOntoDialog> (app, wid), "Move takes onto another window's tracks", parent);
 }
 
 // ======================================================================================================== Re-HarmoniSer (edit window)

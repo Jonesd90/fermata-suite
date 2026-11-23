@@ -3,6 +3,7 @@
 #include "../core/PreampMemory.h"
 #include "Uikit.h"
 #include "WaveColor.h"
+#include "LiveWaveColours.h"
 #include "../core/WaveShape.h"
 #include "PluginHost.h"
 #include "../core/SessionClock.h"
@@ -56,7 +57,10 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     /** WaveColour: the waveforms are coloured by what is in them (pitch = hue, tonal = vivid, a thump below 100 Hz = black). Off by default; the rainbow button in the take and edit windows. */
     bool waveColour = false;
     WaveColorCache waveColors;
-    void setWaveColour (bool on) { waveColour = on; project.sendChangeMessage(); }
+    /** 3.59.0: WaveColour while a take records - the engine feeds what it records (setLiveFeeds, while WaveColour is on) and this colours it as
+        it comes in; a finished take's colours go straight to waveColors (see takeInFinishedTakes). */
+    LiveWaveColours liveColours;
+    void setWaveColour (bool on) { waveColour = on; engine.setLiveFeeds (on); project.sendChangeMessage(); }
     /** The colours of this file's waveform, or nothing while it is not wanted or not worked out yet (it is being worked out in the background). */
     std::shared_ptr<const WaveColorData> waveColourOf (const juce::File& f) { return waveColour ? waveColors.get (f) : nullptr; }
 

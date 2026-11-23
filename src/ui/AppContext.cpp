@@ -14,6 +14,10 @@ AppContext::AppContext()
 {
     waveColors.folder = [this] { return project.projectFolder().getChildFile ("Waveforms"); };
     waveColors.onReady = [this] { if (waveColour) project.sendChangeMessage(); };          // a file's colours are ready: draw them
+    // 3.58.0: several files at once (a take window of an orchestral session asks for hundreds), leaving two cores free; none while recording
+    waveColors.setWorkers (juce::SystemStats::getNumCpus() - 2);
+    waveColors.holdOff = [this] { return engine.isRecording(); };
+    liveColours.onFileColoured = [this] (const juce::File& f, std::shared_ptr<WaveColorData> d) { waveColors.put (f, std::move (d)); };     // 3.59.0
     remoteCrKey.holdMs = 1000;                     // the remote Talk key: under 1 second latches, longer is momentary
     project.newStripsToMain = true;
     juce::PropertiesFile::Options o;
@@ -142,6 +146,7 @@ AppContext::AppContext()
 
 AppContext::~AppContext()
 {
+    liveColours.stop();                              // 3.59.0: the colours of a take being recorded (its thread)
     waveColors.stop();                               // 3.18.2: first - a colouring job still queued would ask the project for its folder after the project has gone
     project.settleBackgroundSaves = nullptr;
     *saverAlive = false;                             // (what it finishes from here on is not taken in: the program is closing, and shutdown() saved)
@@ -166,6 +171,7 @@ void AppContext::takeInFinishedTakes (bool tellPerson)
     const auto done = engine.reapFinishedTakes();
     if (done.empty()) return;
     forgetWaveforms (done);
+    liveColours.handOver (done);                                         // 3.59.0: the colours worked out while they recorded are theirs (after the forget above)
     for (auto& [wid, gid] : engine.takeFinishFailures())              // 3.27.1: a file that refused the end of the take while it was finished: the take is marked cut short, and the person told
         if (auto* w = project.findTakeWindow (wid))
             if (auto* g = w->findGroup (gid))

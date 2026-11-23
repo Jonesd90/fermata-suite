@@ -680,6 +680,26 @@ static bool splitSide (const juce::String& name, juce::String& base, int& side, 
     return false;
 }
 
+/** 3.57.0: the name a joined pair gets - its base name, or, when a file of its own already has that name, the base with " L-R" after it (a
+    Decca tree: "Tree-L", "Tree-C", "Tree-R" - Pyramix's -C file is the track "Tree", and the pair used to be "Tree" as well: both on one track). */
+static std::set<juce::String> plainKeysOf (const ImportPlan& plan, bool numbers)
+{
+    std::set<juce::String> keys;
+    for (auto& t : plan.takes)
+        for (auto& p : t.parts)
+        {
+            juce::String base; int side = 0;
+            const bool half = p.channel < 0 && p.trackChannels == 1 && p.source2 < 0 && plan.sources[(size_t) p.source].channels == 1 && splitSide (p.trackName, base, side, numbers);
+            if (! half) keys.insert (p.trackKey);
+        }
+    return keys;
+}
+static juce::String pairName (const juce::String& base, const std::set<juce::String>& plainKeys)
+{
+    const juce::String n = base.isEmpty() ? juce::String ("L-R") : base;
+    return plainKeys.count (n.toLowerCase()) != 0 ? n + " L-R" : n;
+}
+
 bool hasStereoPairs (const ImportPlan& plan, bool numbers)
 {
     for (auto& t : plan.takes)
@@ -698,6 +718,7 @@ bool hasStereoPairs (const ImportPlan& plan, bool numbers)
 std::vector<StereoPairCandidate> stereoPairCandidates (const ImportPlan& plan, bool numbers)
 {
     std::vector<StereoPairCandidate> out; std::set<juce::String> done;
+    const auto plainKeys = plainKeysOf (plan, numbers);
     for (auto& t : plan.takes)
     {
         struct Seen { int mask = 0; juce::String base, l, r; };
@@ -713,7 +734,7 @@ std::vector<StereoPairCandidate> stereoPairCandidates (const ImportPlan& plan, b
             }
         }
         for (auto& k : order)
-            if (seen[k].mask == 3 && ! done.count (k)) { done.insert (k); out.push_back ({ k, seen[k].base.isEmpty() ? juce::String ("L-R") : seen[k].base, seen[k].l, seen[k].r }); }
+            if (seen[k].mask == 3 && ! done.count (k)) { done.insert (k); out.push_back ({ k, pairName (seen[k].base, plainKeys), seen[k].l, seen[k].r }); }
     }
     return out;
 }
@@ -721,6 +742,7 @@ std::vector<StereoPairCandidate> stereoPairCandidates (const ImportPlan& plan, b
 ImportPlan joinStereoPairs (const ImportPlan& in, bool numbers, const std::set<juce::String>* joinOnly)
 {
     ImportPlan plan = in;
+    const auto plainKeys = plainKeysOf (in, numbers);
     for (auto& t : plan.takes)
     {
         std::map<juce::String, std::pair<int, int>> halves;                   // base -> (left part index, right part index)
@@ -749,7 +771,7 @@ ImportPlan joinStereoPairs (const ImportPlan& in, bool numbers, const std::set<j
                     used.insert (h.first); used.insert (h.second);
                     ImportPart j = t.parts[(size_t) h.first];
                     j.source2 = t.parts[(size_t) h.second].source;
-                    j.trackName = base.isEmpty() ? juce::String ("L-R") : base; j.trackKey = j.trackName.toLowerCase(); j.trackChannels = 2;
+                    j.trackName = pairName (base, plainKeys); j.trackKey = j.trackName.toLowerCase(); j.trackChannels = 2;
                     out.push_back (j);
                     continue;
                 }
@@ -789,32 +811,52 @@ juce::String copyImportFiles (juce::AudioFormatManager& fm, const ImportPlan& pl
     {
         const auto& take = plan.takes[ti];
         files[ti].assign (take.parts.size(), juce::File());
-        // a stereo track made from a left and a right mono file: one new stereo file
+        // a stereo track made from a left and a right mono file: one new stereo file (3.57.0: or from one of the two, silence on the other side)
         for (size_t pi = 0; pi < take.parts.size(); ++pi)
         {
             const auto& part = take.parts[pi];
-            if (part.source2 < 0) continue;
-            const auto& sl = plan.sources[(size_t) part.source]; const auto& sr = plan.sources[(size_t) part.source2];
-            std::unique_ptr<juce::AudioFormatReader> rl (fm.createReaderFor (sl.file)), rr (fm.createReaderFor (sr.file));
-            if (rl == nullptr || rr == nullptr) return fail ("Cannot read " + (rl == nullptr ? sl : sr).file.getFileName());
+            if (! part.joined()) continue;
+            const bool oneSide = part.source2 == ImportPart::kOneSide;
+            const ImportSource* sideSrc[2] = { nullptr, nullptr };              // [left, right]; null = silence
+            if (oneSide) sideSrc[part.sourceRight ? 1 : 0] = &plan.sources[(size_t) part.source];
+            else { sideSrc[0] = &plan.sources[(size_t) part.source]; sideSrc[1] = &plan.sources[(size_t) part.source2]; }
+            std::unique_ptr<juce::AudioFormatReader> rd[2];
+            for (int sd = 0; sd < 2; ++sd)
+                if (sideSrc[sd] != nullptr)
+                {
+                    rd[sd].reset (fm.createReaderFor (sideSrc[sd]->file));
+                    if (rd[sd] == nullptr) return fail ("Cannot read " + sideSrc[sd]->file.getFileName());
+                }
+            const auto& sl = plan.sources[(size_t) part.source];                // (the rate and the format: of the file there is, or of the left one)
             const auto dest = audioops::uniqueFile (folder.getChildFile (TakeWindowDef::fileNameFor (takeNumbers[ti], label, part.trackName)));
-            auto w = audioops::makeWavWriter (dest, sl.sampleRate, 2, sl.floatData || sr.floatData);
+            bool anyFloat = false, reduces = false; juce::int64 total = 0;
+            for (int sd = 0; sd < 2; ++sd)
+                if (sideSrc[sd] != nullptr)
+                {
+                    anyFloat = anyFloat || sideSrc[sd]->floatData;
+                    reduces = reduces || (! sideSrc[sd]->floatData && rd[sd]->bitsPerSample > 24);
+                    total = juce::jmax (total, sideSrc[sd]->length);
+                }
+            auto w = audioops::makeWavWriter (dest, sl.sampleRate, 2, anyFloat);
             if (w == nullptr) return fail ("Cannot create " + dest.getFileName());
             openOne = &w;
-            const bool reduces = (! sl.floatData && rl->bitsPerSample > 24) || (! sr.floatData && rr->bitsPerSample > 24);
             DitherOut dout (*w, reduces);
             made.push_back (dest); files[ti][pi] = dest;
-            std::vector<std::vector<float>> bl, br;
-            const juce::int64 total = juce::jmax (sl.length, sr.length);
+            std::vector<std::vector<float>> got;
             constexpr juce::int64 block = 1 << 16;
             for (juce::int64 pos = 0; pos < total; pos += block)
             {
                 if (job != nullptr) { if (job->cancelled()) return fail ("Cancelled."); job->setProgress ((float) ((double) doneSamples / (double) juce::jmax ((juce::int64) 1, totalSamples))); }
                 const auto cnt = (int) juce::jmin (block, total - pos);
-                std::vector<float> zero ((size_t) cnt, 0.0f), left = zero, right = zero;
-                if (pos < sl.length) { const auto c = juce::jmin ((juce::int64) cnt, sl.length - pos); if (! audioops::readRange (*rl, pos, c, bl)) return fail ("Cannot read " + sl.file.getFileName()); std::copy (bl[0].begin(), bl[0].begin() + c, left.begin()); }
-                if (pos < sr.length) { const auto c = juce::jmin ((juce::int64) cnt, sr.length - pos); if (! audioops::readRange (*rr, pos, c, br)) return fail ("Cannot read " + sr.file.getFileName()); std::copy (br[0].begin(), br[0].begin() + c, right.begin()); }
-                const float* ptrs[2] = { left.data(), right.data() };
+                std::vector<float> sides[2] = { std::vector<float> ((size_t) cnt, 0.0f), std::vector<float> ((size_t) cnt, 0.0f) };
+                for (int sd = 0; sd < 2; ++sd)
+                    if (sideSrc[sd] != nullptr && pos < sideSrc[sd]->length)
+                    {
+                        const auto c = juce::jmin ((juce::int64) cnt, sideSrc[sd]->length - pos);
+                        if (! audioops::readRange (*rd[sd], pos, c, got)) return fail ("Cannot read " + sideSrc[sd]->file.getFileName());
+                        std::copy (got[0].begin(), got[0].begin() + c, sides[sd].begin());
+                    }
+                const float* ptrs[2] = { sides[0].data(), sides[1].data() };
                 if (! dout.write (ptrs, 2, cnt)) return fail ("Disk full or write error.");
                 doneSamples += (juce::int64) cnt * 2;
             }
@@ -826,7 +868,7 @@ juce::String copyImportFiles (juce::AudioFormatManager& fm, const ImportPlan& pl
         for (size_t pi = 0; pi < take.parts.size(); ++pi)
         {
             const auto& part = take.parts[pi];
-            if (part.source2 >= 0) continue;
+            if (part.joined()) continue;
             if (linkOriginals && part.channel < 0 && plan.sources[(size_t) part.source].channels == part.trackChannels)   // a whole mono / stereo file: used where it is, nothing is copied
             {
                 files[ti][pi] = plan.sources[(size_t) part.source].file;

@@ -42,7 +42,14 @@ public:
         const double sr = app.engine.getSampleRate() > 0.0 ? app.engine.getSampleRate() : 48000.0;
         onBox.setButtonText ("Low cut on");
         onBox.setToggleState (lc.on.get(), juce::dontSendNotification);
-        onBox.onClick = [this] { lc.setOn (onBox.getToggleState()); app.project.markDirty(); app.engine.checkLatency(); refreshText(); repaint(); };
+        onBox.onClick = [this]
+        {
+            const bool v = onBox.getToggleState();
+            lc.setOn (v);
+            for (auto* o : others) o->setOn (v);                         // 3.58.0: the strips linked when the panel opened
+            app.project.markDirty(); app.engine.checkLatency(); refreshText(); repaint();
+            if (onChanged) onChanged();
+        };
         addAndMakeVisible (onBox);
         linearBox.setButtonText ("Linear phase");
         linearBox.setToggleState (lc.linear.get(), juce::dontSendNotification);
@@ -86,7 +93,8 @@ public:
         const auto& t = mixTheme();
         g.fillAll (theme::panel);
         g.setColour (theme::text); g.setFont (FermataLookAndFeel::displayFont (15.0f));
-        g.drawText ("Low cut  -  " + name, 12, 8, getWidth() - 24, 20, juce::Justification::centredLeft, true);
+        g.drawText ("Low cut  -  " + name + (others.empty() ? juce::String() : "  + " + juce::String ((int) others.size()) + " linked"),
+                    12, 8, getWidth() - 24, 20, juce::Justification::centredLeft, true);
         // the curve: dB against log frequency
         const auto plot = plotRect();
         g.setColour (t.field); g.fillRect (plot);
@@ -173,13 +181,17 @@ private:
     {
         pending = false;
         lc.setDesign ((float) freq.getValue(), slopeBox.getSelectedId() - 1, linearBox.getToggleState());
+        for (auto* o : others) o->setDesign ((float) freq.getValue(), slopeBox.getSelectedId() - 1, linearBox.getToggleState());     // 3.58.0
         app.project.markDirty();
         app.engine.checkLatency();                                      // (a new length: the mixer's delay compensation follows)
         if (onChanged) onChanged();
     }
 public:
     std::function<void()> onChanged;                                   // the strip's key redraws its caption
+    /** 3.58.0: the low cuts of the mixer strips linked to this one as the panel opened (Shift + Alt held): everything set here goes to them too. */
+    void setLinked (std::vector<LowCut*> l) { others = std::move (l); repaint(); }
 private:
+    std::vector<LowCut*> others;
     AppContext& app; LowCut& lc; juce::String name;
     juce::ToggleButton onBox, linearBox; juce::Slider freq; juce::Label freqValue, freqCap, slopeCap, delayCap, delayValue; juce::ComboBox slopeBox;
     std::unique_ptr<valueentry::ReadoutClick> freqClick;
@@ -200,7 +212,14 @@ public:
         key.setClickingTogglesState (false);
         key.setTooltip ("Low cut (before the inserts): click to switch it on or off. Hold the key down, or right-click it, to set the frequency, the slope and the kind: zero latency "
                         "(a Butterworth high-pass, the usual) or linear phase (held back by half its length). 80 Hz, 48 dB / octave, zero latency until changed.");
-        key.onClick = [this] { if (swallow) { swallow = false; return; } lc.setOn (! lc.on.get()); app.project.markDirty(); app.engine.checkLatency(); refresh(); };
+        key.onClick = [this]
+        {
+            if (swallow) { swallow = false; return; }
+            const bool v = ! lc.on.get();
+            lc.setOn (v);
+            for (auto& o : linked()) o.lc->setOn (v);                   // 3.58.0: the mixer strips linked to this one (Shift + Alt)
+            app.project.markDirty(); app.engine.checkLatency(); refresh(); refreshLinked();
+        };
         key.addMouseListener (this, false);
         addAndMakeVisible (key);
         if (pol != nullptr)
@@ -211,7 +230,13 @@ public:
             polKey.setColour (juce::TextButton::textColourOnId, juce::Colours::black);
             polKey.setTooltip ("Polarity: click to invert every channel of this strip (after the low cut, before the inserts) - lit while it is inverted. "
                                "The mixer's own; the preamp's polarity (in Preamps) is the hardware's.");
-            polKey.onClick = [this] { pol->set (! pol->get()); app.project.markDirty(); refresh(); };
+            polKey.onClick = [this]
+            {
+                const bool v = ! pol->get();
+                pol->set (v);
+                for (auto& o : linked()) if (o.polarity != nullptr) o.polarity->set (v);     // 3.58.0
+                app.project.markDirty(); refresh(); refreshLinked();
+            };
             addAndMakeVisible (polKey);
         }
         else
@@ -262,12 +287,24 @@ public:
     void openPanel()
     {
         auto panel = std::make_unique<LowCutPanel> (app, lc, nameOf ? nameOf() : juce::String());
+        {   // 3.58.0: opened with Shift + Alt held on a strip selected with others - the panel sets all of them
+            std::vector<LowCut*> others;
+            for (auto& o : linked()) others.push_back (o.lc);
+            if (! others.empty()) panel->setLinked (std::move (others));
+        }
         juce::Component::SafePointer<LowCutKey> safe (this);
-        panel->onChanged = [safe] { if (safe != nullptr) safe->refresh(); };
+        panel->onChanged = [safe] { if (safe != nullptr) { safe->refresh(); safe->refreshLinked(); } };
         auto& box = juce::CallOutBox::launchAsynchronously (std::move (panel), key.getScreenBounds(), nullptr);
         box.setDismissalMouseClicksAreAlwaysConsumed (true);
     }
+    /** 3.58.0: set by a mixer strip - the low cut and polarity of each strip linked to it right now (Shift + Alt held: StripGang in MixerWindow.cpp), so
+        a click on LC or the polarity key, or the panel's settings, change all of them the same; and what shows the result on their strips. Empty: on its own. */
+    struct Linked { LowCut* lc = nullptr; Flag* polarity = nullptr; };
+    std::function<std::vector<Linked>()> linkedNow;
+    std::function<void()> linkedRefresh;
 private:
+    std::vector<Linked> linked() const { return linkedNow ? linkedNow() : std::vector<Linked>(); }
+    void refreshLinked() { if (linkedRefresh) linkedRefresh(); }
     void timerCallback() override
     {
         stopTimer();

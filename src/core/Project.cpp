@@ -3,6 +3,7 @@
 #include "FileSync.h"
 #include "WavRepair.h"
 #include "AudioRelink.h"
+#include "StripOrder.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -460,7 +461,7 @@ Project::Project() { createDefaultDesign(); }
 
 void Project::createDefaultDesign()
 {
-    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; stageClickDb = 0.0f; stagePipeDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; ltcInPort = {}; ltcOutPort = {}; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone(); rxSeen.clear(); consonants.clear(); preampDevices.clear(); pitchPipe = PitchPipeDef(); click = ClickDef(); alignEnabled = true; alignSets.clear(); alignActive.clear();
+    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; stageClickDb = 0.0f; stagePipeDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; ltcInPort = {}; ltcOutPort = {}; lastImportWindow = juce::Uuid::null(); retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone(); rxSeen.clear(); consonants.clear(); preampDevices.clear(); pitchPipe = PitchPipeDef(); click = ClickDef(); alignEnabled = true; alignSets.clear(); alignActive.clear();
     sampleRate = 0.0;                                                                                 // (3.9.0: chosen for the new project by the one making it)
     postFaderSlots = false;                                                                           // (3.40.0: a new project starts without the post-fader slots)
     windowFiles.clear(); missingWindowRefs.clear(); loadNotes.clear(); oldWindowFiles.clear();     // (nothing of the project that was open before: its missing files are not this one's)
@@ -704,8 +705,16 @@ void Project::moveTrack (int from, int to)
 void Project::removeTrack (int index)
 {
     if (juce::isPositiveAndBelow (index, (int) tracks.size()))
+    {
+        forgetStrips ({ tracks[(size_t) index].id });
         tracks.erase (tracks.begin() + index);
+    }
     structureChanged();
+}
+
+void Project::forgetStrips (const std::vector<juce::Uuid>& going)
+{
+    for (auto& m : mixers) striporder::forget (m->stripPlaces, striporder::itemsOf (*this, *m), going);
 }
 
 BusDef& Project::addBus (const String& busName, bool external, BusFormat format)
@@ -721,7 +730,10 @@ BusDef& Project::addBus (const String& busName, bool external, BusFormat format)
 void Project::removeBus (int index)
 {
     if (juce::isPositiveAndBelow (index, (int) buses.size()))
+    {
+        forgetStrips ({ buses[(size_t) index].id });
         buses.erase (buses.begin() + index);
+    }
     structureChanged();
 }
 
@@ -754,6 +766,7 @@ void Project::removeVca (const juce::Uuid& id)
                 m->vcaShown.fetch_and (~(1u << bit));
                 m->vcas[bit].gainDb.set (0.0f); m->vcas[bit].mute.set (false); m->vcas[bit].solo.set (false);
             }
+            forgetStrips ({ id });
             vcas.erase (vcas.begin() + (std::ptrdiff_t) i);
             break;
         }
@@ -1242,6 +1255,11 @@ bool Project::trackHasAudio (const juce::Uuid& trackId) const
 int Project::removeEmptyTracks (const std::vector<juce::Uuid>& ids)
 {
     const auto before = tracks.size();
+    {
+        std::vector<juce::Uuid> going;                     // 3.58.0: a bus or VCA moved next to one of them in a mixer's window keeps its spot
+        for (auto& t : tracks) if (! t.isLtc && std::find (ids.begin(), ids.end(), t.id) != ids.end() && ! trackHasAudio (t.id)) going.push_back (t.id);
+        forgetStrips (going);
+    }
     tracks.erase (std::remove_if (tracks.begin(), tracks.end(), [&] (const TrackDef& t)
                   { return ! t.isLtc && std::find (ids.begin(), ids.end(), t.id) != ids.end() && ! trackHasAudio (t.id); }), tracks.end());
     const int gone = (int) (before - tracks.size());
@@ -1805,6 +1823,19 @@ var Project::mixerToVar (const MixerState& mref) const
         for (auto& h : m->hiddenStrips) for (auto& t : tracks) if (t.id == h) { hid.add (h.toString()); break; }
         if (! hid.isEmpty()) put (o, "hiddenStrips", hid);
     }
+    if (! m->stripPlaces.empty())                          // 3.58.0: buses and VCAs moved among the strips of this mixer's window (only those the project still has)
+    {
+        const auto items = striporder::itemsOf (*this, *m);
+        juce::Array<var> pl;
+        for (auto& p : m->stripPlaces)
+        {
+            if (striporder::indexOf (items, p.strip) < 0) continue;
+            var e = obj(); put (e, "strip", p.strip.toString());
+            if (! p.after.isNull()) put (e, "after", p.after.toString());
+            pl.add (e);
+        }
+        if (! pl.isEmpty()) put (o, "stripPlaces", pl);
+    }
     juce::Array<var> fxs;
     for (auto& f : buses)
     {
@@ -2051,6 +2082,9 @@ var Project::toVar (bool withWindows) const
         put (o, "id", t.id.toString()); put (o, "name", t.name); put (o, "format", (int) t.format);
         put (o, "surround", t.surroundChannels); put (o, "colour", (juce::int64) t.colour); put (o, "armed", t.isArmed()); put (o, "monitor", (int) t.monitor()); if (t.isLtc) put (o, "ltc", true);
         if (t.alignRole != 0) put (o, "alignRole", t.alignRole);
+        if (! t.mics.isEmpty()) put (o, "mics", t.mics.joinIntoString ("|"));                 // (3.57.0: written only when there are some)
+        if (! t.micsLeft.isEmpty()) put (o, "micsL", t.micsLeft.joinIntoString ("|"));
+        if (! t.micsRight.isEmpty()) put (o, "micsR", t.micsRight.joinIntoString ("|"));
         juce::Array<var> ins;
         for (int c = 0; c < t.channelCount(); ++c) ins.add (t.inputOf (c));
         put (o, "inputs", ins);
@@ -2084,6 +2118,7 @@ var Project::toVar (bool withWindows) const
     put (root, "ltcOutStartMode", ltcOutStartMode); put (root, "ltcOutStartSeconds", ltcOutStartSeconds);
     if (ltcInPort.isNotEmpty()) put (root, "ltcInPort", ltcInPort);
     if (ltcOutPort.isNotEmpty()) put (root, "ltcOutPort", ltcOutPort);
+    if (! lastImportWindow.isNull()) put (root, "lastImportWindow", lastImportWindow.toString());
     {
         auto outList = [] (const std::vector<int>& v) { juce::Array<var> a; for (int o : v) a.add (o); return var (a); };
         var pp = obj();
@@ -2390,7 +2425,7 @@ bool Project::fromVar (const var& root)
     if (! root.isObject() || ! isProjectFormat (root.getProperty ("format", {}).toString()))
         return false;
 
-    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; stageClickDb = 0.0f; stagePipeDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; ltcInPort = {}; ltcOutPort = {}; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone(); rxSeen.clear(); consonants.clear();
+    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; stageClickDb = 0.0f; stagePipeDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; ltcInPort = {}; ltcOutPort = {}; lastImportWindow = juce::Uuid::null(); retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone(); rxSeen.clear(); consonants.clear();
     sampleRate = juce::jmax (0.0, (double) root.getProperty ("sampleRate", 0.0));
     postFaderSlots = (bool) root.getProperty ("postFaderSlots", false);
     ignoredMissing.clear();
@@ -2423,6 +2458,8 @@ bool Project::fromVar (const var& root)
             t.format = (TrackFormat) (int) v["format"]; t.surroundChannels = (int) v["surround"]; t.colour = (juce::uint32) (juce::int64) v["colour"]; t.isLtc = v.hasProperty ("ltc") && (bool) v["ltc"];
             t.setArmed ((bool) v["armed"]); t.setMonitor ((Monitor) juce::jlimit (0, 3, (int) v["monitor"]));
             t.alignRole = juce::jlimit (0, 3, (int) v.getProperty ("alignRole", 0));
+            auto micList = [&v] (const char* k) { juce::StringArray a; a.addTokens (v.getProperty (k, juce::String()).toString(), "|", ""); a.removeEmptyStrings(); return a; };
+            t.mics = micList ("mics"); t.micsLeft = micList ("micsL"); t.micsRight = micList ("micsR");
             if (auto* ins = v["inputs"].getArray())
                 for (int c = 0; c < kMaxTrackChannels && c < ins->size(); ++c) t.inputs[(size_t) c] = (int) (*ins)[c];
             else for (int c = 0; c < t.channelCount(); ++c) t.inputs[(size_t) c] = (int) v["firstInput"] + c;   // older project files
@@ -2467,6 +2504,7 @@ bool Project::fromVar (const var& root)
     ltcInput = (int) root.getProperty ("ltcInput", -1); ltcOutput = (int) root.getProperty ("ltcOutput", -1); ltcOutOn = (bool) root.getProperty ("ltcOutOn", false);
     ltcOutFormat = (int) root.getProperty ("ltcOutFormat", 1); ltcOutStartMode = (int) root.getProperty ("ltcOutStartMode", 0); ltcOutStartSeconds = (double) root.getProperty ("ltcOutStartSeconds", 0.0);
     ltcInPort = root.getProperty ("ltcInPort", juce::String()).toString(); ltcOutPort = root.getProperty ("ltcOutPort", juce::String()).toString();
+    lastImportWindow = root.hasProperty ("lastImportWindow") ? juce::Uuid (root["lastImportWindow"].toString()) : juce::Uuid::null();
     {
         auto outs = [this] (const var& v) { std::vector<int> r; if (auto* a = v.getArray()) for (auto& x : *a) { const int o = (int) x; if (o >= 0 && o < (int) outputs.size() && std::find (r.begin(), r.end(), o) == r.end()) r.push_back (o); } return r; };
         pitchPipe = PitchPipeDef();
@@ -2551,6 +2589,11 @@ bool Project::fromVar (const var& root)
             m->followProcessing.set ((bool) v.getProperty ("followProcessing", false) && m->editId.isNull());
             if (auto* hs = v["hiddenStrips"].getArray())
                 for (auto& h : *hs) if (h.toString().isNotEmpty()) m->hiddenStrips.push_back (juce::Uuid (h.toString()));
+            if (auto* ps = v["stripPlaces"].getArray())     // 3.58.0
+                for (auto& pv : *ps)
+                    if (pv["strip"].toString().isNotEmpty())
+                        m->stripPlaces.push_back ({ juce::Uuid (pv["strip"].toString()),
+                                                    pv["after"].toString().isNotEmpty() ? juce::Uuid (pv["after"].toString()) : juce::Uuid::null() });
             mixers.push_back (std::move (m));
         }
 

@@ -220,3 +220,29 @@ copies it like everything else, which is fine.
     keys, none changed, written only when set: `"ltcInPort"` and `"ltcOutPort"` (MIDI port names); with `"ltcInPort"` set, `"ltcInput"` is
     255 and the LTC track's input is 255. fermata:Live opens no MIDI timecode port, so in it that LTC track records silence; nothing else in
     fermata:Live changes. A project that never chose a MIDI port is saved byte for byte as before.
+  - Still contract 3 (fermata 3.57.0, fermata:Live 0.10.7): an import laid out like a take window. The project file gained, on a track,
+    `"mics"`, `"micsL"` and `"micsR"` (the mics remembered for it, joined by "|"; written only when there are some) and, at the top,
+    `"lastImportWindow"` (the take window last imported into); none changed. `TrackDef` has `mics`, `micsLeft`, `micsRight`; `Project` has
+    `lastImportWindow`. `ImportPart` has `kOneSide` / `sourceRight` (a stereo track of which a take has only one side: `copyImportFiles`
+    writes silence on the other); `joinStereoPairs` / `stereoPairCandidates` name a pair "<name> L-R" when a file of its own already has the
+    pair's name (a Decca tree's centre). New header `src/core/TrackLayout.h` (fermata's import and take window only); `src/core/StereoJoin.h` gained
+    `writeJobs`, `planInto` and `applyInto` (fermata only). Nothing in fermata:Live uses them; its projects keep the new keys as they are.
+  - Still contract 3 (fermata 3.58.0, fermata:Live 0.10.8): the strips' order in a mixer window, a bus solo, two shared UI files. A mixer in
+    the project file gained `"stripPlaces"` (a list of `{ "strip", "after" }`: an Int Bus, an Ext Bus that is not a main output, or a VCA
+    shown right after another strip, "after" left out = first; written only when there are some); nothing changed. `MixerState` has
+    `StripPlace` / `stripPlaces` (message thread only, never read by the audio thread); new header `src/core/StripOrder.h` (the order, a move,
+    back to the usual place, and `forget` for strips that go); `Project::forgetStrips`, called by `removeTrack`, `removeEmptyTracks`,
+    `removeBus` and `removeVca`; `StereoJoin` moves a place after one of the two mono tracks onto the stereo track. fermata:Live keeps the
+    key as it is and shows its strips in the usual order. `AudioEngine`: a strip that feeds a soloed channel plays only the sends and output
+    that lead to it (`Node::soloSelf`, `soloAfter`); a soloed track or anything after a soloed channel plays as before. `src/ui/SpectralWindow.h`:
+    `JobDialogBase`'s bar shows the moving stripes and the seconds while a job's progress has not moved for a second. `src/ui/WaveColor.h`:
+    `WaveColorCache` keeps a queue (newest first), can run up to four workers (`setWorkers`, fermata only; one by default), each with its own
+    format manager, at low priority, and waits while `holdOff` says so (fermata: while recording).
+  - Still contract 3 (fermata 3.59.0, fermata:Live 0.10.9): WaveColour while recording. Nothing in the project file changed.
+    `AudioEngine::LiveFeed`: per recorded track, the mean of its first two channels in a ring of about 1.5 s (`std::atomic<float>`, written by
+    the audio thread - by the message thread at Stop, once the audio thread has left the take - read by one other thread, which can tell when
+    it fell behind: `begun` / `count` and fences, as a seqlock), with the colours worked out from it under its own lock and `ended` /
+    `fileDone`. Made only after `setLiveFeeds (true)` (fermata, while WaveColour is on); fermata:Live never calls it. `RecTrack::feed` is fed
+    wherever the take's file and live waveform are (`deliverFromRing`, the direct path, the silence for a device that was away); the direct
+    path's outsize block (written to the file as silence) now gives the live waveform and the feed that silence too. `WaveColorCache::put`
+    (`src/ui/WaveColor.h`): colours for a file worked out elsewhere, kept and saved as its own (fermata only).

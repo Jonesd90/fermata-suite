@@ -10,6 +10,7 @@
 #include "TakeWriter.h"
 #include "PitchPipe.h"
 #include "RateBridge.h"
+#include <mutex>
 
 namespace td
 {
@@ -93,6 +94,46 @@ public:
     /** 3.27.1: the takes (window id, take id) whose files refused data while they were finished, since the last call (message thread). */
     std::vector<std::pair<juce::Uuid, juce::Uuid>> takeFinishFailures() { auto v = std::move (finishFailures); finishFailures.clear(); return v; }
     bool   isRecording() const noexcept   { return rec.load() != nullptr; }
+
+    /** 3.59.0: the sound of one track being recorded, as WaveColour takes a file (the mean of its first two channels), so its waveform can be
+        coloured WHILE it records (fermata's take window: LiveWaveColours). fermata colours a file once it is finished; this is fed by the audio
+        thread beside the live waveform, in the same order as the file gets its audio (the silence for a device that was away included), so its
+        block k is the file's block k. One reader takes it in blocks from a ring of about 1.5 s: a reader that falls further behind loses the
+        oldest part (read() says no), never the recording. The colours worked out from it are kept here too (under 'lock': the reader adds,
+        the take window draws), with 'ended' (nothing more will come: Stop) and 'fileDone' (the file is closed). Lives while anyone holds it. */
+    struct LiveFeed
+    {
+        static constexpr int kBlock = 4096;                     // WaveColour's block (WaveColorCache::kBlock)
+        juce::File file;                                        // the take's file
+        double sampleRate = 48000.0;
+        /** Message thread, before the audio thread is handed it. */
+        void prepare (double sr, const juce::File& takeFile);
+        /** The writer (the audio thread; at Stop the message thread, once that thread has left the take). */
+        void add (const float* const* chans, int numChans, int n) noexcept;
+        void addSilence (juce::int64 n) noexcept;
+        /** The reader: samples [from, from + n) into dest. False when they have not all come yet, or have been written over (fell behind). */
+        bool read (juce::int64 from, float* dest, int n) const noexcept;
+        juce::int64 written() const noexcept { return count.load (std::memory_order_acquire); }
+        int capacity() const noexcept { return cap; }
+        std::atomic<bool> ended { false }, fileDone { false };
+        // the colours worked out so far, one per block: argb 0 = not known (the reader fell behind there); complete = every block, the last
+        // part-block too; gap = some are not known
+        mutable std::mutex lock;
+        std::vector<juce::uint32> argb;
+        std::vector<float> level;
+        bool complete = false, gap = false;
+    private:
+        std::unique_ptr<std::atomic<float>[]> ring;
+        int cap = 0;
+        std::atomic<juce::int64> begun { 0 }, count { 0 };     // samples the writer has started to put in / has put in
+    };
+    /** 3.59.0: whether the takes started from now on are fed for their colours (fermata: while WaveColour is on). Message thread. */
+    void setLiveFeeds (bool on) noexcept { liveFeedsOn = on; }
+    /** 3.59.0: the feed of a track of the take recording now (groupId null) or of that take while its files are being finished; null when it has
+        none. Message thread. */
+    std::shared_ptr<LiveFeed> getLiveFeed (const juce::Uuid& trackId, const juce::Uuid& groupId = juce::Uuid::null()) const;
+    /** 3.59.0: every feed of the take recording now and of the takes being finished. Message thread. */
+    std::vector<std::shared_ptr<LiveFeed>> liveFeeds() const;
 
     // --- the second recording drive (see BackupCopier) ---
     /** Message thread: every new take is also copied, while it records, into this folder (normally on another drive), in a folder named after the
@@ -378,7 +419,9 @@ private:
         BusState* bus = nullptr;
         int trackIndex = -1;
         std::vector<SendPlan> sends;
-        bool soloHeard = false;                 // audio thread: feeds something that is soloed (so it stays open while others are muted by solo)
+        bool soloHeard = false;                 // audio thread: feeds something that is soloed (so it stays open while others are muted by solo) - only on the paths that lead there (3.58.0)
+        bool soloSelf = false;                  // audio thread (3.58.0): soloed itself (its SOLO, or a soloed VCA's)
+        bool soloAfter = false;                 // audio thread (3.58.0): soloed, or fed by a soloed channel (a soloed track's reverb bus, the bus after a soloed bus): every path open
         bool receives = false;                  // other channels send here
         bool isMainOut = false;                 // the mixer's main Ext Bus (what 'talkback playback' takes from the processing mixer)
         int tapIdx = -1;                        // offline render: which capture output its post-fader signal goes to (-1 = none)
@@ -480,6 +523,7 @@ private:
         TrackPlan route;
         std::unique_ptr<TakeWriter> writer;
         std::unique_ptr<LivePeaks> peaks;
+        std::shared_ptr<LiveFeed> feed;                         // 3.59.0: its sound for the colours while it records (null: not wanted, see setLiveFeeds)
         std::shared_ptr<BackupCopier::Job> backup;              // its copy on the second drive (null when there is none)
     };
     /** The last seconds of every driver input that a track is patched to (session mode). Written by the audio thread; never reallocated
@@ -622,6 +666,7 @@ private:
     std::vector<float> tbTap;                       // audio thread: the playback-only main output of the processing mixer, left then right
     std::vector<float> mainCap;                     // audio thread: the processing mixer's main output, left then right, for the cue mixers that follow it
     std::unique_ptr<RecordingSession> session;      // owned by the message thread
+    bool liveFeedsOn = false;                       // 3.59.0: message thread (see setLiveFeeds)
     /** A stopped take whose files the finisher thread is closing. The message thread owns the list; the finisher only closes the writers of an
         entry it was handed and then sets 'done'. */
     struct Finishing

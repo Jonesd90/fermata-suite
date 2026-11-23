@@ -303,7 +303,7 @@ void AudioEngine::fillDeviceGap (RecordingSession& rs, PreRoll* pr, juce::int64 
     }
     const juce::int64 at = ring ? rs.delivered - rs.first + rs.gapSamples : rs.samples.load (std::memory_order_relaxed);
     if (n > rs.gapFillMax) { pushRecEvent (RecEvent::gapNotFilled, at, n); return; }
-    for (auto& rt : rs.tracks) { rt.writer->addSilence (n); rt.peaks->addSilence (n); }
+    for (auto& rt : rs.tracks) { rt.writer->addSilence (n); rt.peaks->addSilence (n); if (rt.feed != nullptr) rt.feed->addSilence (n); }
     rs.gapSamples += n;
     if (! ring) rs.samples.fetch_add (n);
     pushRecEvent (RecEvent::gapFilled, at, n);
@@ -791,6 +791,7 @@ void AudioEngine::deliverFromRing (RecordingSession& rs, juce::int64 from, juce:
             }
             if (! rt.writer->write (ptrs, len)) rs.overruns.fetch_add (1);
             rt.peaks->add (ptrs, rt.route.numCh, len);
+            if (rt.feed != nullptr) rt.feed->add (ptrs, rt.route.numCh, len);         // 3.59.0: for its colours while it records
         }
         from += len;
     }
@@ -1019,7 +1020,16 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
             if (! silenceOk) rt.writer->skip (numSamples);                 // (a block far bigger than the device said: its time is kept as silence)
             else if (! rt.writer->write (ptrs, numSamples))
                 rs->overruns.fetch_add (1);
-            if (silenceOk) rt.peaks->add (ptrs, rt.route.numCh, numSamples);
+            if (silenceOk)
+            {
+                rt.peaks->add (ptrs, rt.route.numCh, numSamples);
+                if (rt.feed != nullptr) rt.feed->add (ptrs, rt.route.numCh, numSamples);          // 3.59.0: for its colours while it records
+            }
+            else                                                            // 3.59.0: the live waveform and the feed keep in time with the file (they lost this time)
+            {
+                rt.peaks->addSilence (numSamples);
+                if (rt.feed != nullptr) rt.feed->addSilence (numSamples);
+            }
         }
         if (! silenceOk) rs->overruns.fetch_add (1);
         rs->samples.fetch_add (numSamples);
@@ -1375,15 +1385,25 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
     {
         const juce::uint32 vm = nd->kind == NodeKind::Track ? nd->strip->vcaMask.load (std::memory_order_relaxed) : nd->kind == NodeKind::IntBus ? nd->bus->vcaMask.load (std::memory_order_relaxed) : 0u;
         const bool me = (nd->kind == NodeKind::Track && nd->strip->solo.get()) || (nd->kind == NodeKind::IntBus && nd->bus->solo.get()) || (vm & vcaSolo) != 0;
-        nd->soloHeard = me;
+        nd->soloSelf = me; nd->soloAfter = me; nd->soloHeard = false;
         anySolo = anySolo || me;
     }
-    if (anySolo)                                           // whatever feeds a soloed channel (tracks, buses, through faders or sends) stays open too
-        for (size_t k = mp.order.size(); k-- > 0;)
+    // 3.58.0 (asked for on 22 November 2026: "if I solo that int bus, the main output of those audio tracks are muted and only the track send to that
+    // solod int bus is kept active"): what is heard while something is soloed. A soloed channel, and whatever it feeds (a soloed track's reverb bus,
+    // the bus after a soloed bus), plays on every path ('after'). A channel that feeds a soloed one ('heard') plays only on the paths that lead to it:
+    // a track sent to a soloed Int Bus is heard through that bus, not also on its own way to the main output, nor through any other bus. Anything else
+    // is silent. (Before, a channel feeding a soloed one was opened whole: its main output and its other sends were heard as well.)
+    auto sendOn = [] (const SendPlan& sp) { return (sp.st->active() && ! sp.st->mute.get()) || sp.st->lastGain > 0.0f; };   // (a send held in the plan while off, or muted, keeps nothing open)
+    if (anySolo)
+    {
+        for (size_t k = mp.order.size(); k-- > 0;)         // backwards (every channel comes after the ones that feed it): what feeds a soloed channel, through faders or sends
         {
             auto& nd = *mp.order[k];
-            for (auto& sp : nd.sends) if (sp.dest->soloHeard && ((sp.st->active() && ! sp.st->mute.get()) || sp.st->lastGain > 0.0f)) { nd.soloHeard = true; break; }     // (a send held in the plan while off, or muted, keeps nothing open)
+            for (auto& sp : nd.sends) if (sendOn (sp) && (sp.dest->soloSelf || sp.dest->soloHeard)) { nd.soloHeard = true; break; }
         }
+        for (auto& ndp : mp.order)                          // forwards: what a soloed channel feeds
+            if (ndp->soloAfter) for (auto& sp : ndp->sends) if (sendOn (sp)) sp.dest->soloAfter = true;
+    }
 
     for (auto& nd : mp.order) if (nd->receives) nd->incoming.clear (0, n);
     const bool playingForDelays = playing && ! mp.tailNow;
@@ -1510,7 +1530,7 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
                 for (int c = 0; c < nc; ++c)
                     juce::FloatVectorOperations::addWithMultiply ((c & 1) ? R : L, view.getReadPointer (c), k, n);
             }
-            soloOk = ! anySolo || st->solo.get() || nd.soloHeard;
+            soloOk = ! anySolo || st->solo.get() || nd.soloSelf || nd.soloAfter || nd.soloHeard;      // (3.58.0: which of its paths are heard: see pathOpen below)
             audible = ! st->mute.get() && soloOk;
             faderGain = dbToGain (st->gainDb.get());
             if (const auto vm = st->vcaMask.load (std::memory_order_relaxed); vm != 0 && mp.mixer != nullptr) faderGain *= mp.mixer->vcaGain (vm, st->vcaAutoDb, st->vcaAutoMask.load (std::memory_order_relaxed));      // the VCAs of this strip add their gain
@@ -1693,7 +1713,9 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
         for (auto& sp : nd.sends)
         {
             auto* sd = sp.st;
-            const float st1 = sd->active() && ! sd->mute.get() ? dbToGain (sd->gainDb.get()) : 0.0f;     // (its own MUTE: faded out like a level change; the level is kept)
+            // 3.58.0: under a solo, a path is heard only out of a channel that is soloed (or fed by one), or into a channel on the way to a soloed one
+            const bool pathOpen = ! anySolo || nd.soloAfter || sp.dest->soloSelf || sp.dest->soloHeard;
+            const float st1 = pathOpen && sd->active() && ! sd->mute.get() ? dbToGain (sd->gainDb.get()) : 0.0f;     // (its own MUTE: faded out like a level change; the level is kept)
             if (st1 == 0.0f && sd->lastGain == 0.0f) continue;
             const int dc = sp.dstCh;                                 // the destination's channels: the send's inserts, delay line and level work on these
             const juce::AudioBuffer<float>* src = nullptr;
@@ -2053,6 +2075,7 @@ juce::String AudioEngine::startRecording (TakeWindowDef& window)
         for (int dup = 2; file.existsAsFile(); ++dup)   // never overwrite an existing recording
             file = folder.getChildFile (TakeWindowDef::fileNameFor (group.number, label, t->name + " (" + juce::String (dup) + ")"));
         rt.info.file = file;
+        if (liveFeedsOn) { rt.feed = std::make_shared<LiveFeed>(); rt.feed->prepare (sampleRate, file); }      // 3.59.0: coloured while it records
 
         auto opts = juce::AudioFormatWriterOptions()
                         .withSampleRate (sampleRate)
@@ -2148,6 +2171,12 @@ juce::Uuid AudioEngine::stopRecording()
         session->delivered = session->livePos.load();
         session->samples.store (session->delivered - session->first + session->gapSamples);
     }
+    for (auto& rt : session->tracks)                                   // 3.59.0: nothing more comes into the feeds - their colours can finish (a file that lost
+        if (rt.feed != nullptr)                                         // sound to an overrun has silence where the feed had it: its colours are not handed to it)
+        {
+            if (rt.writer->samplesLost() > 0) { const std::lock_guard<std::mutex> g (rt.feed->lock); rt.feed->gap = true; }
+            rt.feed->ended.store (true, std::memory_order_release);
+        }
     const auto length = session->samples.load();
     const auto gid = session->groupId;
     auto fin = std::make_unique<Finishing>();
@@ -2203,8 +2232,14 @@ void AudioEngine::Finisher::run()
         const auto t0 = juce::Time::getMillisecondCounterHiRes();
         for (auto& rt : f->rs->tracks)                              // writes what is left in the buffer, then the header (the length)
         {
-            if (rt.writer != nullptr && ! rt.writer->finish()) f->failedAtEnd.store (true, std::memory_order_relaxed);
+            const bool ok = rt.writer == nullptr || rt.writer->finish();
+            if (! ok) f->failedAtEnd.store (true, std::memory_order_relaxed);
             rt.writer.reset();
+            if (rt.feed != nullptr)                                     // 3.59.0: its colours may now be handed to the file - not when the file lost its end
+            {
+                if (! ok) { const std::lock_guard<std::mutex> g (rt.feed->lock); rt.feed->gap = true; }
+                rt.feed->fileDone.store (true, std::memory_order_release);
+            }
         }
         for (auto& c : f->copies) BackupCopier::finish (c);         // now the second drive's copies can take the finished files
         juce::Logger::writeToLog (f->report + "; files finished " + juce::String (juce::roundToInt (juce::Time::getMillisecondCounterHiRes() - t0)) + " ms after Stop"
@@ -2327,6 +2362,81 @@ void AudioEngine::LivePeaks::addSilence (juce::int64 n) noexcept
         count += take; n -= take;
         if (count >= binSamples) closeBin();
     }
+}
+
+void AudioEngine::LiveFeed::prepare (double sr, const juce::File& takeFile)
+{
+    sampleRate = sr > 0.0 ? sr : 48000.0;
+    file = takeFile;
+    cap = juce::jmax (4, (int) std::ceil (1.5 * sampleRate / (double) kBlock)) * kBlock;     // about 1.5 s, in whole blocks
+    ring.reset (new std::atomic<float>[(size_t) cap]);
+    for (int i = 0; i < cap; ++i) ring[(size_t) i].store (0.0f, std::memory_order_relaxed);
+}
+
+void AudioEngine::LiveFeed::add (const float* const* chans, int numChans, int n) noexcept
+{
+    if (cap <= 0 || n <= 0 || numChans < 1) return;
+    const auto w = count.load (std::memory_order_relaxed);
+    begun.store (w + n, std::memory_order_relaxed);
+    std::atomic_thread_fence (std::memory_order_release);              // (a reader that sees any of what follows sees 'begun' too: see read)
+    const float* a = chans[0];
+    const float* b = numChans > 1 ? chans[1] : nullptr;                // (WaveColour takes the mean of the first two channels)
+    int pos = (int) (w % cap);
+    for (int i = 0; i < n; ++i)
+    {
+        ring[(size_t) pos].store (b != nullptr ? 0.5f * (a[i] + b[i]) : a[i], std::memory_order_relaxed);
+        if (++pos == cap) pos = 0;
+    }
+    count.store (w + n, std::memory_order_release);
+}
+
+void AudioEngine::LiveFeed::addSilence (juce::int64 n) noexcept
+{
+    if (cap <= 0 || n <= 0) return;
+    const auto w = count.load (std::memory_order_relaxed);
+    begun.store (w + n, std::memory_order_relaxed);
+    std::atomic_thread_fence (std::memory_order_release);
+    const auto z = juce::jmin<juce::int64> (n, cap);                   // (longer than the ring: only its last ring's worth is there to be read)
+    int pos = (int) ((w + n - z) % cap);
+    for (juce::int64 i = 0; i < z; ++i)
+    {
+        ring[(size_t) pos].store (0.0f, std::memory_order_relaxed);
+        if (++pos == cap) pos = 0;
+    }
+    count.store (w + n, std::memory_order_release);
+}
+
+bool AudioEngine::LiveFeed::read (juce::int64 from, float* dest, int n) const noexcept
+{
+    if (cap <= 0 || n <= 0 || n > cap || from < 0) return false;
+    const auto w = count.load (std::memory_order_acquire);
+    if (from + n > w || from < w - cap) return false;
+    int pos = (int) (from % cap);
+    for (int i = 0; i < n; ++i)
+    {
+        dest[i] = ring[(size_t) pos].load (std::memory_order_relaxed);
+        if (++pos == cap) pos = 0;
+    }
+    std::atomic_thread_fence (std::memory_order_acquire);
+    return from >= begun.load (std::memory_order_relaxed) - cap;       // (the writer had started to write over some of it: not good)
+}
+
+std::shared_ptr<AudioEngine::LiveFeed> AudioEngine::getLiveFeed (const juce::Uuid& trackId, const juce::Uuid& groupId) const
+{
+    const RecordingSession* rsn = groupId.isNull() || (session != nullptr && session->groupId == groupId) ? session.get() : nullptr;
+    if (rsn == nullptr && ! groupId.isNull())
+        for (auto& f : finishing) if (f->rs != nullptr && f->rs->groupId == groupId) rsn = f->rs.get();
+    if (rsn != nullptr)
+        for (auto& rt : rsn->tracks) if (rt.info.trackId == trackId) return rt.feed;
+    return nullptr;
+}
+
+std::vector<std::shared_ptr<AudioEngine::LiveFeed>> AudioEngine::liveFeeds() const
+{
+    std::vector<std::shared_ptr<LiveFeed>> v;
+    if (session != nullptr) for (auto& rt : session->tracks) if (rt.feed != nullptr) v.push_back (rt.feed);
+    for (auto& f : finishing) if (f->rs != nullptr) for (auto& rt : f->rs->tracks) if (rt.feed != nullptr) v.push_back (rt.feed);
+    return v;
 }
 
 bool AudioEngine::getLivePeaks (const juce::Uuid& trackId, const juce::int16*& data, int& bins, int& binSamples, int* numChannels, const juce::Uuid& groupId) const

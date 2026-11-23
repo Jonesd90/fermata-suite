@@ -36,6 +36,12 @@ struct TrackDef
     /** Spot-mic time alignment (see timealign::analyse): the track's role - 0 not used, 1 main, 2 spot, 3 distance. The role belongs to the track
         (where the mic is in the set-up); the delays and measurements belong to each piece (Project::alignSets). */
     int          alignRole = 0;
+    /** 3.57.0: the microphones whose audio goes on this track, as the import reads them from the file names (compared without capitals, the words
+        joined by single spaces: see tracklayout::canon) - remembered when an import is laid out like another take window, so a track renamed, or
+        a mic whose name the matching could not see, is found again for the next piece. 'mics': files that go on the track whole (a mono file on a
+        mono track, a stereo file on a stereo track); 'micsLeft' / 'micsRight': the mono files that go on the left / right side of a stereo track.
+        Most of what the layout knows does not need these: it is read from the take files' own original names (TakeFile::sourceName). */
+    juce::StringArray mics, micsLeft, micsRight;
 
     TrackDef() { inputs.fill (-1); }
 
@@ -169,6 +175,8 @@ public:
     // 3.56.0: timecode as MIDI (MTC) - the MIDI port it comes in on (then ltcInput is kMaxInputs - 1: the LTC the engine makes from it) and the
     // MIDI port Fermata's own is sent on as well as, or instead of, ltcOutput. By the port's name (as rtpMIDI names its session). Empty: none.
     juce::String ltcInPort, ltcOutPort;
+    /** 3.57.0: the take window takes were last imported into (an import laid out "like another take window" offers it first). Null = none yet. */
+    juce::Uuid lastImportWindow;
     // ---- spot-mic alignment (the Align window): every piece keeps its own set (a take window's id -> its set; an edit measured in post: the edit's id)
     std::map<juce::String, AlignSet> alignSets;
     juce::String alignActive;                 // whose set the mixers use now: the piece being recorded, played or worked on (set by the program)
@@ -297,6 +305,9 @@ public:
     /** Gives the track its inputs: channel 0 gets 'first', channel 1 gets first+1, ... (clipped to the inputs that exist). */
     void assignInputsFrom (TrackDef&, int first) const;
     void removeTrack (int index);
+    /** 3.58.0: strips about to leave the project (tracks, a bus, a VCA): in every mixer, a bus or VCA moved right after one of them takes the strip
+        before it instead (MixerState::stripPlaces, StripOrder.h), so it stays where it is in the window. Called by the removals here. */
+    void forgetStrips (const std::vector<juce::Uuid>& going);
     BusDef& addBus (const juce::String& busName, bool external = false, BusFormat format = BusFormat::Stereo);
     /** 3.39.0: the channel format of a bus (stereo for anything else: an audio track, an unknown id). */
     BusFormat busFormat (const juce::Uuid&) const;

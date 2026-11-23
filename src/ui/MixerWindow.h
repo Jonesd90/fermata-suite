@@ -115,6 +115,10 @@ private:
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
     void timerCallback() override;
     void rebuild();
+    /** 3.58.0: a bus or VCA strip moved sideways - dragged between two strips (it now comes right after 'after'; null: first), or from its name
+        plate's menu (StripBase::kMoveNext / kMoveBack). Kept in the mixer (MixerState::stripPlaces) and saved; the strips are rebuilt afterwards. */
+    void moveStrip (const juce::Uuid& strip, const juce::Uuid& after);
+    void moveCommand (const juce::Uuid& strip, int what);
     int naturalContentW() const;
     int naturalContentH() const;
     int minContentH() const;
@@ -122,7 +126,7 @@ private:
     bool inApply = false;
     int slotsBase = 1, extraSlots = 0;
     // 3.26.0: the rows every strip lays out (see StripLayout in MixerWindow.cpp), what the last layout gave, and the fader line / the top section's scroll bar
-    int lyInputRows = 2, lyPanRows = 2, lySendRows = 1;
+    int lyInputRows = 2, lyPanRows = 1, lySendRows = 1;
     bool lyPostRow = false;               // 3.40.0: the post-fader slot's row under every fader (Project::postFaderSlots)
     int lastTopShown = 0, lastTopContent = 0, lastFaderH = 0, topScroll = 0, dragFader = 0, shownFaderGen = 0, lastViewY = 0;
     bool lineDragging = false;

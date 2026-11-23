@@ -59,6 +59,8 @@
 #include "../src/core/TextBytes.h"
 #include "../src/core/RxWatch.h"
 #include "../src/core/StereoJoin.h"
+#include "../src/core/TrackLayout.h"
+#include "../src/core/StripOrder.h"
 #include "../src/core/WaveShape.h"
 #include "../src/core/Surround.h"
 #include "../src/ui/TakeMatchService.h"
@@ -66,6 +68,7 @@
 #include "../src/ui/OnceSavedBin.h"
 #include <cstdio>
 #include <thread>
+#include <set>
 
 using namespace td;
 static int failures = 0;
@@ -1244,11 +1247,28 @@ int main()
             CHECK (p.setSendLevel (mixA, violinId, strings, 0.0f) == SendResult::RoutingChanged);
             eng.rebuildPlan();
             auto* toStrings = mixA.stripFor (violinId)->sends.find (strings);
+            const bool stringsWasOn = mixA.busFor (strings)->outOn.get(); const auto stringsWasTo = mixA.busFor (strings)->outDest;
+            mixA.busFor (strings)->outOn.set (true); mixA.busFor (strings)->outDest = juce::Uuid::null(); eng.rebuildPlan();     // (Strings -> Main)
             mixA.busFor (strings)->solo.set (true);
-            CHECK (rig.measure (eng)[0] > 0.2);                                           // the send on: the violin stays open (its own main out is heard)
+            {
+                const auto m = rig.measure (eng);
+                CHECK (m[0] > 0.2 && corr (rig.out[0], rig.in[0]) > 0.9);              // the send on: the violin is heard - through Strings
+                CHECK (m[2] < 1e-6);                                                      // 3.58.0: not on its other ways out (its send to the Foldback Ext Bus)
+            }
+            mixA.busFor (strings)->outOn.set (false); eng.rebuildPlan();
+            CHECK (rig.measure (eng)[0] < 1e-6);                                          // 3.58.0: nor on its own main output: Strings going nowhere, nothing is heard
+            mixA.busFor (strings)->outOn.set (true); eng.rebuildPlan();
             toStrings->mute.set (true);
             CHECK (rig.measure (eng)[0] < 1e-6);                                          // muted: nothing keeps it open any more
             toStrings->mute.set (false); mixA.busFor (strings)->solo.set (false);
+            {   // a soloed TRACK still plays on all its paths: its main output, its sends, and the bus it feeds out to Main
+                mixA.stripFor (violinId)->solo.set (true);
+                const auto m = rig.measure (eng);
+                CHECK (m[0] > 0.2 && m[2] > 0.2);
+                mixA.stripFor (violinId)->solo.set (false);
+                rig.measure (eng);
+            }
+            mixA.busFor (strings)->outOn.set (stringsWasOn); mixA.busFor (strings)->outDest = stringsWasTo; eng.rebuildPlan();
             p.setSendLevel (mixA, violinId, strings, -100.0f);
             eng.rebuildPlan();
             // written so that an older Fermata (no send mute) keeps it silent: level off, the kept level beside it
@@ -15884,6 +15904,453 @@ int main()
                 close = close && std::abs ((tcAt - startQ) - (heard - t0)) < 1.5 / fps;
             }
             CHECK (close);
+        }
+    }
+
+    SECTION ("3.57.0 an import laid out like a take window: each mic onto the track it went on there (renamed, made stereo), and a window's takes moved onto another window's tracks");
+    {
+        using namespace tracklayout;
+        auto SL = [] (const juce::Uuid& t, int side) { Slot x; x.track = t; x.side = side; return x; };
+        // the names as compared
+        CHECK (canon ("Rorate Caeli_SPOT4-19") == "rorate caeli spot4 19" && canon ("Omni-L") == "omni l");
+        {
+            juce::String b;
+            CHECK (sideOf ("Omni-Right", b) == 1 && b == "omni");
+            CHECK (sideOf ("Piano4099L", b) == 0 && b == "piano4099");
+            CHECK (sideOf ("Vln1", b) == -1 && sideOf ("OMNI", b) == -1);
+        }
+        CHECK (withoutTakeNumbers ("spot4 19 18") == "spot4" && withoutTakeNumbers ("mic 1") == "mic 1" && withoutTakeNumbers ("01 02").isEmpty());
+        {
+            const auto r = reducedNames ({ "gloria spot1", "gloria spot2", "gloria omni l", "gloria omni r" });
+            CHECK (r.at ("gloria spot1") == "spot1" && r.at ("gloria omni l") == "omni l");
+            CHECK (reducedNames ({ "gloria a", "gloria b", "gloria c" }).at ("gloria a") == "gloria a");            // (three names say too little)
+            CHECK (reducedNames ({ "tree l", "tree r", "tree c l", "tree c r" }).at ("tree l") == "tree l");         // (nothing would be left but a side)
+        }
+        // (found here too) a Decca tree: Tree-L + Tree-R joined is "Tree L-R", not "Tree" - the Tree-C file is the track "Tree"
+        {
+            std::vector<ImportSource> tree;
+            for (int n = 1; n <= 2; ++n)
+                for (auto* m : { "Tree-L", "Tree-C", "Tree-R", "Spot" })
+                {
+                    ImportSource x; x.file = tmp.getChildFile ("P 00" + juce::String (n) + "_" + m + ".wav"); x.channels = 1; x.length = (4 + n) * 48000; x.sampleRate = 48000.0;
+                    tree.push_back (x);
+                }
+            const auto tp = buildImportPlan (tree);
+            const auto joined = joinStereoPairs (tp);
+            juce::StringArray names; for (auto& t : joined.tracks) names.add (t.name + (t.channels == 2 ? " (2)" : ""));
+            CHECK (joined.tracks.size() == 3 && names.contains ("Tree") && names.contains ("Tree L-R (2)") && names.contains ("Spot"));
+            const auto cands = stereoPairCandidates (tp);
+            CHECK (cands.size() == 1 && cands[0].name == "Tree L-R" && cands[0].key == "tree");
+            bool twoOnOne = false;
+            for (auto& t : joined.takes) { std::set<juce::String> k; for (auto& p : t.parts) if (! k.insert (p.trackKey).second) twoOnOne = true; }
+            CHECK (! twoOnOne);
+        }
+        // piece 1, set up: imported as Pyramix files ("Sym1 001_Vln1.wav" ...), Vln1 renamed Violins I, Vla Violas, Wood Woodwind, Omni-L and
+        // Omni-R made into the stereo track Omni; a keyboard track whose file name says nothing useful, but "celesta" was chosen for it before
+        auto dir = tmp.getChildFile ("Layout"); dir.deleteRecursively(); dir.createDirectory();
+        juce::AudioFormatManager fm; fm.registerBasicFormats();
+        auto readAt = [&] (const juce::File& f, juce::int64 at, int ch) -> float
+        {
+            auto r = audioops::openReader (fm, f); if (r == nullptr || ch >= (int) r->numChannels) return -9.0f;
+            std::vector<std::vector<float>> v; audioops::readRange (*r, at, 1, v); return v[(size_t) ch][0];
+        };
+        auto chans = [&] (const juce::File& f) { auto r = audioops::openReader (fm, f); return r != nullptr ? (int) r->numChannels : 0; };
+        auto lenOf = [&] (const juce::File& f) { auto r = audioops::openReader (fm, f); return r != nullptr ? r->lengthInSamples : (juce::int64) -1; };
+        const juce::int64 S = 48000;
+        Project q; q.setInputCount (16); q.setOutputCount (2); q.tracks.clear(); q.buses.clear(); q.takeWindows.clear(); q.edits.clear();
+        q.projectFile = dir.getChildFile ("Layout.fermata");
+        const auto vlnI = q.addTrack ("Violins I", TrackFormat::Mono, 0).id;
+        const auto vln2 = q.addTrack ("Vln2", TrackFormat::Mono, 1).id;
+        const auto vla  = q.addTrack ("Violas", TrackFormat::Mono, 2).id;
+        const auto omni = q.addTrack ("Omni", TrackFormat::Stereo, 3).id;
+        const auto wind = q.addTrack ("Woodwind", TrackFormat::Mono, 5).id;
+        const auto harp = q.addTrack ("Harp", TrackFormat::Mono, 6).id;
+        const auto kbd  = q.addTrack ("Keyboard", TrackFormat::Mono, 7).id;
+        auto& X = q.addTakeWindow ("Symphony 1");
+        const auto xid = X.id;
+        auto tf = [&dir] (const juce::Uuid& tr, const juce::String& src, const juce::String& src2)
+        { TakeFile f; f.trackId = tr; f.file = dir.getChildFile ("copy of " + src); f.numChannels = src2.isEmpty() ? 1 : 2; f.sourceName = src; f.sourceName2 = src2; return f; };
+        for (int n = 1; n <= 2; ++n)
+        {
+            TakeGroup g; g.id = juce::Uuid(); g.number = n; g.lengthSamples = (3 + n) * S; g.sampleRate = 48000.0; g.startSeconds = n * 10.0;
+            const juce::String pre = "Sym1 00" + juce::String (n) + "_";
+            g.files = { tf (vlnI, pre + "Vln1.wav", {}), tf (vln2, pre + "Vln2.wav", {}), tf (vla, pre + "Vla.wav", {}), tf (omni, pre + "Omni-L.wav", pre + "Omni-R.wav"),
+                        tf (wind, pre + "Wood.wav", {}), tf (harp, pre + "Harp.wav", {}), tf (kbd, pre + "Track 9.wav", {}) };
+            X.groups.push_back (g);
+        }
+        remember (*q.findTrack (kbd), -1, { "celesta" });
+        const auto lay = layoutOf (q, X);
+        CHECK (lay.tracks.size() == 7 && lay.window == xid);
+        CHECK (lay.find (SL (omni, 0)) != nullptr && lay.find (SL (omni, 0))->names.contains ("omni l") && lay.find (SL (omni, 1)) != nullptr && lay.find (SL (omni, 1))->names.contains ("omni r"));
+        CHECK (lay.find (SL (vlnI, -1))->names.contains ("vln1") && lay.find (SL (vlnI, -1))->names.contains ("violins i") && lay.find (SL (kbd, -1))->names.contains ("celesta"));
+        // piece 2's files, as the import reads them: the same mics, a tuba as well, and take 2 has no Omni-R file
+        auto src = [&] (const juce::String& name, juce::int64 len) { ImportSource x; x.file = dir.getChildFile (name); x.channels = 1; x.length = len; x.sampleRate = 48000.0; return x; };
+        std::vector<ImportSource> in;
+        for (int n = 1; n <= 2; ++n)
+            for (auto* m : { "Vln1", "Vln2", "Vla", "Omni-L", "Omni-R", "Wood", "Celesta", "Tuba" })
+                if (! (n == 2 && juce::String (m) == "Omni-R"))
+                    in.push_back (src ("Sym2 00" + juce::String (n) + "_" + m + ".wav", (5 + n) * S));
+        const auto base = buildImportPlan (in);
+        CHECK (base.readAs == "Pyramix" && base.takes.size() == 2 && base.tracks.size() == 8);
+        juce::StringArray all; for (auto& t : base.tracks) all.add (canon (t.name));
+        const auto red = reducedNames (all);
+        std::vector<Item> items; std::map<juce::String, juce::StringArray> namesOf;
+        for (auto& t : base.tracks) { Item it; it.key = t.key; it.names = formsOf (t.name, red); it.original = t.name; it.channels = t.channels; items.push_back (it); namesOf[t.key] = it.names; }
+        const auto found = match (lay, items);
+        auto where = [&] (const juce::String& key) { for (size_t i = 0; i < items.size(); ++i) if (items[i].key == key) return found[i]; return Found(); };
+        CHECK (where ("vln1").slot == SL (vlnI, -1) && where ("vln1").how == How::sameName);
+        CHECK (where ("vln2").slot == SL (vln2, -1) && where ("vla").slot == SL (vla, -1) && where ("wood").slot == SL (wind, -1));
+        CHECK (where ("omni-l").slot == SL (omni, 0) && where ("omni-r").slot == SL (omni, 1));
+        CHECK (where ("celesta").slot == SL (kbd, -1));                                       // (remembered on the track)
+        CHECK (where ("tuba").slot.isNull() && where ("tuba").how == How::none);               // (no such mic there: a track of its own)
+        // the other ways of matching
+        {
+            Layout l2; l2.window = xid; l2.tracks = { omni, vla };
+            Entry eo; eo.slot = SL (omni, -1); eo.channels = 2; eo.names = { "omni" }; l2.entries.push_back (eo);
+            Entry ev; ev.slot = SL (vla, -1); ev.channels = 1; ev.names = { "gloria vla" }; l2.entries.push_back (ev);
+            Item a; a.key = "a"; a.names = { "omni right" }; a.original = "Omni Right"; a.channels = 1;
+            Item b; b.key = "b"; b.names = { "vla" }; b.original = "Vla"; b.channels = 1;
+            Item c; c.key = "c"; c.names = { "gloria vla 07 03" }; c.original = "Gloria Vla 07 03"; c.channels = 1;
+            Item d; d.key = "d"; d.names = { "omni" }; d.original = "Omni"; d.channels = 1;                   // (a mono file named as the stereo track: not on it)
+            const auto f = match (l2, { a, b, c, d });
+            CHECK (f[0].slot == SL (omni, 1) && f[0].how == How::sideOfStereo);
+            CHECK (f[1].slot == SL (vla, -1) && f[1].how == How::endOfName);
+            CHECK (f[2].slot == SL (vla, -1) && f[2].how == How::numbersOff);
+            CHECK (f[3].slot.isNull());
+        }
+        // the plan: every file on its track, the Omni pair one stereo part (take 2: the left alone, the right silent), the tuba on a track of its own
+        std::map<juce::String, Choice> choices;
+        for (size_t i = 0; i < items.size(); ++i) { Choice c; if (! found[i].slot.isNull()) { c.kind = Choice::slot; c.to = found[i].slot; } choices[items[i].key] = c; }
+        auto trackName = [&q] (const juce::Uuid& id) { auto* t = q.findTrack (id); return t != nullptr ? t->name : juce::String(); };
+        const auto b = build (base, choices, namesOf, trackName);
+        CHECK (b.clashing.empty() && b.plan.takes.size() == 2 && b.plan.tracks.size() == 7);
+        auto partOn = [] (const ImportTake& t, const juce::String& key) -> const ImportPart* { for (auto& p : t.parts) if (p.trackKey == key) return &p; return nullptr; };
+        const auto* o1 = partOn (b.plan.takes[0], keyFor (omni)); const auto* o2 = partOn (b.plan.takes[1], keyFor (omni));
+        CHECK (o1 != nullptr && o1->source2 >= 0 && o1->trackChannels == 2 && o1->trackName == "Omni");
+        CHECK (o1 != nullptr && base.sources[(size_t) o1->source].file.getFileName().contains ("Omni-L") && base.sources[(size_t) o1->source2].file.getFileName().contains ("Omni-R"));
+        CHECK (o2 != nullptr && o2->source2 == ImportPart::kOneSide && ! o2->sourceRight && o2->joined());
+        CHECK (b.problems.joinIntoString (" ").contains ("silent"));
+        CHECK (b.plan.takes[0].parts.size() == 7 && partOn (b.plan.takes[0], keyFor (vlnI)) != nullptr && partOn (b.plan.takes[0], keyFor (vlnI))->trackName == "Violins I" && partOn (b.plan.takes[0], "tuba") != nullptr);
+        bool rightRemembered = false;
+        for (auto& m : b.mics) if (m.key == keyFor (omni) && m.side == 1 && m.names.contains ("omni r")) rightRemembered = true;
+        CHECK (rightRemembered);
+        {
+            auto c2 = choices; c2["vln2"].kind = Choice::slot; c2["vln2"].to = SL (vlnI, -1);                   // two mics of a take on one track: both rows say so
+            const auto bc = build (base, c2, namesOf, trackName);
+            CHECK (bc.clashing.count ("vln1") == 1 && bc.clashing.count ("vln2") == 1);
+            auto c3 = choices; c3["tuba"].kind = Choice::leaveOut;
+            CHECK (build (base, c3, namesOf, trackName).plan.tracks.size() == 6);
+            auto c4 = choices; c4["vla"].kind = Choice::slot; c4["vla"].to = SL (omni, -1); c4["vla"].to.side = 0;      // a side and the whole of one track
+            juce::ignoreUnused (c4);
+        }
+        {
+            TrackDef t; t.format = TrackFormat::Mono;
+            remember (t, 0, { "x" }); CHECK (t.micsLeft.isEmpty());                                                // (a mono track has no sides)
+            for (int i = 0; i < 40; ++i) remember (t, -1, { "m" + juce::String (i) });
+            CHECK (t.mics.size() == 32 && t.mics[0] == "m8");
+        }
+        // the import writes a stereo file from one side, silence on the other (and from two files of different lengths)
+        {
+            const auto l = makeConstWav (dir.getChildFile ("one L.wav"), 0.25, 2), r = makeConstWav (dir.getChildFile ("one R.wav"), -0.5, 1);
+            ImportPlan pl;
+            auto srcOf = [] (const juce::File& f, juce::int64 len) { ImportSource x; x.file = f; x.channels = 1; x.length = len; x.sampleRate = 48000.0; return x; };
+            pl.sources = { srcOf (l, 2 * S), srcOf (r, S) };
+            ImportTake tk; tk.length = 2 * S; tk.sampleRate = 48000.0;
+            ImportPart a; a.source = 1; a.source2 = ImportPart::kOneSide; a.sourceRight = true; a.trackChannels = 2; a.trackKey = "@x"; a.trackName = "Omni";
+            ImportPart both; both.source = 0; both.source2 = 1; both.trackChannels = 2; both.trackKey = "@y"; both.trackName = "Pair";
+            tk.parts = { a, both }; pl.takes = { tk };
+            std::vector<std::vector<juce::File>> files;
+            CHECK (copyImportFiles (fm, pl, dir.getChildFile ("copied"), "Take", { 1 }, files, nullptr).isEmpty());
+            CHECK (files.size() == 1 && files[0].size() == 2);
+            if (files.size() == 1 && files[0].size() == 2)
+            {
+                CHECK (chans (files[0][0]) == 2 && lenOf (files[0][0]) == S && readAt (files[0][0], 100, 0) == 0.0f && std::abs (readAt (files[0][0], 100, 1) + 0.5f) < 1e-6f);
+                CHECK (chans (files[0][1]) == 2 && lenOf (files[0][1]) == 2 * S && std::abs (readAt (files[0][1], 100, 0) - 0.25f) < 1e-6f && std::abs (readAt (files[0][1], 100, 1) + 0.5f) < 1e-6f);
+                CHECK (readAt (files[0][1], S + 100, 1) == 0.0f && std::abs (readAt (files[0][1], S + 100, 0) - 0.25f) < 1e-6f);
+            }
+        }
+        // the remembered mics and the last window imported into are saved with the project
+        q.lastImportWindow = xid;
+        {
+            juce::String err; CHECK (q.save (err));
+            Project q2; CHECK (q2.load (q.projectFile, err));
+            CHECK (q2.findTrack (kbd) != nullptr && q2.findTrack (kbd)->mics.contains ("celesta") && q2.lastImportWindow == xid && q2.findTrack (vla)->mics.isEmpty());
+        }
+        // piece 2 imported before this build, onto tracks of its own: Omni-L, Omni-R (mono) and Vln1; an edit made from its first take
+        {
+            auto& W = q.addTakeWindow ("Symphony 2");
+            const auto wid = W.id;
+            const auto l2 = q.addTrack ("Omni-L", TrackFormat::Mono, 8).id, r2 = q.addTrack ("Omni-R", TrackFormat::Mono, 9).id, v2 = q.addTrack ("Vln1", TrackFormat::Mono, 10).id;
+            const auto fL = makeConstWav (dir.getChildFile ("w1 L.wav"), 0.125, 3), fR = makeConstWav (dir.getChildFile ("w1 R.wav"), -0.25, 3), fV = makeConstWav (dir.getChildFile ("w1 V.wav"), 0.5, 3);
+            const auto gL2 = makeConstWav (dir.getChildFile ("w2 L.wav"), 0.375, 2);
+            auto mk = [] (const juce::Uuid& tr, const juce::File& f, const juce::String& srcName) { TakeFile x; x.trackId = tr; x.file = f; x.numChannels = 1; x.sourceName = srcName; return x; };
+            TakeGroup g1; g1.id = juce::Uuid(); g1.number = 1; g1.lengthSamples = 3 * S; g1.sampleRate = 48000.0;
+            g1.files = { mk (l2, fL, "Sym2 001_Omni-L.wav"), mk (r2, fR, "Sym2 001_Omni-R.wav"), mk (v2, fV, "Sym2 001_Vln1.wav") };
+            TakeGroup g2; g2.id = juce::Uuid(); g2.number = 2; g2.startSeconds = 10.0; g2.lengthSamples = 2 * S; g2.sampleRate = 48000.0;
+            g2.files = { mk (l2, gL2, "Sym2 002_Omni-L.wav"), mk (v2, fV, "Sym2 002_Vln1.wav") };
+            W.groups = { g1, g2 };
+            auto& e = q.addEdit ("Symphony 2 edit", wid);
+            const auto eid = e.id;
+            EditRegion rg; rg.srcIn = 0; rg.srcOut = 2 * S; rg.sampleRate = 48000.0; rg.sourceLength = 3 * S; rg.takeName = "001 - Symphony 2"; rg.takeId = g1.id; rg.windowId = wid;
+            RegionFile fa; fa.trackId = l2; fa.file = fL; rg.files.push_back (fa);
+            RegionFile fb; fb.trackId = r2; fb.file = fR; rg.files.push_back (fb);
+            RegionFile fc; fc.trackId = v2; fc.file = fV; rg.files.push_back (fc);
+            e.insertRegion (rg);
+            e.trackIds = { l2, r2, v2 };
+            q.undoReset(); q.changed(); q.undoTick (false, true);
+            // matched as the window "Move this window's takes onto the tracks of another take window" does
+            const auto mine = layoutOf (q, *q.findTakeWindow (wid));
+            const auto theirs = layoutOf (q, *q.findTakeWindow (xid));
+            Item il; il.key = "l"; il.names = mine.find (SL (l2, -1))->names; il.original = "Omni-L"; il.channels = 1;
+            Item iv; iv.key = "v"; iv.names = mine.find (SL (v2, -1))->names; iv.original = "Vln1"; iv.channels = 1;
+            const auto f2 = match (theirs, { il, iv });
+            CHECK (f2[0].slot == SL (omni, 0) && f2[1].slot == SL (vlnI, -1));
+            // refused: automation on one of the mono tracks in an edit made from these takes; onto a mono track
+            {
+                AutoLane lane; lane.id = juce::Uuid(); lane.trackId = r2; lane.param = autoparam::fader; q.findEdit (eid)->lanes.push_back (lane);
+                stereojoin::IntoPlan no;
+                CHECK (stereojoin::planInto (q, wid, l2, r2, omni, no).contains ("automation"));
+                q.findEdit (eid)->lanes.clear();
+                CHECK (stereojoin::planInto (q, wid, l2, r2, vlnI, no).contains ("not a stereo track"));
+            }
+            stereojoin::IntoPlan pl;
+            CHECK (stereojoin::planInto (q, wid, l2, r2, omni, pl).isEmpty());
+            CHECK (pl.takes.size() == 2 && pl.pieces.size() == 1 && pl.jobs.size() == 2);
+            CHECK (stereojoin::writeJobs (fm, pl.jobs).isEmpty());
+            juce::String why;
+            CHECK (stereojoin::applyInto (q, pl, why));
+            auto* Wp = q.findTakeWindow (wid);
+            auto& G1 = Wp->groups[0]; auto& G2 = Wp->groups[1];
+            CHECK (G1.files.size() == 2 && G1.files[0].trackId == omni && G1.files[0].numChannels == 2 && G1.files[1].trackId == v2);
+            CHECK (G1.files[0].sourceName == "Sym2 001_Omni-L.wav" && G1.files[0].sourceName2 == "Sym2 001_Omni-R.wav" && G1.files[0].file.isAChildOf (q.takeFolder (*Wp)));
+            CHECK (std::abs (readAt (G1.files[0].file, 500, 0) - 0.125f) < 1e-6f && std::abs (readAt (G1.files[0].file, 500, 1) + 0.25f) < 1e-6f);
+            CHECK (G2.files.size() == 2 && G2.files[0].trackId == omni && std::abs (readAt (G2.files[0].file, 50, 0) - 0.375f) < 1e-6f && readAt (G2.files[0].file, 50, 1) == 0.0f);
+            auto& P = q.findEdit (eid)->regions[0];
+            CHECK (P.files.size() == 2 && P.files[0].trackId == omni && P.files[0].file == G1.files[0].file && P.files[0].numChannels == 2 && P.files[0].fileStart == 0);
+            const auto& tids = q.findEdit (eid)->trackIds;
+            CHECK (tids.size() == 2 && tids[0] == omni && tids[1] == v2);
+            CHECK (q.findTrack (l2) != nullptr && ! q.trackHasAudio (l2) && ! q.trackHasAudio (r2));   // (the mono tracks stay, empty: they can be deleted)
+            CHECK (q.findTakeWindow (xid)->groups[0].files.size() == 7);                              // (the other window is not touched)
+            juce::String w2;
+            CHECK (q.moveTakeClips (wid, v2, vlnI, { G1.id, G2.id }, w2) == 2);
+            // Ctrl + Z: both back as they were
+            q.undoTick (false, true);
+            CHECK (q.undo());
+            auto* Wb = q.findTakeWindow (wid);
+            CHECK (Wb != nullptr && Wb->groups[0].files.size() == 3 && Wb->groups[0].files[0].trackId == l2 && Wb->groups[0].files[1].trackId == r2 && Wb->groups[0].files[2].trackId == v2);
+            CHECK (q.findEdit (eid) != nullptr && q.findEdit (eid)->regions[0].files.size() == 3);
+            CHECK (q.trackHasAudio (l2) && q.trackHasAudio (r2));
+        }
+    }
+
+    SECTION ("3.58.0 buses and VCAs moved sideways among a mixer's strips: the order, a drag, back again, the strip it follows going, saved");
+    {
+        Project q;
+        q.setInputCount (8); q.setOutputCount (4);
+        q.tracks.clear();
+        std::vector<juce::Uuid> T;
+        for (int i = 0; i < 5; ++i) T.push_back (q.addTrack ("t" + juce::String (i + 1), TrackFormat::Mono, i).id);
+        q.retireAllMixers();
+        const auto mainB = q.addBus ("Main", true).id;
+        const auto ib1 = q.addBus ("Strings", false).id, ib2 = q.addBus ("Wind", false).id;
+        const auto cue = q.addBus ("Cue", true).id;
+        auto& mq = q.addMixer ("Processing");
+        q.syncMixers();
+        mq.busFor (mainB)->isMain.set (true);
+        auto* vca = q.addVca ("All", false);
+        CHECK (vca != nullptr);
+        const auto vId = vca != nullptr ? vca->id : juce::Uuid::null();
+        mq.vcaShown.fetch_or (1u);
+        using namespace striporder;
+        auto ids = [&] (bool shownOnly)
+        {
+            juce::StringArray a;
+            for (auto& it : order (itemsOf (q, mq), mq.stripPlaces))
+                if (it.shown || ! shownOnly)
+                {
+                    juce::String n = it.id == vId ? "V" : it.id == ib1 ? "S" : it.id == ib2 ? "W" : it.id == cue ? "C" : it.id == mainB ? "M" : juce::String ("?");
+                    if (auto* t = q.findTrack (it.id)) n = t->name.substring (1);                // (t1 .. t5: by name - deleting one renumbers nothing)
+                    a.add (n);
+                }
+            return a.joinIntoString (" ");
+        };
+        // the usual order: the tracks, the Int Buses, the Ext Buses, the VCAs; the main Ext Bus cannot be moved, the others can
+        CHECK (ids (true) == "1 2 3 4 5 S W M C V");
+        {
+            const auto it = itemsOf (q, mq);
+            CHECK (! it[(size_t) indexOf (it, mainB)].movable && it[(size_t) indexOf (it, cue)].movable && it[(size_t) indexOf (it, ib1)].movable
+                   && it[(size_t) indexOf (it, vId)].movable && ! it[(size_t) indexOf (it, T[0])].movable);
+        }
+        // dragged between two strips: right after the left one; a VCA and a cue bus too; first of all
+        CHECK (moveAfter (mq.stripPlaces, itemsOf (q, mq), ib1, T[2]));
+        CHECK (ids (true) == "1 2 3 S 4 5 W M C V");
+        CHECK (! moveAfter (mq.stripPlaces, itemsOf (q, mq), ib1, T[2]));                 // (already there: nothing changes)
+        CHECK (! moveAfter (mq.stripPlaces, itemsOf (q, mq), mainB, T[0]));               // (the main output stays where it is)
+        CHECK (! moveAfter (mq.stripPlaces, itemsOf (q, mq), T[4], T[0]));                // (an audio track keeps the project's order)
+        CHECK (moveAfter (mq.stripPlaces, itemsOf (q, mq), vId, T[2]));                   // between 3 and S: S now follows the VCA
+        CHECK (ids (true) == "1 2 3 V S 4 5 W M C");
+        CHECK (moveAfter (mq.stripPlaces, itemsOf (q, mq), cue, juce::Uuid::null()));
+        CHECK (ids (true) == "C 1 2 3 V S 4 5 W M");
+        // the VCA dragged away: S stays where it was on the screen (after 3)
+        CHECK (moveAfter (mq.stripPlaces, itemsOf (q, mq), vId, T[4]));
+        CHECK (ids (true) == "C 1 2 3 S 4 5 V W M");
+        // no two strips sit right after the same one
+        {
+            std::set<juce::String> anchors; bool unique = true;
+            for (auto& pl : mq.stripPlaces) unique = anchors.insert (pl.after.toString()).second && unique;
+            CHECK (unique);
+        }
+        // a track moved: the bus after it goes with it; a hidden track keeps its spot for the bus after it
+        q.moveTrack (2, 0);                                                                 // t3 first
+        CHECK (ids (true) == "C 3 S 1 2 4 5 V W M");
+        q.moveTrack (0, 2);                                                                 // back
+        mq.hiddenStrips.push_back (T[2]);
+        CHECK (ids (true) == "C 1 2 S 4 5 V W M" && ids (false) == "C 1 2 3 S 4 5 V W M");
+        mq.hiddenStrips.clear();
+        // back to its usual place; the strip that followed it stays put
+        CHECK (moveAfter (mq.stripPlaces, itemsOf (q, mq), ib2, ib1));
+        CHECK (ids (true) == "C 1 2 3 S W 4 5 V M");
+        CHECK (backToUsual (mq.stripPlaces, itemsOf (q, mq), ib1));
+        CHECK (ids (true) == "C 1 2 3 W 4 5 V S M");                                        // (its usual place is after the tracks: V sits right after t5)
+        CHECK (! backToUsual (mq.stripPlaces, itemsOf (q, mq), ib1));
+        // saved with the mixer and read back
+        {
+            Project back; CHECK (back.fromVar (q.toVar()));
+            auto* bm = back.mixers.empty() ? nullptr : back.mixers.front().get();
+            CHECK (bm != nullptr && bm->stripPlaces.size() == mq.stripPlaces.size());
+            if (bm != nullptr)
+            {
+                bool same = true;
+                for (size_t k = 0; k < mq.stripPlaces.size() && k < bm->stripPlaces.size(); ++k)
+                    same = same && bm->stripPlaces[k].strip == mq.stripPlaces[k].strip && bm->stripPlaces[k].after == mq.stripPlaces[k].after;
+                CHECK (same);
+                juce::StringArray a, b;
+                for (auto& it : order (itemsOf (q, mq), mq.stripPlaces)) a.add (it.id.toString());
+                for (auto& it : order (itemsOf (back, *bm), bm->stripPlaces)) b.add (it.id.toString());
+                CHECK (a == b);
+            }
+        }
+        // the track a bus sits after is deleted: the bus takes the strip before it, so nothing moves on the screen
+        CHECK (ids (true) == "C 1 2 3 W 4 5 V S M");
+        q.removeTrack (2);                                                                  // t3 (W was after it)
+        T.erase (T.begin() + 2);
+        CHECK (ids (true) == "C 1 2 W 4 5 V S M");
+        CHECK (q.removeEmptyTracks ({ T[2], T[3] }) == 2);                                  // t4 and t5 (V was after t5: it takes W, the strip before them)
+        T.resize (2);
+        CHECK (ids (true) == "C 1 2 W V S M");
+        // a bus removed: its place goes, and the strip after it keeps its spot
+        CHECK (moveAfter (mq.stripPlaces, itemsOf (q, mq), vId, ib1));
+        CHECK (ids (true) == "C 1 2 W S V M");
+        for (size_t k = 0; k < q.buses.size(); ++k) if (q.buses[k].id == ib1) { q.removeBus ((int) k); break; }
+        CHECK (ids (true) == "C 1 2 W V M");
+        for (auto& pl : mq.stripPlaces) CHECK (pl.strip != ib1);
+        // the strip is no longer movable (an Ext Bus ticked as main): back in its usual place, its place kept for later
+        mq.busFor (cue)->isMain.set (true);
+        CHECK (ids (true) == "1 2 W V M C");
+        mq.busFor (cue)->isMain.set (false);
+        CHECK (ids (true) == "C 1 2 W V M");
+        // places that cannot count are ignored: a strip that is gone, one after itself, one after a strip that is gone, a circle
+        {
+            std::vector<Place> bad = { { juce::Uuid(), T[0] }, { ib2, ib2 }, { vId, juce::Uuid() } };
+            CHECK (ids (true) == "C 1 2 W V M");
+            CHECK (order (itemsOf (q, mq), bad).size() == itemsOf (q, mq).size());
+            std::vector<Place> circle = { { ib2, vId }, { vId, ib2 } };
+            const auto o = order (itemsOf (q, mq), circle);
+            CHECK (o.size() == itemsOf (q, mq).size() && indexOf (o, ib2) >= 0 && indexOf (o, vId) >= 0);
+        }
+    }
+
+    SECTION ("3.59.0 the live feed for WaveColour while recording: the ring, falling behind, silence, and a take's feed matching its file");
+    {
+        // the ring on its own
+        AudioEngine::LiveFeed f;
+        f.prepare (48000.0, juce::File());
+        CHECK (f.capacity() >= 72000 && f.capacity() % AudioEngine::LiveFeed::kBlock == 0);
+        std::vector<float> a (1000), b (1000);
+        for (int i = 0; i < 1000; ++i) { a[(size_t) i] = (float) i; b[(size_t) i] = (float) (3 * i); }
+        const float* st[2] = { a.data(), b.data() };
+        f.add (st, 2, 1000);                                                 // stereo: the mean of the two
+        f.add (st, 1, 1000);                                                 // mono: as it is
+        CHECK (f.written() == 2000);
+        std::vector<float> got (2000);
+        CHECK (f.read (0, got.data(), 2000));
+        CHECK (got[10] == 20.0f && got[999] == 1998.0f && got[1010] == 10.0f && got[1999] == 999.0f);
+        CHECK (! f.read (1500, got.data(), 600));                           // (not all there yet)
+        f.addSilence (100);
+        CHECK (f.written() == 2100 && f.read (2000, got.data(), 100) && got[0] == 0.0f && got[99] == 0.0f);
+        // the writer goes round the ring more than once: the oldest is gone (read says no), the newest is there
+        for (int k = 0; k < 200; ++k) f.add (st, 1, 1000);
+        CHECK (! f.read (0, got.data(), 100));
+        const auto w = f.written();
+        CHECK (f.read (w - 1000, got.data(), 1000) && got[0] == 0.0f && got[999] == 999.0f);
+        CHECK (! f.read (w - f.capacity() - 1, got.data(), 10));
+        // a long silence (more than the ring holds): counted in full, the ring's worth of it zero
+        f.addSilence ((juce::int64) f.capacity() * 3);
+        CHECK (f.written() == w + (juce::int64) f.capacity() * 3 && f.read (f.written() - 4096, got.data(), 1000) && got[0] == 0.0f && got[999] == 0.0f);
+
+        // a take recorded with the feeds on (session mode, so the pre-roll goes in first): the feed has every sample of the file, in order
+        Project q;
+        q.projectFile = tmp.getChildFile ("Feed").getChildFile ("Feed.fermata");
+        q.setInputCount (8); q.setOutputCount (2);
+        q.tracks.clear();
+        const auto mono = q.addTrack ("violin", TrackFormat::Mono, 0).id;
+        const auto stereo = q.addTrack ("pair", TrackFormat::Stereo, 2).id;
+        q.takeWindows.front()->name = "Feed";
+        AudioEngine e3 (q);
+        e3.prepare (48000.0, Rig::block);
+        Rig r3;
+        e3.setSessionMode (true);
+        e3.setPreRollSeconds (1);
+        CHECK (e3.waitForPreRoll (5000));
+        for (auto& t : q.tracks) t.setArmed (true);
+        r3.run (e3, 200);
+        CHECK (e3.getLiveFeed (mono) == nullptr);                           // (no take yet)
+        CHECK (e3.startRecording (*q.takeWindows.front()).isEmpty());
+        CHECK (e3.getLiveFeed (mono) == nullptr && e3.liveFeeds().empty()); // the feeds off (WaveColour off): none made
+        r3.run (e3, 20);
+        auto gOff = e3.stopRecording();
+        CHECK (e3.waitForFinishedTakes (10000)); e3.reapFinishedTakes();
+        juce::ignoreUnused (gOff);
+        e3.setLiveFeeds (true);
+        r3.run (e3, 150);
+        CHECK (e3.startRecording (*q.takeWindows.front()).isEmpty());
+        auto fm1 = e3.getLiveFeed (mono), fs1 = e3.getLiveFeed (stereo);
+        CHECK (fm1 != nullptr && fs1 != nullptr && e3.liveFeeds().size() == 2 && ! fm1->ended.load());
+        r3.run (e3, 300);                                                    // 3.2 s
+        CHECK (fm1 != nullptr && fm1->written() > 48000 + 290 * Rig::block);
+        const auto gid = e3.stopRecording();
+        CHECK (fm1 != nullptr && fm1->ended.load() && e3.getLiveFeed (mono, gid) == fm1);     // (while it is finished: by its take)
+        CHECK (e3.waitForFinishedTakes (10000));
+        CHECK (fm1 != nullptr && fm1->fileDone.load() && fs1 != nullptr && fs1->fileDone.load());
+        e3.reapFinishedTakes();
+        CHECK (e3.getLiveFeed (mono, gid) == nullptr && e3.liveFeeds().empty());   // the engine has let go; the feed lives on with its holder
+        auto* gF = q.takeWindows.front()->findGroup (gid);
+        CHECK (gF != nullptr && fm1 != nullptr && gF->lengthSamples == fm1->written() && fs1->written() == fm1->written());
+        if (gF != nullptr && gF->files.size() == 2 && fm1 != nullptr && fs1 != nullptr)
+        {
+            juce::AudioFormatManager fmg; fmg.registerBasicFormats();
+            for (int k = 0; k < 2; ++k)
+            {
+                auto feed = gF->files[(size_t) k].trackId == mono ? fm1 : fs1;
+                CHECK (feed->file == gF->files[(size_t) k].file);
+                std::unique_ptr<juce::AudioFormatReader> rd (fmg.createReaderFor (gF->files[(size_t) k].file));
+                CHECK (rd != nullptr && rd->lengthInSamples == feed->written());
+                if (rd == nullptr) continue;
+                const int n = 8192;                                          // the last 8192 samples (the ring still has them)
+                const auto from = rd->lengthInSamples - n;
+                juce::AudioBuffer<float> fileBuf ((int) rd->numChannels, n);
+                rd->read (&fileBuf, 0, n, from, true, true);
+                std::vector<float> fed ((size_t) n);
+                CHECK (feed->read (from, fed.data(), n));
+                double worst = 0.0;
+                for (int i = 0; i < n; ++i)
+                {
+                    double want = fileBuf.getSample (0, i);
+                    if (rd->numChannels > 1) want = 0.5 * (want + fileBuf.getSample (1, i));
+                    worst = juce::jmax (worst, std::abs (want - (double) fed[(size_t) i]));
+                }
+                CHECK (worst < 1e-5);                                        // (24-bit in the file)
+            }
         }
     }
 

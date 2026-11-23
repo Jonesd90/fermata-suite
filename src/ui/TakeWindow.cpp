@@ -1214,7 +1214,8 @@ private:
         return nullptr;
     }
 
-    /** The waveform of the take being recorded, drawn from the overview the audio thread keeps (updates as you record). */
+    /** The waveform of the take being recorded, drawn from the overview the audio thread keeps (updates as you record). 3.59.0: with WaveColour on,
+        coloured as it comes in (LiveWaveColours); the newest moment, not worked out yet, stays in the plain colour. */
     void drawLiveWave (juce::Graphics& g, juce::Rectangle<int> r, const juce::Uuid& trackId, const juce::Uuid& groupId = juce::Uuid::null())
     {
         const juce::int16* data = nullptr; int bins = 0, binSamples = 0, nc = 1;
@@ -1222,7 +1223,10 @@ private:
         const double binSeconds = (double) binSamples / app.engine.getSampleRate();
         const float laneH = (float) r.getHeight() / (float) nc;
         juce::Graphics::ScopedSaveState clipState (g); g.reduceClipRegion (r);
-        setWaveColour (g, juce::Colour (0xffffd6cc));
+        const juce::Colour plain (0xffffd6cc);
+        setWaveColour (g, plain);
+        const auto feed = app.waveColour ? app.engine.getLiveFeed (trackId, groupId) : nullptr;
+        std::vector<juce::Colour> cols; bool coloured = false;              // (worked out for the first lane, the same for the others)
         // only the columns inside the clip (3.27.1: the whole take was walked - 14,400 columns of a 20-minute take, per track, 30 times a second - though
         // only the part on the screen is drawn; the finished waveform's drawers start from the clip the same way)
         const auto clip = g.getClipBounds().getIntersection (r);
@@ -1246,7 +1250,9 @@ private:
                 tops.push_back (mid - waveshape::apply ((float) hi / 32767.0f, app.waveShape()) * half * app.waveZoom);      // (3.27.0: compressed too, while it records)
                 bots.push_back (mid - waveshape::apply ((float) lo / 32767.0f, app.waveShape()) * half * app.waveZoom);
             }
-            fillEnvelope (g, (float) (r.getX() + xFirst), tops, bots, nullptr, laneH);
+            if (c == 0 && feed != nullptr)
+                coloured = LiveWaveColours::colours (*feed, (double) xFirst / pixelsPerSecond, 1.0 / pixelsPerSecond, (int) tops.size(), cols, plain);
+            fillEnvelope (g, (float) (r.getX() + xFirst), tops, bots, coloured && cols.size() == tops.size() ? &cols : nullptr, laneH);
         }
     }
 
@@ -1556,6 +1562,9 @@ private:
             m.addSubMenu ("Move its " + clips + " onto another track", to);
             if (const auto pairs = nameMatchPairs(); pairs.size() > 1)
                 m.addItem ("Move the clips of all " + juce::String ((int) pairs.size()) + " tracks named like this onto the tracks named in their names...", [safe] { if (safe != nullptr) safe->moveAllByName(); });
+            if (fixtools::canMoveTakesOntoWindow (app, windowId))           // 3.57.0: every track at once, onto the tracks the same mics went on in another take window
+                m.addItem ("Move this window's takes onto the tracks of another take window...",
+                           [safe] { if (safe != nullptr) fixtools::moveTakesOntoWindow (safe->app, safe->windowId, safe.getComponent()); });
             m.addSeparator();
         }
         if (trackSelected (trackId) && selectedTracks.size() == 2)          // 3.23.0: two mono tracks that are really a stereo pair
@@ -1928,6 +1937,8 @@ private:
         // 3.52.0: held behind a process window that is playing (HeldPicture.h): nothing here asks for a redraw until the play is over. Never
         // while this window records - a recording is always drawn.
         held.notePlaying (app.isPlaying());
+        if (app.waveColour && (app.engine.isRecording() || app.engine.anyFinishing()))
+            app.liveColours.watch (app.engine.liveFeeds());                   // 3.59.0: the takes recording now are coloured as they come in
         if (! app.engine.isRecording())
         {
             if (held.frozen (app.isPlaying())) return;
@@ -2136,7 +2147,7 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     playheadMode.setToggleState (app.playheadFollows, juce::dontSendNotification);
     playheadMode.setWantsKeyboardFocus (false);
     addAndMakeVisible (playheadMode);
-    waveColourBtn.setTooltip ("WaveColour. Lit: the waveforms are coloured by their sound. The hue is the pitch (red low, green middle, blue high); vivid colour is a clear note, pale colour is noise; BLACK is a thump below 100 Hz, such as a kicked mic stand. Off: ordinary waveforms. (The same in every window.)");
+    waveColourBtn.setTooltip ("WaveColour. Lit: the waveforms are coloured by their sound. The hue is the pitch (red low, green middle, blue high); vivid colour is a clear note, pale colour is noise; BLACK is a thump below 100 Hz, such as a kicked mic stand. A take is coloured while it records, too, when this is lit before Record. Off: ordinary waveforms. (The same in every window.)");
     waveColourBtn.onClick = [this] { app.setWaveColour (! app.waveColour); };
     waveColourBtn.setToggleState (app.waveColour, juce::dontSendNotification);
     waveColourBtn.setWantsKeyboardFocus (false);
@@ -2614,6 +2625,16 @@ bool TakeWindowComponent::keyPressed (const juce::KeyPress& k)
     if (c == '.' || c == '>')           { app.changeWaveZoom (1.4f);        return true; }     // . bigger waveforms
     if (c == ',' || c == '<')           { app.changeWaveZoom (1.0f / 1.4f); return true; }     // , smaller
     if (isShiftFour (k))                { toEdit (true, true); return true; }                   // Shift + 4: the same, but an INSERT (the rest of the edit moves later)
+    // 3.58.0 (it did nothing in the take window): Enter opens ReTouch, DeClick & Denoise for the part between marks 1 and 2 - or the take selected
+    // whole - as it does in the edit window. (KeyPress == a key code: no modifier held.)
+    if (k == juce::KeyPress::returnKey)
+    {
+        auto* w = def();
+        const bool marked = w != nullptr && w->findGroup (w->editTake) != nullptr && w->editIn >= 0.0 && w->editOut > w->editIn;
+        if (! marked && timeline->selectedTakes.empty()) return false;
+        if (repairButton.onClick) repairButton.onClick();
+        return true;
+    }
     if (! k.getModifiers().isAnyModifierKeyDown())
     {
         if (c == '1') { editMarkIn();  return true; }

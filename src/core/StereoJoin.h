@@ -11,6 +11,7 @@
 #include "Automation.h"
 #include <limits>
 #include <map>
+#include <set>
 
 namespace td { namespace stereojoin
 {
@@ -264,15 +265,15 @@ inline juce::String plan (const Project& p, const juce::Uuid& leftId, const juce
     return {};
 }
 
-/** Writes every file of the plan (any thread). "" when all went well; otherwise what went wrong, and every file it had made is deleted again. */
-inline juce::String writeFiles (juce::AudioFormatManager& fm, Plan& plan, AudioJob* job = nullptr)
+/** Writes these files (any thread). "" when all went well; otherwise what went wrong, and every file it had made is deleted again. */
+inline juce::String writeJobs (juce::AudioFormatManager& fm, std::vector<FileJob>& jobs, AudioJob* job = nullptr)
 {
     std::vector<juce::File> made;
     auto fail = [&] (const juce::String& e) { for (auto& f : made) f.deleteFile(); return e; };
-    for (size_t i = 0; i < plan.jobs.size(); ++i)
+    for (size_t i = 0; i < jobs.size(); ++i)
     {
-        if (job != nullptr) { if (job->cancelled()) return fail ("Cancelled."); job->setProgress ((float) i / (float) plan.jobs.size()); }
-        auto& j = plan.jobs[i];
+        if (job != nullptr) { if (job->cancelled()) return fail ("Cancelled."); job->setProgress ((float) i / (float) jobs.size()); }
+        auto& j = jobs[i];
         juce::int64 lenL = 0, lenR = 0;
         if (j.left != juce::File())  { auto r = audioops::openReader (fm, j.left);  if (r == nullptr) return fail ("Could not read " + j.left.getFullPathName() + ".");  lenL = r->lengthInSamples; }
         if (j.right != juce::File()) { auto r = audioops::openReader (fm, j.right); if (r == nullptr) return fail ("Could not read " + j.right.getFullPathName() + "."); lenR = r->lengthInSamples; }
@@ -300,6 +301,8 @@ inline juce::String writeFiles (juce::AudioFormatManager& fm, Plan& plan, AudioJ
     }
     return {};
 }
+/** Writes every file of the plan (any thread): see writeJobs. */
+inline juce::String writeFiles (juce::AudioFormatManager& fm, Plan& plan, AudioJob* job = nullptr) { return writeJobs (fm, plan.jobs, job); }
 
 /** Makes the change, once the files are written (message thread). False with 'why' - and nothing changed - when the project changed since the plan
     (the caller then deletes the files). */
@@ -361,6 +364,7 @@ inline bool apply (Project& p, const Plan& plan, juce::String& why)
     S.id = plan.stereo; S.name = plan.name; S.format = TrackFormat::Stereo;
     S.colour = L->colour; S.alignRole = L->alignRole;
     S.inputs[0] = L->inputs[0]; S.inputs[1] = R->inputs[0];
+    S.micsLeft = L->mics; S.micsRight = R->mics;                         // (3.57.0: the mics remembered for each mono track go to its side)
     {
         size_t at = 0;
         for (size_t i = 0; i < p.tracks.size(); ++i) if (p.tracks[i].id == plan.left) at = i;
@@ -460,6 +464,8 @@ inline bool apply (Project& p, const Plan& plan, juce::String& why)
         const bool bothHidden = m->isStripHidden (plan.left) && m->isStripHidden (plan.right);
         m->hiddenStrips.erase (std::remove_if (m->hiddenStrips.begin(), m->hiddenStrips.end(), [&] (const juce::Uuid& x) { return x == plan.left || x == plan.right; }), m->hiddenStrips.end());
         if (bothHidden) m->hiddenStrips.push_back (plan.stereo);
+        for (auto& pl : m->stripPlaces)                  // 3.58.0: a bus or VCA moved next to one of them in the mixer's window stays next to the stereo track
+            if (pl.after == plan.left || pl.after == plan.right) pl.after = plan.stereo;
     }
 
     // the two mono tracks leave the project (their files stay on the disk)
@@ -467,6 +473,219 @@ inline bool apply (Project& p, const Plan& plan, juce::String& why)
     p.structureChanged();
     p.undoReset();                                       // (Ctrl+Z cannot go back to the two tracks: they are gone)
     p.keepAllWindows();                                  // (nor can "keep / revert this window" at quit - 3.27.1: every window, the mixers too: their kept state had the two mono strips, so each one was listed as changed and a revert would have undone the strip settings carried over)
+    return true;
+}
+// ======================================================================================================== 3.57.0: into a stereo track that is there already
+/** Two mono tracks' audio in ONE take window, joined into stereo files on a stereo track the project already has ('onto'): a take window's takes
+    moved onto the tracks of another take window that has the pair as one stereo track (tracklayout, "Move this window's takes onto the tracks of
+    another take window"). Only that window's takes change, and the pieces of edits made from them; the frozen versions of edits stay as they are
+    (as when clips are moved: decided for 3.47.0). The two mono tracks stay in the project with whatever else they hold (they can be deleted
+    afterwards when nothing is left on them). A take with only one of the two: silence on the other side. An ordinary change: Ctrl + Z puts the
+    mono files back. */
+struct IntoPlan
+{
+    juce::Uuid window, left, right, onto;     // 'left' or 'right' may be null: only one side has a track
+    juce::String ontoName;
+    std::vector<FileJob> jobs;
+    std::vector<TakeUse> takes;
+    std::vector<PieceUse> pieces;             // (version always 0: the edits themselves)
+};
+
+/** Works out the change. "" when it can be done (with 'out' filled in), else the reason, in plain words. */
+inline juce::String planInto (const Project& p, const juce::Uuid& windowId, const juce::Uuid& leftId, const juce::Uuid& rightId, const juce::Uuid& ontoId, IntoPlan& out)
+{
+    out = IntoPlan();
+    const TakeWindowDef* w = nullptr;
+    for (auto& x : p.takeWindows) if (x->id == windowId) w = x.get();
+    const auto* L = leftId.isNull() ? nullptr : trackOf (p, leftId);
+    const auto* R = rightId.isNull() ? nullptr : trackOf (p, rightId);
+    const auto* S = trackOf (p, ontoId);
+    if (w == nullptr || S == nullptr || (L == nullptr && R == nullptr)) return "Nothing to join.";
+    if ((L != nullptr && L == R) || ontoId == leftId || ontoId == rightId) return "Choose two different tracks.";
+    if (S->format != TrackFormat::Stereo) return S->name + " is not a stereo track.";
+    for (auto* t : { L, R })
+        if (t != nullptr && (t->isLtc || t->format != TrackFormat::Mono)) return t->isLtc ? juce::String ("The LTC (timecode) track cannot be part of a stereo track.") : t->name + " is not a mono track.";
+    if (S->isLtc) return "The LTC (timecode) track cannot be part of a stereo track.";
+    out.window = windowId; out.left = leftId; out.right = rightId; out.onto = ontoId; out.ontoName = S->name;
+    auto isPair = [&] (const juce::Uuid& id) { return ! id.isNull() && (id == leftId || id == rightId); };
+    const auto nameOf = [&] (const juce::Uuid& id) { auto* t = trackOf (p, id); return t != nullptr ? t->name : juce::String ("?"); };
+    std::map<juce::String, size_t> wholeTake;
+    auto key = [] (const juce::File& a, const juce::File& b) { return a.getFullPathName() + "|" + b.getFullPathName(); };
+    std::set<juce::Uuid> takeIds;
+    for (auto& g : w->groups)
+    {
+        const TakeFile* fl = nullptr; const TakeFile* fr = nullptr; bool onS = false;
+        for (auto& f : g.files) { if (! leftId.isNull() && f.trackId == leftId) fl = &f; else if (! rightId.isNull() && f.trackId == rightId) fr = &f; else if (f.trackId == ontoId) onS = true; }
+        if (fl == nullptr && fr == nullptr) continue;
+        if (onS) return "Take " + w->displayName (g) + " already has audio on " + S->name + ".";
+        if ((fl != nullptr && fl->numChannels != 1) || (fr != nullptr && fr->numChannels != 1))
+            return "Take " + w->displayName (g) + " has a file on " + (fl != nullptr && fl->numChannels != 1 ? nameOf (leftId) : nameOf (rightId)) + " that is not mono.";
+        for (auto& wp : g.waiting)
+            if (wp.active() && (wp.tracks.empty() || std::any_of (wp.tracks.begin(), wp.tracks.end(), isPair)))
+                return "Take " + w->displayName (g) + " has a part waiting for corrected audio (Export for Processing). Re-link it, or stop waiting (right-click the block), first.";
+        FileJob j;
+        if (fl != nullptr) j.left = fl->file;
+        if (fr != nullptr) j.right = fr->file;
+        j.dest = audioops::uniqueFile (p.takeFolder (*w).getChildFile (TakeWindowDef::fileNameFor (g.number, w->labelFor (g), S->name)));
+        const auto k = key (j.left, j.right);
+        size_t idx;
+        if (auto it = wholeTake.find (k); it != wholeTake.end()) idx = it->second;
+        else { idx = out.jobs.size(); out.jobs.push_back (j); wholeTake[k] = idx; }
+        out.takes.push_back ({ w->id, g.id, j.left, j.right, idx });
+        takeIds.insert (g.id);
+    }
+    if (out.takes.empty()) return "There is no audio on " + juce::String (L != nullptr ? L->name : R->name) + " in this take window.";
+    // the pieces of edits made from these takes
+    const auto fixes = p.audioFolder().getChildFile ("Fixes");
+    for (auto& e : p.edits)
+    {
+        bool touched = false;
+        for (auto* list : { &e->regions, &e->overdubs })
+            for (auto& r : *list)
+            {
+                if (takeIds.count (r.takeId) == 0) continue;
+                const RegionFile* fl = nullptr; const RegionFile* fr = nullptr; bool onS = false;
+                for (auto& f : r.files) { if (! leftId.isNull() && f.trackId == leftId) fl = &f; else if (! rightId.isNull() && f.trackId == rightId) fr = &f; else if (f.trackId == ontoId) onS = true; }
+                if (fl == nullptr && fr == nullptr) continue;
+                if (onS) return "A piece of the edit '" + e->name + "' (" + r.takeName + ") already has audio on " + S->name + ".";
+                if (r.waiting.active() && (r.waiting.tracks.empty() || std::any_of (r.waiting.tracks.begin(), r.waiting.tracks.end(), isPair)))
+                    return "The edit '" + e->name + "' has a part of these takes that is " + juce::String (r.waiting.rx ? "out in iZotope RX" : "waiting for corrected audio")
+                           + " (" + r.waiting.name + "). Bring it back, or cancel it (right-click the block), first.";
+                PieceUse u; u.edit = e->id; u.piece = r.id;
+                u.hasLeft = fl != nullptr; u.hasRight = fr != nullptr;
+                if (fl != nullptr) { u.left = fl->file; u.leftStart = fl->fileStart; }
+                if (fr != nullptr) { u.right = fr->file; u.rightStart = fr->fileStart; }
+                const auto it = (u.leftStart == 0 && u.rightStart == 0) ? wholeTake.find (key (u.left, u.right)) : wholeTake.end();
+                if (it != wholeTake.end()) u.job = it->second;
+                else
+                {
+                    const double rate = r.sampleRate > 0 ? r.sampleRate : 48000.0;
+                    const auto h = (juce::int64) std::llround (2.0 * rate);
+                    FileJob j;
+                    j.left = u.left; j.right = u.right; j.leftStart = u.leftStart; j.rightStart = u.rightStart;
+                    j.wantFrom = r.srcIn + juce::jmin ((juce::int64) 0, (juce::int64) std::llround (r.inStart * rate)) - h;
+                    j.wantTo = r.srcOut + juce::jmax ((juce::int64) 0, (juce::int64) std::llround (r.outEnd * rate)) + h;
+                    j.dest = audioops::uniqueFile (fixes.getChildFile (sanitiseForFile (r.takeName.upToFirstOccurrenceOf (" (", false, false) + " - " + S->name) + " (stereo).wav"));
+                    u.job = out.jobs.size(); out.jobs.push_back (j);
+                }
+                out.pieces.push_back (u);
+                touched = true;
+            }
+        if (! touched) continue;
+        for (auto& l : e->lanes)                                          // automation on the mono tracks would have nowhere to go
+            if (isPair (l.trackId))
+                return "The edit '" + e->name + "' has automation on " + nameOf (l.trackId) + ". Move these takes before automating, or delete that automation first.";
+    }
+    return {};
+}
+
+/** Makes the change once the files are written (message thread). False with 'why' - and nothing changed - when the project changed since the plan
+    (the caller then deletes the files). */
+inline bool applyInto (Project& p, const IntoPlan& plan, juce::String& why)
+{
+    const auto* S = trackOf (p, plan.onto);
+    auto* w = p.findTakeWindow (plan.window);
+    if (S == nullptr || w == nullptr) { why = "A track or the take window has gone."; return false; }
+    for (auto& j : plan.jobs) if (! j.dest.existsAsFile()) { why = "A new file is missing: " + j.dest.getFullPathName(); return false; }
+    auto isL = [&] (const juce::Uuid& id) { return ! plan.left.isNull() && id == plan.left; };
+    auto isR = [&] (const juce::Uuid& id) { return ! plan.right.isNull() && id == plan.right; };
+    auto groupOf = [&] (const TakeUse& u) -> TakeGroup*
+    {
+        auto* g = w->findGroup (u.take);
+        if (g == nullptr) return nullptr;
+        juce::File l, r; bool onS = false;
+        for (auto& f : g->files) { if (isL (f.trackId)) l = f.file; else if (isR (f.trackId)) r = f.file; else if (f.trackId == plan.onto) onS = true; }
+        return (l == u.left && r == u.right && ! onS) ? g : nullptr;
+    };
+    auto pieceOf = [&] (const PieceUse& u) -> EditRegion*
+    {
+        auto* e = p.findEdit (u.edit);
+        auto* rg = e != nullptr ? e->findAny (u.piece) : nullptr;
+        if (rg == nullptr) return nullptr;
+        const RegionFile* fl = nullptr; const RegionFile* fr = nullptr;
+        for (auto& f : rg->files) { if (isL (f.trackId)) fl = &f; else if (isR (f.trackId)) fr = &f; else if (f.trackId == plan.onto) return nullptr; }
+        if ((fl != nullptr) != u.hasLeft || (fr != nullptr) != u.hasRight) return nullptr;
+        if (fl != nullptr && (fl->file != u.left || fl->fileStart != u.leftStart)) return nullptr;
+        if (fr != nullptr && (fr->file != u.right || fr->fileStart != u.rightStart)) return nullptr;
+        return rg;
+    };
+    for (auto& u : plan.takes)  if (groupOf (u) == nullptr)  { why = "The takes changed while the files were being written."; return false; }
+    for (auto& u : plan.pieces) if (pieceOf (u) == nullptr) { why = "An edit changed while the files were being written."; return false; }
+    for (auto& g : w->groups)                                             // nothing on the two tracks in this window that the plan does not know of
+        for (auto& f : g.files)
+            if ((isL (f.trackId) || isR (f.trackId)) && std::none_of (plan.takes.begin(), plan.takes.end(), [&] (const TakeUse& u) { return u.take == g.id; }))
+            { why = "The takes changed while the files were being written."; return false; }
+
+    std::set<juce::Uuid> takeIds;
+    for (auto& u : plan.takes)
+    {
+        auto* g = groupOf (u);
+        takeIds.insert (g->id);
+        int il = -1, ir = -1;
+        for (int i = 0; i < (int) g->files.size(); ++i) { if (isL (g->files[(size_t) i].trackId)) il = i; else if (isR (g->files[(size_t) i].trackId)) ir = i; }
+        TakeFile tf; tf.trackId = plan.onto; tf.trackName = S->name; tf.file = plan.jobs[u.job].dest; tf.numChannels = 2;
+        if (il >= 0) tf.sourceName = g->files[(size_t) il].sourceName.isNotEmpty() ? g->files[(size_t) il].sourceName : g->files[(size_t) il].file.getFileName();
+        if (ir >= 0) tf.sourceName2 = g->files[(size_t) ir].sourceName.isNotEmpty() ? g->files[(size_t) ir].sourceName : g->files[(size_t) ir].file.getFileName();
+        for (auto& wp : g->waiting) for (auto& t : wp.tracks) if (isL (t) || isR (t)) t = plan.onto;
+        const int keep = il >= 0 ? il : ir, drop = il >= 0 ? ir : -1;
+        g->files[(size_t) keep] = tf;
+        if (drop >= 0) g->files.erase (g->files.begin() + drop);
+    }
+    std::set<juce::Uuid> editsTouched;
+    for (auto& u : plan.pieces)
+    {
+        auto* r = pieceOf (u);
+        int il = -1, ir = -1;
+        for (int i = 0; i < (int) r->files.size(); ++i) { if (isL (r->files[(size_t) i].trackId)) il = i; else if (isR (r->files[(size_t) i].trackId)) ir = i; }
+        const auto& j = plan.jobs[u.job];
+        RegionFile rf; rf.trackId = plan.onto; rf.trackName = S->name; rf.file = j.dest; rf.numChannels = 2; rf.fileStart = j.from;
+        const int keep = il >= 0 ? il : ir, drop = il >= 0 ? ir : -1;
+        if (keep < 0) continue;
+        for (auto& gc : r->gains)
+        {
+            auto dbOf = [&] (int i) { return juce::isPositiveAndBelow (i, (int) gc.db.size()) ? gc.db[(size_t) i] : 0.0f; };
+            const float lvl = drop >= 0 ? 0.5f * (dbOf (keep) + dbOf (drop)) : dbOf (keep);
+            if (juce::isPositiveAndBelow (keep, (int) gc.db.size())) gc.db[(size_t) keep] = lvl;
+            if (drop >= 0 && juce::isPositiveAndBelow (drop, (int) gc.db.size())) gc.db.erase (gc.db.begin() + drop);
+        }
+        for (auto& t : r->waiting.tracks) if (isL (t) || isR (t)) t = plan.onto;
+        r->files[(size_t) keep] = rf;
+        if (drop >= 0) r->files.erase (r->files.begin() + drop);
+        editsTouched.insert (u.edit);
+    }
+    // the edits' lists of tracks: the stereo track where the left one was; the mono ones only go when no piece of the edit uses them any more
+    for (auto& id : editsTouched)
+    {
+        auto* e = p.findEdit (id);
+        if (e == nullptr) continue;
+        bool usesL = false, usesR = false;
+        for (auto* list : { &e->regions, &e->overdubs }) for (auto& r : *list) for (auto& f : r.files) { usesL = usesL || isL (f.trackId); usesR = usesR || isR (f.trackId); }
+        auto fix = [&] (std::vector<juce::Uuid>& v, bool addOnto)
+        {
+            const auto at = std::find_if (v.begin(), v.end(), [&] (const juce::Uuid& x) { return isL (x) || isR (x); });
+            const auto pos = at - v.begin();
+            if (addOnto && at != v.end() && std::find (v.begin(), v.end(), plan.onto) == v.end()) v.insert (v.begin() + pos, plan.onto);
+            v.erase (std::remove_if (v.begin(), v.end(), [&] (const juce::Uuid& x) { return (isL (x) && ! usesL) || (isR (x) && ! usesR); }), v.end());
+        };
+        if (! e->trackIds.empty())
+        {
+            if (std::find (e->trackIds.begin(), e->trackIds.end(), plan.onto) == e->trackIds.end()
+                && std::none_of (e->trackIds.begin(), e->trackIds.end(), [&] (const juce::Uuid& x) { return isL (x) || isR (x); }))
+                e->trackIds.push_back (plan.onto);
+            fix (e->trackIds, true);
+        }
+        fix (e->fixTracks, true);
+        if ((isL (e->guide.trackId) && ! usesL) || (isR (e->guide.trackId) && ! usesR)) { e->guide.trackId = plan.onto; e->guide.trackName = S->name; }
+    }
+    // this window: the stereo track shown; marks on chosen tracks follow
+    w->unhide (plan.onto);
+    if (takeIds.count (w->editTake) != 0)
+    {
+        bool any = false;
+        for (auto& t : w->editTracks) if (isL (t) || isR (t)) { t = plan.onto; any = true; }
+        if (any) { std::vector<juce::Uuid> once; for (auto& t : w->editTracks) if (std::find (once.begin(), once.end(), t) == once.end()) once.push_back (t); w->editTracks = once; }
+    }
+    p.changed();
     return true;
 }
 }} // namespace td::stereojoin

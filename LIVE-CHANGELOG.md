@@ -8,6 +8,34 @@ fermata:Live is the live-concert recorder that goes with fermata (see `docs/LIVE
 
 A line that starts with **Shared:** is a change to the code fermata shares (see `COMPATIBILITY.md`), so fermata's next build mentions it too.
 
+## 0.10.9
+Built 23 November 2026 (the conversation for both programs), with Claude Opus. No change to fermata:Live's own code: what the shared folder
+gained for fermata 3.59.0 (its take window colours a take while it records).
+- **Shared (fermata 3.59.0):** `AudioEngine` can hand the sound of each track it records to a colouring thread (`LiveFeed`,
+  `setLiveFeeds`, `getLiveFeed`, `liveFeeds`); nothing is made unless `setLiveFeeds (true)` is called, which fermata:Live never does - its
+  live colours come from the recorder's chunks as before (`LiveColours`). The engine's live waveform keeps in time with its file after an
+  outsize block from the device. `WaveColorCache::put` (`src/ui/WaveColor.h`) takes colours worked out elsewhere for a file; fermata:Live
+  does not use it. Rebuild and check that recording and the coloured waveforms are unchanged.
+
+## 0.10.8
+Built 23 November 2026 (the conversation for both programs), with Claude Opus. No change to the recorder and none to fermata:Live's own
+code: what the shared folder gained.
+- **Shared (fermata 3.58.0):** the shared engine now solos an Int Bus by playing the tracks that feed it only into it (their own outputs
+  and other sends are silent; `AudioEngine`); a soloed track is as before, and fermata:Live's mixer has no bus solo of its own. A mixer in the project file can carry `"stripPlaces"` (fermata's buses
+  and VCAs moved among the strips; `MixerState::stripPlaces`, new `src/core/StripOrder.h`, `Project::forgetStrips`), kept as it is when
+  fermata:Live saves; its own mixer window still shows the strips in the usual order. The ReTouch jobs' progress bar (`src/ui/SpectralWindow.h`)
+  shows moving stripes and the seconds while a long step gives no progress (the Fixer's ReTouch too). The waveform colouring
+  (`src/ui/WaveColor.h`) takes the newest request first and runs at a low priority (fermata:Live keeps one worker). Rebuild and check that
+  recording, the Fixer's ReTouch and the coloured waveforms are unchanged.
+
+## 0.10.7
+Built 22 November 2026 (the conversation for both programs), with Claude Opus. No change to the recorder and none to fermata:Live's own
+code: what the shared folder gained.
+- **Shared (fermata 3.57.0):** a track in the project file can carry the mics remembered for it (`mics`, `micsL`, `micsR`) and the project the
+  take window last imported into (`lastImportWindow`) - kept as they are when fermata:Live saves a project; the import code can write a stereo
+  file from one side, and names a joined L / R pair "... L-R" when a file of its own has its name; new `src/core/TrackLayout.h` and more in `src/core/StereoJoin.h` (fermata only). Rebuild and check that recording is
+  unchanged.
+
 ## 0.10.6
 Built 20 November 2026 (the conversation for both programs), with Claude Opus. No change to the recorder and none to fermata:Live's own
 code: what the shared folder gained.

@@ -2620,6 +2620,188 @@ fermata's `shutdown()` and its static destructors. Our unhandled-exception filte
   right after closing the log, so the PDF reader's unload code never runs. Everything is saved and closed by then.
 (The symbols of Windows' own libraries were not available here: the reading rests on the single thread and the order of the modules.)
 
+## 3.59.0: WaveColour while a take records (23 November 2026, with Claude Opus)
+
+**What was asked** (23 November 2026, after 3.58.0): "the coloured waveform does work in the take window once the recording is finished, but
+I want to see the colours live as they are being recorded". A take that records is drawn from the engine's live waveform (`LivePeaks`), which
+has no colours; WaveColour (`WaveColorCache`) colours finished files from the disk. fermata:Live already colours while it records
+(`LiveColours`, from the recorder's chunks on the drive); fermata's files cannot be read while they record (their header is refreshed every
+10 s), so the sound is taken in memory instead.
+
+**The feed** (`AudioEngine::LiveFeed`, shared): per recorded track, `RecTrack::feed`, made in `startRecording` when `setLiveFeeds (true)`
+(fermata: `AppContext::setWaveColour`). The audio thread adds the mean of the track's first two channels (what `WaveColorCache::analyse`
+takes from a file) wherever the file and the live waveform get audio: `deliverFromRing` (session mode, the pre-roll first), the direct path,
+`fillDeviceGap` (silence), and the direct path's outsize block (`writer->skip`: silence - the live waveform now gets it too, so it stays in
+time with the file). So the feed's sample k is the file's sample k. The ring is about 1.5 s in whole 4096-sample blocks of
+`std::atomic<float>` (relaxed); the writer stores `begun`, a release fence, the samples, then `count` (release); `read` loads `count`
+(acquire), copies, an acquire fence, then checks `begun` - false when the samples were not all there, or the writer had started over them
+(the reader fell behind). At Stop the message thread delivers the rest (the audio thread has left the take) and sets `ended`; a file that
+lost sound to an overrun (`samplesLost`) marks `gap` (its file has silence where the feed has sound). The finisher sets `fileDone` once the
+writer is finished (a failure there marks `gap` too). The feed also holds the colours worked out (`argb`, `level`, `complete`, `gap`, under
+its `lock`). `getLiveFeed (track, take)` and `liveFeeds()` hand out shared pointers (message thread): the session can go while the colours
+are still being worked out.
+
+**The colours** (`src/ui/LiveWaveColours.h`, fermata only; `AppContext::liveColours`): one thread at low priority. The take window's timer
+calls `watch (engine.liveFeeds())` while a take records or is being finished (WaveColour on); each new feed is a job from sample 0. Every
+40 ms (or at once while there is work) each job takes the whole blocks that have come in, up to 32 at a time, and runs
+`WaveColorCache::BlockAnalyser` on them (the files' own analysis); a block the ring no longer holds is left unknown (argb 0, `gap`) and it
+goes on from the oldest block still there. After `ended`, the last part-block is padded with silence (as the files' are) and the feed is
+`complete`. `drawLiveWave` asks `LiveWaveColours::colours` for its pixel columns (the loudest block in each, the plain colour where nothing
+is known yet) and hands them to `fillEnvelope`, once per track for all its lanes. **The hand-over:** `AppContext::takeInFinishedTakes` calls
+`handOver (files)` after `forgetWaveforms` (which drops the files' old entries); a complete feed with no gap whose `fileDone` is set goes to
+`WaveColorCache::put` (kept as the file's colours, saved in the Waveforms folder; a waiting request dropped) at once, or from the thread (via
+the message thread) as soon as it is complete. With a gap it is dropped and the file is coloured from the disk as before (`holdOff` keeps
+that until no take records).
+
+**Checked here:** the core tests - "3.59.0 the live feed for WaveColour while recording" (the ring: stereo mean, mono, `addSilence` short and
+longer than the ring, `read` refusing what has not come or was written over; a take in session mode with a 1 s pre-roll: no feeds while they
+are off, two while on, `ended` at Stop, `fileDone` once finished, the engine letting go at the reap, and the last 8192 samples of each file -
+the stereo one as the mean of its two channels - equal to the feed's within 24-bit steps). `scratchpad/livecol/livecol.cpp` (not in the
+repository: it needs `juce_graphics`, which the core tests do not link): the engine recording a sweep with noise, thumps and silence in real
+time, `LiveWaveColours` watching - 82 of 82 blocks coloured while recording, `colours()` giving changing column colours; after the finish
+and `handOver`, both files' colours identical to `WaveColorCache`'s own analysis of the files (0 blocks different, levels within 1.5e-8); a
+take watched 4 s late: `gap`, its first blocks unknown, not handed over; `setLiveFeeds (false)`: no feeds. **On the Linux build:** a copy of
+fermata built for the trial only with fermata:Live's pretend device (`TestSignalDeviceType` through `GuardedDeviceManager::makeRealTypes`;
+not in the repository) - WaveColour on, 7 tracks armed, Rec: the take's waveforms coloured as it recorded (input 1's 110 Hz red-orange with
+its clicks marked, up to 770 Hz green), and one second after Stop the finished take drawn from its files in the same colours, its `.fwcol`
+files written by the hand-over. **Not checked:** Windows, a real interface, and how much the colouring adds with 64 tracks at 192 kHz
+(about 3000 blocks a second: on a modern PC a few per cent of one core, at low priority).
+
+## 3.58.0: bus solo, Enter in the take window, a moving progress bar, faster WaveColour, the mixer's link, strip order and layout (23 November 2026, with Claude Opus)
+
+**What was asked** (22 November 2026), eight things: (1) soloing an Int Bus left lots else playing - only what feeds INTO the soloed bus should
+be heard (a track sent to the bus and also going to Main: its main output muted, its send kept); (2) Enter for ReTouch did nothing in the take
+window; (3) the denoise has no progress bar and looks hung - show progress "even if it's not real"; (4) coloured waveforms "don't show" in the
+take window; (5) strips selected with Shift, then Shift + Alt held: a change to one strip - the example, its fader output to another Int / Ext
+Bus - changes all of them; (6) move Int Buses, VCAs and non-main Ext Buses sideways (a bus next to the 8 strips that feed it); (7) M / S under
+the fader, a stereo track's two pans on one line ("small and fiddly" is fine, values are typed), the fader and its meter nearer the top and
+bottom of their area; (8) Reset peaks lower, above Phase scope.
+
+**(1) Solo** (`AudioEngine::processMixer`): three flags per node. `soloSelf`: its SOLO or a soloed VCA's. `soloAfter`: soloed, or fed (along a
+live send or output, forwards in the plan's order) by a soloed node. `soloHeard`: feeds a node that is `soloSelf` or `soloHeard` (backwards).
+A track plays (`soloOk`) when any of the three is set. Every send and output (`SendPlan`, outputs included) is open only when the node is
+`soloAfter` or its destination is `soloSelf` / `soloHeard` (`pathOpen`): a node upstream of a soloed one plays only along the paths that lead
+there. A soloed track, and everything after a soloed node, is as before; before 3.58.0 a node feeding a soloed one was opened whole.
+Test: the section "audio tracks, Int Buses and Ext Buses" (the Strings bus soloed: its tracks heard through it only, the Foldback send closed;
+the bus's output off or the send muted: silence; a soloed violin: everything it feeds).
+
+**(2) Enter** (`TakeWindowComponent::keyPressed`): `returnKey` with no modifier and marks 1 / 2 set on a take (or takes selected) clicks the
+ReTouch button, as the edit window's Enter does; otherwise it is passed on. In the hot keys list.
+
+**(3) Progress** (`JobDialogBase`, `src/ui/SpectralWindow.h`, shared): the timer notes when `job.progress()` last moved; after a second
+without, `progressValue` is -1 (JUCE's ProgressBar then runs its moving stripes) and the bar's text says "Working... N s" (seconds since
+`runJob`); real progress shows again as soon as it moves. Every job dialog (ReTouch, Noise mode's denoise / de-click / de-hum, the Fixer's
+ReTouch in fermata:Live) gets it.
+
+**(4) WaveColour** (`WaveColorCache`, `src/ui/WaveColor.h`, shared): not reproduced - the take window colours its takes on the Linux build
+(`TakeWindow.cpp` draws with `app.waveColourOf`, as the edit window). The likely cause is time: one worker, oldest request first, for the
+hundreds of files of an orchestral take window. Now: requests go into a queue (a file asked for again moves to the back), each worker takes
+the newest first (what was drawn last is on the screen), up to `setWorkers` workers (fermata: CPUs - 2, 1 - 4; fermata:Live: 1), each with its
+own `AudioFormatManager`, in a low-priority pool made at the first request; `holdOff` (fermata: `engine.isRecording()`) makes them wait;
+`clear()` empties the queue too.
+
+**(5) The link** (`StripGang`): `forSelectedOthers` (no key check, for a choice in a list that opened with the keys held) and `othersNow`
+(ids, for a menu answered later). `StripOutputRow`: `OpenAwareBox` notes in `showPopup` whether the keys are held (`linkAtOpen`); `choose()`
+and the OUT button give the linked strips the same `outDest` / `outOn` (`linkApply`, set by `ChannelStrip`). `LowCutKey::linkedNow` /
+`linkedRefresh`: LC on / off and polarity to the linked strips; the panel (`LowCutPanel::setLinked`, captured when it opens) sets their low
+cuts too ("+ N linked" in its title). The + menu adds the same send to the linked strips (one that already sends there keeps its level).
+`ColourPickerPanel` takes `also` (more channels): the coloured bar with the keys held (`StripBase::colourAlso`), and "Colour of the N selected
+strips..." in a selected strip's plate menu. `gangRefresh` refreshes LC and the output row too.
+
+**(6) Strip order** (`src/core/StripOrder.h`, shared; `MixerState::stripPlaces`, saved as `"stripPlaces"`): `itemsOf` lists a mixer's strips
+in the usual order - tracks (hidden ones too, so a place after one holds), Int Buses, Ext Buses, VCAs (`shown`, `movable`: not tracks, not an
+Ext Bus ticked as main in this mixer). `order` takes out the strips with a valid place (movable, its anchor here or null) and puts each back
+right after its anchor (several after one anchor in the order of the list; a circle at the end). `moveAfter` keeps the anchors unique: the
+strips that followed the moved one take its old left neighbour, the one that followed the new anchor follows the moved strip - so nothing
+else moves on the screen. `backToUsual` and `forget` (strips going: a place after one takes the nearest strip before it that stays, in the
+order shown) the same way; `Project::forgetStrips` runs it from `removeTrack`, `removeEmptyTracks`, `removeBus`, `removeVca`; the stereo join
+moves places after either mono track onto the stereo track. The window (`MixerComponent::rebuild`) builds the strips in `order`'s order;
+movable strips get `StripBase::onMoveDrag` (a press on the bar or plate arms it; 6 px sideways starts the drag, `beginDragAutoRepeat`; a click
+without a move opens the colour picker on release - a plate's single-click timer waits for the release while the button is held),
+`onMoveCommand` and `isMoved` (the plate menu's two moves). `MixerStripsHolder::moveDrag` draws the gap (`paintOverChildren`), scrolls the
+viewport (`autoScroll`) and, let go, hands `MixerComponent::moveStrip` the strip left of the gap; the rebuild comes from the message loop.
+"Next to the strips that feed it": after the last shown track or Int Bus whose output or an active send goes to it (a VCA: whose `vcaMask`
+has it).
+
+**(7) Layout** (`StripBase::layoutFrame`, `FaderBlock::resized`, `ChannelStrip::resized`): bottom up - OUT, the post-fader slot, M / S, the
+fader, the pans. `StripLayout::panRows` is always 1: a stereo track's two `TypedSlider`s are side by side, each half the width less 4 px, the
+read-outs over them (24 - 34 px) with "PAN" between when 18 px are left. The fader's slider now covers the whole block: the travel runs from
+8 px under the peak read-out to 7 px over the reading (`travelFrom` / `travelTo`), the cap tucking under them at the ends; the meters (on the
+same scale) follow; the peak read-out takes clicks (`setInterceptsMouseClicks`) so a click on it does not move the fader. (The cap is 44 px,
+`MixerLookAndFeel::kCapHalf` 22, in the shared look: not changed.)
+
+**(8)** `MeterSettingsStrip::resized`: Reset peaks right above Phase scope.
+
+**Tried on the Linux build** (a made-up session: 8 string tracks sent to an Int Bus "Strings" and controlled by VCA 1, two winds, a stereo
+Omni, an Int Bus "Reverb", a cue Ext Bus): the layout (M / S under the faders, "L100 PAN R100" over two half-width sliders, +12 just under
+the peak read-out, -inf's cap tucked under the reading, Reset peaks over Phase scope); Strings dragged by its bar to between Cb and Fl (the
+gold line and the veil while dragging; no colour picker after); VCA 1 "Move next to the strips it controls": after Cb, with Strings
+following it; saved (`"stripPlaces"` in the mixer's .fmmix) and the same order after closing and opening; strips 1 - 6 selected, Shift + Alt
+held as strip 2's output list opened, let go, Reverb picked: all six to Reverb, the others not; Shift + Alt + double-click on strip 2's plate:
+the selection kept. Take window: a take selected and Enter: ReTouch opened; its scan showed the stripes and "Working... 3 s" .. "9 s";
+WaveColour on: the takes coloured.
+
+**Checked here:** the core tests - "audio tracks, Int Buses and Ext Buses" (the bus solo) and "3.58.0 buses and VCAs moved sideways" (the
+order, `moveAfter` keeping anchors unique, a track moved or hidden, `backToUsual`, saving, `removeTrack` / `removeEmptyTracks` / `removeBus`
+keeping the spot, an Ext Bus ticked as main, places that cannot count). **Not checked:** Windows (the Alt key held over a drop-down list, and
+the cursor while dragging); the colouring time with a real orchestral session.
+
+## 3.57.0: an import laid out like a take window; a window's takes onto another window's tracks (22 November 2026, with Claude Opus)
+
+**What was asked** (22 November 2026): an orchestral session of just under 50 mono files per take, some made into stereo tracks and renamed
+after the first piece's import. Every later piece's import made another set of about 50 tracks (the names no longer matched: "One set of
+tracks" failed on the renames, "Use the existing audio tracks" by order failed once pairs had become stereo tracks). Wanted: a choice in the
+import to copy a take window's track structure, names and stereo tracks; and (offered, accepted) a way to put a piece already imported on
+tracks of its own onto the first piece's tracks.
+
+**How the mics are known** (`src/core/TrackLayout.h`):
+- `layoutOf (project, window, naming)`: for every track the window has audio on, the names of the mics whose audio is there. From (1) the
+  take files' `sourceName` / `sourceName2` (the original file names, kept by every import and by "Make a stereo track"), read again with
+  `buildImportPlan` (the same reading as the import itself, so the names compare like with like), each name tied to the track and side its
+  file is on now; (2) the track's own name; (3) the mics remembered on the track (`TrackDef::mics`, `micsLeft`, `micsRight`: what was chosen
+  in an earlier list). A source name that appears twice in a take (the channels of one polyphonic file) is not used: it says nothing about
+  which channel.
+- Names are compared canonical (`canon`: words, lower case, single spaces) and reduced (`reducedNames`: words every name of one import starts
+  or ends with taken off - only with 4+ names, while every name keeps a word that is not a number or a side, and only if they stay distinct).
+- `match`: in order, the first that gives exactly ONE place wins (two or more: undecided, the person chooses): the same name; a mono file
+  whose name is a stereo track's with L / R after it (and a stereo file whose name is the two sides' without L / R); the same name without
+  take numbers at the end (two digits or more only - "Mic 1" keeps its 1); the end of the name, longest wins. Compatible places only: mono
+  file -> mono track or a side of a stereo track; stereo file -> stereo track.
+- `build`: the choices applied to the unjoined import plan - parts on a layout track get the key "@<track id>" (`mapTracks` mode 3 puts
+  them there; a key whose track has gone gets a new track of its name), the two sides of a stereo track one part (source + source2, or
+  `ImportPart::kOneSide` with `sourceRight` when a take has only one: silence on the other side, written by `copyImportFiles`). Two files of
+  a take on one place (or on a whole stereo track and one of its sides) are `clashing` and the import waits.
+- After the import the mics' names are remembered on the tracks they went on (`remember`: at most 32 each); every import sets
+  `Project::lastImportWindow`, which the layout choice offers first.
+
+**The import window** (`src/ui/FixTools.cpp`): the two tick boxes became the "Tracks:" choice (`importTrackMode` 1-4; the old settings
+`importOntoExisting` / `importByTrackName` carried over); mode 4 hides the pair list (the layout decides the pairs) and the track order
+button, and shows the window choice and the `PlacementList` (one row per import track: name, a box of places - the layout's tracks first,
+then the project's other tracks - and a note). The window is 780 x 760.
+
+**Moving a window's takes** (`MoveOntoDialog`, `moveTakesOntoWindow`; the Import button's menu and the track-name menu): rows for this
+window's tracks that the other window does not use; matched with the same `match` (a stereo track made from two files: its whole names
+first, then its two sides). A whole place: `Project::moveTakeClips` (as the 2.99.0 moves). A side: `stereojoin::planInto` / `writeJobs` /
+`applyInto` - the two mono tracks' files in THIS window joined into the existing stereo track; the pieces of edits made from these takes
+follow (whole-take files shared, other pieces their own file in Fixes); frozen versions are not touched (decided for moves, 3.47.0); the
+mono tracks stay (deletable once empty: offered afterwards). Refused: audio already on the stereo track in such a take or piece, parts out
+for processing, automation on the mono tracks in an edit with such pieces. An ordinary undo step (the tracks are not removed).
+
+**Found while trying the window here:** `joinBox`, `pairView`, `numBox` and `pieceBox` of the import window were never added as children
+(in every version in this repository's history): `setVisible` and `isVisible()` on a component without a parent change only its own flag,
+so `splitting()` and the pair joining worked with their defaults while nothing was shown. Now `addChildComponent`.
+
+**Tried on the Linux build** (a trial project: piece 1 from Pyramix-style files, renamed, Omni-L / Omni-R made into "Omni"): piece 2
+imported "laid out like" piece 1 - every file on its renamed track, the Omni pair one stereo file (left 0.15 / right 0.16 as written), only
+the new Celesta made a track, the mics remembered, `lastImportWindow` moved on; piece 3 (imported by name, 9 tracks of its own) moved onto
+piece 2's tracks with the move window, the pair joined, and the 9 empty tracks deleted when offered: one set of 18 tracks.
+
+**Checked here:** the core tests' section "3.57.0 an import laid out like a take window": the names, `reducedNames`, the four ways of
+matching, a remembered pick, `build` (joined pair, one-sided pair, clashes, left out), `remember`, the one-sided and different-length stereo
+files from `copyImportFiles`, saving and loading the new keys, and `planInto` / `applyInto` on a window with an edit (refusals, files,
+pieces, the edit's track list, Ctrl + Z). **Not checked:** the two windows on Windows; real orchestral file names (the matching is only as
+good as the names: the list is the safety net).
+
 ## 3.56.0: timecode as MIDI - the Hapi's LTC_in and LTC_out through rtpMIDI (20 November 2026, with Claude Opus)
 
 **What was asked** (20 November 2026): the user installed rtpMIDI as Merging describe ("TimeCode Setup with Merging RAVENNA / AES67

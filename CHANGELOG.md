@@ -6,6 +6,128 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.59.0
+Built 23 November 2026 (the conversation for both programs), with Claude Opus. Asked for on 23 November: the coloured waveforms (WaveColour)
+while a take is being recorded - they only came once the take was finished.
+- **WaveColour while recording.** With WaveColour on, the waveforms in the take window are coloured as they record, a moment behind the
+  sound (the colours are worked out a block of 4096 samples at a time - under a tenth of a second at 48 kHz); the newest sliver stays in
+  the plain recording colour until it is done. They are worked out from what is being recorded, in the background at a low priority, the
+  same way the finished files are coloured, so a take looks the same while it records and afterwards. When the take's files are finished
+  it keeps those colours at once (before, a finished take was worked out again from its files, which took a while).
+- Switch WaveColour on before you press Record: a take started with it off is coloured once it is finished, as before. A take whose files
+  lost sound to an overrun, or one the colouring fell more than about 1.5 s behind on (a computer far too busy), is shown as far as it
+  could be coloured, and coloured from its files once the recording has stopped.
+- The live waveform keeps in time with the file after a block far bigger than the audio device said it would send (it used to lose that
+  time, so the rest of the take was drawn a little early until Stop).
+- **Shared:** the engine hands each recorded track's sound to the colouring (`AudioEngine::LiveFeed`, `setLiveFeeds`, `getLiveFeed`,
+  `liveFeeds`) - only when asked, so fermata:Live's recordings are untouched; `WaveColorCache::put` takes colours worked out elsewhere for a
+  file (`src/ui/WaveColor.h`). See `COMPATIBILITY.md`.
+- Checked here: the core tests (all pass; new: the feed's ring - stereo and mono, silence, a reader that fell behind - and a take recorded in
+  session mode whose feed holds exactly its file's samples, the pre-roll included). A test program records two takes without a device:
+  while recording, 82 of 82 blocks were coloured as they came in; the colours handed to the finished files were the very colours worked out
+  from the files themselves; a take watched only 4 s in was not handed over; with WaveColour off nothing is fed. On the Linux build, with a
+  pretend audio device built in for the trial only: 7 tracks recorded with WaveColour on were coloured while recording (110 Hz red to
+  770 Hz green, the clicks of input 1 marked), and a second after Stop the finished take had the same colours, saved in the Waveforms folder.
+  Not tried: Windows itself and a real interface.
+
+## 3.58.0
+Built 23 November 2026 (the conversation for both programs), with Claude Opus. Eight things asked for on 22 November: soloing an Int Bus
+properly, Enter in the take window, a moving progress bar while denoising, coloured waveforms in the take window, the mixer's Shift + Alt
+link for outputs, moving buses and VCAs among the strips, and the strips' layout.
+- **Solo an Int Bus: you hear only what goes into it.** Soloing a bus used to leave every track that feeds it fully open, so their own
+  outputs (to Main, say) went on playing beside the bus. Now a track that feeds a soloed bus plays only along the paths that lead into it:
+  its fader output and its other sends are silent, and its send (or output) to the soloed bus stays live. What the soloed bus goes on to
+  (its own output, its sends) is heard as before. A track soloed itself still plays through everything it goes to, as before. The same
+  when the bus is soloed by a VCA that controls it.
+- **Take window: Enter opens ReTouch, DeClick & Denoise** for the part between marks 1 and 2 (or the take selected whole), as in the edit
+  window. It did nothing in the take window. (Added to the hot keys list.)
+- **Denoise (and every other job in ReTouch / Noise mode) no longer looks hung.** The progress bar shows real progress as it comes; when a
+  long step gives none for a second (a long box being denoised, the picture being made again), the bar runs its moving stripes and counts
+  the seconds ("Working... 12 s") until real progress comes again.
+- **Coloured waveforms (WaveColour) in the take window.** I could not make them fail to show here: on the Linux build the take window
+  colours its takes. What I did find is that the colours came one file at a time, oldest first - a take window of an orchestral session
+  asks for hundreds of files, so the takes on the screen could wait many minutes. Now several files are coloured at once (up to four,
+  leaving two cores free), the ones drawn last (on the screen) first, at a low priority, and none while recording. If they still do not show
+  for you, tell me what you see (the button lit but plain waveforms? colours in the edit window?).
+- **Mixer: Shift + Alt now links the output too.** With strips selected (click the name plates, Shift + click for a run) and Shift + Alt
+  held, changing one strip's output - the OUT button, or the place it goes to (hold the keys as you open the list; you may let go before
+  choosing) - changes every selected strip. Also linked now: LC on / off, polarity, the low cut's panel (opened with the keys held: its title
+  says "+ 5 linked"), a send to another track (+), and the colour (the coloured bar clicked with the keys held, or "Colour of the 6 selected
+  strips..." in a selected strip's name-plate menu). Faders, sends, pans, M / S and plug-ins were linked already.
+- **Move Int Buses, VCAs and Ext Buses sideways among the strips.** Drag a bus or VCA strip by its coloured bar (or its name plate) left or
+  right: a bright line shows where it will go, the view scrolls at its edges, and it stays there - next to the 8 strings that feed it, say.
+  A click without moving still picks the colour. Right-click its name plate for **Move next to the strips that feed it** (a VCA: the
+  strips it controls) and **Move back to its usual place**. The main output's Ext Bus stays where it is. Each mixer keeps its own order,
+  saved with the project; a moved strip follows the track it sits after when tracks are reordered, and keeps its spot when that track is
+  deleted or joined into a stereo track.
+- **The mixer strips' layout:**
+  - **M and S are under the fader** (they were above it), then the post-fader slot (when it is on), then OUT.
+  - **A stereo track's two pans are side by side on one line**, like a mono track's one pan (each half as wide; their read-outs above them,
+    click one to type a position). The pan section is one row on every strip now.
+  - **The fader and its meters run nearly the whole height of their well**: the travel goes from just under the peak read-out to just over
+    the fader's reading (the cap tucks under them at the very ends), so the empty bands above +12 and below -inf are gone.
+  - **Reset peaks** is lower down in the METERS strip, just above Phase scope (it was at the top).
+- **Shared:** the engine's solo (`AudioEngine`); `MixerState::stripPlaces` and the new `src/core/StripOrder.h` (the strips' order; the
+  project file gained `"stripPlaces"` on a mixer); `Project::forgetStrips`; `StereoJoin` keeps a moved strip next to the stereo track; the
+  progress bar of the ReTouch jobs (`src/ui/SpectralWindow.h`); the waveform colouring's workers (`src/ui/WaveColor.h`). See
+  `COMPATIBILITY.md`.
+- Checked here: the core tests (all pass; new: the bus solo - heard only through the bus, its other ways out silent, a soloed track as
+  before - and the strips' order: a drag, back again, a track moved, hidden or deleted, a bus removed, saved and read back). On the Linux
+  build with a made-up 11-track session: the new strip layout; the Strings bus dragged between Cb and Fl, the VCA moved next to its strips
+  from the plate menu, both still there after closing and opening again; six strips selected, Shift + Alt held as strip 2's output list
+  opened, the keys let go, Reverb chosen: all six went to Reverb; Shift + Alt + double-click on a selected strip kept the selection; Enter
+  in the take window opened ReTouch, whose bar ran its stripes ("Working... 9 s") while it scanned; WaveColour coloured the take window.
+  Not tried: Windows itself, a real orchestral session's colouring time, and the Alt key's behaviour on Windows.
+
+## 3.57.0
+Built 22 November 2026 (the conversation for both programs), with Claude Opus. Importing a piece onto the tracks of a piece already set up:
+the same tracks, your names and your stereo tracks, with no new tracks - and the same for a piece that is already imported on tracks of its
+own.
+- **Import: one "Tracks:" choice instead of two tick boxes.** *By name* (as before without a tick), *One set of tracks* (the old tick box),
+  *The project's tracks in order* (the old "Use the existing audio tracks") and, new, **Lay it out like a take window**. Fermata remembers
+  the choice (the old tick boxes' settings are carried over).
+- **Lay it out like a take window.** Choose the window whose layout to copy (Fermata offers the take window you last imported into). Each
+  mic's file goes on the track the same mic went on in that window, whatever you have renamed the track to, and a left and a right file go
+  into the stereo track you made from that pair (one stereo file is written per take). No new tracks are made, and the mixer keeps one set
+  of strips.
+  - **How Fermata knows which mic is which:** every imported take remembers the name its file had when it came in, including the two files
+    behind a stereo track made with *Make a stereo track*. Those names are read again exactly as an import reads names, and matched to the
+    new files' names - the same mic name; a stereo track's name with L / R after it; the same name without the take numbers at its end; or
+    the end of the name ("Gloria SPOT4" and "SPOT4").
+  - **The list** shows every mic of the import and where it goes, with a few words on how that was found. Anything Fermata could not match
+    for sure is in orange and goes on a track of its own - pick its track in the list. A pick is remembered on that track, so the next piece
+    finds it without asking. A mic can also be left out.
+  - **Red rows**: two files of one take would go on the same track (or on a stereo track and one of its sides). The import waits until one
+    of them is changed.
+  - **A take with only one side of a stereo pair** (one mic's file missing): the stereo file is written with that side silent, and the
+    window says so.
+  - A mic that window never had goes on a track of its own; a mic missing from this piece just leaves its track empty in this window.
+- **Move this window's takes onto the tracks of another take window** (the take window's Import button, and the right-click menu of a
+  track's name). For a piece already imported onto tracks of its own: the same matching and the same list, then every track's clips go onto
+  the matching track of the other window, and a left and a right mono track are joined into that window's stereo track (a new stereo file
+  per take; the mono files stay on the disk). The takes stay where they are in time, and the pieces of edits made from them go along (the
+  frozen versions of edits stay as they are, as with moving clips). Ctrl + Z puts the takes back. Afterwards Fermata offers to delete the
+  tracks that are left empty.
+  - Not done (and said why): a take that already has audio on the track it would go on; a pair whose takes are out being processed; a pair
+    in an edit that has automation on one of the two mono tracks (move the takes before automating, or delete that automation first).
+- **Fixed: the import window's list of left / right pairs, the "Mic 1 + Mic 2" box and the "one take window per piece" box were never
+  shown.** They were never added to the window, so they worked unseen with their defaults (every L / R pair joined into a stereo track,
+  each piece in its own take window) and could not be changed. They are there now, above "Recorded with" (not with "Lay it out like a take
+  window", where that window's stereo tracks decide the pairs).
+- **Fixed: a Decca tree's L and R files no longer land on the same track as its centre file.** With "Tree-L", "Tree-C" and "Tree-R" (the
+  -C file is the track "Tree"), the joined left / right pair was named "Tree" as well, so a take had two files on one track. A pair whose
+  name a file of its own already has is now called "Tree L-R" (the tick list shows that name).
+- **Shared:** the project file keeps, on a track, the mics remembered for it (`mics`, `micsL`, `micsR`, written only when there are some)
+  and the take window last imported into (`lastImportWindow`); the import can write a stereo file from one side, and names a joined pair
+  "... L-R" when a file of its own has its name (both in `ImportPlan`); new
+  `src/core/TrackLayout.h`; `src/core/StereoJoin.h` can join two mono tracks of one take window into a stereo track that is there already
+  (see `COMPATIBILITY.md`).
+- Checked here in the core tests (the matching, the plan, the one-sided stereo file, the Decca tree's names, the join into an existing
+  stereo track with an edit made from the takes, Ctrl + Z, saving), and both windows tried on the Linux build with a made-up orchestral
+  session (piece 1 renamed and an Omni pair made stereo; piece 2 imported laid out like it; piece 3, imported the old way, moved onto the
+  same tracks and its 9 empty tracks deleted). Not tried: Windows itself, and your real file names - if a mic is matched wrongly, the list
+  lets you put it right; send me a few of the file names and the matching can learn them.
+
 ## 3.56.0
 Built 20 November 2026 (the conversation for both programs), with Claude Opus. Timecode as MIDI: the Hapi's LTC_in and LTC_out, reached
 through rtpMIDI, as well as LTC on an audio channel.

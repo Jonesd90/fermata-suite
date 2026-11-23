@@ -396,6 +396,11 @@ struct MixerState
         again (the + button). Message thread only. */
     std::vector<juce::Uuid> hiddenStrips;
     bool isStripHidden (const juce::Uuid& trackId) const { return std::find (hiddenStrips.begin(), hiddenStrips.end(), trackId) != hiddenStrips.end(); }
+    /** 3.58.0: Int Buses, Ext Buses (not a main output) and VCAs moved sideways among the strips of THIS mixer's window: each sits right after the
+        strip 'after' (an audio track, a bus or a VCA; null = before all of them). One with no entry is in its usual place (Int Buses after the
+        audio tracks, then Ext Buses, then VCAs). Only where the window shows them: the sound does not change. See StripOrder.h. Message thread only. */
+    struct StripPlace { juce::Uuid strip = juce::Uuid::null(), after = juce::Uuid::null(); };
+    std::vector<StripPlace> stripPlaces;
 
     /** Audio thread: what the VCAs in 'mask' do to a strip: their gains multiplied together, or 0 when one of them is muted. For the VCAs in
         'ownMask' the strip's own automated value (own[i]) is used instead of the VCA's fader. */

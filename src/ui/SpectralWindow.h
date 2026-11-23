@@ -87,10 +87,22 @@ public:
     }
     ~JobDialogBase() override { ProcessWindows::get().remove (this); stopTimer(); job.release(); }          // (asks the work to stop and never waits for it: see AudioJob::release)
 protected:
-    void timerCallback() override { progressValue = (double) job.progress(); }
+    /** 3.58.0 (asked for on 22 November 2026: a denoise "LOOKS like the program hangs or freezes"): the bar always moves while a job runs. Real progress is
+        shown as it comes; while it has not moved for a second - one long step: a long box being denoised, the picture being made again - the bar shows
+        the moving "working" stripes and how long the job has been at it, so a long step is never taken for a hang. */
+    void timerCallback() override
+    {
+        const double p = (double) job.progress();
+        const auto now = juce::Time::getMillisecondCounter();
+        if (p > lastReal + 1.0e-4) { lastReal = p; lastMove = now; }
+        const bool waiting = now - lastMove > 1000 && p < 0.999;
+        progressValue = waiting ? -1.0 : p;
+        bar.setTextToDisplay (waiting ? "Working... " + juce::String ((int) ((now - jobStart) / 1000)) + " s" : juce::String());
+    }
     /** 'ifGone' (optional) runs instead of 'done' when the window has been closed before the job ended: it tidies away what the job made (its files). */
     void runJob (AudioJob::Work w, std::function<void (const juce::String&)> done, std::function<void (const juce::String&)> ifGone = {})
     {
+        jobStart = lastMove = juce::Time::getMillisecondCounter(); lastReal = 0.0; bar.setTextToDisplay ({});
         bar.setVisible (true); progressValue = 0.0; startTimerHz (10);
         juce::Component::SafePointer<JobDialogBase> self (this);
         job.start (std::move (w), [self, done, ifGone] (const juce::String& err)
@@ -106,6 +118,7 @@ protected:
     AudioJob& job = *new AudioJob();                                   // (handed back with release() in the destructor: it may outlive this window)
     bool running = false;
     double progressValue = 0.0; juce::ProgressBar bar; juce::Label status;
+    juce::uint32 jobStart = 0, lastMove = 0; double lastReal = 0.0;   // (3.58.0: when the job began, and when its progress last moved)
 };
 
 

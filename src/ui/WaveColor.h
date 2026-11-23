@@ -50,23 +50,31 @@ struct WaveColorData
 class WaveColorCache
 {
 public:
-    WaveColorCache() : pool (1) { td::registerAudioFormats (formats); }
+    WaveColorCache() = default;
     ~WaveColorCache() { stop(); }
 
     std::function<void()> onReady;
     std::function<juce::File()> folder;              // the Waveforms folder: worked-out colours are kept there between runs (called on the message thread only)
+    /** 3.58.0: while this says true (fermata: a recording is under way), the colouring waits. Set once, before the first get(); called from the workers. */
+    std::function<bool()> holdOff;
+    /** 3.58.0: how many files are worked out at once (1 - 4; fermata:Live keeps 1). A take window of an orchestral session asks for hundreds of files
+        at once, and one at a time it took many minutes before the colours of what was on the screen came. Message thread, before the first get(). */
+    void setWorkers (int n) { if (pool == nullptr) maxWorkers = juce::jlimit (1, kMaxWorkers, n); }
+    /** How many files are still waiting to be coloured (for a word on the screen). */
+    int waiting() { std::lock_guard<std::mutex> lock (m); return (int) pending.size(); }
 
     /** Closing (3.18.2): nothing more is started, and a job under way is given up (it looks at 'alive' between chunks); waits for it, at most 20 s. Safe to call again. */
     void stop()
     {
         alive->store (false);
-        pool.removeAllJobs (true, 20000);
+        if (pool != nullptr) pool->removeAllJobs (true, 20000);
     }
     /** Another project (3.18.2): the finished colours are let go (a file drawn again is worked out again, or read back from its Waveforms folder). */
     void clear()
     {
         std::lock_guard<std::mutex> lock (m);
         done.clear();
+        queue.clear(); pending.clear();                                       // (3.58.0: what was still waiting is not worked out for a project that has gone)
     }
 
     std::shared_ptr<const WaveColorData> get (const juce::File& f)
@@ -77,21 +85,34 @@ public:
         std::lock_guard<std::mutex> lock (m);
         auto it = done.find (key);
         if (it != done.end()) return it->second;
-        if (pending.insert (key).second)
-            pool.addJob ([this, f, key, dir, alive = alive]
-                         {
-                             td::crashreport::nameThisThreadW (L"Waveform colours");
-                             auto d = dir != juce::File() ? loadSaved (dir, f) : nullptr;
-                             if (d == nullptr)
-                             {
-                                 d = analyse (f);
-                                 if (alive->load() && dir != juce::File()) save (dir, f, *d);
-                             }
-                             if (! alive->load()) return;
-                             { std::lock_guard<std::mutex> l (m); done[key] = d; pending.erase (key); }
-                             juce::MessageManager::callAsync ([this, alive] { if (alive->load() && onReady) onReady(); });
-                         });
+        if (pending.insert (key).second) queue.push_back ({ f, key, dir });
+        else for (size_t i = 0; i < queue.size(); ++i)                       // (asked for again: drawn again now, so it is on the screen - to the back, taken next)
+            if (queue[i].key == key) { auto rq = queue[i]; queue.erase (queue.begin() + (long) i); queue.push_back (rq); break; }
+        if (pool == nullptr)                                                  // (made when first needed, as big as asked for; low priority: playing and recording come first)
+            pool = std::make_unique<juce::ThreadPool> (maxWorkers, juce::Thread::osDefaultStackSize, juce::Thread::Priority::low);
+        while (running < maxWorkers && running < (int) queue.size())
+        {
+            ++running;
+            pool->addJob ([this, alive = alive] { work (alive); });
+        }
         return nullptr;
+    }
+
+    /** 3.59.0: colours worked out elsewhere for a finished file (fermata: while it was recorded, LiveWaveColours) - kept as if worked out here,
+        and saved in the Waveforms folder; a request for it still waiting is dropped. Message thread. */
+    void put (const juce::File& f, std::shared_ptr<WaveColorData> d)
+    {
+        if (d == nullptr || d->argb.empty() || ! alive->load()) return;
+        const auto key = f.getFullPathName() + "|" + juce::String (f.getSize());
+        const auto dir = folder ? folder() : juce::File();
+        {
+            std::lock_guard<std::mutex> lock (m);
+            done[key] = d;
+            pending.erase (key);
+            queue.erase (std::remove_if (queue.begin(), queue.end(), [&key] (const Request& r) { return r.key == key; }), queue.end());
+        }
+        if (dir != juce::File()) save (dir, f, *d);                          // (a few kilobytes: 8 bytes for every 4096 samples)
+        if (onReady) onReady();
     }
 
     /** Forgets what was worked out for this file (the next draw works it out again from the audio). */
@@ -174,7 +195,34 @@ private:
         }
         tmp.overwriteTargetFileWithTemporary();
     }
-    std::shared_ptr<WaveColorData> analyse (const juce::File& f)
+    /** 3.58.0: a worker - takes the newest request first (what was drawn last is what is on the screen now), until none is left. */
+    struct Request { juce::File f; juce::String key; juce::File dir; };
+    void work (std::shared_ptr<std::atomic<bool>> alive)
+    {
+        td::crashreport::nameThisThreadW (L"Waveform colours");
+        juce::AudioFormatManager fm; td::registerAudioFormats (fm);         // (its own: the workers run side by side)
+        for (;;)
+        {
+            if (! alive->load()) return;                                     // (closing: 'running' no longer matters)
+            if (holdOff && holdOff()) { juce::Thread::sleep (250); continue; }
+            Request rq;
+            {
+                std::lock_guard<std::mutex> l (m);
+                if (queue.empty()) { --running; return; }
+                rq = queue.back(); queue.pop_back();
+            }
+            auto d = rq.dir != juce::File() ? loadSaved (rq.dir, rq.f) : nullptr;
+            if (d == nullptr)
+            {
+                d = analyse (fm, rq.f);
+                if (alive->load() && rq.dir != juce::File()) save (rq.dir, rq.f, *d);
+            }
+            if (! alive->load()) return;
+            { std::lock_guard<std::mutex> l (m); done[rq.key] = d; pending.erase (rq.key); }
+            juce::MessageManager::callAsync ([this, alive] { if (alive->load() && onReady) onReady(); });
+        }
+    }
+    std::shared_ptr<WaveColorData> analyse (juce::AudioFormatManager& formats, const juce::File& f)
     {
         auto d = std::make_shared<WaveColorData>();
         std::unique_ptr<juce::AudioFormatReader> r (formats.createReaderFor (f));
@@ -207,11 +255,14 @@ private:
         return d;
     }
 
-    juce::AudioFormatManager formats;
-    juce::ThreadPool pool;
+    static constexpr int kMaxWorkers = 4;
+    std::unique_ptr<juce::ThreadPool> pool;
     std::mutex m;
     std::map<juce::String, std::shared_ptr<const WaveColorData>> done;
     std::set<juce::String> pending;
+    std::vector<Request> queue;                     // (3.58.0) waiting, the newest at the back
+    int running = 0;                                // workers under way (both guarded by m)
+    int maxWorkers = 1;
     std::shared_ptr<std::atomic<bool>> alive = std::make_shared<std::atomic<bool>> (true);     // (atomic: read by the job, written at closing)
 };
 }

@@ -4,15 +4,16 @@
 namespace td
 {
 /** The small panel that opens when you click a channel's colour (on the mixer strip, or on a track name in a take / edit window):
-    a grid of ready-made colours, "Automatic", and "Other..." for any colour at all. Every window that shows the channel follows at once. */
+    a grid of ready-made colours, "Automatic", and "Other..." for any colour at all. Every window that shows the channel follows at once.
+    3.58.0: 'also' - more channels that take the same colour (the mixer strips selected with this one). */
 class ColourPickerPanel : public juce::Component
 {
 public:
-    ColourPickerPanel (AppContext& a, const juce::Uuid& channel) : app (a), id (channel)
+    ColourPickerPanel (AppContext& a, const juce::Uuid& channel, std::vector<juce::Uuid> alsoIds = {}) : app (a), id (channel), also (std::move (alsoIds))
     {
         autoButton.setButtonText ("Automatic");
         autoButton.setTooltip ("Go back to the colour the program picks for this kind of channel");
-        autoButton.onClick = [this] { app.project.setChannelColour (id, 0); repaint(); };
+        autoButton.onClick = [this] { setAll (0); repaint(); };
         addAndMakeVisible (autoButton);
         otherButton.setButtonText ("Other...");
         otherButton.setTooltip ("Pick any colour");
@@ -26,7 +27,8 @@ public:
         g.fillAll (theme::panel);
         g.setColour (theme::border); g.drawRect (getLocalBounds(), 1);
         g.setColour (theme::dimText); g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
-        g.drawText ("COLOUR  -  " + app.project.nodeName (id), kPad, kPad - 2, getWidth() - 2 * kPad, kTitleH, juce::Justification::centredLeft, true);
+        g.drawText ("COLOUR  -  " + app.project.nodeName (id) + (also.empty() ? juce::String() : "  + " + juce::String ((int) also.size()) + " more"),
+                    kPad, kPad - 2, getWidth() - 2 * kPad, kTitleH, juce::Justification::centredLeft, true);
         const auto current = chan::of (app.project, id);
         const bool custom = app.project.channelColour (id) != 0;
         const auto& pal = chan::palette();
@@ -68,7 +70,7 @@ public:
         for (int i = 0; i < (int) pal.size(); ++i)
             if (swatch (i).contains (e.getPosition()))
             {
-                app.project.setChannelColour (id, pal[(size_t) i]);
+                setAll (pal[(size_t) i]);
                 repaint();
                 return;
             }
@@ -87,8 +89,14 @@ private:
     {
         const auto r = rollRect();
         const float h = juce::jlimit (0.0f, 1.0f, (float) (x - r.getX()) / (float) juce::jmax (1, r.getWidth()));
-        app.project.setChannelColour (id, juce::Colour::fromHSV (h, rollS(), rollV(), 1.0f).getARGB());
+        setAll (juce::Colour::fromHSV (h, rollS(), rollV(), 1.0f).getARGB());
         repaint();
+    }
+    /** The colour on this channel and on every one in 'also'. */
+    void setAll (juce::uint32 argb)
+    {
+        app.project.setChannelColour (id, argb);
+        for (auto& o : also) app.project.setChannelColour (o, argb);
     }
     juce::Rectangle<int> swatch (int i) const
     {
@@ -98,8 +106,8 @@ private:
     /** The full colour chooser; the channel follows while you drag in it. */
     struct Selector : public juce::ColourSelector, private juce::ChangeListener
     {
-        Selector (AppContext& a, const juce::Uuid& channel)
-            : juce::ColourSelector (juce::ColourSelector::showColourspace | juce::ColourSelector::showSliders, 4, 4), app (a), id (channel)
+        Selector (AppContext& a, const juce::Uuid& channel, std::vector<juce::Uuid> alsoIds)
+            : juce::ColourSelector (juce::ColourSelector::showColourspace | juce::ColourSelector::showSliders, 4, 4), app (a), id (channel), also (std::move (alsoIds))
         {
             setCurrentColour (chan::of (app.project, id), juce::dontSendNotification);
             addChangeListener (this);
@@ -108,25 +116,28 @@ private:
         ~Selector() override { removeChangeListener (this); }
         void changeListenerCallback (juce::ChangeBroadcaster*) override
         {
-            app.project.setChannelColour (id, getCurrentColour().withAlpha (1.0f).getARGB());
+            const auto c = getCurrentColour().withAlpha (1.0f).getARGB();
+            app.project.setChannelColour (id, c);
+            for (auto& o : also) app.project.setChannelColour (o, c);
         }
-        AppContext& app; juce::Uuid id;
+        AppContext& app; juce::Uuid id; std::vector<juce::Uuid> also;
     };
 
     void openSelector()
     {
         auto where = getScreenBounds();
         if (auto* box = findParentComponentOfClass<juce::CallOutBox>()) box->dismiss();
-        juce::CallOutBox::launchAsynchronously (std::make_unique<Selector> (app, id), where, nullptr);
+        juce::CallOutBox::launchAsynchronously (std::make_unique<Selector> (app, id, also), where, nullptr);
     }
 
     AppContext& app; juce::Uuid id;
+    std::vector<juce::Uuid> also;                                  // 3.58.0
     juce::TextButton autoButton, otherButton;
 };
 
-/** Opens the colour panel next to 'target'. */
-inline void showColourPickerAt (AppContext& app, const juce::Uuid& channel, juce::Rectangle<int> screenArea)
+/** Opens the colour panel next to 'target' (3.58.0: 'also' - more channels that take the same colour). */
+inline void showColourPickerAt (AppContext& app, const juce::Uuid& channel, juce::Rectangle<int> screenArea, std::vector<juce::Uuid> also = {})
 {
-    juce::CallOutBox::launchAsynchronously (std::make_unique<ColourPickerPanel> (app, channel), screenArea, nullptr);
+    juce::CallOutBox::launchAsynchronously (std::make_unique<ColourPickerPanel> (app, channel, std::move (also)), screenArea, nullptr);
 }
 } // namespace td

@@ -27,6 +27,11 @@ struct ImportPart
     juce::String trackName;
     int          trackChannels = 1;          // 1 = mono track, 2 = stereo track
     int          source2 = -1;               // >= 0: a stereo track made from two mono files: 'source' is the left one, this is the right one
+    /** 3.57.0: source2 == kOneSide: a stereo track of which this take has only one side - 'source' (a mono file) on the side 'sourceRight' says,
+        silence on the other (an import laid out like another take window, when one mic of a stereo pair has no file in a take). */
+    static constexpr int kOneSide = -2;
+    bool         sourceRight = false;
+    bool joined() const noexcept { return source2 >= 0 || source2 == kOneSide; }
 };
 
 struct ImportTake
