@@ -315,7 +315,7 @@ void LtcGenerator::start (int formatCode, double startSeconds) noexcept
     bitLen = rate / (fps * 80.0);
     dayFrames = drop ? 2589408LL : (long long) nominal * 86400LL;
     frameNo = (long long) std::llround (std::fmod (std::max (0.0, startSeconds), 86400.0) * fps) % dayFrames;
-    bitIdx = 0; phase = 0.0; halfDone = false; level = 1.0f; smooth = 0.0;
+    bitIdx = 0; phase = 0.0; halfDone = false; level = 1.0f; smooth = 0.0; speed = 1.0;
     buildFrame();
     running = true;
 }
@@ -331,7 +331,7 @@ void LtcGenerator::startExact (int formatCode, double seconds) noexcept
     frameNo = (long long) whole % dayFrames;
     const double bitPos = (frames - whole) * 80.0;                 // how far into the frame, in bits
     bitIdx = juce::jlimit (0, 79, (int) std::floor (bitPos));
-    phase = (bitPos - std::floor (bitPos)) * bitLen;
+    phase = (bitPos - std::floor (bitPos)) * bitLen; speed = 1.0;
     buildFrame();
     // the level a generator running since the frame's start would have now: it changes at every bit's start, and in the middle of every 1 bit
     float l = 1.0f;
@@ -372,7 +372,7 @@ void LtcGenerator::fill (float* out, int count) noexcept
         else if (! halfDone && bits[bitIdx] != 0 && phase >= bitLen * 0.5) { level = -level; halfDone = true; }
         smooth += 0.55 * ((double) (level * amp) - smooth);    // a rise time of about two samples, like a real LTC generator
         out[i] = (float) smooth;
-        phase += 1.0;
+        phase += speed;                                        // (1 unless it is following timecode from outside: see setSpeed)
     }
 }
 } // namespace td

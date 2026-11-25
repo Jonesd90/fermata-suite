@@ -914,7 +914,11 @@ private:
             {
                 TakeFile f; f.trackId = trackFor[tk.parts[pi].trackKey]; f.trackName = tk.parts[pi].trackName;
                 f.file = files[ti][pi]; f.numChannels = tk.parts[pi].trackChannels;
-                if (tk.parts[pi].source >= 0 && tk.parts[pi].source < (int) plan.sources.size()) f.sourceName = plan.sources[(size_t) tk.parts[pi].source].file.getFileName();
+                // (3.67.0: a stereo file made from the RIGHT mic's file alone keeps that name as the right side's, sourceName2 - as Make a stereo
+                // track does. It was kept as sourceName, the left side's place, so a later import laid out like this window read the right mic's
+                // name as the name of the whole stereo track.)
+                const bool rightOnly = tk.parts[pi].source2 == ImportPart::kOneSide && tk.parts[pi].sourceRight;
+                if (tk.parts[pi].source >= 0 && tk.parts[pi].source < (int) plan.sources.size()) (rightOnly ? f.sourceName2 : f.sourceName) = plan.sources[(size_t) tk.parts[pi].source].file.getFileName();
                 if (tk.parts[pi].source2 >= 0 && tk.parts[pi].source2 < (int) plan.sources.size()) f.sourceName2 = plan.sources[(size_t) tk.parts[pi].source2].file.getFileName();
                 if (auto* tr = p.findTrack (f.trackId)) f.trackName = tr->name;
                 g.files.push_back (f);

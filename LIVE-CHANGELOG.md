@@ -8,6 +8,16 @@ fermata:Live is the live-concert recorder that goes with fermata (see `docs/LIVE
 
 A line that starts with **Shared:** is a change to the code fermata shares (see `COMPATIBILITY.md`), so fermata's next build mentions it too.
 
+## 0.10.14
+Built 25 November 2026 (the conversation for both programs), with Claude Fable, beside fermata 3.67.0 (the pass with Fable over what was built
+on Opus since 3.55.0). Nothing of fermata:Live's own changed.
+- **Shared:** the audio engine's MIDI timecode (`src/core/Mtc.h`, `Ltc.h` / `Ltc.cpp`, `AudioEngine.h` / `AudioEngine.cpp`): its timing and
+  the handing of messages between two threads, for fermata's LTC IN / LTC OUT as MIDI. fermata:Live does not use MIDI timecode and its
+  recorder is its own code, so nothing it does changes; it is rebuilt because the code is in it. One line of `Project.cpp` (which files
+  count as recorded here when missing audio is looked for).
+- Checked here: fermata:Live builds and links on Linux with no warnings; the compatibility check, the recorder's tests and the tool checks
+  (address, thread, realtime) passed. Not checked: the Windows build (GitHub).
+
 ## 0.10.13
 Built 25 November 2026 (the conversation for both programs), with Claude Fable. The Windows build of 0.10.11 and 0.10.12 stopped: fermata:Live
 did not compile there (fermata itself did), so there has been no fermata-Live.exe since 0.10.10. This is the mend.

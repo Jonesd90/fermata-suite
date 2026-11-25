@@ -78,10 +78,14 @@ public:
     /** 3.56.0: where it is now, as time of day in seconds (frames / fps, as start() takes it), and the format it was started with. */
     double positionSeconds() const noexcept { return bitLen > 0.0 && fps > 0.0 ? ((double) frameNo + ((double) bitIdx + phase / bitLen) / 80.0) / fps : 0.0; }
     int formatCode() const noexcept { return code; }
+    /** 3.67.0: runs this much faster (above 1) or slower than the sample clock from here on - a trim of a few parts in ten thousand at most, for
+        LTC that follows timecode from outside (MtcChase: a source whose clock is not the audio's drifts, and is followed without a jump in the
+        code). start() and startExact() put it back to 1, where every bit is exactly as long as it was before there was a trim. */
+    void setSpeed (double s) noexcept { speed = s > 0.5 && s < 2.0 ? s : 1.0; }
     void fill (float* out, int count) noexcept;
 private:
     void buildFrame() noexcept;
-    double rate = 48000.0, fps = 25.0, bitLen = 24.0, phase = 0.0, smooth = 0.0;
+    double rate = 48000.0, fps = 25.0, bitLen = 24.0, phase = 0.0, smooth = 0.0, speed = 1.0;
     int nominal = 25, code = 1; bool drop = false, running = false, halfDone = false;
     long long frameNo = 0, dayFrames = 0; int bitIdx = 0; int bits[80] = {}; float level = 1.0f;
 };

@@ -71,14 +71,15 @@ public:
         main = nullptr; last = nullptr;
     }
 
-    /** The window a new box or window opens over (see the top of the file). */
-    juce::Component* anchor (juce::Component* hint = nullptr) const
+    /** The window a new box or window opens over (see the top of the file). 'notThis': a window that cannot be the answer (the net asks for
+        the anchor of a window that is already on the screen - and may itself be the active one by then). */
+    juce::Component* anchor (juce::Component* hint = nullptr, const juce::Component* notThis = nullptr) const
     {
         if (hint != nullptr)
-            if (auto* t = windowOf (hint); usable (t)) return t;
-        if (usable (last.getComponent())) return last.getComponent();
-        if (auto* a = juce::TopLevelWindow::getActiveTopLevelWindow(); usable (a) && ! a->getProperties().contains (kOwnPlace)) return a;
-        if (usable (main.getComponent())) return main.getComponent();
+            if (auto* t = windowOf (hint); usable (t) && t != notThis) return t;
+        if (auto* l = last.getComponent(); usable (l) && l != notThis) return l;
+        if (auto* a = juce::TopLevelWindow::getActiveTopLevelWindow(); usable (a) && a != notThis && ! a->getProperties().contains (kOwnPlace)) return a;
+        if (auto* m = main.getComponent(); usable (m) && m != notThis) return m;
         return nullptr;
     }
     juce::Component* mainWindow() const { return main.getComponent(); }
@@ -114,7 +115,6 @@ private:
     void check()
     {
         auto& d = juce::Desktop::getInstance();
-        juce::Component* anchorNow = nullptr; bool anchorFound = false;
         for (int i = 0; i < d.getNumComponents(); ++i)
         {
             auto* c = d.getComponent (i);
@@ -124,8 +124,11 @@ private:
             auto* tlw = dynamic_cast<juce::TopLevelWindow*> (c);
             if (tlw == nullptr || c == main.getComponent() || c->getProperties().contains (kOwnPlace)) continue;
             if (auto* dw = dynamic_cast<juce::DocumentWindow*> (c); dw != nullptr && (dw->isFullScreen() || dw->isMinimised())) continue;
-            if (! anchorFound) { anchorNow = anchor(); anchorFound = true; }
-            if (anchorNow == nullptr || anchorNow == c) continue;
+            // (3.67.0: the anchor is never the new window itself. With no window clicked in yet - fermata worked by the keyboard since it started,
+            // or the window last clicked in closed - the anchor was the active window, which by now is the new box: it was "over itself", and
+            // was left on the other screen. Now the next in line is taken: the main window.)
+            auto* anchorNow = anchor (nullptr, c);
+            if (anchorNow == nullptr) continue;
             const auto* here = displayOf (c->getScreenBounds());
             const auto* there = displayOf (anchorNow->getScreenBounds());
             if (here == nullptr || there == nullptr || here->userArea == there->userArea) continue;

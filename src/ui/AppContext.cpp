@@ -17,9 +17,10 @@ AppContext::AppContext()
     waveColors.onReady = [this] { if (waveColour) project.sendChangeMessage(); };          // a file's colours are ready: draw them
     // 3.58.0: several files at once (a take window of an orchestral session asks for hundreds), leaving two cores free; none while recording
     waveColors.setWorkers (juce::SystemStats::getNumCpus() - 2);
-    waveColors.holdOff = [this] { return engine.isRecording(); };
+    // (3.67.0: or is being finished on the disk - takesBusy, kept by the watcher below: a file is not read in the moment between Stop and its header)
+    waveColors.holdOff = [this] { return engine.isRecording() || takesBusy.load (std::memory_order_acquire); };
     liveColours.onFileColoured = [this] (const juce::File& f, std::shared_ptr<WaveColorData> d) { waveColors.put (f, std::move (d)); };     // 3.59.0
-    tuningStore.holdOff = [this] { return engine.isRecording(); };                // 3.63.0: the tuning line - no take files read while a take records
+    tuningStore.holdOff = [this] { return engine.isRecording() || takesBusy.load (std::memory_order_acquire); };      // 3.63.0: the tuning line - no take files read while a take records (3.67.0: or is finished)
     liveTuning.onTakeDone = [this] (const juce::Uuid& id, std::shared_ptr<const tuning::Line> l, const juce::String& key)
     {
         tuningStore.put (id, std::move (l), key);                                   // (a take measured while it recorded: kept, not measured again)
@@ -87,6 +88,10 @@ AppContext::AppContext()
         else if (! engine.isPlaying() && playInfo.kind != PlayInfo::Kind::None) stopPlayback (true);     // the engine stopped on its own (the device restarted: AudioEngine::prepare): the windows are told the same way (3.1.5)
         engine.servicePreRoll();                                             // Pre-Rec's memory, made in the background, goes in place
         takeInFinishedTakes (true);                                          // a stopped take's files are finished on the disk: draw their real waveforms
+        // 3.67.0: for the background readers of take files (the tuning line's, the waveform colours'): true from the first look while a take
+        // records until its files have been finished and taken in. They held off only while it recorded, and so could open a take's files in
+        // the moment after Stop, before the last of the sound and the header were written.
+        takesBusy.store (engine.isRecording() || engine.anyFinishing(), std::memory_order_release);
         if (++alignTicks % 3 == 0 && ! engine.isPlaying() && ! engine.isRecording())   // idle: the live inputs are aligned for the piece being worked on
             setAlignOwner (currentAlignOwner());
     };
@@ -254,10 +259,25 @@ void AppContext::applyLtc (bool restartOutput)
     // 3.56.0: the MIDI timecode ports (a port that is not there now - rtpMIDI not running yet - is tried again each time this runs; the lamps say)
     engine.setLtcMidiInput (project.ltcInput == AudioEngine::kLtcFromMidi ? project.ltcInPort : juce::String());
     engine.setLtcMidiOutput (project.ltcOutPort);
+    engine.setLtcMidiInOffset (0.001 * mtcInOffsetMs());         // (3.67.0)
     engine.setLtcInput (project.ltcInput);
     const auto now = juce::Time::getCurrentTime();
     const double tod = now.getHours() * 3600.0 + now.getMinutes() * 60.0 + now.getSeconds() + now.getMilliseconds() / 1000.0;
     engine.setLtcOutput (project.ltcOutput, project.ltcOutOn, project.ltcOutFormat, project.ltcOutStartMode == 0 ? tod : project.ltcOutStartSeconds, restartOutput);
+}
+
+double AppContext::mtcInOffsetMs()
+{
+    auto* st = props.getUserSettings();
+    return st != nullptr ? juce::jlimit (-500.0, 500.0, st->getDoubleValue ("mtcInOffsetMs", 0.0)) : 0.0;
+}
+
+void AppContext::setMtcInOffsetMs (double ms)
+{
+    ms = juce::jlimit (-500.0, 500.0, ms);
+    if (auto* st = props.getUserSettings()) { st->setValue ("mtcInOffsetMs", ms); props.saveIfNeeded(); }
+    engine.setLtcMidiInOffset (0.001 * ms);
+    juce::Logger::writeToLog ("MIDI timecode in: the offset is now " + juce::String (ms, 2) + " ms");
 }
 
 TrackDef* AppContext::ltcTrack()
@@ -1092,7 +1112,7 @@ void AppContext::showTuningMenu (juce::Component* target, bool editWindow)
 
 void AppContext::watchTuning (const TakeGroup& recording)
 {
-    if (! tuningShow) return;
+    if (! tuningShow || liveTuning.watching (recording.id)) return;          // (3.67.0: asked every tick of the take window's timer - nothing to work out once it is watched)
     const auto src = tuning::sourceOf (recording, tuningSet);
     std::vector<std::shared_ptr<AudioEngine::LiveFeed>> feeds;
     const auto all = engine.liveFeeds();

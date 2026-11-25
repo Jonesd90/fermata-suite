@@ -2620,6 +2620,170 @@ fermata's `shutdown()` and its static destructors. Our unhandled-exception filte
   right after closing the log, so the PDF reader's unload code never runs. Everything is saved and closed by then.
 (The symbols of Windows' own libraries were not available here: the reading rests on the single thread and the order of the modules.)
 
+## 3.67.0: the pass with Fable over what was built on Opus since 3.55.0 (25 November 2026, with Claude Fable)
+
+**What was asked** (25 November 2026): "we have fable usage. Can you please check and build everything/finish anything off that needed
+Fable to look at that we have left." The list kept for this (memory: the Fable list): MTC / LTC timing (3.56.0), Int-bus solo (3.58.0),
+the recording tap `AudioEngine::LiveFeed` and `LiveWaveColours` (3.59.0), the tuning line's threads (3.63.0), window placement (3.64.0),
+then everything else built on Opus since 3.55.0 (fermata 3.56.0 - 3.66.0, fermata:Live 0.10.6 - 0.10.12). The items "to build or tune
+with Fable" (take matching, PanNoir-style spot delay, the ReHarmoniser's tuning, direct network input) wait for the user's material or
+decision and were not touched.
+
+**What was read, and how.** Line by line: `Mtc.h`, `Ltc.*`, the whole `AudioEngine` diff since 3.55.0 (the tap, the solo, MTC),
+`LiveWaveColours.h`, `TuningLine.h` and its wiring in `AppContext`, `WindowPlace.h`, the `Project.cpp` diff, `AudioGather.h`,
+`TrackLayout.h`, `StripOrder.h`, the `StereoJoin.h` and `ImportPlan.*` diffs, `WaveColor.h`'s diff, `MeterBridge.h`, `ExportDone.h`,
+fermata:Live's diff, and the `FixTools.cpp` diff (the import laid out like a window, Move onto a window's tracks, Import source tracks,
+the AAF's one track one row). NOT line by line: the diffs of `TakeWindow.cpp`, `MixerWindow.cpp`, `EditWindow.cpp`, `MainWindow.cpp`,
+`ScoreWindow.h` and `AppContext.cpp` beyond what the above touches - those were searched (every line added since 3.55.0) for callbacks
+that could outlive their window (`callAsync`, `callAfterDelay`, menu and box callbacks capturing `this` without a guard: only
+AppContext's own, which lives as long as the program, and three guarded by an `alive` flag), for `juce::Uuid()` meant as null, for static
+JUCE objects, and for the nested-lambda capture that stopped the Windows build (0.10.13); and both programs build with no warnings.
+
+### MIDI timecode: the timing (`src/core/Mtc.h`, `Ltc.*`, `AudioEngine`)
+
+What was wrong or rough, and what is there now.
+
+1. **A missed read was taken for "no timecode"** (a real fault). `MtcReader::ref()` tried its seqlock eight times and then returned an
+   empty reference; `MtcChase::fill` then stopped the generator and wrote a block of silence, and `MtcOutput`'s timer set `sending =
+   false` (a full-frame locate and a fresh start). Eight tries pass in well under 100 ns, so the read fails whenever the writer is put
+   aside by the system in the middle of its five stores - seldom (my reckoning: once in some hours for timecode coming in, the MIDI thread
+   being an ordinary one; not measured), but in a take. Now `MtcReader::read (Ref&)` says whether it read, `MtcChase` keeps the last
+   reference it read (good for the 0.25 s that timecode counts as arriving anyway), and the timer simply looks again a millisecond
+   later. `ref()` stays for the message thread and the tests (it tries until it has it). The test hammers a writer against 400,000
+   reads: 1,500 - 64,000 of them cannot be read at once (a writer going flat out is far worse than 100 messages a second), every one
+   that is read is whole (`tc - start == at - t0`), and a read that fails leaves the caller's reference untouched.
+2. **The seqlocks lacked a release fence** after the writer's first increment (`MtcReader::publish`, `MtcOutput::stamp`). The readers
+   had their acquire fence. Without the writer's, the language allows a reader to see new values and still the old count (the stores
+   are relaxed and nothing ties them to the increment); on x86 it cannot happen, on ARM it can. Added (free on x86).
+3. **23.976 / 29.97 NDF against 24 / 30**: decided from the frames' speed since the run began, from six seconds on, with one threshold
+   half way - so one message 3 ms late just after the six seconds flipped the format for a message, and `MtcChase` set the generator
+   again at each flip. Now it changes its mind only when eight messages in a row (two frames) are past three quarters of the way to the
+   other speed (0.075 % and 0.025 % below nominal). A run that starts 23.976 is still made as 24 for the first six seconds: that cannot
+   be known sooner from MTC.
+4. **Where the block is in time.** (a) `mtc::BlockClock`: the time read at each block is steadied by the audio's own clock (each block
+   expected one block's length after the last; the reading pulls it with a time constant of about a second; a block more than 20 ms +
+   half a block from where it was expected starts it again - a dropout, the device away). A first-order loop: a PC clock and an audio
+   clock 0.01 % apart sit 0.1 ms apart in it, which is nothing here. With the sample-rate converter the engine's blocks come in bursts
+   and it mostly degenerates to the plain reading (recording is not possible like that anyway). (b) The block's first sample is as old
+   as the driver's input latency (`AudioIODevice::getInputLatencyInSamples`, passed straight from ASIO's `getLatencies` by JUCE: "the
+   age of the first sample of the block when the callback comes", so it includes the block) - never taken as less than the block's own
+   length, which is what a driver that says 0 gets (and what 3.56.0 used for all). `AudioEngine::setDeviceLatencies`, from
+   `audioDeviceAboutToStart`; 0 when prepared without a device (the tests). Logged at device start. (c) MTC out is stamped with the
+   moment the block's first sample is HEARD (the output latency, and the converter's delay when there is one), so MTC out and LTC on an
+   output channel agree. At a start from 00:00:00:00 the first few milliseconds of MTC therefore say 23:59:59:xx (where the "heard"
+   position is before the generator's first sample is out), then a locate to 00:00:00:00 - harmless, left as it is.
+5. **Following, not standing still** (`MtcChase`). `LtcGenerator::setSpeed` (a multiplier on the bit clock; 1 after `start` /
+   `startExact`, and then every sample is bit-for-bit as before - tested). The error against the reference is averaged over about half
+   a second (`kAverage`; one block counts for 20 ms at most, so one message that came late with a long block cannot look like a jump),
+   and the speed is 1 + average / 8 s (`kPull`), held within 0.02 % (`kMaxTrim`). A proportional loop: against a source that drifts by D
+   it sits D x 8 s behind (0.4 ms at 0.005 %); an integral term would take that out and was not thought worth its risk. With
+   `kPull = 16 x kAverage` it cannot swing past (damping about 2). Set again (`startExact`, a break in the code) when the error is over
+   half a second at once, or the average is over 5 ms (`kJump`) - a jump of more than 20 ms is followed after about 0.15 s. 0.02 % is a
+   fifth of the way from 24 to 23.976, and `analyseLtc` takes the middle of the frame lengths of the whole take, so a trimmed take still
+   reads as its own rate (tested: a minute at the full trim reads 25, no jumps).
+6. **The offset** (`AudioEngine::setLtcMidiInOffset`, fermata's user setting `mtcInOffsetMs`, `AppContext::mtcInOffsetMs`). What is left
+   once the driver's latency is allowed for: how late the MIDI arrives (the Hapi's own reading of the LTC, the network, rtpMIDI). Kept
+   with the computer, not the project: it is a property of the network, and a project file is not touched. **Measuring it**
+   (`LtcCompare`, `AudioEngine::setLtcCompareInput` / `ltcCompareResult`, `MainComponent::measureMtcOffset`): the same timecode as MIDI and
+   as LTC on an audio input; the audio thread decodes that input (an `LtcDecoder` that keeps no frames) and, for every frame that follows
+   the one before it by the right number of samples, compares the frame's own time with where the chase generator was at the sample the
+   frame began (the generator's place at the block's first sample, carried back). Mean and spread over 8 s (about 200 frames at 25);
+   the box offers "offset now + mean". The LTC on the audio input goes through the same converters as all the audio, so it IS the right
+   answer; what the measurement finds is the MIDI's lateness less any error in the driver's stated input latency - which is exactly
+   what the offset has to make up. Under 50 frames, or more than 100 ms apart, nothing is offered.
+7. **Ports.** `isOpen()` was a read of the `unique_ptr` from the audio thread while the message thread could reset it: now an atomic flag.
+   A port open here but gone from the system's list (looked at every 3 s while a MIDI timecode port is chosen) is closed after it was
+   missing twice running - and never while timecode still arrives on it - so that the retry there already was opens it afresh.
+
+**Not built, on purpose: an offset for MIDI timecode going OUT.** The generator behind LTC OUT runs free (the time of day, or from a start
+time): nothing in fermata ties its sound to that timecode, so a few milliseconds either way at the Hapi's LTC output change nothing fermata
+records. What is recorded with a take is the LTC IN side, which has its offset. An OUT offset would matter only if fermata's own LTC
+track were fed from its own generator inside the computer while cameras took the Hapi's LTC output; if that is ever the set-up,
+`LtcCompare` can measure it the same way (the Hapi's LTC out patched to an audio input, compared with `ltcGen` less the two latencies).
+
+**Still not checked:** any real MIDI port, rtpMIDI, the Hapi. Every figure above is from tests with made-up messages. The first run on
+the real thing should look at: the log line with the driver's latencies; whether the lamp stays lit; the measured offset and its spread
+(under a millisecond expected on a wired network); and the LTC track's timecode against LTC on an audio input over a long take.
+
+### The solo of an Int Bus (3.58.0) - checked, unchanged
+
+`processMixer`: `soloSelf` (soloed itself, or by a soloed VCA), `soloHeard` (feeds a soloed channel: the backward pass over the order),
+`soloAfter` (a soloed channel and what it feeds: the forward pass); a strip is audible when any is set; a path is open out of an 'after'
+channel, or into a soloed or 'heard' one. Worked through: a soloed bus with tracks sent to it (heard through it only, not on their own
+outputs or other sends); a chain T -> B1 -> B2 with B2 soloed, and with B1 soloed; a soloed track with a send to a reverb bus that other
+tracks also feed (the bus carries the soloed track only); a muted send (keeps nothing open); a bus with a generator in it but nothing
+soloed feeding it (its way out is shut); VCA solo. All right. Two tests added to the mixer section of the core tests: the chain (the
+output is exactly what the chain alone gives, to 1e-6, and the Foldback send is silent), and the soloed track's bus (exactly the output
+with the other track muted).
+
+### The recording tap and the live colours (3.59.0) - checked, unchanged
+
+`AudioEngine::LiveFeed`: one writer at a time (the audio thread; at Stop the message thread once the audio thread has left the take),
+`begun` before and `count` after each write, the reader checks both sides of its copy: a seqlock over a ring, with its fences in the
+right places. Nothing in it allocates or waits; the ring's pages are touched when it is prepared. All three places that write a take's
+file feed it. `LiveWaveColours`: reads only; a take's job leaves through `takeReady` after `handOver`; every finished take is reaped
+through `takeInFinishedTakes`. Nothing to change. (One thing beside it: `WaveColorCache`'s workers held off only while a take recorded;
+they now also hold off until its files are finished - `AppContext::takesBusy`, below.)
+
+### The tuning line (3.63.0) - four faults in `Store` and `Live`
+
+- **The race at Stop.** `tuningOf` asks `Store::get` for a take as soon as it is drawn; for the take that is recording that is usually
+  before the take window's timer has handed its feeds to `Live`, so `Store` holds a job for the recording take, going round until
+  `holdOff` (was: `engine.isRecording()`) lets go. At Stop that is at once - while the engine's finisher is still writing the last of
+  the sound and the headers. `measureFiles` then read files that were too short (or said 0 samples), and when it finished after
+  `Live`'s `put`, `finish` put that line over the live one and `saveLine` wrote it to the Analysis folder. Shown with the trial
+  (`tune.cpp`, "the live line comes while the take's files are being measured") against 3.66.0's header: the live line was lost; with
+  this build it stands. Mended three ways, each enough alone: `holdOff` is `engine.isRecording() || takesBusy` (`AppContext::takesBusy`,
+  an atomic the 100 ms watcher keeps: recording, or `engine.anyFinishing()` - which only the message thread may ask); `put` drops every
+  waiting job of its take; and `finish` takes a line only for an entry that is still pending with the same key (`wanted`), and the file
+  is written only after `finish` took it.
+- **A take with files away** (`measureFiles`' `allRead`): not written to the folder, `whole = false`, so it is measured again next time.
+- **`held`**: jobs that cannot be measured yet wait in a second queue, put back all together each second; stored lines are read at once.
+  A job remembers that the folder was looked in (`looked`), so held jobs do not ask the disk again every second beside a recording.
+- **Joining late / catching up** (`Meter::startAt`, `Meter::skip`, `Decimator::skip`): `Live::watch` on a take whose feeds have already
+  wrapped starts at `written - capacity / 2` (rounded up to the decimator's step) with the line marked not whole; a reader that fell
+  behind counts the lost stretch as silence instead of filtering it. `watchTuning` returns at once when the take is already watched.
+- **The edit window's lane** (`EditTimeline::tuningSegs`, found while reading the window code): it ran at every repaint that touched the
+  lane, and for every piece found its take (a search of every take window), built the take's source key (`tuning::sourceOf`: the files'
+  paths sorted, joined and hashed) and asked `Store::get` - and for an edit with pieces that name no take (an AAF import) first made a
+  map of every take file in the project. Now the pieces' places are worked out first and the rest is done only for the pieces the
+  clip touches, and from the start of the edit as far as the first piece with a reading (the reference Relative needs - so the values
+  shown are the same). The AAF map is kept (path -> take id, not a pointer) until the project next changes. The tooltip still looks
+  up all of them (it runs when the mouse rests). Checked on the trial's edit: the lane's picture before and after is the same to the
+  pixel, and stays right after narrow redraws (the cursor moved about inside the second piece, whose values hang on the first's).
+
+### Window placement (3.64.0)
+
+`Tracker::check` asked `anchor()` for the window to move a new box over; with `last` empty (no click yet, or the clicked window gone)
+that fell to `TopLevelWindow::getActiveTopLevelWindow()`, which by then is the new box itself, and `anchorNow == c` left it where it
+was. `anchor (hint, notThis)` now skips the window asked about, so it goes on to the main window. The "please wait" window
+(`busy::setAreaProvider` in `Main.cpp`) is given the part of the anchor that is on its screen. Many boxes still pass no window to JUCE
+(`AlertWindow::showAsync` without `withAssociatedComponent`): they open in the middle of Windows' main screen and the net moves them when
+the anchor is on another - as designed in 3.64.0; with the mend above that now holds in every case.
+
+### Smaller things
+
+- `FixTools.cpp` `finishImport`: a one-sided stereo part made from the RIGHT file (`ImportPart::kOneSide`, `sourceRight`) kept the name in
+  `TakeFile::sourceName`; now `sourceName2`, as `stereojoin::applyInto` does. `Project::relinkAudio`: "recorded here" needs both names empty.
+- Read and found right, nothing changed: `AudioGather.h` (the copy is checked by CRC before it gets its name; a cancel removes what was
+  made), `TrackLayout.h`, `StripOrder.h`, `StereoJoin.h`'s `planInto` / `applyInto`, `ImportPlan.cpp`'s one-sided join, `WaveColor.h`'s
+  queue and workers and the knock weighting, `MeterBridge.h`, `ExportDone.h`.
+
+**Checked here:** the core tests (new: "3.67.0 MIDI timecode, the timing" and the two solo cases), the tuning trial (`tune.cpp` in the
+session's scratch folder, not in the repository) with its new cases, both programs built and linked with no warnings, on the Linux
+build's screen the LTC IN menu, the offset box (a wrong entry refused, 3.4 kept and shown, saved in the settings) and a measurement
+with nothing to measure (the 8 s box, then "Nothing could be compared"), and the six pre-delivery checks. Also `tools/tool-checks.sh`
+`rtcheck` and `tsan` on the engine (the core tests and the stress test): 0 realtime reports, 0 thread reports. `asan`: the stress, time
+format and control-port tests passed with 0 reports, but `tests/core_test.cpp` could not be compiled with `-fsanitize=address,undefined`
+on this machine any more (cc1plus was killed at 6 GB - the file is 16,600 lines); instead the two MIDI timecode sections were built on
+their own with the same flags, and the tuning trial too: 0 reports. To do when there is a bigger machine, or by splitting the test
+file: the whole core tests under the address check. (The realtime check does not reach the MIDI timecode's branch of `process()` - no MIDI port in a test - so that branch
+was read for it instead: atomics, the generator, a decoder that keeps no frames; nothing allocates.) One run of the stress test
+aborted ("munmap_chunk(): invalid pointer") - a header was edited while the check was building, so half of it was built against the old
+layout; the run on the finished tree passed. **Not checked:** see above for MIDI; the box that offers a measured offset (it needs a
+real measurement); the window-placement mend on a screen (the Linux rig does not make a new box the active window as Windows does, so
+it was checked by its logic: `anchor (nullptr, box)` gives the main window); Windows.
+
 ## 3.66.0: an edit's pages of its score (24 November 2026, with Claude Opus)
 
 Asked: one PDF with four movements, each movement its own take and edit window - "tell fermata which pages of the PDF that edit and take
@@ -3203,7 +3367,8 @@ go over the timing part afterwards.
 - Project: `ltcInPort`, `ltcOutPort` (port names). `AppContext::applyLtc` opens the ports; the main window's lamp update tries a missing
   port again every 30 updates.
 
-**For the Fable pass (the timing):** where MTC arrives against the audio. Known approximations: (1) the block's capture time is taken
+**For the Fable pass (the timing)** (done in 3.67.0 - see "3.67.0", above: the driver's latencies, a steadied clock, the offset and its
+measuring): where MTC arrives against the audio. Known approximations: (1) the block's capture time is taken
 as `now - block length`, without the driver's input latency or the converter's; (2) with the sample-rate converter (`RateBridge`) the
 engine's blocks are not one per device callback, so `now` jitters by up to a device block; (3) MTC out is stamped when the block is
 made, not when it is heard (output latency); (4) the rtpMIDI latency itself (2-5 ms in the user's screenshot) is not allowed for. All

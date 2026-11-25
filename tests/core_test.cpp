@@ -1269,6 +1269,51 @@ int main()
                 mixA.stripFor (violinId)->solo.set (false);
                 rig.measure (eng);
             }
+            {   // 3.67.0 (the pass with Claude Fable over the solo of 3.58.0). A soloed track's bus carries that track and no other: the viola,
+                // sent to Strings as well, is not heard through it - the output is exactly what it is with the viola muted.
+                CHECK (p.setSendLevel (mixA, violaId, strings, 0.0f) == SendResult::RoutingChanged);
+                eng.rebuildPlan();
+                const auto both = rig.measure (eng);
+                mixA.stripFor (violaId)->mute.set (true);
+                const auto violinOnly = rig.measure (eng);
+                mixA.stripFor (violaId)->mute.set (false);
+                mixA.stripFor (violinId)->solo.set (true);
+                const auto soloed = rig.measure (eng);
+                CHECK (both[0] > violinOnly[0] * 1.05 && std::abs (soloed[0] - violinOnly[0]) < 1e-6 && std::abs (soloed[2] - violinOnly[2]) < 1e-6);
+                mixA.stripFor (violinId)->solo.set (false);
+                // A chain: the violin and the viola into Strings, Strings into a second Int Bus, that one to Main - and the second one soloed.
+                // Everything that reaches it is heard, through it alone: not on the tracks' own outputs, not on the violin's send to Foldback.
+                const auto chain = p.addBus ("Chain", false).id;
+                eng.rebuildPlan();
+                mixA.busFor (strings)->outDest = chain; mixA.busFor (chain)->outOn.set (true); mixA.busFor (chain)->outDest = juce::Uuid::null();
+                eng.rebuildPlan();
+                // (what the chain alone gives: the tracks' own outputs to Main off, the Foldback send muted)
+                setMain (mixA, violinId, false); setMain (mixA, violaId, false);
+                mixA.stripFor (violinId)->sends.find (foldback)->mute.set (true);
+                const auto chainOnly = rig.measure (eng);
+                setMain (mixA, violinId, true); setMain (mixA, violaId, true);
+                mixA.stripFor (violinId)->sends.find (foldback)->mute.set (false);
+                const auto open = rig.measure (eng);
+                mixA.busFor (chain)->solo.set (true);
+                const auto chainSolo = rig.measure (eng);
+                CHECK (chainOnly[0] > 0.2 && open[0] > chainOnly[0] * 1.2 && open[2] > 0.2);
+                CHECK (std::abs (chainSolo[0] - chainOnly[0]) < 1e-6 && chainSolo[2] < 1e-6);
+                // the first bus of the chain soloed instead: the same sound (it goes on through the second), and still nothing else
+                mixA.busFor (chain)->solo.set (false); mixA.busFor (strings)->solo.set (true);
+                const auto firstSolo = rig.measure (eng);
+                CHECK (std::abs (firstSolo[0] - chainOnly[0]) < 1e-6 && firstSolo[2] < 1e-6);
+                // and with the violin's send into the chain muted, only the viola is left in it
+                mixA.busFor (strings)->solo.set (false); mixA.busFor (chain)->solo.set (true);
+                toStrings->mute.set (true);
+                const auto violaLeft = rig.measure (eng);
+                CHECK (violaLeft[0] > 0.05 && violaLeft[0] < chainOnly[0] * 0.9);
+                toStrings->mute.set (false); mixA.busFor (chain)->solo.set (false);
+                mixA.busFor (strings)->outDest = juce::Uuid::null();
+                p.setSendLevel (mixA, violaId, strings, -100.0f);
+                for (int i = 0; i < (int) p.buses.size(); ++i) if (p.buses[(size_t) i].id == chain) { p.removeBus (i); break; }
+                eng.rebuildPlan();
+                rig.measure (eng);
+            }
             mixA.busFor (strings)->outOn.set (stringsWasOn); mixA.busFor (strings)->outDest = stringsWasTo; eng.rebuildPlan();
             p.setSendLevel (mixA, violinId, strings, -100.0f);
             eng.rebuildPlan();
@@ -15912,6 +15957,186 @@ int main()
                 close = close && std::abs ((tcAt - startQ) - (heard - t0)) < 1.5 / fps;
             }
             CHECK (close);
+        }
+    }
+
+    SECTION ("3.67.0 MIDI timecode, the timing: a steadied block clock, a source that drifts followed without a break, a jump followed, a late message not taken for one, the offset measured");
+    {
+        const double fps = 25.0;
+        // the blocks' clock: now() read 0 to 1.5 ms late at every block comes out steady, a clock 0.01% fast is followed, a 100 ms gap is taken at once
+        {
+            mtc::BlockClock bc; const double sr = 48000.0; const int n = 256; const double len = n / sr;
+            unsigned rnd = 12345; auto jit = [&rnd] { rnd = rnd * 1664525u + 1013904223u; return (double) (rnd >> 8) / (double) (1u << 24); };
+            double worst = 0.0, lastOut = 0.0, shift = 0.0; bool gapTaken = false, forwards = true;
+            for (int k = 0; k < 20000; ++k)
+            {
+                if (k == 15000) shift = 0.1;                                                              // the device was away for a tenth of a second
+                const double ideal = 10.0 + k * len * 1.0001 + shift;                                     // (the PC's clock 0.01% faster than the audio's)
+                const double out = bc.tick (ideal + 0.0015 * jit(), n, sr);
+                if (k == 15000) gapTaken = std::abs (out - ideal) < 0.002;
+                if (k > 2000 && (k < 15000 || k > 17000)) worst = std::max (worst, std::abs (out - (ideal + 0.00075)));   // (the middle of the lateness)
+                if (k > 0) forwards = forwards && out > lastOut;
+                lastOut = out;
+            }
+            CHECK (worst < 0.00035 && gapTaken && forwards);
+        }
+        // one run of MIDI timecode into LTC. The source's clock runs 'drift' faster than the audio's; message q arrives late (q) seconds late; at
+        // 'jumpAt' seconds the timecode jumps on by ten frames. Returns the decoded frames' errors (seconds, against the source's own time).
+        struct Run { std::vector<double> at, err; int sets = 0; int jumps = 0; size_t frames = 0; };
+        auto chaseRun = [fps] (double seconds, double sr, int blockLen, double drift, const std::function<double (long long)>& late, double jumpAt, double offset)
+        {
+            Run out; MtcReader rd; MtcChase chase; chase.prepare (sr);
+            LtcDecoder dec (sr); std::vector<float> buf ((size_t) blockLen);
+            const double start = 36000.0, t0 = 500.0, len = blockLen / sr;
+            long long q = (long long) (start * fps * 4.0); q += (8 - (q & 7)) & 7;
+            const double startTc = (double) q / (fps * 4.0);
+            long long jumpQ = 0; double jumped = 0.0; bool didJump = false;
+            juce::uint8 bytes[8] = {};
+            auto sentAt = [&] (long long qq) { return t0 + ((double) qq / (fps * 4.0) - startTc - jumped) / (1.0 + drift); };     // when the source sends quarter frame qq
+            const int blocks = (int) (seconds / len);
+            for (int b = 0; b < blocks; ++b)
+            {
+                const double tBlock = t0 + b * len;
+                for (;;)
+                {
+                    if (jumpAt > 0.0 && ! didJump && (q & 7) == 0 && sentAt (q) - t0 >= jumpAt) { didJump = true; jumpQ = q; q += 80; jumped = 80.0 / (fps * 4.0); }
+                    if (sentAt (q) + late (q) > tBlock + len) break;
+                    if ((q & 7) == 0) MtcOutput::quarterFrames ((q >> 3) * 2, 1, bytes);
+                    const juce::uint8 msg[2] = { 0xF1, bytes[q & 7] };
+                    rd.feed (msg, 2, sentAt (q) + late (q));
+                    ++q;
+                }
+                chase.fill (rd, tBlock, buf.data(), blockLen, offset);
+                dec.feed (buf.data(), blockLen);
+            }
+            (void) jumpQ;
+            for (auto& f : dec.frames())
+            {
+                const double heard = f.pos / sr;                                                          // seconds after t0
+                const double jumpedHere = (didJump && heard >= jumpAt + 0.05) ? jumped : 0.0;
+                if (didJump && heard > jumpAt - 0.1 && heard < jumpAt + 0.5) continue;                    // (the half second in which it follows the jump)
+                const double truth = startTc + heard * (1.0 + drift) + jumpedHere;
+                out.at.push_back (heard); out.err.push_back ((f.h * 3600.0 + f.m * 60.0 + f.s + f.f / fps) - truth);
+            }
+            out.sets = chase.timesSet(); out.jumps = analyseLtc (dec.frames(), sr).jumps; out.frames = dec.frames().size();
+            return out;
+        };
+        auto worstAfter = [] (const Run& r, double from) { double w = 0.0; for (size_t i = 0; i < r.at.size(); ++i) if (r.at[i] >= from) w = std::max (w, std::abs (r.err[i])); return w; };
+        auto none = [] (long long) { return 0.0; };
+        auto wobble = [] (long long q) { return (double) ((q * 7919) % 5) * 0.0005; };                    // 0 to 2 ms late
+        {
+            // a source 0.005% fast (a camera's own clock), two minutes: the LTC stays on it (it used to fall 6 ms behind by here), set once, no break
+            const auto r = chaseRun (120.0, 48000.0, 480, 5.0e-5, none, 0.0, 0.0);
+            CHECK (r.frames > 2990 && r.sets == 1 && r.jumps == 0);
+            CHECK (worstAfter (r, 40.0) < 0.0006);
+            // and one that is slow, with wobble on the messages
+            const auto r2 = chaseRun (120.0, 48000.0, 256, -8.0e-5, wobble, 0.0, 0.0);
+            CHECK (r2.sets == 1 && r2.jumps == 0 && worstAfter (r2, 40.0) < 0.0007);                         // (the wobble is 1 ms late on average, the drift pulls 0.64 ms the other way)
+        }
+        {
+            // first set from a message that came 2 ms late: taken out again within half a minute, without setting it again
+            const auto r = chaseRun (60.0, 48000.0, 480, 0.0, none, 0.0, 0.0);
+            CHECK (r.sets == 1 && worstAfter (r, 1.0) < 0.0002);                                           // (nothing late: on it from the start)
+            long long firstQ = -1;
+            const auto r2 = chaseRun (60.0, 48000.0, 480, 0.0, [&firstQ] (long long q) { if (firstQ < 0) firstQ = q; return q - firstQ < 24 ? 0.002 : 0.0; }, 0.0, 0.0);
+            CHECK (r2.sets == 1 && worstAfter (r2, 0.5) > 0.001 && worstAfter (r2, 40.0) < 0.0003);
+        }
+        {
+            // the timecode jumps on by ten frames: followed within half a second, by setting it again (the one break)
+            const auto r = chaseRun (20.0, 48000.0, 480, 0.0, none, 8.0, 0.0);
+            CHECK (r.sets == 2 && worstAfter (r, 1.0) < 0.0006);
+            // one message 50 ms late, with long blocks (4096 at 44.1 kHz): not a jump
+            long long n = 0;
+            const auto r2 = chaseRun (30.0, 44100.0, 4096, 0.0, [&n] (long long) { return ++n == 1500 ? 0.05 : 0.0; }, 0.0, 0.0);
+            CHECK (r2.sets == 1 && r2.jumps == 0 && worstAfter (r2, 1.0) < 0.0008);
+            // the offset moves the timecode later by what it says
+            const auto r3 = chaseRun (10.0, 48000.0, 480, 0.0, [] (long long) { return 0.003; }, 0.0, 0.003);
+            CHECK (r3.sets == 1 && worstAfter (r3, 1.0) < 0.0002);
+        }
+        {
+            // 30 fps with a message 5 ms late every half second: never taken for 29.97 (one such message just after the first six seconds used to be)
+            MtcReader rd; juce::uint8 bytes[8] = {}; bool always30 = true;
+            for (long long q = 0; q < 30 * 4 * 20; ++q)
+            {
+                if ((q & 7) == 0) MtcOutput::quarterFrames ((q >> 3) * 2, 4, bytes);
+                const juce::uint8 msg[2] = { 0xF1, bytes[q & 7] };
+                rd.feed (msg, 2, (double) q / 120.0 + ((q % 60) == 59 || q == 721 ? 0.005 : 0.0));
+                const auto r = rd.ref(); if (r.valid) always30 = always30 && r.formatCode == 4;
+            }
+            CHECK (always30);
+        }
+        {
+            // the two threads: the audio thread's read is never a mixture of two messages, and when it cannot read, what it had stands
+            MtcReader rd; std::atomic<bool> stop { false }; const double start = 36000.0;
+            long long startQ = (long long) (start * fps * 4.0); startQ += (8 - (startQ & 7)) & 7;
+            const double startTc = (double) startQ / (fps * 4.0);
+            std::thread writer ([&]
+            {
+                juce::uint8 bytes[8] = {};
+                for (long long q = startQ; ! stop.load() && q < startQ + 3000000; ++q)                    // (far faster than timecode ever comes: 100 a second)
+                {
+                    if ((q & 7) == 0) MtcOutput::quarterFrames ((q >> 3) * 2, 1, bytes);
+                    const juce::uint8 msg[2] = { 0xF1, bytes[q & 7] };
+                    rd.feed (msg, 2, 100.0 + ((double) q / (fps * 4.0) - startTc));
+                }
+            });
+            bool whole = true; int got = 0, missed = 0; MtcReader::Ref r, before;
+            for (int i = 0; i < 400000; ++i)
+            {
+                before = r;
+                if (! rd.read (r)) { ++missed; whole = whole && r.tc == before.tc && r.at == before.at && r.valid == before.valid; continue; }     // (not read: left as it was)
+                ++got;
+                if (r.valid) whole = whole && r.running && r.formatCode == 1 && std::abs ((r.tc - startTc) - (r.at - 100.0)) < 1.0e-6;
+            }
+            stop.store (true); writer.join();
+            CHECK (whole && got > 1000);
+            (void) missed;
+        }
+        {
+            // measuring the offset: the same timecode as LTC on an input and as MIDI that arrives 3 ms late - the LTC made from MIDI reads 3 ms behind;
+            // with the offset set to that, level
+            for (int pass = 0; pass < 2; ++pass)
+            {
+                const double sr = 48000.0, lateBy = 0.003, offset = pass == 0 ? 0.0 : lateBy; const int blockLen = 480;
+                MtcReader rd; MtcChase chase; chase.prepare (sr); LtcCompare cmp; cmp.prepare (sr); cmp.arm (3);
+                LtcGenerator real; real.prepare (sr);
+                std::vector<float> made ((size_t) blockLen), onInput ((size_t) blockLen);
+                const double start = 3600.0, t0 = 50.0, len = blockLen / sr;
+                long long q = (long long) (start * fps * 4.0); q += (8 - (q & 7)) & 7;
+                const double startTc = (double) q / (fps * 4.0);
+                real.startExact (1, startTc);                                                             // the LTC on the input: the timecode itself, at the samples
+                juce::uint8 bytes[8] = {};
+                for (int b = 0; b < 800; ++b)
+                {
+                    const double tBlock = t0 + b * len;
+                    for (; t0 + ((double) q / (fps * 4.0) - startTc) + lateBy <= tBlock + len; ++q)
+                    {
+                        if ((q & 7) == 0) MtcOutput::quarterFrames ((q >> 3) * 2, 1, bytes);
+                        const juce::uint8 msg[2] = { 0xF1, bytes[q & 7] };
+                        rd.feed (msg, 2, t0 + ((double) q / (fps * 4.0) - startTc) + lateBy);
+                    }
+                    chase.fill (rd, tBlock, made.data(), blockLen, offset);
+                    real.fill (onInput.data(), blockLen);
+                    cmp.block (onInput.data(), blockLen, chase.isRunning(), chase.positionAtBlockStart(), chase.formatCode());
+                }
+                const auto res = cmp.result();
+                CHECK (res.frames > 150 && res.spread < 0.0002);
+                CHECK (std::abs (res.mean - (pass == 0 ? lateBy : 0.0)) < 0.00015);
+                cmp.arm (-1); cmp.idle();
+                CHECK (cmp.result().frames == 0);                                                         // (armed afresh: nothing left of the last measurement)
+            }
+        }
+        {
+            // the generator's speed trim: 0.02% fast for a minute is 12 ms on, the code still reads, and it is exactly as before when not trimmed
+            const double sr = 48000.0; LtcGenerator a, b; a.prepare (sr); b.prepare (sr); a.startExact (1, 100.0); b.startExact (1, 100.0);
+            std::vector<float> x (48000), y (48000); bool same = true;
+            a.setSpeed (1.0); a.fill (x.data(), 48000); b.fill (y.data(), 48000);
+            for (int i = 0; i < 48000; ++i) same = same && x[(size_t) i] == y[(size_t) i];
+            CHECK (same);
+            a.setSpeed (1.0002); LtcDecoder dec (sr);
+            for (int s = 0; s < 60; ++s) { a.fill (x.data(), 48000); b.fill (y.data(), 48000); dec.feed (x.data(), 48000); }
+            CHECK (std::abs (mtc::daySpan (a.positionSeconds(), b.positionSeconds()) - 0.012) < 0.0001);
+            CHECK (dec.frames().size() > 1495 && analyseLtc (dec.frames(), sr).jumps == 0 && std::abs (analyseLtc (dec.frames(), sr).fps - 25.0) < 0.001);
         }
     }
 

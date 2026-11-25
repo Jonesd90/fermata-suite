@@ -6,6 +6,87 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.67.0
+Built 25 November 2026 (the conversation for both programs), with Claude Fable. Asked for on 25 November: "we have fable usage. Can you please
+check and build everything/finish anything off that needed Fable to look at that we have left." This is that pass: the parts built on Opus
+since 3.55.0 that were set aside for Fable - the MIDI timecode's timing (3.56.0), the solo of an Int Bus (3.58.0), the recording feed behind
+WaveColour while recording (3.59.0), the tuning line's threads (3.63.0), where windows open (3.64.0) - and then the rest of what was built
+since 3.55.0. What was found is mended here; what was found right is said too.
+- **MIDI timecode coming in (the Hapi's LTC_in through rtpMIDI): the timing.**
+  - **A new setting: the MIDI timecode offset.** The LTC track's timecode is made from the MIDI timecode by when each message arrives, and
+    the messages arrive a little late (the Hapi's own work, the network, rtpMIDI - a few milliseconds, the same every time). The offset is
+    that lateness, added back. In the LTC IN menu: **"MIDI timecode offset: 0.0 ms (type it...)"** and **"Measure the offset against LTC on
+    an input"**. To measure: feed the same running timecode to the Hapi's LTC input and, as LTC, to any audio input; choose that input in
+    the menu; fermata listens for 8 seconds, says how far apart the two are and offers to set the offset so that they agree. It is a
+    setting of this computer (its network), not of a project, so it is measured once.
+  - **Placed by the driver's own latency.** The block of audio the timecode is matched to was taken to be one block old; it is as old as
+    the driver says its input latency is (which adds the driver's and the network's own buffers). The figure goes into the log when the
+    device starts ("the driver gives its latency as ...").
+  - **A timecode source that drifts is followed without a break.** The LTC made from MIDI timecode was set once and then left to run on
+    the audio's clock until it was a whole frame out, then set again (a break in the code). A camera's or a recorder's own clock drifts
+    against the audio for as long as a take lasts, and the first setting itself was one message's arrival, a millisecond or so either way.
+    It is now kept on the timecode by a trim of its speed (0.02 % at most - far inside what tells 24 from 23.976), so the code has no break
+    in it, as LTC on an audio input has none. It is set again only after a real jump (half a second at once, or 5 ms on the average of the
+    last half second).
+  - **No more lost blocks.** Seldom - by my reckoning once in some hours of running timecode, not something measured - the audio thread
+    could ask for the newest message at the very moment the MIDI thread was writing it, and took that for "no timecode": the LTC stopped
+    for that block - a gap on the LTC track, in a take. It now carries on from the message it read before.
+  - **24 is not taken for 23.976 (or 30 for 29.97) because one message came late.** That decision is made from how fast the frames really
+    come, after six seconds; one message a few milliseconds late just then could flip it for a moment, and each flip set the LTC again.
+    It now takes eight messages in a row, each clearly on the other side.
+  - **A port that goes away is opened again by itself when it is back** (its rtpMIDI session removed and made again). It used to stay
+    "open" and silent, and choosing it again in the menu did nothing. It is never closed while timecode is still arriving on it.
+- **MIDI timecode going out (the Hapi's LTC_out):** it now says where the LTC is at the moment it is heard (the driver's output latency
+  on), so it agrees with LTC on an output channel when both are on; the time each block is stamped with is steadied by the audio's own
+  clock (it wobbled by up to a millisecond or more with the driver's call); and the same clash of two threads that could lose a block
+  coming in could make the timecode going out start again with a locate - it now waits the one millisecond for the next look.
+- **The tuning line.** Four things, all in the background work:
+  - **A take's line could be cut short or empty, and stay so.** When a take stopped, fermata could start measuring its files in the moment
+    before they were finished on the disk, and that line could replace the one measured while it recorded - and be the one kept in the
+    project's Analysis folder. The files are now left alone until they are finished, and the line measured live always stands. (If a take
+    of yours shows a line that stops early: right-click the Tuning button > Measure every take again.)
+  - A take whose files could not all be opened (a drive away) was kept as "no steady pitch" for good. It is now shown as far as it goes and
+    measured again another day.
+  - While a take recorded, lines that were already stored could wait many seconds to appear (each take that could not be measured yet
+    held the queue for a second). They now come at once.
+  - Switching the line on, or opening the take window, in the middle of a take made fermata work through everything it had missed as
+    silence. It now starts from where the sound still is; the whole line is measured from the files when the take is finished.
+  - **In an edit window, the tuning lane no longer costs time at every tick of the playhead.** Each redraw of the lane - the playhead's
+    narrow one too, many times a second while the edit plays - looked up the take behind every piece of the edit and asked for every
+    take's line; for an edit imported from an AAF it first listed every take file in the project. On a long edit that is milliseconds
+    of work each time, for a strip a few pixels wide. It now looks up only the pieces being drawn. What is drawn is the same.
+- **Windows and boxes (3.64.0).** If you had not clicked in any fermata window yet (working by the keyboard since it started), or the
+  window you last clicked in had closed, a new box that opened on the other screen was left there: the safety net took the new box
+  itself for the window to open over. It now takes the main window. The "please wait" window sits over the window you clicked in, too.
+- **The solo of an Int Bus (3.58.0):** checked case by case - a soloed bus, a chain of two buses, a soloed track and its reverb bus, a
+  muted send, a VCA - and found right; nothing changed. Two new tests keep it so (a chain of buses; a soloed track's bus carrying no other
+  track).
+- **The recording feed behind WaveColour while recording (3.59.0):** read through for anything that could disturb a recording, and found
+  right; nothing changed in it. The waveform colours' background reader now also holds off until a stopped take's files are finished (as
+  the tuning line's does).
+- **Imports laid out like a take window (3.57.0):** a stereo file made from the RIGHT mic's file alone kept that file's name as if it were
+  the left side's, so a later import laid out like that window could read the right mic's name as the whole track's. It is kept as the
+  right side's now.
+- **Shared:** `src/core/Mtc.h`, `Ltc.h` / `Ltc.cpp`, `AudioEngine.h` / `AudioEngine.cpp`, and one line of `Project.cpp` - fermata:Live is
+  rebuilt as 0.10.14 and needs a test (it has no MIDI timecode of its own; its recorder is its own code and is not changed).
+- Checked here, on the Linux build: new core tests for the timing (a clock 0.01 % fast and a driver's call up to 1.5 ms late steadied to
+  under 0.2 ms; a source 0.005 % fast for two minutes followed to within 0.42 ms with no break - it fell 6 ms behind before; a first
+  setting 2 ms out gone after 40 s; a ten-frame jump followed within half a second; one message 50 ms late not taken for a jump; 30
+  frames a second with a late message every half second never taken for 29.97; the two threads hammered against each other - of 400,000
+  reads between 1,500 and 64,000 came at the wrong moment, none of them mixed up and none lost; the offset measured as 3.002 ms for
+  timecode that came 3 ms late) and for the solo; the tuning line's trial with new cases (the live line arriving during a measurement
+  of the files - the old code lost it there, shown by running the same case against 3.66.0; a file away; six takes waiting; joining a
+  take 20 s in); both programs built with no warnings; the six pre-delivery checks; and, because audio-thread code changed, the
+  engine's own tool checks - nothing inside the audio callback allocates, locks or waits (realtime check, 0 reports) and the thread
+  check (0 reports, the new two-thread test included). The address check passed on the stress test, and on the new timecode tests and
+  the tuning trial run on their own (0 reports); the whole file of core tests could NOT be built under it here - the compiler ran out
+  of this machine's memory on that one file - so that run was not made. **Not checked: any real MIDI port, rtpMIDI or the
+  Hapi** - there is none here, and MIDI timecode has still never run on the real thing. The measuring box was tried with made-up
+  timecode in a test, not on the screen with a port. Windows: GitHub builds it.
+- What this pass did not do: the window code of the take, edit, mixer, main and score windows built since 3.55.0 was searched for the
+  known kinds of mistake (a callback that outlives its window, the line that stopped the Windows build) and built without warnings, but
+  it was not read line by line as the core was. An offset for MIDI timecode going OUT was left out on purpose: see DEVELOPMENT-NOTES.
+
 ## 3.66.0
 Built 24 November 2026 (the conversation for both programs), with Claude Opus. Asked for on 24 November: "in the PDF viewer ... the PDF I have
 contains four movements in one single document but the four movements are split over 4 separate take and edit windows. Can we make a function

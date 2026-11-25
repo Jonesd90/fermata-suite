@@ -57,6 +57,9 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     void showWaveCompressMenu (juce::Component* target);
 
     /** WaveColour: the waveforms are coloured by what is in them (pitch = hue, tonal = vivid, a thump below 100 Hz = black). Off by default; the rainbow button in the take and edit windows. */
+    /** 3.67.0: a take records, or is being finished on the disk (kept by the watcher in AppContext's constructor): the background readers of take
+        files - the waveform colours', the tuning line's - hold off while it is true. (Declared before them: they read it from their threads.) */
+    std::atomic<bool> takesBusy { false };
     bool waveColour = false;
     WaveColorCache waveColors;
     /** 3.59.0: WaveColour while a take records - the engine feeds what it records (setLiveFeeds, while WaveColour is on) and this colours it as
@@ -173,6 +176,10 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     void applyTalkback();
     /** LTC (timecode as audio): the input it arrives on / the output it is sent on, from the project's settings. */
     void applyLtc (bool restartOutput = false);
+    /** 3.67.0: how late MIDI timecode arrives on this computer, in milliseconds - a setting of the computer (its network and rtpMIDI), not of a
+        project. Measured from the LTC IN menu. */
+    double mtcInOffsetMs();
+    void setMtcInOffsetMs (double ms);
     /** Chooses the driver input that carries LTC (-1 = none). The LTC track (recorded with every take) is made if there is none, and gets that input. */
     void setLtcInput (int inputChannel);
     /** The LTC track of the project (nullptr if there is none yet). */

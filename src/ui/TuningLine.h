@@ -28,7 +28,14 @@
 
     For the Fable pass (asked for: "we will do a pass with Fable later to stabilise it all"): the Live thread beside a recording (it only reads
     the feeds' rings, as LiveWaveColours does), the Store thread (one take at a time, held while a take records), and the empty-job bug the
-    trial found (DEVELOPMENT-NOTES 3.63.0). */
+    trial found (DEVELOPMENT-NOTES 3.63.0).
+
+    3.67.0, that pass (25 November 2026, with Claude Fable). What it found and mended, all in Store and Live below: (1) a take's files could be
+    measured in the moment between Stop and their being finished on the disk, and that line - cut short, or empty - could replace the one measured
+    live and be the one kept; (2) a take whose files could not all be opened was stored as "nothing to measure" for good; (3) while a take
+    recorded, lines already stored waited in turn behind takes that could not be measured yet, one a second; (4) the live reader joining a take
+    already under way, or catching up after falling behind, pushed all it had missed through the filters as silence - work for nothing, beside
+    a recording. See DEVELOPMENT-NOTES 3.67.0. */
 #include "../core/AudioEngine.h"
 #include "../core/Project.h"
 #include "../core/AudioFormats.h"
@@ -134,6 +141,17 @@ public:
         hist.assign ((size_t) (2 * L), 0.0f);
     }
     double rate() const { return outRate; }
+    int step() const { return factor; }
+    /** 3.67.0: n samples of silence without the work: returns how many samples at the lower rate that makes (all of them 0 - the filter is
+        left empty, as after that much silence it very nearly is). */
+    juce::int64 skip (juce::int64 n)
+    {
+        if (n <= 0) return 0;
+        std::fill (hist.begin(), hist.end(), 0.0f);
+        const juce::int64 total = (juce::int64) phase + n, made = total / factor;
+        phase = (int) (total % factor);
+        return made;
+    }
     /** Takes n samples; 'out' is called with each new sample at the lower rate. */
     template <typename Out> void push (const float* x, int n, Out&& out)
     {
@@ -264,6 +282,26 @@ public:
         auto& ring = rings[(size_t) c]; auto& g = got[(size_t) c];
         dec[(size_t) c].push (x, n, [&] (float v) { ring[(size_t) (g % R)] = v; ++g; });
     }
+    /** 3.67.0: begin part way into the take, at input sample 'from' or just after (what it returns): nothing before that will be pushed, and the
+        first window is the first one that starts after it. Before anything is pushed. */
+    juce::int64 startAt (juce::int64 from)
+    {
+        if (dec.empty() || from <= 0) return 0;
+        const juce::int64 f = dec.front().step();
+        from = ((from + f - 1) / f) * f;
+        for (auto& g : got) g = from / f;
+        next = (from / f + S - 1) / S;
+        return from;
+    }
+    /** 3.67.0: n samples of silence on channel c, without filtering them (the live reader fell behind and the sound is gone). */
+    void skip (int c, juce::int64 n)
+    {
+        if (! juce::isPositiveAndBelow (c, (int) dec.size())) return;
+        auto& ring = rings[(size_t) c]; auto& g = got[(size_t) c];
+        const juce::int64 made = dec[(size_t) c].skip (n);
+        for (juce::int64 i = juce::jmax ((juce::int64) 0, made - R); i < made; ++i) ring[(size_t) ((g + i) % R)] = 0.0f;      // (only the ring's own length of it need be written)
+        g += made;
+    }
     /** The readings of the windows that every channel now covers ('lost': a window a channel had already written over - it ran too far ahead). */
     void step (std::vector<Point>& out, bool& lost)
     {
@@ -353,7 +391,7 @@ public:
     void setFolder (const juce::File& analysisFolder)
     {
         const std::lock_guard<std::mutex> g (lock);
-        folder = analysisFolder; known.clear(); queue.clear(); ++epoch;
+        folder = analysisFolder; known.clear(); queue.clear(); held.clear(); ++epoch;
         notify();
     }
     /** A take's line, or nothing while it is not known yet (it is then read or measured; generation goes up when it is). */
@@ -362,9 +400,9 @@ public:
         if (src.files.empty()) return nullptr;
         const std::lock_guard<std::mutex> g (lock);
         auto it = known.find (take.id);
-        if (it != known.end() && it->second.key == src.key) return it->second.line;
-        if (it != known.end() && it->second.pending && it->second.key == src.key) return nullptr;
+        if (it != known.end() && it->second.key == src.key) return it->second.line;        // (nothing yet while it is being read or measured)
         auto& k = known[take.id]; k.key = src.key; k.pending = true; k.line = nullptr;
+        dropJobsFor (take.id);                                             // (3.67.0: asked for from other tracks before: that ask is not wanted any more)
         queue.push_back ({ take.id, src, nullptr });
         if (! isThreadRunning()) startThread (juce::Thread::Priority::low);
         notify();
@@ -378,6 +416,10 @@ public:
         const std::lock_guard<std::mutex> g (lock);
         if (! line->whole) return;                                         // (asked for again from the files when it is drawn)
         auto& k = known[takeId]; k.key = key; k.pending = false; k.line = line;
+        // 3.67.0: an ask to measure this take from its files (made when it was first drawn, before the live reader had it) is dropped here, and
+        // one that is being measured this moment is not taken when it comes (finish): the line measured live is the one that stands. Before, a
+        // measurement of the files begun in the moment between Stop and their being finished could come after this and replace it - cut short.
+        dropJobsFor (takeId);
         queue.push_front ({ takeId, {}, line });                           // (written by the thread)
         ++generation;
         if (! isThreadRunning()) startThread (juce::Thread::Priority::low);
@@ -387,16 +429,18 @@ public:
     void measureAgain()
     {
         juce::File f;
-        { const std::lock_guard<std::mutex> g (lock); known.clear(); queue.clear(); ++epoch; f = folder; }
+        { const std::lock_guard<std::mutex> g (lock); known.clear(); queue.clear(); held.clear(); ++epoch; f = folder; }
         if (f.isDirectory()) for (auto& x : f.findChildFiles (juce::File::findFiles, false, "*.ftune")) x.deleteFile();
         ++generation;
     }
     void stop() { signalThreadShouldExit(); notify(); stopThread (4000); }
     /** (for a test) The take files are measured here at once, on the calling thread. */
-    static std::shared_ptr<Line> measureFiles (const Source& src, juce::AudioFormatManager& fm, const std::function<bool()>& keepGoing)
+    static std::shared_ptr<Line> measureFiles (const Source& src, juce::AudioFormatManager& fm, const std::function<bool()>& keepGoing, bool* allRead = nullptr)
     {
         std::vector<std::unique_ptr<juce::AudioFormatReader>> rs;
         for (auto& [file, ch] : src.files) { juce::ignoreUnused (ch); if (auto* r = fm.createReaderFor (file)) rs.emplace_back (r); }
+        // (3.67.0: 'allRead' false when a file could not be opened - missing, on a drive that is away: the line is then of what there was, and is not kept)
+        if (allRead != nullptr) *allRead = rs.size() == src.files.size();
         if (rs.empty()) return std::make_shared<Line>();
         const double sr = rs.front()->sampleRate;
         juce::int64 len = rs.front()->lengthInSamples; for (auto& r : rs) len = juce::jmin (len, r->lengthInSamples);
@@ -425,17 +469,46 @@ public:
     }
 private:
     struct Known { juce::String key; std::shared_ptr<const Line> line; bool pending = false; };
-    struct Job { juce::Uuid takeId = juce::Uuid::null(); Source src; std::shared_ptr<const Line> save; };     // (null: juce::Uuid's own default is a NEW random id)
+    struct Job
+    {
+        juce::Uuid takeId = juce::Uuid::null();                            // (null: juce::Uuid's own default is a NEW random id)
+        Source src; std::shared_ptr<const Line> save;
+        bool looked = false;                                               // the Analysis folder has been looked in for it (and it was not there)
+    };
+    // (the lock held) every ask about this take that is waiting, taken away
+    void dropJobsFor (const juce::Uuid& takeId)
+    {
+        auto drop = [&] (std::deque<Job>& q) { q.erase (std::remove_if (q.begin(), q.end(), [&] (const Job& j) { return j.takeId == takeId; }), q.end()); };
+        drop (queue); drop (held);
+    }
+    // (the lock held) this measuring job is still what is wanted of its take
+    bool wanted (const Job& job, int ep)
+    {
+        if (ep != epoch) return false;
+        const auto it = known.find (job.takeId);
+        return it != known.end() && it->second.pending && it->second.key == job.src.key;
+    }
     void run() override
     {
         while (! threadShouldExit())
         {
-            Job job; juce::File dir; int ep = 0;
+            Job job; juce::File dir; int ep = 0; bool onlyHeld = false;
             {
                 const std::lock_guard<std::mutex> g (lock);
-                if (queue.empty()) { /* nothing to do */ }
-                else { job = queue.front(); queue.pop_front(); }
+                if (! queue.empty()) { job = queue.front(); queue.pop_front(); }
+                else onlyHeld = ! held.empty();
                 dir = folder; ep = epoch;
+            }
+            if (onlyHeld)
+            {
+                // 3.67.0: what cannot be measured yet (a take records, or is being finished) waits to one side and is looked at again every
+                // second, all together. They used to go round in the one queue a second apart, so a line that was already stored and only
+                // had to be read could wait many seconds behind them.
+                wait (1000);
+                const std::lock_guard<std::mutex> g (lock);
+                for (auto& h : held) queue.push_back (std::move (h));
+                held.clear();
+                continue;
             }
             if (job.takeId.isNull()) { wait (-1); continue; }
             if (job.save == nullptr && job.src.files.empty()) continue;           // (nothing to measure)
@@ -446,44 +519,51 @@ private:
                 if (dir != juce::File() && key.isNotEmpty()) saveLine (file, *job.save, key);
                 continue;
             }
-            juce::String key;
-            if (file.existsAsFile())
-                if (auto l = loadLine (file, key); l != nullptr && key == job.src.key && l->whole)
-                {
-                    finish (job, l, ep);
-                    continue;
-                }
-            if (holdOff && holdOff())                                      // a take records: later (put back, looked at again in a second)
+            if (! job.looked)
             {
-                { const std::lock_guard<std::mutex> g (lock); if (ep == epoch) queue.push_back (job); }
-                wait (1000);
+                job.looked = true;
+                juce::String key;
+                if (dir != juce::File() && file.existsAsFile())
+                    if (auto l = loadLine (file, key); l != nullptr && key == job.src.key && l->whole)
+                    {
+                        finish (job, l, ep);
+                        continue;
+                    }
+            }
+            if (holdOff && holdOff())                                      // a take records or is being finished: later
+            {
+                const std::lock_guard<std::mutex> g (lock);
+                if (wanted (job, ep)) held.push_back (job);
                 continue;
             }
-            auto l = measureFiles (job.src, formats, [&] { return ! threadShouldExit() && ! (holdOff && holdOff()) && epoch == ep; });
+            bool allRead = true;
+            auto l = measureFiles (job.src, formats, [&] { return ! threadShouldExit() && ! (holdOff && holdOff()) && epoch == ep; }, &allRead);
             if (l == nullptr)                                              // stopped part way: again later
             {
                 const std::lock_guard<std::mutex> g (lock);
-                if (ep == epoch) queue.push_back (job);
+                if (wanted (job, ep)) held.push_back (job);
                 continue;
             }
-            if (dir != juce::File()) saveLine (file, *l, job.src.key);
-            finish (job, l, ep);
+            // 3.67.0: kept on the disk only when it is the line still wanted (finish) and every file was read. A line of a take whose files were
+            // not all there is shown for now (as far as it goes) and measured again another day; it used to be stored as "nothing to measure".
+            if (! allRead) l->whole = false;
+            if (finish (job, l, ep) && allRead && dir != juce::File()) saveLine (file, *l, job.src.key);
         }
     }
-    void finish (const Job& job, std::shared_ptr<const Line> l, int ep)
+    bool finish (const Job& job, std::shared_ptr<const Line> l, int ep)
     {
         const std::lock_guard<std::mutex> g (lock);
-        if (ep != epoch) return;
+        if (! wanted (job, ep)) return false;                              // (asked for from other tracks meanwhile, or the live line came: see put)
         auto& k = known[job.takeId];
-        if (k.key != job.src.key) return;                                  // (asked for from other tracks meanwhile)
         k.line = std::move (l); k.pending = false;
         ++generation;
+        return true;
     }
     juce::AudioFormatManager formats;
     std::mutex lock;
     juce::File folder;
     std::map<juce::Uuid, Known> known;
-    std::deque<Job> queue;
+    std::deque<Job> queue, held;                         // to do; and what cannot be measured yet (see run)
     std::atomic<int> epoch { 0 };
 };
 
@@ -507,12 +587,30 @@ public:
             const std::lock_guard<std::mutex> g (lock);
             for (auto& j : jobs) if (j->takeId == takeId) return;
             auto j = std::make_shared<Job> ((int) feeds.size(), feeds.front()->sampleRate);
-            j->takeId = takeId; j->feeds = feeds; j->key = key; j->pos.assign (feeds.size(), 0);
+            j->takeId = takeId; j->feeds = feeds; j->key = key;
+            // 3.67.0: a take already under way (the line switched on, or the window opened, in the middle of it): it starts where every feed still
+            // has the sound, not at the take's start - what came before is gone from the feeds (and used to be pushed through the filters as
+            // silence, all of it). The line is then not whole, and the take's files are measured afterwards.
+            juce::int64 from = 0; bool late = false;
+            for (auto& f : feeds) late = late || f->written() > (juce::int64) f->capacity() - Feed::kBlock;       // (its first samples are about to be, or have been, written over)
+            if (late)
+            {
+                for (auto& f : feeds) from = juce::jmax (from, f->written() - (juce::int64) f->capacity() / 2);
+                from = j->meter.startAt (from); j->lost = true;
+            }
+            j->pos.assign (feeds.size(), from);
             j->shown = std::make_shared<const Line>();
             jobs.push_back (std::move (j));
         }
         if (! isThreadRunning()) startThread (juce::Thread::Priority::low);
         notify();
+    }
+    /** This take is being measured as it records (so watch() need not be asked again). */
+    bool watching (const juce::Uuid& takeId) const
+    {
+        const std::lock_guard<std::mutex> g (lock);
+        for (auto& j : jobs) if (j->takeId == takeId) return true;
+        return false;
     }
     std::shared_ptr<const Line> lineFor (const juce::Uuid& takeId) const
     {
@@ -541,7 +639,7 @@ private:
     };
     void run() override
     {
-        std::vector<float> buf (4096), zeros (4096, 0.0f);
+        std::vector<float> buf (4096);
         std::vector<Point> pts;
         while (! threadShouldExit())
         {
@@ -562,9 +660,11 @@ private:
                         const int n = (int) juce::jmin ((juce::int64) buf.size(), w - p);
                         if (! f.read (p, buf.data(), n))                    // written over: the reader fell behind - silence instead, and the files are measured later
                         {
+                            // (3.67.0: the silence is counted, not filtered - this thread fell behind because the computer is busy, and pushing
+                            // what it missed through the filters was more work at the worst moment)
                             j->lost = true;
                             const auto to = juce::jmax (p + 1, f.written() - (juce::int64) f.capacity() / 2);
-                            while (p < to) { const int z = (int) juce::jmin ((juce::int64) zeros.size(), to - p); j->meter.push ((int) c, zeros.data(), z); p += z; }
+                            j->meter.skip ((int) c, to - p); p = to;
                             continue;
                         }
                         j->meter.push ((int) c, buf.data(), n);

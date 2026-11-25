@@ -1077,7 +1077,14 @@ void MainComponent::timerCallback()
         // 3.56.0: timecode as MIDI. A port that is wanted but not there (rtpMIDI started after fermata, the Hapi off) is tried again every few seconds.
         const bool midiIn = p.ltcInput == AudioEngine::kLtcFromMidi, inMissing = midiIn && ! app.engine.ltcMidiInputOpen();
         const bool outMissing = p.ltcOutPort.isNotEmpty() && ! app.engine.ltcMidiOutputOpen();
-        if ((inMissing || outMissing) && ++ltcPortRetry >= 30) { ltcPortRetry = 0; app.applyLtc(); }
+        // (3.67.0: and a port that was open but has gone from the system's list - its rtpMIDI session taken away - is closed, so that it is opened
+        // afresh when it is back: it used to stay "open" and silent)
+        if (++ltcPortRetry >= 90) ltcPortRetry = 0;
+        if (ltcPortRetry % 30 == 0)                                       // (about once a second)
+        {
+            if (ltcPortRetry == 0 && (midiIn || p.ltcOutPort.isNotEmpty())) app.engine.closeLtcMidiPortsThatAreGone();      // (every third time)
+            if (inMissing || outMissing) app.applyLtc();
+        }
         ltcInLamp.set (p.ltcInput >= 0 && st.present,
                        inMissing ? "the MIDI port " + p.ltcInPort + " is not there"
                                  : (midiIn ? "MIDI timecode from " + p.ltcInPort + ", " : juce::String()) + fpsName (st.fps, st.drop) + " fps");
@@ -1702,18 +1709,109 @@ void MainComponent::showLtcInMenu()
     if (midiIn && app.project.ltcInPort.isNotEmpty() && ! ports.contains (app.project.ltcInPort)) ports.add (app.project.ltcInPort);       // (chosen, not there now)
     if (ports.isEmpty()) m.addItem (3, "(no MIDI input ports - for a Hapi, connect its LTC_in in rtpMIDI, then restart fermata)", false);
     for (int i = 0; i < ports.size(); ++i) m.addItem (1000 + i, ports[i], true, midiIn && app.project.ltcInPort == ports[i]);
+    // 3.67.0: the offset of MIDI timecode - how late it arrives (the network, rtpMIDI) - typed, or measured against the same timecode as LTC on an input
+    {
+        const double off = app.mtcInOffsetMs();
+        m.addItem (5, "MIDI timecode offset: " + juce::String (off > 0.0 ? "+" : "") + juce::String (off, 1) + " ms  (type it...)", midiIn);
+        juce::PopupMenu mm;
+        mm.addItem (6, "Feed the same timecode to the MIDI port and, as LTC, to one of these inputs; then choose that input:", false);
+        for (int i = 0; i < n; ++i) mm.addItem (2000 + i, "Input " + juce::String (i + 1) + "  -  " + app.project.inputLabel (i));
+        m.addSubMenu ("Measure the offset against LTC on an input", mm, midiIn && n > 0);
+    }
     m.addSeparator();
     m.addItem (2, "It is recorded with every take, on the track named LTC (show it with the LTC triangle in the take and edit windows)", false);
-    m.addItem (4, "MIDI timecode is made into LTC for that track, placed by when it arrives: within a millisecond or so of LTC on an audio input", false);
+    m.addItem (4, "MIDI timecode is made into LTC for that track, placed by when it arrives and by the offset: measure the offset once for your set-up", false);
     juce::Component::SafePointer<MainComponent> safe (this);
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&ltcInLamp).withMinimumWidth (320), [safe, ports] (int r)
     {
         if (safe == nullptr || r == 0) return;
         auto& p = safe->app.project;
         if (r == 1) { p.ltcInPort = {}; safe->app.setLtcInput (-1); }
+        else if (r == 5) safe->typeMtcOffset();
+        else if (r >= 2000) safe->measureMtcOffset (r - 2000);
         else if (r >= 1000 && r - 1000 < ports.size()) { p.ltcInPort = ports[r - 1000]; safe->app.setLtcInput (AudioEngine::kLtcFromMidi); }
-        else if (r >= 100) { p.ltcInPort = {}; safe->app.setLtcInput (r - 100); }
+        else if (r >= 100 && r < 1000) { p.ltcInPort = {}; safe->app.setLtcInput (r - 100); }
     });
+}
+
+// 3.67.0: the offset of MIDI timecode coming in. What it is: the LTC track's timecode is made from the MIDI timecode by when each message arrives,
+// and the messages arrive a little late (the Hapi's own work, the network, rtpMIDI: a few milliseconds, the same every time). The offset is that
+// lateness, added back. It belongs to the computer and its network, not to a project (AppContext::mtcInOffsetMs).
+void MainComponent::typeMtcOffset()
+{
+    auto* aw = new juce::AlertWindow ("MIDI timecode offset",
+                                      "How late the MIDI timecode arrives, in milliseconds. The LTC track's timecode is moved later by this much "
+                                      "(a number below 0 moves it earlier).\n\nIt is best measured: LTC IN > Measure the offset against LTC on an input.",
+                                      juce::MessageBoxIconType::NoIcon, place::anchor());
+    aw->addTextEditor ("ms", juce::String (app.mtcInOffsetMs(), 2), "Offset in ms");
+    aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    juce::Component::SafePointer<MainComponent> safe (this);
+    aw->enterModalState (true, juce::ModalCallbackFunction::create ([safe, aw] (int res)
+    {
+        if (res != 1 || safe == nullptr) return;
+        const auto text = aw->getTextEditorContents ("ms").trim().replaceCharacter (',', '.');
+        if (text.isEmpty() || ! text.containsOnly ("+-.0123456789")) { safe->app.setNotice ("That is not a number of milliseconds. The offset was left as it was."); return; }
+        const double ms = text.getDoubleValue();
+        if (std::abs (ms) > 500.0) { safe->app.setNotice ("The offset can be half a second at most. It was left as it was."); return; }
+        safe->app.setMtcInOffsetMs (ms);
+        safe->app.setNotice ("MIDI timecode offset: " + juce::String (ms, 2) + " ms");
+    }), true);
+}
+
+void MainComponent::measureMtcOffset (int inputChannel)
+{
+    if (app.project.ltcInput != AudioEngine::kLtcFromMidi) return;
+    const juce::String inName = "input " + juce::String (inputChannel + 1);
+    app.engine.setLtcCompareInput (inputChannel);
+    auto* aw = new juce::AlertWindow ("Measuring the MIDI timecode offset",
+                                      "Listening for 8 seconds to the MIDI timecode and to the LTC on " + inName + ".\n\nBoth must carry the same timecode, running, for all of that time.",
+                                      juce::MessageBoxIconType::NoIcon, place::anchor());
+    aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    juce::Component::SafePointer<MainComponent> safe (this);
+    juce::Component::SafePointer<juce::AlertWindow> box (aw);
+    aw->enterModalState (true, juce::ModalCallbackFunction::create ([safe, inName] (int res)
+    {
+        if (safe == nullptr) return;
+        const auto r = safe->app.engine.ltcCompareResult();
+        safe->app.engine.setLtcCompareInput (-1);
+        if (res != 2) return;                                                       // (cancelled)
+        const double was = safe->app.mtcInOffsetMs(), by = 1000.0 * r.mean, now = was + by, spread = 1000.0 * r.spread;
+        juce::Logger::writeToLog ("MIDI timecode in, measured against the LTC on " + inName + ": " + juce::String (r.frames) + " frames, the LTC made from MIDI "
+                                  + juce::String (by, 3) + " ms behind (below 0: ahead), steady to " + juce::String (spread, 3) + " ms, with the offset at " + juce::String (was, 2) + " ms");
+        auto say = [&] (const juce::String& text)
+        {
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::NoIcon, "MIDI timecode offset", text, "OK", place::anchor());
+        };
+        if (r.frames < 50)
+        {
+            say ("Nothing could be compared: " + juce::String (r.frames == 0 ? "no LTC was read on " + inName + ", or no MIDI timecode was arriving, or the two were not the same timecode"
+                                                                               : "only " + juce::String (r.frames) + " frames of LTC were read on " + inName + " (it should be about 200)")
+                 + ".\n\nThe offset was left at " + juce::String (was, 1) + " ms.");
+            return;
+        }
+        if (std::abs (now) > 100.0)
+        {
+            say ("The LTC made from the MIDI timecode and the LTC on " + inName + " are " + juce::String (std::abs (by), 0) + " ms apart. That is more than a network's delay: "
+                 "they do not look like the same timecode from the same source.\n\nThe offset was left at " + juce::String (was, 1) + " ms.");
+            return;
+        }
+        juce::String text = "Over " + juce::String (r.frames) + " frames, the LTC made from the MIDI timecode was "
+                            + (std::abs (by) < 0.05 ? juce::String ("level with") : juce::String (std::abs (by), 1) + (by > 0.0 ? " ms behind" : " ms ahead of"))
+                            + " the LTC on " + inName + " (steady to within " + juce::String (juce::jmax (0.1, 2.0 * spread), 1) + " ms).\n\n"
+                            + "The offset is " + juce::String (was, 1) + " ms now. At " + juce::String (now, 1) + " ms the two agree.";
+        if (spread > 2.0) text += "\n\nThe two did not stay a steady distance apart, so this figure is rough: measure again, and if it is the same again, the network is the cause.";
+        auto* ask = new juce::AlertWindow ("MIDI timecode offset", text, juce::MessageBoxIconType::NoIcon, place::anchor());
+        ask->addButton ("Set the offset to " + juce::String (now, 1) + " ms", 1, juce::KeyPress (juce::KeyPress::returnKey));
+        ask->addButton ("Leave it at " + juce::String (was, 1) + " ms", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+        ask->enterModalState (true, juce::ModalCallbackFunction::create ([safe, now] (int res2)
+        {
+            if (res2 != 1 || safe == nullptr) return;
+            safe->app.setMtcInOffsetMs (now);
+            safe->app.setNotice ("MIDI timecode offset: " + juce::String (now, 1) + " ms");
+        }), true);
+    }), true);
+    juce::Timer::callAfterDelay (8000, [box] { if (box != nullptr && box->isCurrentlyModal()) box->exitModalState (2); });
 }
 
 static bool parseTimecodeText (const juce::String& text, double fps, double& seconds)

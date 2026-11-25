@@ -2,6 +2,15 @@
 
 The brief is in `docs/LIVE-BRIEF.md`, and the rules shared with fermata are in `COMPATIBILITY.md`. Newest entries come first.
 
+## 0.10.14: rebuilt for the shared core's MIDI timecode changes (25 November 2026, with Claude Fable)
+
+fermata 3.67.0's pass with Fable changed `src/core/Mtc.h`, `Ltc.*` and `AudioEngine.*` (the timing of MIDI timecode: see
+`docs/DEVELOPMENT-NOTES.md`, "3.67.0"). fermata:Live does not open a MIDI timecode port and its recorder (`RecorderService`, the recorder
+core) does not use `AudioEngine`'s LTC code, so nothing it does changes. The new engine calls (`setDeviceLatencies`, `setLtcMidiInOffset`,
+`setLtcCompareInput`, `closeLtcMidiPortsThatAreGone`) are not called from `src/live`. Nothing of fermata:Live's own was changed. The pass
+also read fermata:Live's changes since 0.10.5 (the Colours key and the knock weighting, `LiveColours.h`'s half block before each block)
+and found nothing to mend.
+
 ## 0.10.13: the Windows build mended - 'this' in the capture of a lambda inside a lambda (25 November 2026, with Claude Fable)
 
 GitHub's build of 3.66.0 / 0.10.12 (the first upload since 3.55.0 / 0.10.5) built Fermata.exe and stopped in FermataLive:

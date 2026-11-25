@@ -271,3 +271,13 @@ copies it like everything else, which is fine.
     program ignores them. They are view keys (`kEditViewKeys`: saved, never undone; an undo keeps the live edit's). `Project::addScore` sets
     them back to 0 when the edit gets another PDF. fermata:Live has no score window and no edits of its own; it reads and writes the keys
     like the others. Nothing else changed.
+  - Still contract 3 (fermata 3.67.0, fermata:Live 0.10.14): the pass with Fable over the MIDI timecode. Nothing in the project file changed
+    (the offset of MIDI timecode is a setting of the computer, kept by fermata in its own settings). `src/core/Mtc.h`: `mtc::BlockClock`
+    (the blocks' steadied clock); `MtcReader::read (Ref&)` (the audio thread's read: false = not read this time, the caller keeps what it
+    had - `ref()` is for the message thread and the tests); a release fence in both seqlock writers; the 24 / 23.976 decision takes eight
+    messages in a row; `MtcChase::fill (..., offset)` trims the generator's speed and counts the times it was set (`timesSet`); `LtcCompare`
+    (the LTC on an audio input against a generator, for measuring the offset); `MtcInput` / `MtcOutput`: `isOpen()` is an atomic flag,
+    `closeIfGone()`. `LtcGenerator::setSpeed` (`Ltc.h`; 1 after `start` / `startExact`, and then every bit is as long as before).
+    `AudioEngine`: `setDeviceLatencies` (called by `audioDeviceAboutToStart`; 0 without a device), `setLtcMidiInOffset`,
+    `setLtcCompareInput` / `ltcCompareResult`, `closeLtcMidiPortsThatAreGone`. fermata:Live calls none of them. `Project.cpp`
+    (`relinkAudio`): a take file counts as recorded here only when it has neither of its two original names.

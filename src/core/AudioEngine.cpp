@@ -131,6 +131,12 @@ void AudioEngine::audioDeviceAboutToStart (juce::AudioIODevice* d)
         if (juce::MessageManager::getInstance()->isThisTheMessageThread()) deviceRestartedWhileRecording (newRate);
         else juce::MessageManager::callAsync ([this, newRate] { deviceRestartedWhileRecording (newRate); });     // (JUCE restarts a device on the message thread; this is only in case)
     }
+    {   // 3.67.0: the driver's own latencies, for placing timecode that comes and goes as MIDI against the audio (see process())
+        const double r = d->getCurrentSampleRate();
+        const int li = d->getInputLatencyInSamples(), lo = d->getOutputLatencyInSamples();
+        setDeviceLatencies (r > 0.0 ? li / r : 0.0, r > 0.0 ? lo / r : 0.0);
+        juce::Logger::writeToLog ("Engine: the driver gives its latency as " + juce::String (li) + " samples in, " + juce::String (lo) + " out");
+    }
     startForDevice (d->getCurrentSampleRate(), juce::jmax (64, d->getCurrentBufferSizeSamples()), deviceInputs, deviceOutputs);
     running = true;
     juce::Logger::writeToLog ("Engine: device started OK");
@@ -194,6 +200,7 @@ void AudioEngine::deviceBlock (const float* const* in, int numIn, float* const* 
                 if (tp.inputs[c] >= 0 && tp.inputs[c] < kMaxInputs) wantIn[(size_t) tp.inputs[c]] = true;
     for (int c = 0; c < kMaxInputs; ++c) if (crSel[(size_t) c].load (std::memory_order_relaxed)) wantIn[(size_t) c] = true;
     if (const int lc = ltcInCh.load (std::memory_order_relaxed); lc >= 0 && lc < kMaxInputs) wantIn[(size_t) lc] = true;
+    if (const int cc = ltcCmp.input(); cc >= 0 && cc < kMaxInputs) wantIn[(size_t) cc] = true;      // (3.67.0: the input MIDI timecode is being measured against)
     bridgedBlock = true;
     b->run (in, numIn, out, numOut, numSamples, wantIn.data(),
             [this] (const float* const* i, int ni, float* const* o, int no, int n) { process (i, ni, o, no, n); });
@@ -325,6 +332,7 @@ void AudioEngine::prepare (double sr, int block)
     if (! preparingForDevice)                      // (prepared without a device - the tests, an offline render: no converter)
     {
         bridge.reset(); converting = false; converterMs = 0.0; deviceRateNow.store (sr);
+        setDeviceLatencies (0.0, 0.0);
     }
     stopPlayback();
     lastPlanSeen.store (nullptr);                  // (the audio thread is not running here: the plan it last saw may already be gone)
@@ -336,6 +344,7 @@ void AudioEngine::prepare (double sr, int block)
     zeros.assign ((size_t) juce::jmax (maxBlock * 4, 8192), 0.0f);
     ltcIn.prepare (sr); ltcGen.prepare (sr); ltcSeenRestart = -1;
     mtcChase.prepare (sr); ltcMidiIn.assign (zeros.size(), 0.0f); ltcScratch.assign (zeros.size(), 0.0f);
+    blockClock.reset(); ltcCmp.prepare (sr);
     aux.prepare (sr, juce::jmax (maxBlock * 4, 8192));
     tbTap.assign (zeros.size() * 2, 0.0f);   // also the silence for the pre-roll hand-over (4096 samples at a time)
     mainCap.assign (zeros.size() * 2, 0.0f);
@@ -919,12 +928,20 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
 {
     auto* pl = plan.load (std::memory_order_acquire);
     auto* rs = rec.load (std::memory_order_acquire);
-    const double blockTime = mtc::now();                      // (3.56.0: when this block is being worked on, for MIDI timecode in and out)
+    // 3.56.0: when this block is being worked on, for MIDI timecode in and out. (3.67.0: steadied by the audio's own clock - see mtc::BlockClock.)
+    const double blockTime = blockClock.tick (mtc::now(), numSamples, sampleRate);
     // 3.56.0: timecode coming in as MIDI is made into LTC here and handed on as one more input (kLtcFromMidi), which the LTC track records, the
-    // pre-roll keeps and the lamp reads, as any input. The block's first sample was heard about one block before now.
+    // pre-roll keeps and the lamp reads, as any input.
+    // 3.67.0: the block's first sample is as old as the driver says its input latency is (that is what an ASIO driver's figure means; it was
+    // taken as one block, which leaves out the driver's and the network's own buffers) - and never less than the block's own length. What is
+    // then left, the time the MIDI takes to arrive, is the offset (setLtcMidiInOffset).
     if (ltcInCh.load (std::memory_order_relaxed) == kLtcFromMidi && mtcIn.isOpen() && numSamples <= (int) ltcMidiIn.size() && sampleRate > 0.0)
     {
-        mtcChase.fill (mtcIn.reader(), blockTime - (double) numSamples / sampleRate, ltcMidiIn.data(), numSamples);
+        const double heardAgo = juce::jmax (devInLatency.load (std::memory_order_relaxed), (double) numSamples / sampleRate);
+        mtcChase.fill (mtcIn.reader(), blockTime - heardAgo, ltcMidiIn.data(), numSamples, mtcInOffset.load (std::memory_order_relaxed));
+        // (measuring the offset: the LTC on an audio input against the LTC just made)
+        if (const int cc = ltcCmp.input(); cc >= 0 && cc < numIn && in[cc] != nullptr) ltcCmp.block (in[cc], numSamples, mtcChase.isRunning(), mtcChase.positionAtBlockStart(), mtcChase.formatCode());
+        else ltcCmp.idle();
         const int n = juce::jmin (numIn, kLtcFromMidi);
         for (int c = 0; c < n; ++c) inWithLtc[(size_t) c] = in[c];
         for (int c = n; c < kLtcFromMidi; ++c) inWithLtc[(size_t) c] = nullptr;
@@ -1341,7 +1358,9 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
         {
             const int rq = ltcOutRestart.load (std::memory_order_relaxed);
             if (rq != ltcSeenRestart || ! ltcGen.isRunning()) { ltcSeenRestart = rq; ltcGen.start (ltcOutFormat.load (std::memory_order_relaxed), ltcOutStart.load (std::memory_order_relaxed)); }
-            if (toMidi) mtcOut.stamp (true, ltcGen.positionSeconds(), blockTime, ltcGen.formatCode());
+            // (3.67.0: stamped with when this block's first sample is HEARD - the driver's output latency on, and the converter's delay when
+            // there is one - so the MIDI timecode and the LTC on an output channel say the same time at the same moment)
+            if (toMidi) mtcOut.stamp (true, ltcGen.positionSeconds(), blockTime + devOutLatency.load (std::memory_order_relaxed) + 0.001 * converterMs.load (std::memory_order_relaxed), ltcGen.formatCode());
             ltcGen.fill (toChannel ? out[oc] : ltcScratch.data(), numSamples);
             ltcOutRunning.store (true, std::memory_order_relaxed);
         }

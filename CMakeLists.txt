@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-set(FERMATA_VERSION 3.66.0)        # fermata's version: the ONE place it is changed (see CHANGELOG.md). fermata:Live's is in src/live/Live.cmake.
+set(FERMATA_VERSION 3.67.0)        # fermata's version: the ONE place it is changed (see CHANGELOG.md). fermata:Live's is in src/live/Live.cmake.
 project(Fermata VERSION ${FERMATA_VERSION} LANGUAGES C CXX)
 
 # This repository builds TWO programs from one shared core (read COMPATIBILITY.md before changing anything shared):

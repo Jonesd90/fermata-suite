@@ -4230,7 +4230,9 @@ Project::RelinkReport Project::relinkAudio (const juce::File& searchFolder, cons
                 {
                     fromTakes.insert (tf.file.getFullPathName());
                     x->sampleRate = g.sampleRate; x->numChannels = juce::jmax (1, tf.numChannels); x->lengthSamples = g.lengthSamples;
-                    x->ownRecording = tf.sourceName.isEmpty();                                   // (not imported from another file)
+                    // (not imported from another file. 3.67.0: nor made from an imported right-hand file alone - a stereo file joined from only the
+                    // right of two mono tracks has its one name in sourceName2, and was taken for a recording made here)
+                    x->ownRecording = tf.sourceName.isEmpty() && tf.sourceName2.isEmpty();
                     x->bitsPerSample = x->ownRecording ? 24 : 0;                                  // (recorded by Fermata: always 24 bit)
                     x->trackName = tf.trackName; x->takeTag = pad3 (g.number); x->windowName = w->name; x->recordedAt = g.recordedAt;
                 }

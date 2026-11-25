@@ -349,6 +349,23 @@ public:
         on = true; the output channel may then be -1). False when it would not open. Message thread. */
     bool setLtcMidiOutput (const juce::String& portName) { if (portName.isEmpty()) { mtcOut.close(); return true; } return mtcOut.open (portName); }
     bool ltcMidiOutputOpen() const noexcept { return mtcOut.isOpen(); }
+    /** 3.67.0: a MIDI timecode port that is open here but gone from the system's list is closed (message thread, every few seconds), so that
+        setLtcMidiInput / setLtcMidiOutput open it afresh when it is back. */
+    void closeLtcMidiPortsThatAreGone() { mtcIn.closeIfGone(); mtcOut.closeIfGone(); }
+    /** 3.67.0: how late MIDI timecode arrives, in seconds (added to the timecode the LTC is made from; it may be negative). What is left of the
+        timing once the driver's own latency is allowed for: the network's and rtpMIDI's delay. Measured with setLtcCompareInput. */
+    void setLtcMidiInOffset (double seconds) noexcept { mtcInOffset.store (juce::jlimit (-0.5, 0.5, seconds), std::memory_order_relaxed); }
+    double ltcMidiInOffset() const noexcept { return mtcInOffset.load (std::memory_order_relaxed); }
+    /** 3.67.0: measuring that offset. The same timecode comes in as MIDI and as LTC on audio input 'inputChannel': every frame read on that input
+        is compared with the LTC made from the MIDI timecode (LtcCompare). -1 stops. The result's mean is what to ADD to the offset in force. */
+    void setLtcCompareInput (int inputChannel) noexcept { ltcCmp.arm (inputChannel >= 0 && inputChannel < kLtcFromMidi ? inputChannel : -1); }
+    LtcCompare::Result ltcCompareResult() const noexcept { return ltcCmp.result(); }
+    /** 3.67.0: what the driver says of its latencies, in seconds (0: not said). The block's first input sample is this old when the block arrives
+        (never taken as less than the block's own length), its first output sample is heard this much later. */
+    void setDeviceLatencies (double inputSeconds, double outputSeconds) noexcept
+    {
+        devInLatency.store (juce::jlimit (0.0, 0.5, inputSeconds), std::memory_order_relaxed); devOutLatency.store (juce::jlimit (0.0, 0.5, outputSeconds), std::memory_order_relaxed);
+    }
     /** The MIDI ports there are now, by name (for the menus). */
     static juce::StringArray midiInputNames()  { juce::StringArray a; for (auto& d : juce::MidiInput::getAvailableDevices())  a.add (d.name); return a; }
     static juce::StringArray midiOutputNames() { juce::StringArray a; for (auto& d : juce::MidiOutput::getAvailableDevices()) a.add (d.name); return a; }
@@ -643,6 +660,9 @@ private:
     LtcLive ltcIn; LtcGenerator ltcGen;
     // 3.56.0: timecode as MIDI (Mtc.h). The ports are opened on the message thread; the audio thread reads mtcIn's reader and stamps mtcOut.
     MtcInput mtcIn; MtcOutput mtcOut; MtcChase mtcChase;
+    // 3.67.0 (the timing): the blocks' steadied clock, the driver's latencies, the offset of MIDI timecode coming in, and the measuring of it
+    mtc::BlockClock blockClock; LtcCompare ltcCmp;
+    std::atomic<double> devInLatency { 0.0 }, devOutLatency { 0.0 }, mtcInOffset { 0.0 };
     std::vector<float> ltcMidiIn, ltcScratch;                 // the LTC made from MIDI timecode (an input for the LTC track), and where LTC that goes only as MIDI is made
     std::array<const float*, kMaxInputs> inWithLtc {};        // the driver's inputs with that one added (audio thread)
     std::atomic<bool> ltcOutOnA { false };

@@ -395,6 +395,8 @@ private:
     LtcLamp ltcInLamp { "LTC IN", "LTC in: red = no timecode arriving, green = LTC is arriving (with its frame rate). Click to choose the audio input it comes in on (a Hapi TC input routed in Aneman arrives as an ordinary input channel), or the MIDI port it comes in on as MIDI timecode (the Hapi's LTC_in through rtpMIDI). It is recorded with every take on the track named LTC." },
             ltcOutLamp { "LTC OUT", "LTC out: green = Fermata is sending LTC. Click to choose the output channel (route it in Aneman to the Hapi TC output) and/or a MIDI port to send it on as MIDI timecode (the Hapi's LTC_out through rtpMIDI), the frame rate and the start time." };
     void showLtcInMenu();
+    void typeMtcOffset();                       // (3.67.0: the offset of MIDI timecode coming in, typed ...
+    void measureMtcOffset (int inputChannel);   //  ... or measured against the same timecode as LTC on an audio input)
     int ltcPortRetry = 0;                       // (3.56.0: counts lamp updates between tries at opening a MIDI timecode port that is not there)
     void showLtcOutMenu();
     RecPreFlag flagPre;                                       // 3.18.0: the Rec | Pre button (it was the Pre-Rec square)

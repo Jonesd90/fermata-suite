@@ -471,7 +471,14 @@ public:
             if (it != windows.end()) if (auto* mc = dynamic_cast<MediaComponent*> (it->second->getContentComponent())) mc->selectFile (f);   // the window need not be in front
         };
         ctx->refreshTitles = [this] { refreshWindows(); };
-        busy::setAreaProvider ([this] { return mainWindow != nullptr && mainWindow->isVisible() ? mainWindow->getScreenBounds() : juce::Rectangle<int>(); });   // the "please wait" window sits over the main window
+        // the "please wait" window sits over the main window (3.67.0: over the window you clicked in, as every box does since 3.64.0 - the part of it
+        // that is on its screen; the main window when there is none)
+        busy::setAreaProvider ([this]
+        {
+            if (auto* a = place::anchor(); a != nullptr && a->isShowing())
+                if (const auto part = a->getScreenBounds().getIntersection (place::screenOf (a)); ! part.isEmpty()) return part;
+            return mainWindow != nullptr && mainWindow->isVisible() ? mainWindow->getScreenBounds() : juce::Rectangle<int>();
+        });
 
         // audio device: restore the last choice, otherwise prefer ASIO
         std::unique_ptr<juce::XmlElement> saved (ctx->props.getUserSettings()->getXmlValue ("audioDevice"));

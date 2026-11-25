@@ -245,31 +245,63 @@ public:
     int tuneH() const { return app.tuningShow ? tuning::kLaneH : 0; }
     int tuneTop() const { return kGuideTop + guideH(); }
     int shownTuneH = -1, shownTuningGen = -1, shownLiveGen = -1; tuning::Mode shownTuningMode = tuning::Mode::relative; double shownTuningA = 440.0;
-    struct TuneSeg { const TakeGroup* take = nullptr; std::shared_ptr<const tuning::Line> line; double from = 0, to = 0, offset = 0; int x0 = 0, x1 = 0; };
+    struct TuneSeg { const TakeGroup* take = nullptr; std::shared_ptr<const tuning::Line> line; double from = 0, to = 0, offset = 0; int x0 = 0, x1 = 0; const EditRegion* piece = nullptr; };
+    // (3.67.0) for the pieces of an edit imported from an AAF, which name no take: the take each take file of the project belongs to, by the
+    // file's path. Made when first needed and forgotten when the project changes (changeListenerCallback) - it used to be made again at every
+    // repaint. Ids, not pointers: a take looked up by an id that has gone is simply not found.
+    std::map<juce::String, juce::Uuid> tuneTakeOfFile; bool tuneTakeOfFileKnown = false;
     /** Each piece with a take behind it: its take's line, the part of the take it plays (from .. to, seconds into the take) and where that is
-        on this edit's timeline (a reading at t is drawn at t + offset). Pieces in time order. */
-    std::vector<TuneSeg> tuningSegs (const EditDef& e)
+        on this edit's timeline (a reading at t is drawn at t + offset). Pieces in time order.
+
+        3.67.0: this runs at every repaint that touches the lane - the playhead's narrow one too, many times a second while the edit plays - and
+        it used to find every piece's take and ask for every take's line each time: milliseconds of work on a long edit, for a strip a few
+        pixels wide. With 'clip' (the part being painted), the pieces' places are worked out first (which is cheap), and a take and its line
+        are looked up only for the pieces that are needed: those the clip touches, and, from the start of the edit, as far as the first piece
+        that has a reading - the edit's starting pitch, which Relative measures every piece from (tuningValue). Without 'clip': all of them. */
+    std::vector<TuneSeg> tuningSegs (const EditDef& e, const juce::Rectangle<int>* clip = nullptr)
     {
         std::vector<TuneSeg> out;
         const double rate = e.sampleRate > 0.0 ? e.sampleRate : 48000.0;
-        // a piece imported from an AAF names no take: its take is the one whose files it plays (looked up by the file's path)
-        std::map<juce::String, const TakeGroup*> byFile;
-        bool anyWithout = false; for (auto& r : e.regions) anyWithout = anyWithout || r.takeId.isNull();
-        if (anyWithout)
-            for (auto& w : app.project.takeWindows) for (auto& g : w->groups) for (auto& tf : g.files) byFile.emplace (tf.file.getFullPathName(), &g);
+        out.reserve (e.regions.size());
         for (auto& r : e.regions)
         {
-            const TakeGroup* tg = nullptr;
-            if (! r.takeId.isNull()) { for (auto& w : app.project.takeWindows) if (auto* g = w->findGroup (r.takeId)) { tg = g; break; } }
-            else for (auto& f : r.files) if (auto it = byFile.find (f.file.getFullPathName()); it != byFile.end() && f.fileStart == 0) { tg = it->second; break; }
-            if (tg == nullptr) continue;
             const double sr = r.sampleRate > 0.0 ? r.sampleRate : rate;
-            TuneSeg s; s.take = tg; s.line = app.tuningOf (*tg);
+            TuneSeg s; s.piece = &r;
             s.from = (double) r.srcIn / sr; s.to = (double) r.srcOut / sr; s.offset = (double) r.startSample / rate - s.from;
             s.x0 = xOf (s.from + s.offset); s.x1 = xOf (s.to + s.offset);
             out.push_back (std::move (s));
         }
         std::sort (out.begin(), out.end(), [] (const TuneSeg& a, const TuneSeg& b) { return a.from + a.offset < b.from + b.offset; });
+        auto takeById = [this] (const juce::Uuid& id) -> const TakeGroup*
+        {
+            for (auto& w : app.project.takeWindows) if (auto* g = w->findGroup (id)) return g;
+            return nullptr;
+        };
+        auto takeOf = [&] (const EditRegion& r) -> const TakeGroup*
+        {
+            if (! r.takeId.isNull()) return takeById (r.takeId);
+            // a piece imported from an AAF names no take: its take is the one whose files it plays (looked up by the file's path)
+            if (! tuneTakeOfFileKnown)
+            {
+                tuneTakeOfFileKnown = true; tuneTakeOfFile.clear();
+                for (auto& w : app.project.takeWindows) for (auto& g : w->groups) for (auto& tf : g.files) tuneTakeOfFile.emplace (tf.file.getFullPathName(), g.id);
+            }
+            for (auto& f : r.files)
+                if (auto it = tuneTakeOfFile.find (f.file.getFullPathName()); it != tuneTakeOfFile.end() && f.fileStart == 0) return takeById (it->second);
+            return nullptr;
+        };
+        bool startKnown = false;                                         // a piece with a reading has been met: the edit's starting pitch
+        for (auto& s : out)
+        {
+            const bool painted = clip == nullptr || ! (s.x0 > clip->getRight() || s.x1 < clip->getX());
+            if (! painted && startKnown) continue;
+            s.take = takeOf (*s.piece);
+            if (s.take == nullptr) continue;
+            s.line = app.tuningOf (*s.take);
+            if (! startKnown && s.line != nullptr)
+                for (auto& p : s.line->pts) if ((double) p.t >= s.from && (double) p.t < s.to) { startKnown = true; break; }
+        }
+        out.erase (std::remove_if (out.begin(), out.end(), [] (const TuneSeg& s) { return s.take == nullptr; }), out.end());     // (no take behind it, or not needed this time)
         return out;
     }
     /** What a reading of a piece's line shows here: Absolute as in the take window; Relative from the EDIT's starting pitch (the first reading
@@ -302,7 +334,7 @@ public:
         const auto laneR = juce::Rectangle<int> (0, y0, getWidth(), h);
         tuning::paintLaneBack (g, laneR);
         const auto plot = laneR.reduced (0, 2);
-        const auto segs = tuningSegs (e);
+        const auto segs = tuningSegs (e, &clip);                          // (3.67.0: only what this repaint shows)
         const int visibleLeft = viewport.getViewPositionX() + kNameW;
         const juce::String arrow (juce::CharPointer_UTF8 (" \xe2\x86\x92 "));
         for (auto& s : segs)
@@ -3269,6 +3301,7 @@ private:
     void changeListenerCallback (juce::ChangeBroadcaster* source) override
     {
         if (source != &app.project) { thumbsChanged = true; return; }      // a waveform was read a bit further: shown at the next tick (see timerCallback)
+        tuneTakeOfFileKnown = false;                                       // (3.67.0: the takes' files may have changed - see tuningSegs)
         BusyLabel busyLabel ("updating the edit window after a change");
         if (hitch.active) ++hitch.fullRedraws;
         saver.saveFinished (thumbs, wavesFolder()); updateSize(); repaint();
