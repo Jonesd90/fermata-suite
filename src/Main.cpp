@@ -32,6 +32,7 @@
 #include "ui/HotKeysWindow.h"
 #include "ui/RecPrePanel.h"
 #include "ui/RxLink.h"
+#include "ui/WindowPlace.h"
 #if JUCE_WINDOWS
  #include <shlobj.h>
 #endif
@@ -513,6 +514,7 @@ public:
         }
         mainWindow->setVisible (true);
         mainWindow->setFullScreen (true);                              // opens maximised every time (the title bar and the taskbar still show); the size above is what "Restore" goes back to
+        place::Tracker::get().start (mainWindow.get());                // 3.64.0: every window and box from now on opens over the window you clicked in (WindowPlace.h)
         if (splash != nullptr)
             splash->startCountdown ([this] { juce::MessageManager::callAsync ([this] { splash.reset(); }); });
         if (err.isNotEmpty() && saved == nullptr) showError ("Audio device", err + "\n\nOpen \"Audio settings\" to choose your ASIO device.");     // (3.31.0: the device saved but missing is the guard's message)
@@ -573,6 +575,7 @@ public:
         windows.clear();
         audioSettings.reset();                                                    // (3.27.1: before the AppContext - its device chooser lets go of the device manager in its destructor)
         closing::step ("windows closed");
+        place::Tracker::get().stop();
         mainWindow.reset();
         closing::step ("main window closed");
         ctx.reset();
@@ -788,25 +791,31 @@ private:
         w->isTransportWindow = key.startsWith ("take:") || key.startsWith ("edit:");
         w->forwardKeys = key.startsWith ("mixer:") || key.startsWith ("scope:") || key == "bridge" || key == "media" || key == "takedisplay" || key == "organiser" || key == "pitchpipe" || key == "click" || key == "align" || key == "hotkeys" || key.startsWith ("score:");
         juce::Rectangle<int> mixerRemembered;                                         // a mixer's size when it was last closed (put back by fitWindowToStrips)
-        {   // where it was left last time (kept in the project), or else centred; never wider than the screen, nor taller
+        {   // where it was left last time (kept in the project), or else over the window you clicked in; never wider than the screen, nor taller.
+            // 3.64.0: the remembered place only when it is on the same screen as the window you clicked in (a place on the other screen - which may be
+            // a fibre box that shows nothing - is not used), and a new window opens over that window (it was centred on Windows' main screen).
             const auto& displays = juce::Desktop::getInstance().getDisplays();
-            const auto area = (mainWindow != nullptr ? displays.getDisplayForRect (mainWindow->getBounds()) : displays.getPrimaryDisplay())->userArea;
+            auto* anchor = place::anchor();
+            const auto area = place::screenOf (anchor != nullptr ? anchor : mainWindow.get());
             juce::Rectangle<int> saved;
             if (auto sit = ctx->project.windowBounds.find (key); sit != ctx->project.windowBounds.end()) saved = juce::Rectangle<int>::fromString (sit->second);
             bool onScreen = false;                                                   // a remembered place counts only if its title bar can still be reached
             for (auto& d : displays.displays) if (d.userArea.intersects (juce::Rectangle<int> (saved.getX() + 20, saved.getY() - 10, 120, 30))) onScreen = true;
             const bool isMixer = key.startsWith ("mixer:");
-            if (saved.getWidth() >= 120 && saved.getHeight() >= 80 && onScreen)
+            if (saved.getWidth() >= 120 && saved.getHeight() >= 80 && onScreen && place::sameScreen (saved, anchor))
             {
                 if (isMixer) { w->setTopLeftPosition (saved.getPosition()); mixerRemembered = saved; }     // a mixer: its size is put back once it knows its strips (below)
                 else w->setBounds (saved);
             }
             else
             {
-                const bool mixer = key.startsWith ("mixer:");
-                w->setSize (juce::jmin (w->getWidth(), area.getWidth() - 20), mixer ? w->getHeight() : juce::jmin (w->getHeight(), area.getHeight() - 100));
-                w->centreWithSize (w->getWidth(), w->getHeight());
-                if (mixer) w->setTopLeftPosition (w->getX(), juce::jmax (w->getY(), area.getY() + 44));
+                const bool sizeKnown = saved.getWidth() >= 120 && saved.getHeight() >= 80;          // (a remembered place on another screen: its size still, on this one)
+                if (isMixer && sizeKnown) mixerRemembered = saved.withPosition (0, 0);
+                if (! isMixer && sizeKnown) w->setSize (saved.getWidth(), saved.getHeight());
+                w->setSize (juce::jmin (w->getWidth(), area.getWidth() - 20), isMixer ? w->getHeight() : juce::jmin (w->getHeight(), area.getHeight() - 100));
+                if (anchor != nullptr) place::over (*w, anchor);
+                else w->centreWithSize (w->getWidth(), w->getHeight());
+                if (isMixer) w->setTopLeftPosition (w->getX(), juce::jmax (w->getY(), area.getY() + 44));
             }
         }
         const bool owned = mainWindow != nullptr && makeOwnedBy (*w, *mainWindow);
@@ -969,7 +978,11 @@ private:
         {
             it->second->setAlwaysOnTop (true);                 // floats above the other windows (of every program)
             bridgeTop = std::make_unique<StayOnTop> (*it->second);
-            if (ctx->project.windowBounds.find (key) == ctx->project.windowBounds.end()) { it->second->setSize (1100, 420); it->second->setTopLeftPosition (20, 20); }
+            if (ctx->project.windowBounds.find (key) == ctx->project.windowBounds.end())
+            {
+                const auto a = place::screenOf (place::anchor());               // (3.64.0: the top left of the screen you are working on, not of Windows' main screen)
+                it->second->setSize (juce::jmin (1100, a.getWidth() - 40), 420); it->second->setTopLeftPosition (a.getX() + 20, a.getY() + 20);
+            }
         }
     }
     /** The Recording monitor (3.2.0): the three lamps and the take's events, floating above every window like the meter bridge. */
@@ -982,7 +995,11 @@ private:
         {
             it->second->setAlwaysOnTop (true);
             recMonTop = std::make_unique<StayOnTop> (*it->second);
-            if (ctx->project.windowBounds.find (key) == ctx->project.windowBounds.end()) it->second->setTopLeftPosition (40, 60);
+            if (ctx->project.windowBounds.find (key) == ctx->project.windowBounds.end())
+            {
+                const auto a = place::screenOf (place::anchor());               // (3.64.0: as the meter bridge)
+                it->second->setTopLeftPosition (a.getX() + 40, a.getY() + 60);
+            }
         }
     }
     // ---- the Stream Deck + XL's window keys
@@ -1226,7 +1243,8 @@ private:
         });
         dw->setContentOwned (new CornerStripHost (new AudioSettingsPanel (*ctx, [this] { juce::MessageManager::callAsync ([this] { audioSettings.reset(); }); })), true);
         dw->setResizable (false, false);
-        dw->centreWithSize (dw->getWidth(), dw->getHeight());
+        if (auto* a = place::anchor()) place::over (*dw, a);                    // 3.64.0: over the window you clicked in (it was centred on Windows' main screen)
+        else dw->centreWithSize (dw->getWidth(), dw->getHeight());
         if (mainWindow != nullptr) makeOwnedBy (*dw, *mainWindow);
         dw->setVisible (true);
         audioSettings.reset (dw);

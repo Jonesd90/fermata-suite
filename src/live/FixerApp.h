@@ -8,6 +8,7 @@
 #include "StationModel.h"
 #include "TakeLayout.h"
 #include "Player.h"
+#include "../ui/WaveColor.h"                         // (0.10.11: knockweight - the colours' knock weighting)
 #include "LiveMixer.h"
 #include "../core/Project.h"
 #include <juce_gui_extra/juce_gui_extra.h>
@@ -78,6 +79,11 @@ public:
     void setStationName (const juce::String& n)              { settings->setValue ("stationName", n.trim().substring (0, 40)); settings->saveIfNeeded(); sendChangeMessage(); }
     bool timeOfDay() const                                   { return settings->getBoolValue ("timeOfDay", false); }
     void setTimeOfDay (bool on)                              { settings->setValue ("timeOfDay", on); rebuildLayout(); sendChangeMessage(); }
+    // ---- 0.10.11: the coloured waveforms (fermata's WaveColour), as on the Primary, and how readily a knock is drawn black (knockweight)
+    bool colourWaves() const                                 { return settings->getBoolValue ("colourWaves", false); }
+    void setColourWaves (bool on)                            { settings->setValue ("colourWaves", on); settings->saveIfNeeded(); sendChangeMessage(); }
+    int knockWeight() const                                  { return juce::jlimit (0, 3, settings->getIntValue ("knockWeight", 0)); }
+    void setKnockWeight (int w)                              { settings->setValue ("knockWeight", juce::jlimit (0, 3, w)); settings->saveIfNeeded(); knockweight::level().store (knockWeight()); sendChangeMessage(); }
 
     // ---- 0.5.0: notes (N) - the Fixer's own, kept by the session (the Primary puts them into the project); see StationNotes.h
     juce::String pinNote (double seconds, juce::String& whyNot);

@@ -17,6 +17,13 @@ h1{font-size:22px;margin:0;font-weight:600;letter-spacing:.2px}
 .sub{color:var(--dim);font-size:13px}
 .me{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:13px;color:var(--dim)}
 .me input{width:170px}
+.me input.need{outline:2px solid #c0392b;outline-offset:1px;background:#fff1ee}
+#helpbtn{margin-left:auto;align-self:center;border:1px solid var(--line);background:var(--card);color:var(--ink)}
+#helpbtn + .me{margin-left:0}
+button.add.off{opacity:.55}
+#help{max-width:640px;max-height:86vh;overflow:auto}
+#help h3{margin:14px 0 4px;font-size:14px}
+#help p{margin:0 0 4px;font-size:13.5px;line-height:1.45}
 input,textarea{font:inherit;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:8px;padding:7px 10px;outline:none}
 input:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 25%,transparent)}
 button{font:inherit;cursor:pointer;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:8px;padding:7px 13px;min-height:38px}
@@ -127,6 +134,7 @@ dialog textarea{width:100%;height:170px;font:12px/1.35 Consolas,monospace}
 <header>
   <h1 id="title"></h1>
   <span class="sub" id="subtitle"></span>
+  <button id="helpbtn" title="How to use this page">Instructions</button>
   <label class="me">Your name <input id="who" type="text" maxlength="60" placeholder="so they know who wrote it" autocomplete="name"></label>
 </header>
 <main>
@@ -150,7 +158,7 @@ dialog textarea{width:100%;height:170px;font:12px/1.35 Consolas,monospace}
     </div>
     <div class="bar">
       <button class="add" id="addbtn" title="Add a comment at the current time (C)">&#9873; Add a comment here</button>
-      <span class="hint">Click the picture to move around. Press the button the moment you hear something.</span>
+      <span class="hint" id="namehint"></span>
     </div>
     <div id="status"></div>
     <audio id="audio" preload="auto"></audio>
@@ -171,21 +179,31 @@ dialog textarea{width:100%;height:170px;font:12px/1.35 Consolas,monospace}
     <div class="card panel" id="histcard">
       <h2><span id="htitle">The conversation so far</span> <span class="count" id="hcount">0</span></h2>
       <div id="hist"></div>
-      <p class="hint">What was said about each version, placed where that music is in this recording. Above the picture each version has a line for the listeners' comments and, under it, a gold line for the editor's replies. Click a version's name here to open or close it; older versions start closed. Press <b>Reply</b> to answer a comment.</p>
     </div>
     <div class="card panel">
       <h2>Your comments <span class="count" id="count">0</span></h2>
       <div id="list"></div>
 )HTMLX",
 R"HTMLX(      <div class="acts"><button id="save">Save my comments</button><span class="hint" id="savehint"></span></div>
-      <p class="hint">Your comments are saved in this browser as you go, so you can close this page and come back to it later on this computer.</p>
       <div class="acts"><button class="pri" id="export">Export comments for sending back to the sender</button></div>
       <div class="acts"><span class="hint" id="exphint"></span><a class="hint" id="openlink" href="#" title="Carry on from comments you exported earlier (on another computer, say)">Open exported comments&hellip;</a></div>
-      <p class="hint">When you have finished, press <b>Export comments for sending back to the sender</b> and send the file it makes (its name ends in .fmnotes) back to whoever sent you this recording.</p>
       <input type="file" id="openfile" accept=".fmnotes,.json" style="display:none">
     </div>
   </aside>
 </main>
+<dialog id="help"><h2 style="margin-top:0">How to use this page</h2>
+<h3>Listening</h3>
+<p>Click a piece in the list to hear it. Click the picture to move around in it. Space plays and pauses, the arrow keys go back or on 5 seconds, and &minus; and + zoom in and out.</p>
+<h3>Commenting</h3>
+<p>First type <b>your name</b> in the box at the top right, so they know who wrote your comments: you cannot add a comment without it.</p>
+<p>Press <b>Add a comment here</b> (or the C key) the moment you hear something: the comment is placed at that moment. Write what you heard, add the bar if you know it, and press <b>Add comment</b>. Your comments are listed under <b>Your comments</b>, where you can change or delete them.</p>
+<h3>The conversation so far</h3>
+<p>When there were earlier versions, what was said about each one is placed where that music is in this recording. Above the picture each version has a line for the listeners' comments and, under it, a gold line for the piece editor's replies. Click a version's name to open or close it; older versions start closed. Press <b>Reply</b> to answer a comment.</p>
+<h3>Saving and sending your comments back</h3>
+<p>Your comments are saved in this browser as you go, so you can close this page and come back to it later on this computer (<b>Save my comments</b> saves them at once).</p>
+<p>When you have finished, press <b>Export comments for sending back to the sender</b> and send the file it makes (its name ends in .fmnotes) back to whoever sent you this recording. <b>Open exported comments</b> carries on from a file you exported earlier (on another computer, say).</p>
+<p class="hint" style="margin-top:10px">Nothing is sent anywhere: it all happens on this device. This box opens by itself the first time; the <b>Instructions</b> button at the top brings it back.</p>
+<div class="acts"><button class="pri" id="helpclose">Close</button></div></dialog>
 <dialog id="dlg"><h2 style="margin-top:0">Copy your comments</h2><p class="hint">Your browser would not save the file. Select everything below, copy it, paste it into an email (or a text file) and send that.</p><textarea id="dtext" readonly></textarea><div class="acts"><button class="pri" id="dcopy">Copy</button><button id="dclose">Close</button></div></dialog>
 <script type="application/json" id="meta">__META__</script>
 <script>
@@ -221,6 +239,8 @@ function initials(name){var p=String(name||'').trim().split(/\s+/),r='';for(var 
 function myColour(){var w=$('who').value.trim();return w?personColour(w):css('--flag');}
 /* ---------- the conversation so far: every version's comments, as Fermata put them into this copy (a lane for each version) ---------- */
 var HT=[],HN={};
+/* the piece editor (the person at fermata): their name as fermata had it when this copy was made, "(Piece Editor)" after it */
+var EDNAME=String(META.editor||'').trim()||'Editor',EDLABEL=EDNAME+' (Piece Editor)';
 (function(){
   for(var k=0;k<T.length;k++){
     var lanes=T[k].history||[],out=[],marks=[],rows=[];
@@ -228,7 +248,8 @@ var HT=[],HN={};
       var L=lanes[i]||{},ns=(L.notes||[]).filter(function(n){return n&&n.text;}),th=null,mc=null,me=null;
       lanes[i]=L;L.nc=0;L.ne=0;
       for(var j=0;j<ns.length;j++){
-        var n=ns[j];n.t=Number(n.t)||0;n.lane=i;n.k=k;n.label=L.label||('Edit '+L.version);n.colour=n.colour||personColour(n.who);HN[n.id]=n;
+        var n=ns[j];n.t=Number(n.t)||0;n.lane=i;n.k=k;
+        if(n.editor){var nw=String(n.who||'').trim();n.who=(!nw||nw==='Editor'?EDNAME:nw)+' (Piece Editor)';}n.label=L.label||('Edit '+L.version);n.colour=n.colour||personColour(n.who);HN[n.id]=n;
         if(th&&Math.abs(n.t-th.t)<=0.05)th.notes.push(n);
         else{th={lane:i,t:n.t,notes:[n]};out.push(th);mc=me=null;}
         /* in the picture a moment's notes are two flags: the listeners' on the version's own line, the editor's on the line under it */
@@ -530,16 +551,21 @@ function quote(t){t=String(t||'').replace(/\s+/g,' ').trim();return t.length>90?
 function renderHist(){
   var lanes=HT[cur].lanes,ths=hThreads(),rows=hRows(),el=$('hist'),g=$('gutter'),pk=$('lanepick'),h='',gh='',ph='',i,j,k;
   for(i=0;i<lanes.length;i++)
-    ph+='<label title="'+esc('The comments on '+(lanes[i].label||('Edit '+lanes[i].version))+' and the editor\'s replies to them')+'"><input type="checkbox" data-v="'+esc(lanes[i].version)+'"'+(laneOn(i)?' checked':'')+'> '+esc(laneName(lanes[i]))+'</label>';
+    ph+='<label title="'+esc('The comments on '+(lanes[i].label||('Edit '+lanes[i].version))+' and the replies to them from '+EDLABEL)+'"><input type="checkbox" data-v="'+esc(lanes[i].version)+'"'+(laneOn(i)?' checked':'')+'> '+esc(laneName(lanes[i]))+'</label>';
   for(i=0;i<rows.length;i++){
     var RL=lanes[rows[i].lane];
 )HTMLX",
-R"HTMLX(    gh+='<div style="height:'+LANEH+'px;line-height:'+LANEH+'px'+(rows[i].ed?';color:#a8842f':'')+'" title="'+esc(rows[i].ed?'What the editor wrote back about the comments on Edit '+RL.version:'The comments made on '+(RL.label||('Edit '+RL.version)))+'">Edit '+esc(RL.version)+(rows[i].ed?' editor':' comments')+'</div>';
+R"HTMLX(    gh+='<div style="height:'+LANEH+'px;line-height:'+LANEH+'px'+(rows[i].ed?';color:#a8842f':'')+'" title="'+esc(rows[i].ed?'What '+EDLABEL+' wrote back about the comments on Edit '+RL.version:'The comments made on '+(RL.label||('Edit '+RL.version)))+'">Edit '+esc(RL.version)+(rows[i].ed?': '+esc(EDLABEL):' comments')+'</div>';
   }
   gh+='<div style="height:'+FLAGH+'px;line-height:'+FLAGH+'px;color:var(--ink)" title="The comments you add now, on this version">'+(T[cur].version?'Edit '+esc(T[cur].version)+': yours':'Your comments')+'</div>';
   g.innerHTML=gh;pk.innerHTML=lanes.length?'<span>Show:</span>'+ph:'';
   var any=false;for(i=0;i<T.length;i++)if(HT[i].lanes.length)any=true;
-  g.classList.toggle('on',rows.length>0);pk.classList.toggle('on',lanes.length>0);$('histcard').classList.toggle('on',any);document.body.classList.toggle('hashist',any);
+  g.classList.toggle('on',rows.length>0);
+  if(rows.length){   /* the line names whole (the piece editor's name is longer than "editor" was): the gutter widens to them, up to 260 px */
+    var base=window.innerWidth<=900?82:104,need=base;g.style.width='';
+    for(i=0;i<g.children.length;i++)need=Math.max(need,g.children[i].scrollWidth+8);
+    var wpx=Math.min(260,need)+'px';if(g.style.width!==wpx){g.style.width=wpx;setTimeout(function(){window.dispatchEvent(new Event('resize'));},0);}
+  }pk.classList.toggle('on',lanes.length>0);$('histcard').classList.toggle('on',any);document.body.classList.toggle('hashist',any);
   $('hcount').textContent=hCount();$('htitle').textContent='The conversation so far'+(multi?' (this piece)':'');
   /* a tab for each version: its name opens and closes it (the same choice as its tick above the picture) */
   for(k=0;k<lanes.length;k++){
@@ -553,7 +579,7 @@ R"HTMLX(    gh+='<div style="height:'+LANEH+'px;line-height:'+LANEH+'px'+(rows[i
       for(j=0;j<th.notes.length;j++){
         var n=th.notes[j],o=n.re?HN[n.re]:null;
         h+='<div class="hn'+(j?' rep':'')+(n.editor?' ed':'')+(n.done?' done':'')+(n.id===selH?' sel':'')+'" data-hid="'+esc(n.id)+'" style="--pc:'+esc(n.colour)+'">'+
-           '<div class="meta"><span class="dot"></span><span class="who">'+esc(n.who||'Someone')+'</span>'+(n.editor?'<span class="edtag">editor</span>':'')+
+           '<div class="meta"><span class="dot"></span><span class="who">'+esc(n.who||'Someone')+'</span>'+''+
            '<a data-hgo="'+esc(n.id)+'">'+fmt(hTime(n),true)+'</a>'+(n.bar?'<span class="bartag">'+esc(n.bar)+'</span>':'')+
            (n.done?'<span class="donetag">&#10003; done</span>':'')+(n.adrift?'<span class="donetag" title="The music this was about is not in this version any more">not in this version</span>':'')+
            '<span class="nact"><button class="ghost" data-reply="'+esc(n.id)+'">Reply</button></span></div>'+
@@ -593,7 +619,15 @@ $('list').addEventListener('click',function(e){
   else if(t.getAttribute('data-edit')){openComposer(n);}
   else if(t.getAttribute('data-del')){if(confirm('Delete this comment?')){notes=notes.filter(function(x){return x.id!==id;});persist();renderList();}}
 });
+/* a comment needs the listener's name (asked for on 23 November 2026): without it the name box is marked and nothing opens */
+function hasName(){return !!$('who').value.trim();}
+function nameState(){var has=hasName();$('addbtn').classList.toggle('off',!has);$('addbtn').title=has?'Add a comment at the current time (C)':'Type your name at the top right first';
+  $('namehint').textContent=has?'':'Type your name at the top right to add comments.';
+  if(has){$('who').classList.remove('need');if($('status').textContent.indexOf('Please type your name')===0)setStatus('');}}
+function needName(){var w=$('who');w.classList.add('need');w.focus();if(window.scrollTo)window.scrollTo(0,0);
+  setStatus('Please type your name in the box at the top right first, so they know who wrote your comments.',true);}
 function openComposer(existing,reply){
+  if(!hasName()){needName();return;}
   editing=existing||null;
   if(!existing){wasPlaying=!audio.paused;if(wasPlaying&&$('pausetype').checked)audio.pause();draft={k:cur,t:reply?hTime(reply):now()};
     if(reply){draft.re=reply.id;draft.reWho=reply.who||'';}}     /* a reply sits at the moment of the comment it answers */
@@ -623,7 +657,11 @@ $('csave').onclick=function(){
   else{var n={id:rid(),k:draft.k,t:t,bar:$('cbar').value.trim(),text:text,at:new Date().toISOString()};if(draft.re){n.re=draft.re;n.reWho=draft.reWho||'';}notes.push(n);selId=n.id;}
   persist();renderList();closeComposer(true);
 };
-$('who').addEventListener('input',function(){lsSet('fermata-review-name',this.value);persist();renderList();});
+$('who').addEventListener('input',function(){lsSet('fermata-review-name',this.value);persist();renderList();nameState();});
+/* the Instructions box: opens by itself the first time this page is opened in this browser; the Instructions button brings it back */
+function showHelp(){var d=$('help');try{if(!d.open)d.showModal();}catch(e){d.setAttribute('open','');}}
+$('helpbtn').onclick=showHelp;
+$('helpclose').onclick=function(){try{$('help').close();}catch(e){$('help').removeAttribute('open');}};
 
 /* ---------- Save (in this browser) and Export (the file that goes back to the sender) ---------- */
 $('save').onclick=function(){
@@ -714,6 +752,8 @@ function start(){
     for(var i=0;i<notes.length;i++){if(typeof notes[i].k!=='number'||notes[i].k<0||notes[i].k>=T.length)notes[i].k=0;}
     if(o.who&&!$('who').value)$('who').value=o.who;
     dirty=notes.length>0&&o.exported!==true;}}catch(e){}}
+  nameState();
+  if(!lsGet('fermata-review-help-seen')){lsSet('fermata-review-help-seen','1');showHelp();}
   renderNow();renderHist();renderList();clockUpdate();
   selectTrack(0,false,0);
   var anyH=false;for(var hk=0;hk<T.length;hk++)if(HT[hk].lanes.length)anyH=true;

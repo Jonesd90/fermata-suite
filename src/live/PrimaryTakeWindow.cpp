@@ -166,7 +166,7 @@ public:
         loopBtn.setTooltip ("Loop [L]: playback goes round the part marked by dragging on the timeline");
         loopBtn.onClick = [this] { loopOn = loopBtn.getToggleState(); applyLoop(); };
         addAndMakeVisible (loopBtn);
-        for (auto* b : { &flagBtn, &noteBtn, &armAllBtn, &armNoneBtn, &fitBtn, &zoomIn, &zoomOut, &mixerBtn, &followBtn, &todBtn, &colourBtn, &reportBtn })
+        for (juce::TextButton* b : std::initializer_list<juce::TextButton*> { &flagBtn, &noteBtn, &armAllBtn, &armNoneBtn, &fitBtn, &zoomIn, &zoomOut, &mixerBtn, &followBtn, &todBtn, &colourBtn, &reportBtn })
         { addAndMakeVisible (b); b->setWantsKeyboardFocus (false); }
         flagBtn.setTooltip ("Pin a flag [Enter]: at the moment of the music now (or at the flag point, if you clicked one in the flag band), sent to the Fixer at once. Type the note and press Enter again.");
         flagBtn.onClick = [this] { pinFlag(); };
@@ -194,6 +194,17 @@ public:
         colourBtn.setTooltip ("Coloured waveforms (fermata's WaveColour): the colour says how high the sound is (red low, green middle, blue high), how vivid how tonal it is; "
                               "a thump below 100 Hz (a kicked stand, a door) is black. Worked out as the take records, from the drive.");
         colourBtn.onClick = [this] { app.setColourWaves (colourBtn.getToggleState()); applyColours(); view.repaint(); };
+        knockweight::level().store (app.knockWeight());                    // (0.10.11: the weighting kept on this computer)
+        colourBtn.onMenu = [this]                                          // 0.10.11: right-click - how readily a knock is drawn black
+        {
+            showKnockMenu (&colourBtn, app.knockWeight(), [safe = juce::Component::SafePointer<juce::Component> (this), this] (int w)
+            {
+                if (safe == nullptr) return;
+                app.setKnockWeight (w);
+                if (! app.colourWaves()) { app.setColourWaves (true); colourBtn.setToggleState (true, juce::dontSendNotification); applyColours(); }
+                view.repaint();
+            });
+        };
         reportBtn.setTooltip ("The recording's report: a PDF of the piece's takes with every note (yours and the Fixer's), flag, reply, gap and fix version at its place, and who wrote it");
         reportBtn.onClick = [this] { makeReport(); };
         noteCaption.setText ("Flag note (Enter saves, Esc leaves it empty):", juce::dontSendNotification);
@@ -728,7 +739,8 @@ private:
     IconButton startBtn, rewBtn, playBtn, fwdBtn, endBtn;
     LoopButton loopBtn;
     juce::TextButton flagBtn { "Flag [Enter]" }, noteBtn { "Note [N]" }, armAllBtn { "Arm all" }, armNoneBtn { "Arm none" }, fitBtn { "Fit" }, zoomIn { "+" }, zoomOut { "-" },
-                     mixerBtn { "Mixer [M]" }, followBtn { "Follow" }, todBtn { "Time of day" }, colourBtn { "Colours" }, reportBtn { "Report..." };
+                     mixerBtn { "Mixer [M]" }, followBtn { "Follow" }, todBtn { "Time of day" }, reportBtn { "Report..." };
+    MenuTextButton colourBtn { "Colours" };                              // (0.10.11: with its right-click menu)
     FlagList flags;
     NotePanel notePanel;
     LiveTakeView view;

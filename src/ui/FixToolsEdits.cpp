@@ -1399,7 +1399,7 @@ private:
                                              + (n == 1 ? juce::String ("its audio track") : "all " + juce::String (n) + " audio tracks")
                                              + ". That takes a long time, and it cannot be stopped once it has started.\n\n"
                                              "To de-click part of it, draw a box (or a Time selection) round that part first.",
-                                         juce::MessageBoxIconType::WarningIcon, this);
+                                         juce::MessageBoxIconType::WarningIcon, place::anchor (this));
         w->addButton ("De-click the whole piece", 1);                                   // (the action on the left, Cancel on the right - asked for on 5 November 2026)
         w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey), juce::KeyPress (juce::KeyPress::returnKey));
         for (auto* c : w->getChildren()) c->setWantsKeyboardFocus (false);
@@ -1504,7 +1504,7 @@ private:
                                              + (n == 1 ? juce::String ("its audio track") : "all " + juce::String (n) + " audio tracks")
                                              + ". That takes a while, and it cannot be stopped once it has started.\n\n"
                                              "To de-hum part of it, draw a box (or a Time selection) round that part first.",
-                                         juce::MessageBoxIconType::WarningIcon, this);
+                                         juce::MessageBoxIconType::WarningIcon, place::anchor (this));
         w->addButton ("De-hum the whole piece", 1);                                     // (the action on the left, Cancel on the right)
         w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey), juce::KeyPress (juce::KeyPress::returnKey));
         for (auto* c : w->getChildren()) c->setWantsKeyboardFocus (false);
@@ -1666,7 +1666,7 @@ private:
     }
     static void askName (const juce::String& title, const juce::String& message, const juce::String& suggestion, std::function<void (const juce::String&)> done)
     {
-        auto* aw = new juce::AlertWindow (title, message, juce::MessageBoxIconType::NoIcon);
+        auto* aw = new juce::AlertWindow (title, message, juce::MessageBoxIconType::NoIcon, place::anchor());
         aw->addTextEditor ("n", suggestion);
         aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
         aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));

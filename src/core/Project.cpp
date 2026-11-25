@@ -461,7 +461,7 @@ Project::Project() { createDefaultDesign(); }
 
 void Project::createDefaultDesign()
 {
-    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; stageClickDb = 0.0f; stagePipeDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; ltcInPort = {}; ltcOutPort = {}; lastImportWindow = juce::Uuid::null(); retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone(); rxSeen.clear(); consonants.clear(); preampDevices.clear(); pitchPipe = PitchPipeDef(); click = ClickDef(); alignEnabled = true; alignSets.clear(); alignActive.clear();
+    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; stageClickDb = 0.0f; stagePipeDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; ltcInPort = {}; ltcOutPort = {}; lastImportWindow = juce::Uuid::null(); retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone(); rxSeen.clear(); consonants.clear(); preampDevices.clear(); preampLinks.clear(); pitchPipe = PitchPipeDef(); click = ClickDef(); alignEnabled = true; alignSets.clear(); alignActive.clear();
     sampleRate = 0.0;                                                                                 // (3.9.0: chosen for the new project by the one making it)
     postFaderSlots = false;                                                                           // (3.40.0: a new project starts without the post-fader slots)
     windowFiles.clear(); missingWindowRefs.clear(); loadNotes.clear(); oldWindowFiles.clear();     // (nothing of the project that was open before: its missing files are not this one's)
@@ -1404,14 +1404,58 @@ void Project::adoptPreamp (int inputIndex, const PreampSettings& s)
 void Project::setPreamp (int inputIndex, const PreampSettings& s)
 {
     if (! juce::isPositiveAndBelow (inputIndex, (int) inputs.size())) return;
-    if (inputs[(size_t) inputIndex].preamp.line != s.line)
-        juce::Logger::writeToLog ("Preamp: input " + juce::String (inputIndex + 1) + " Mic/Line " + (s.line ? "MIC -> LINE" : "LINE -> MIC") + " set from the program (gain " + juce::String (s.gainDb, 1) + ")");
-    auto& cur = inputs[(size_t) inputIndex].preamp;
-    PreampSettings kept = s;                              // what the input CAN do comes from the hardware, not from what is being set (a restored memory has none of it)
-    kept.lineOnly = cur.lineOnly; kept.hasInstrument = cur.hasInstrument; kept.lowCutChoice = cur.lowCutChoice; kept.steppedPad = cur.steppedPad;
-    cur = kept;
-    if (preampDriver != nullptr) preampDriver->apply (inputIndex, kept);
+    auto one = [this, &s] (int i)
+    {
+        if (inputs[(size_t) i].preamp.line != s.line)
+            juce::Logger::writeToLog ("Preamp: input " + juce::String (i + 1) + " Mic/Line " + (s.line ? "MIC -> LINE" : "LINE -> MIC") + " set from the program (gain " + juce::String (s.gainDb, 1) + ")");
+        auto& cur = inputs[(size_t) i].preamp;
+        PreampSettings kept = s;                          // what the input CAN do comes from the hardware, not from what is being set (a restored memory has none of it)
+        kept.lineOnly = cur.lineOnly; kept.hasInstrument = cur.hasInstrument; kept.lowCutChoice = cur.lowCutChoice; kept.steppedPad = cur.steppedPad;
+        cur = kept;
+        if (preampDriver != nullptr) preampDriver->apply (i, kept);
+    };
+    one (inputIndex);
+    if (const int other = preampPartner (inputIndex); other >= 0) one (other);      // 3.60.0: a stereo-linked pair - the other input too
     changed();
+}
+
+int Project::preampPartner (int input) const noexcept
+{
+    const int n = (int) inputs.size();
+    if (! juce::isPositiveAndBelow (input, n)) return -1;
+    for (auto& [l, r] : preampLinks)
+    {
+        if (! juce::isPositiveAndBelow (l, n) || ! juce::isPositiveAndBelow (r, n) || l == r) continue;
+        if (l == input) return r;
+        if (r == input) return l;
+    }
+    return -1;
+}
+
+bool Project::isPreampLeft (int input) const noexcept
+{
+    if (preampPartner (input) < 0) return false;
+    for (auto& lr : preampLinks) if (lr.first == input) return true;
+    return false;
+}
+
+bool Project::linkPreamps (int left, int right)
+{
+    const int n = (int) inputs.size();
+    if (! juce::isPositiveAndBelow (left, n) || ! juce::isPositiveAndBelow (right, n) || left == right) return false;
+    unlinkPreamps (left); unlinkPreamps (right);
+    preampLinks.push_back ({ left, right });
+    juce::Logger::writeToLog ("Preamp: inputs " + juce::String (left + 1) + " (left) and " + juce::String (right + 1) + " (right) stereo-linked");
+    setPreamp (left, inputs[(size_t) left].preamp);       // the right takes the left's settings (and the hardware is told)
+    return true;
+}
+
+void Project::unlinkPreamps (int input)
+{
+    const auto before = preampLinks.size();
+    preampLinks.erase (std::remove_if (preampLinks.begin(), preampLinks.end(), [input] (const std::pair<int, int>& lr) { return lr.first == input || lr.second == input; }),
+                       preampLinks.end());
+    if (preampLinks.size() != before) changed();
 }
 
 var Project::mixSnapshot (const MixerState& m, bool withInserts) const
@@ -1678,13 +1722,15 @@ juce::String Project::addScore (EditDef& e, const juce::File& pdf)
 {
     if (! pdf.existsAsFile()) return "The file is not there: " + pdf.getFullPathName();
     const auto dir = pdfsFolder();
-    if (pdf.getParentDirectory() == dir) { e.score = pdf.getFileName(); e.scoreTop = 0.0; markDirty(); return {}; }      // (chosen from the PDFs folder itself: no copy)
+    auto pagesGo = [&e] (const juce::String& name) { if (name != e.score) { e.scoreFirstPage = 0; e.scoreLastPage = 0; } };     // (3.66.0: another PDF - its pages are not the old one's)
+    if (pdf.getParentDirectory() == dir) { pagesGo (pdf.getFileName()); e.score = pdf.getFileName(); e.scoreTop = 0.0; markDirty(); return {}; }      // (chosen from the PDFs folder itself: no copy)
     if (! dir.createDirectory().wasOk()) return "The folder could not be made: " + dir.getFullPathName();
     auto name = juce::File::createLegalFileName (pdf.getFileName()); if (name.isEmpty()) name = "Score.pdf";
     auto dest = dir.getChildFile (name);
     // the same file chosen again (the same name, size and contents) is not copied twice; another file of that name gets "(2)"
     if (dest.existsAsFile() && ! (dest.getSize() == pdf.getSize() && dest.hasIdenticalContentTo (pdf))) dest = dir.getNonexistentChildFile (dest.getFileNameWithoutExtension(), dest.getFileExtension(), true);
     if (! dest.existsAsFile() && ! pdf.copyFileTo (dest)) return "The file could not be copied into the project's PDFs folder (" + dir.getFullPathName() + ").";
+    pagesGo (dest.getFileName());
     e.score = dest.getFileName(); e.scoreTop = 0.0; markDirty();
     return {};
 }
@@ -1920,6 +1966,8 @@ var Project::editToVarIn (const EditDef& eref, const juce::File& base, bool with
         put (o, "score", e->score);
         if (e->scoreTop > 0.0) put (o, "scoreTop", e->scoreTop);
         if (e->scoreZoom > 0.0) put (o, "scoreZoom", e->scoreZoom);
+        if (e->scoreFirstPage > 0) put (o, "scoreFirstPage", e->scoreFirstPage);       // 3.66.0: this edit's pages of the score (written only when set)
+        if (e->scoreLastPage > 0) put (o, "scoreLastPage", e->scoreLastPage);
     }
     if (e->guide.active())                                                             // the visual guide (2.102)
     {
@@ -1941,6 +1989,7 @@ var Project::editToVarIn (const EditDef& eref, const juce::File& base, bool with
             var lo = obj();
             put (lo, "id", l.id.toString()); put (lo, "track", l.trackId.toString()); put (lo, "param", l.param);
             put (lo, "mixer", l.mixerId.toString()); put (lo, "locked", l.locked);
+            if (! l.snap) put (lo, "snap", false);                                    // 3.60.0 (only when off: on is what a lane without the key has)
             juce::Array<var> ps;
             for (auto& p : l.pts)
             {
@@ -2069,6 +2118,12 @@ var Project::toVar (bool withWindows) const
         in.add (o);
     }
     put (root, "inputs", in);
+    if (! preampLinks.empty())                            // 3.60.0: stereo-linked preamps (only when there are any)
+    {
+        juce::Array<var> pl;
+        for (auto& [l, r] : preampLinks) { var o = obj(); put (o, "left", l); put (o, "right", r); pl.add (o); }
+        put (root, "preampLinks", pl);
+    }
     {
         juce::Array<var> pd;
         for (auto& d : preampDevices) pd.add (d.toVar());
@@ -2353,11 +2408,14 @@ static std::unique_ptr<EditDef> editFromVarIn (const var& v, const juce::File& b
     e->leadIn = (bool) v["leadIn"]; e->leadInSeconds = juce::jlimit (0.0, 3600.0, (double) v["leadInSeconds"]);
     e->score = juce::File::createLegalFileName (v["score"].toString());               // (a name only: never a path out of the PDFs folder)
     e->scoreTop = juce::jlimit (0.0, 100000.0, (double) v["scoreTop"]); e->scoreZoom = juce::jlimit (0.0, 40.0, (double) v["scoreZoom"]);
+    e->scoreFirstPage = juce::jlimit (0, 100000, (int) v["scoreFirstPage"]); e->scoreLastPage = juce::jlimit (0, 100000, (int) v["scoreLastPage"]);     // (3.66.0)
+    if (e->scoreFirstPage > 0 && e->scoreLastPage > 0 && e->scoreLastPage < e->scoreFirstPage) std::swap (e->scoreFirstPage, e->scoreLastPage);
     if (auto* ls = v["autoLanes"].getArray())
         for (auto& lv : *ls)
         {
             AutoLane l; l.id = juce::Uuid (lv["id"].toString()); l.trackId = juce::Uuid (lv["track"].toString());
             l.param = lv["param"].toString(); l.mixerId = juce::Uuid (lv["mixer"].toString()); l.locked = (bool) lv["locked"];
+            l.snap = lv["snap"].isVoid() || (bool) lv["snap"];                       // 3.60.0: on unless saved off
             if (auto* ps = lv["points"].getArray())
                 for (auto& pv : *ps)
                 {
@@ -2499,6 +2557,16 @@ bool Project::fromVar (const var& root)
         stagePipeDb  = (float) juce::jlimit (-60.0, 10.0, (double) root.getProperty ("stagePipeDb", both));
     }
     crMicInputs.erase (std::remove_if (crMicInputs.begin(), crMicInputs.end(), [this] (int i) { return i < 0 || i >= (int) inputs.size(); }), crMicInputs.end());
+    preampLinks.clear();                                  // 3.60.0: stereo-linked preamps - two different inputs, each in one pair at most
+    if (auto* pl = root["preampLinks"].getArray())
+        for (auto& v : *pl)
+        {
+            const int l = (int) v.getProperty ("left", -1), r = (int) v.getProperty ("right", -1);
+            if (l < 0 || r < 0 || l == r || l >= (int) inputs.size() || r >= (int) inputs.size()) continue;
+            bool clash = false;
+            for (auto& lr : preampLinks) clash = clash || lr.first == l || lr.second == l || lr.first == r || lr.second == r;
+            if (! clash) preampLinks.push_back ({ l, r });
+        }
     tbOutputs.erase (std::remove_if (tbOutputs.begin(), tbOutputs.end(), [this] (int o) { return o < 0 || o >= (int) outputs.size(); }), tbOutputs.end());
     std::sort (tbOutputs.begin(), tbOutputs.end()); tbOutputs.erase (std::unique (tbOutputs.begin(), tbOutputs.end()), tbOutputs.end());
     ltcInput = (int) root.getProperty ("ltcInput", -1); ltcOutput = (int) root.getProperty ("ltcOutput", -1); ltcOutOn = (bool) root.getProperty ("ltcOutOn", false);
@@ -2811,6 +2879,7 @@ juce::uint64 Project::undoHash (const EditDef& e)
     for (auto& l : e.lanes)
     {
         h.add (l.id); h.add (l.trackId); h.add (l.param); h.add (l.mixerId); h.add (l.locked);
+        if (! l.snap) h.add (0x5a17);                                                // 3.60.0: snap off is a step of its own (on: the hash is as before)
         h.count (l.pts.size());
         for (auto& p : l.pts) { h.add (p.id); h.add (p.region); h.add (p.take); h.add (p.srcPos); h.add (p.time); h.add (p.value); h.add (p.floating); }
     }
@@ -2856,6 +2925,7 @@ juce::uint64 Project::saveHash (const EditDef& e)
     h.count (e.feedback.size());
     for (auto& n : e.feedback) { h.add (n.key); h.add (n.who); h.add (n.bar); h.add (n.text); h.add (n.colour); h.add (n.source); h.add (n.seconds); h.add (n.done); h.add (n.editor); h.add (n.replyTo); h.add (n.madeIn); }
     h.add (e.score); h.add (e.scoreTop); h.add (e.scoreZoom);                        // 3.51.0: the edit's score
+    h.add (e.scoreFirstPage); h.add (e.scoreLastPage);                                // 3.66.0: its pages
     h.count (e.autoBefore.size()); for (auto& kv : e.autoBefore) { h.add (kv.first); h.add (kv.second); }
     h.add (e.subheading); h.add (e.compareWith);                                     // 3.42.0: the versions (saved, never undone - a frozen version's comments change, so all of it is hashed)
     h.count (e.versions.size());
@@ -2878,7 +2948,7 @@ const std::initializer_list<const char*> kTakeViewKeys = { "editTake", "editIn",
 const std::initializer_list<const char*> kTakeMachineKeys = { "length", "overruns", "lost", "writeFailed", "verified" };     // per take: the recorder's, not the person's (3.1.4)
 const std::initializer_list<const char*> kEditViewKeys = { "markIn", "markOut", "fixIn", "fixOut", "fixTracks", "playhead", "insertIndex", "markers", "feedback", "showFeedback", "showMarkers", "laneRows", "showGuide", "autoBefore",
                                                            "versions", "subheading", "compareWith",
-                                                           "score", "scoreTop", "scoreZoom" };       // (3.42.0: the frozen versions are saved, never undone)
+                                                           "score", "scoreTop", "scoreZoom", "scoreFirstPage", "scoreLastPage" };       // (3.42.0: the frozen versions are saved, never undone)
 }
 
 juce::String Project::undoText (const TakeWindowDef& w) const
@@ -3060,6 +3130,7 @@ bool restorePiece (Project& p, const Project::UndoPiece& piece, const juce::Uuid
             te->showGuide = live->showGuide;                              // (the Guide button: a view; the guide itself is part of undo)
             te->versions = live->versions; te->subheading = live->subheading; te->compareWith = live->compareWith;     // (3.42.0: the frozen versions: saved, never undone)
             te->score = live->score; te->scoreTop = live->scoreTop; te->scoreZoom = live->scoreZoom;                    // (3.51.0: the edit's score: a view)
+            te->scoreFirstPage = live->scoreFirstPage; te->scoreLastPage = live->scoreLastPage;                       // (3.66.0: and its pages)
             // 3.47.0: the markers, comment flags, marks 1 / 2 and the playhead are not part of an undo - they are kept as they are now (above). But a
             // change that moved the music along (a piece put in, or deleted) took them with it, and undoing it left them where the change had put
             // them: the piece's length away from their music. Each one now stays ON ITS MUSIC through the undo (editversions::mapSeconds: the take

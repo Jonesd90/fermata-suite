@@ -52,7 +52,16 @@ public:
             alias.giveAwayKeyboardFocus();
         };
         alias.onFocusLost = commit;
+        alias.setPopupMenuEnabled (false);                       // (3.60.0: a right-click on the strip - its name too - opens the strip's menu)
         for (auto* c : std::initializer_list<juce::Component*> { &driver, &alias, &meter, &scale, &readout }) addAndMakeVisible (c);
+        scale.fine = true;                                       // (3.60.0: more marks when the meter runs the strip's length)
+        linkTag.setFont (juce::FontOptions (9.0f, juce::Font::bold));
+        linkTag.setJustificationType (juce::Justification::centred);
+        linkTag.setColour (juce::Label::textColourId, juce::Colours::black);
+        linkTag.setColour (juce::Label::backgroundColourId, juce::Colour (0xff35c8e8));
+        linkTag.setBorderSize (juce::BorderSize<int> (0));
+        addChildComponent (linkTag);
+        addMouseListener (this, true);                           // (the strip's right-click menu, wherever on the strip - not on its keys or knob)
 
         gain.setRange (0.0, 66.0, 0.5);
         gain.setDoubleClickReturnValue (true, 20.0);
@@ -156,7 +165,59 @@ public:
                                  : "Pad: the mic preamp's input attenuator");
         zhi->setToggleState (in.preamp.zHigh, juce::dontSendNotification);
         crButton.setToggleState (app.project.isCrMic (idx), juce::dontSendNotification);
+        {   // 3.60.0: a stereo-linked preamp - "ST L" / "ST R" in the display
+            const int other = app.project.preampPartner (idx);
+            const bool left = app.project.isPreampLeft (idx);
+            const juce::String t = other < 0 ? juce::String() : juce::String (left ? "ST L" : "ST R");
+            if (linkTag.getText() != t || linkTag.isVisible() != (other >= 0))
+            {
+                linkTag.setText (t, juce::dontSendNotification);
+                linkTag.setTooltip (other < 0 ? juce::String()
+                                              : "Stereo-linked preamp: input " + juce::String ((left ? idx : other) + 1) + " is the left channel, input " + juce::String ((left ? other : idx) + 1)
+                                                + " the right. Their preamp controls (gain, 48V, pad, low cut ...) move together. Right-click the strip to unlink them.");
+                linkTag.setVisible (other >= 0);
+                resized();
+            }
+        }
         updating = false;
+    }
+    /** 3.60.0: the main window starts the pick of the right channel (the next click on another strip). */
+    std::function<void (int)> onMakeLeft;
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (! e.mods.isPopupMenu() || e.eventTime == lastMenuClick) return;      // (the strip listens to its own clicks too: once each)
+        lastMenuClick = e.eventTime;
+        if (dynamic_cast<juce::Button*> (e.eventComponent) != nullptr || e.eventComponent == &gain || e.eventComponent == &readout) return;   // (keys and the knob: theirs)
+        if (e.eventComponent == &alias) alias.giveAwayKeyboardFocus();
+        showStripMenu();
+    }
+    void showStripMenu()
+    {
+        if (idx >= (int) app.project.inputs.size()) return;
+        juce::PopupMenu m;
+        m.addSectionHeader ("Input " + app.project.inputLabel (idx));
+        const int other = app.project.preampPartner (idx);
+        if (other < 0)
+            m.addItem (1, hasPreamp() ? juce::String ("Make left channel of stereo input")
+                                      : juce::String ("Make left channel of stereo input (no preamp controls on this input)"), hasPreamp(), false);
+        else
+        {
+            const bool left = app.project.isPreampLeft (idx);
+            const int l = left ? idx : other, r = left ? other : idx;
+            m.addItem (2, "Unlink stereo input (" + juce::String (l + 1) + " left, " + juce::String (r + 1) + " right)");
+        }
+        juce::Component::SafePointer<InputRow> safe (this);
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this).withMousePosition(), [safe] (int res)
+        {
+            if (safe == nullptr) return;
+            if (res == 1 && safe->onMakeLeft) safe->onMakeLeft (safe->idx);
+            if (res == 2)
+            {
+                const int o = safe->app.project.preampPartner (safe->idx);
+                safe->app.project.unlinkPreamps (safe->idx);
+                safe->app.setNotice ("Inputs " + juce::String (safe->idx + 1) + " and " + juce::String (o + 1) + " are no longer stereo-linked: each preamp is set on its own again.");
+            }
+        });
     }
 
     void tick (const std::vector<float>& inPk)
@@ -200,6 +261,31 @@ public:
         dispArea = r.removeFromTop (z.disp);
         alias.setBounds (dispArea.reduced (6, 0).removeFromTop (juce::roundToInt (z.disp * 0.6f)).withTrimmedTop (z.disp >= 46 ? 5 : 3));
         driver.setBounds (dispArea.reduced (3, 0).removeFromBottom (juce::jmin (18, z.disp / 3)));     // (the whole width of the display: a long name shrinks before it is cut)
+        if (linkTag.isVisible())
+        {   // 3.60.1 (asked for on 23 November 2026): ST L / ST R in the middle of the display, between your name (its line of text) and the driver's
+            const int nameBottom = alias.getY() + juce::roundToInt (alias.getFont().getHeight()) + 1;
+            const int driverTop = driver.getY() + (driver.getHeight() - 10) / 2;
+            const int h = juce::jlimit (9, 12, driverTop - nameBottom);
+            linkTag.setBounds (juce::Rectangle<int> (30, h).withCentre ({ dispArea.getCentreX(), (nameBottom + driverTop + 1) / 2 }));
+        }
+        if (! preampShown)
+        {
+            // 3.60.0 (asked for on 23 November 2026): no preamp controls on this input - the meter runs the length of the strip, from under the
+            // display down to the TALK key (it was a short meter under a gap), its scale with more marks; the monitor keys where they always are
+            gainCapArea = {};                                                          // (no GAIN over nothing)
+            const int keysH = 4 * z.key + 3 * z.keyGap;
+            auto mid = r.removeFromTop (z.gainCap + z.knob + z.afterKnob + z.readout + z.gap1 + keysH + z.gap2 + z.lower);
+            mid.removeFromTop (z.gap1);
+            meter.setBounds (mid.removeFromLeft (12));
+            scale.setBounds (mid.removeFromLeft (21).withTrimmedLeft (1));
+            mid.removeFromLeft (2);
+            auto keysArea = mid.removeFromBottom (z.lower);
+            const int mh = (z.lower - 3 * z.monGap) / 4;
+            for (auto* b : monButtons) { b->setBounds (keysArea.removeFromTop (mh)); keysArea.removeFromTop (z.monGap); }
+            r.removeFromTop (z.gap3);
+            crButton.setBounds (r.removeFromTop (z.talk));
+            return;
+        }
         gainCapArea = r.removeFromTop (z.gainCap);                                     // "GAIN" is drawn here
         gain.setBounds (r.removeFromTop (z.knob).withSizeKeepingCentre (z.knob, z.knob));
         r.removeFromTop (z.afterKnob);
@@ -238,11 +324,15 @@ public:
         g.setColour (colour); g.fillRect (0, 0, b.getWidth(), 4); g.fillRect (0, b.getHeight() - 4, b.getWidth(), 4);
         g.setColour (p.disp); g.fillRect (dispArea);
         g.setColour (p.dispEdge); g.drawRect (dispArea, 1);
-        g.setColour (p.cream); g.setFont (juce::FontOptions (juce::jmin (10.5f, (float) gainCapArea.getHeight() * 0.75f), juce::Font::bold));
-        g.drawText ("GAIN", 0, gainCapArea.getY() + 1, b.getWidth(), gainCapArea.getHeight() - 2, juce::Justification::centred, false);
+        if (! gainCapArea.isEmpty())
+        {
+            g.setColour (p.cream); g.setFont (juce::FontOptions (juce::jmin (10.5f, (float) gainCapArea.getHeight() * 0.75f), juce::Font::bold));
+            g.drawText ("GAIN", 0, gainCapArea.getY() + 1, b.getWidth(), gainCapArea.getHeight() - 2, juce::Justification::centred, false);
+        }
     }
 
     static constexpr int kStripW = 84;
+    bool hasPreamp() const { return app.project.preampDriver != nullptr && app.project.preampDriver->controls (idx); }
 private:
     /** The tracks that record from this input (any channel of the track). */
     std::vector<TrackDef*> tracksOnInput()
@@ -289,7 +379,6 @@ private:
         app.project.setPreamp (idx, s);
     }
 
-    bool hasPreamp() const { return app.project.preampDriver != nullptr && app.project.preampDriver->controls (idx); }
     void checkPreampShown()
     {
         const bool hw = hasPreamp(); if (hw == preampShown) return;
@@ -304,6 +393,8 @@ private:
     juce::Rectangle<int> dispArea, gainCapArea;
     juce::Colour colour;
     juce::Label driver; juce::TextEditor alias; LevelMeter meter { true }; desk::DeskScale scale; desk::DeskEncoder gain; desk::DeskReadout readout;
+    juce::Label linkTag;                                     // 3.60.0: ST L / ST R on a stereo-linked preamp
+    juce::Time lastMenuClick;
     juce::OwnedArray<desk::DeskKey> buttons, monButtons;
     desk::TalkKey crButton;
     desk::DeskKey *mic = nullptr, *v48 = nullptr, *pol = nullptr, *lc = nullptr, *boost = nullptr, *pad = nullptr, *zhi = nullptr;
@@ -413,6 +504,62 @@ private:
     juce::Label driver, fedBy; juce::TextEditor alias; LevelMeter meter { false };
 };
 
+/** 3.60.0 (asked for on 23 November 2026): after "Make left channel of stereo input" on an input strip, the next click on another strip makes
+    that input the right channel. This lies over the inputs until then: the left strip is marked L, the strip under the mouse R. Esc, a right-click
+    or a click on the left strip itself cancels; a strip with no preamp controls is refused (the pick goes on). */
+class StereoPickOverlay : public juce::Component
+{
+public:
+    StereoPickOverlay (int leftInput, std::function<int (juce::Point<int>)> stripAtFn, std::function<juce::Rectangle<int> (int)> boundsOfFn,
+                       std::function<void (int)> doneFn, std::function<void (const juce::MouseEvent&, const juce::MouseWheelDetails&)> wheelFn)
+        : left (leftInput), stripAt (std::move (stripAtFn)), boundsOf (std::move (boundsOfFn)), done (std::move (doneFn)), wheel (std::move (wheelFn))
+    {
+        setWantsKeyboardFocus (true);
+        setMouseCursor (juce::MouseCursor::PointingHandCursor);
+    }
+    void paint (juce::Graphics& g) override
+    {
+        g.fillAll (juce::Colours::black.withAlpha (0.38f));
+        auto mark = [&] (int i, juce::Colour c, const juce::String& t)
+        {
+            const auto r = boundsOf (i);
+            if (r.isEmpty()) return;
+            g.setColour (c.withAlpha (0.16f)); g.fillRect (r);
+            g.setColour (c); g.drawRect (r, 3);
+            auto tag = juce::Rectangle<int> (r.getCentreX() - 16, r.getCentreY() - 16, 32, 32);
+            g.fillEllipse (tag.toFloat());
+            g.setColour (juce::Colours::black); g.setFont (juce::FontOptions (18.0f, juce::Font::bold));
+            g.drawText (t, tag, juce::Justification::centred, false);
+        };
+        mark (left, juce::Colour (0xff35c8e8), "L");
+        if (hover >= 0 && hover != left) mark (hover, juce::Colour (0xffffc83d), "R");
+        const juce::String text = "Click the input that becomes the RIGHT channel of input " + juce::String (left + 1) + "   (Esc: cancel)";
+        const juce::Font f (juce::FontOptions (14.0f, juce::Font::bold));
+        const int w = juce::GlyphArrangement::getStringWidthInt (f, text) + 28;
+        auto banner = juce::Rectangle<int> ((getWidth() - w) / 2, 8, w, 28);
+        g.setColour (juce::Colour (0xf0101418)); g.fillRoundedRectangle (banner.toFloat(), 6.0f);
+        g.setColour (juce::Colour (0xffffc83d)); g.drawRoundedRectangle (banner.toFloat(), 6.0f, 1.5f);
+        g.setColour (juce::Colours::white); g.setFont (f); g.drawText (text, banner, juce::Justification::centred, false);
+    }
+    void mouseMove (const juce::MouseEvent& e) override { const int h = stripAt (e.getPosition()); if (h != hover) { hover = h; repaint(); } }
+    void mouseExit (const juce::MouseEvent&) override { if (hover >= 0) { hover = -1; repaint(); } }
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (e.mods.isPopupMenu()) { done (-1); return; }
+        const int i = stripAt (e.getPosition());
+        if (i == left) { done (-1); return; }
+        if (i >= 0) done (i);
+    }
+    void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override { if (wheel) wheel (e, w); repaint(); }
+    bool keyPressed (const juce::KeyPress& k) override { if (k == juce::KeyPress::escapeKey) { done (-1); return true; } return false; }
+private:
+    int left, hover = -1;
+    std::function<int (juce::Point<int>)> stripAt;
+    std::function<juce::Rectangle<int> (int)> boundsOf;
+    std::function<void (int)> done;
+    std::function<void (const juce::MouseEvent&, const juce::MouseWheelDetails&)> wheel;
+};
+
 /** Shown when Fermata starts: nothing can be done until the project's folder is chosen (or an existing project opened). */
 class StartPanel : public juce::Component
 {
@@ -515,12 +662,12 @@ MainComponent::MainComponent (AppContext& a) : app (a), controllerBox (a)
     flagPre.onPreMenu = [this] { showPrePopup (app, flagPre); };
     flagCr.onClick  = [this]
     {
-        if (! app.talkbackReady()) { juce::NativeMessageBox::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Talkback mic", "Set up the talkback first: choose at least one control-room mic input and one talkback output pair in the Project Designer."); return; }
+        if (! app.talkbackReady()) { juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Talkback mic", "Set up the talkback first: choose at least one control-room mic input and one talkback output pair in the Project Designer.", {}, place::anchor()); return; }
         app.crClickLatch = ! app.crClickLatch;
     };
     flagPb.onClick  = [this]
     {
-        if (app.project.tbOutputs.empty()) { juce::NativeMessageBox::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Talkback playback", "Set up a talkback output pair first in the Project Designer."); return; }
+        if (app.project.tbOutputs.empty()) { juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Talkback playback", "Set up a talkback output pair first in the Project Designer.", {}, place::anchor()); return; }
         app.remotePlayback();
     };
     if (auto* st = app.props.getUserSettings())
@@ -808,7 +955,54 @@ void MainComponent::resized()
     };
     fill (inputsViewport, inputsHolder, inputRows, InputRow::kStripW, stripH);
     fill (outputsViewport, outputsHolder, outputRows, OutputRow::kStripW, OutputRow::kStripH);
+    if (stereoPick != nullptr) stereoPick->setBounds (inputsViewport.getBounds());
     repaint();
+}
+
+/** 3.60.0: the pick of a stereo input's right channel (StereoPickOverlay). */
+void MainComponent::startStereoPick (int left)
+{
+    stereoPick.reset();
+    juce::Component::SafePointer<MainComponent> safe (this);
+    auto stripRect = [safe] (int i) -> juce::Rectangle<int>              // (in the overlay's own coordinates, as much of it as is in view)
+    {
+        if (safe == nullptr || ! juce::isPositiveAndBelow (i, safe->inputRows.size())) return {};
+        auto* row = safe->inputRows[i];
+        const auto r = safe->getLocalArea (row, row->getLocalBounds()).getIntersection (safe->inputsViewport.getBounds());
+        return r.translated (-safe->inputsViewport.getX(), -safe->inputsViewport.getY());
+    };
+    auto stripAt = [safe, stripRect] (juce::Point<int> p)
+    {
+        if (safe == nullptr) return -1;
+        for (int i = 0; i < safe->inputRows.size(); ++i) if (stripRect (i).contains (p)) return i;
+        return -1;
+    };
+    auto done = [safe, left] (int right)
+    {
+        if (safe == nullptr) return;
+        if (right >= 0)
+        {
+            if (! (safe->app.project.preampDriver != nullptr && safe->app.project.preampDriver->controls (right)))
+            {
+                safe->app.setNotice ("Input " + juce::String (right + 1) + " has no preamp controls here, so it cannot be the right channel. Click another input (Esc cancels).");
+                return;                                                  // (the pick goes on)
+            }
+            if (safe->app.project.linkPreamps (left, right))
+                safe->app.setNotice ("Inputs " + juce::String (left + 1) + " (left) and " + juce::String (right + 1) + " (right) are a stereo pair: input " + juce::String (right + 1)
+                                     + " took input " + juce::String (left + 1) + "'s preamp settings, and from now on a preamp control changed on either is changed on both. Right-click either strip to unlink them.");
+        }
+        else safe->app.setNotice ("Stereo input: cancelled.");
+        juce::MessageManager::callAsync ([safe] { if (safe != nullptr) { safe->stereoPick.reset(); safe->repaint(); } });   // (not from inside the overlay's own click)
+    };
+    auto wheel = [safe] (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
+    {
+        if (safe != nullptr) safe->inputsViewport.mouseWheelMove (e.getEventRelativeTo (&safe->inputsViewport), w);
+    };
+    stereoPick = std::make_unique<StereoPickOverlay> (left, stripAt, stripRect, done, wheel);
+    addAndMakeVisible (*stereoPick);
+    stereoPick->setBounds (inputsViewport.getBounds());
+    stereoPick->grabKeyboardFocus();
+    app.setNotice ("Stereo input: now click the input that becomes the RIGHT channel of input " + juce::String (left + 1) + " (Esc cancels).");
 }
 
 void MainComponent::rebuildRows()
@@ -818,7 +1012,11 @@ void MainComponent::rebuildRows()
     for (int i = 0; i < outputRows.size(); ++i) if (outputRows[i]->aliasHasFocus()) focusOut = i;
     inputRows.clear();
     inputsHolder.removeAllChildren();
-    for (int i = 0; i < (int) app.project.inputs.size(); ++i) { inputRows.add (new InputRow (app, i)); inputsHolder.addAndMakeVisible (inputRows.getLast()); }
+    for (int i = 0; i < (int) app.project.inputs.size(); ++i)
+    {
+        inputRows.add (new InputRow (app, i)); inputsHolder.addAndMakeVisible (inputRows.getLast());
+        inputRows.getLast()->onMakeLeft = [this] (int left) { startStereoPick (left); };      // 3.60.0
+    }
     outputRows.clear();
     outputsHolder.removeAllChildren();
     for (int i = 0; i < (int) app.project.outputs.size(); ++i) { outputRows.add (new OutputRow (app, i)); outputsHolder.addAndMakeVisible (outputRows.getLast()); }
@@ -1057,6 +1255,7 @@ void MainComponent::showProjectMenu()
     m.addSeparator();
     const auto workKey = app.lastWorkWindowKey ? app.lastWorkWindowKey() : juce::String();
     m.addItem (9, "Import AAF as edit windows...");
+    m.addItem (25, "Import source tracks to project folders...", app.hasProject());           // 3.62.0: audio played from outside the folder, copied in
     m.addItem (15, "Take sheet of every take window (PDF and CSV)...", app.hasProject());
     m.addItem (8, "Re-draw all waveforms in current window", workKey.isNotEmpty());
     if (! app.project.ignoredMissing.empty())                                    // 3.15.0
@@ -1104,6 +1303,7 @@ void MainComponent::showProjectMenu()
         }
         if (r == 8) { app.redrawWaveforms (app.audioFilesOfWindow (workKey)); return; }
         if (r == 9) { fixtools::importAaf (app, this); return; }
+        if (r == 25) { fixtools::gatherAudio (app, this); return; }
         if (r == 10) { closeProjectDialog(); return; }
         if (r == 1) newProjectDialog();
         else if (r == 2) openProjectDialog();
@@ -1117,7 +1317,7 @@ void MainComponent::showProjectMenu()
         else if (r == 4) app.project.projectFile.getParentDirectory().revealToUser();
         else if (r == 5)
         {
-            auto* aw = new juce::AlertWindow ("Rename project", "Project name:", juce::MessageBoxIconType::NoIcon);
+            auto* aw = new juce::AlertWindow ("Rename project", "Project name:", juce::MessageBoxIconType::NoIcon, place::anchor());
             aw->addTextEditor ("n", app.project.name);
             aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
             aw->addButton ("Close", 0, juce::KeyPress (juce::KeyPress::escapeKey));
@@ -1262,7 +1462,7 @@ void MainComponent::importWindowFileDialog (bool isEdit)
         app.saveNow();
         if (missing == 0)
         {
-            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Imported", msg);
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Imported", msg, {}, place::anchor());
             if (isEdit) { if (app.showEdit) app.showEdit (id); } else if (app.showTakeWindow) app.showTakeWindow (id);
             return;
         }
@@ -1295,7 +1495,7 @@ void MainComponent::relinkAudioDialog (bool isEdit, const juce::Uuid& openAfter)
     }
     if (missing == 0)
     {
-        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Audio files", "Nothing is missing: every audio file this project uses is where the project expects it.");
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Audio files", "Nothing is missing: every audio file this project uses is where the project expects it.", {}, place::anchor());
         openIt();
         return;
     }
@@ -1334,7 +1534,7 @@ void MainComponent::relinkAudioDialog (bool isEdit, const juce::Uuid& openAfter)
             }
             if (rep.byName + rep.renamed > 0) text << "\nThe project was saved with the files found. Ctrl+Z does not undo this; the save before it is the project's .bak file.\n";
             const bool allGood = rep.unsure == 0 && rep.stillMissing == 0;
-            juce::AlertWindow::showMessageBoxAsync (allGood ? juce::MessageBoxIconType::InfoIcon : juce::MessageBoxIconType::WarningIcon, "Audio files", text);
+            juce::AlertWindow::showMessageBoxAsync (allGood ? juce::MessageBoxIconType::InfoIcon : juce::MessageBoxIconType::WarningIcon, "Audio files", text, {}, place::anchor());
         }
         openIt();
     });
@@ -1473,7 +1673,7 @@ void MainComponent::showMixersMenu()
                 juce::String msg;
                 if (! app.project.importMixerFile (f, msg)) { showError ("Import", msg); return; }
                 app.saveNow();
-                juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Imported", msg);
+                juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Imported", msg, {}, place::anchor());
             });
             return;
         }
@@ -1570,7 +1770,7 @@ void MainComponent::showLtcOutMenu()
         else if (r == 21 || r == 22) { p.ltcOutStartMode = 1; p.ltcOutStartSeconds = r == 21 ? 0.0 : 3600.0; }
         else if (r == 23)
         {
-            auto* aw = new juce::AlertWindow ("LTC start time", "Type the timecode the LTC starts at (hours:minutes:seconds:frames):", juce::MessageBoxIconType::NoIcon);
+            auto* aw = new juce::AlertWindow ("LTC start time", "Type the timecode the LTC starts at (hours:minutes:seconds:frames):", juce::MessageBoxIconType::NoIcon, place::anchor());
             aw->addTextEditor ("tc", "01:00:00:00", "Start");
             aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
             aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));

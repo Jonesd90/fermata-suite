@@ -121,6 +121,7 @@ public:
         mutable std::mutex lock;
         std::vector<juce::uint32> argb;
         std::vector<float> level;
+        std::vector<juce::uint8> low;                  // 3.61.0: each block's share of sound below 100 Hz (0..255), for the knock weighting
         bool complete = false, gap = false;
     private:
         std::unique_ptr<std::atomic<float>[]> ring;

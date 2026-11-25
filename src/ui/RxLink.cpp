@@ -199,7 +199,7 @@ void addProgram (AppContext& app, juce::Component* parent, std::function<void (b
         const auto f = c.getResult();
         juce::MessageManager::callAsync ([fc] { delete fc; });          // (not inside its own callback)
         if (f == juce::File() || ! f.exists()) { if (done) done (false); return; }
-        auto* aw = new juce::AlertWindow ("Link a program", "What should Export for Processing's menu call it?\n\n" + f.getFullPathName(), juce::MessageBoxIconType::NoIcon, sp.getComponent());
+        auto* aw = new juce::AlertWindow ("Link a program", "What should Export for Processing's menu call it?\n\n" + f.getFullPathName(), juce::MessageBoxIconType::NoIcon, place::anchor (sp.getComponent()));
         aw->addTextEditor ("name", suggestedName (f), "Name");
         aw->addButton ("Link it", 1, juce::KeyPress (juce::KeyPress::returnKey));
         aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));

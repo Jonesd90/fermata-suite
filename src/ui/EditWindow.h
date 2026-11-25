@@ -1,5 +1,6 @@
 #pragma once
 #include "AppContext.h"
+#include "TuningLine.h"
 #include "Uikit.h"
 #include "TimeReadout.h"
 #include "ScoreWindow.h"
@@ -98,6 +99,8 @@ private:
     LoopButton loopToggle;
     PlayheadModeButton playheadMode;
     RainbowButton waveColourBtn;
+    int shownKnock = -1;                                // (3.61.0: the knock weighting its dots show)
+    tuning::Button tuningBtn;                           // 3.63.0: the tuning line (shown / hidden; right-click: its settings)
     CompressWaveButton waveCompressBtn;                 // 3.27.0: compressed waveforms (the picture only)
     ScoreButton scoreButton;                            // 3.51.0: the edit's score (a PDF) in a window of its own: opens / closes it
     void scoreKey();                                    //   a click: the window open / closed (the first time: asks for the PDF)

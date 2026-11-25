@@ -4,6 +4,8 @@
 #include "Uikit.h"
 #include "WaveColor.h"
 #include "LiveWaveColours.h"
+#include "TuningLine.h"
+#include "WindowPlace.h"
 #include "../core/WaveShape.h"
 #include "PluginHost.h"
 #include "../core/SessionClock.h"
@@ -60,7 +62,33 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     /** 3.59.0: WaveColour while a take records - the engine feeds what it records (setLiveFeeds, while WaveColour is on) and this colours it as
         it comes in; a finished take's colours go straight to waveColors (see takeInFinishedTakes). */
     LiveWaveColours liveColours;
-    void setWaveColour (bool on) { waveColour = on; engine.setLiveFeeds (on); project.sendChangeMessage(); }
+    void setWaveColour (bool on) { waveColour = on; engine.setLiveFeeds (waveColour || tuningShow); project.sendChangeMessage(); }
+    /** 3.63.0 (asked for on 23 November 2026): the tuning line (src/ui/TuningLine.h) - the ensemble's tuning across each take, in a lane under the
+        take banners of the take and edit windows. Shown or hidden (the Tuning button; remembered on this computer); Absolute (cents from A = the Hz
+        set) or Relative (from the take's starting pitch; in an edit, from the edit's) and the tracks it is measured from are the project's own
+        (kept in its Analysis folder, "Tuning.settings"). Measured live while a take records (only while it is shown: the engine's feeds run while
+        WaveColour or the tuning line is on); other takes from their files, in the background, never while a take records. */
+    bool tuningShow = false;
+    tuning::Settings tuningSet;
+    tuning::Store tuningStore;
+    tuning::Live liveTuning;
+    void setTuningShow (bool on);
+    void setTuningSettings (const tuning::Settings& s);
+    void showTuningMenu (juce::Component* target, bool editWindow);
+    /** A take's line: the live one while it records (or is being finished), else the stored one; nothing while it is not known yet (it is then
+        read or measured in the background: tuningStore.generation goes up when it is). */
+    std::shared_ptr<const tuning::Line> tuningOf (const TakeGroup& g)
+    {
+        if (auto l = liveTuning.lineFor (g.id)) return l;
+        return tuningStore.get (g, tuning::sourceOf (g, tuningSet));
+    }
+    /** The take window's timer, while a take records into it: the take's feeds go to the live tuning line (while it is shown). */
+    void watchTuning (const TakeGroup& recording);
+    /** 3.61.0 (asked for on 23 November 2026): how readily a knock is drawn black in WaveColour - 0 Normal (as before), 1 Light, 2 Medium, 3 Strong
+        (knockweight, src/ui/WaveColor.h). The same in every window; remembered on this computer; the WaveColour button's right-click menu. */
+    int waveKnock = 0;
+    void setWaveKnock (int weight);
+    void showWaveColourMenu (juce::Component* target);
     /** The colours of this file's waveform, or nothing while it is not wanted or not worked out yet (it is being worked out in the background). */
     std::shared_ptr<const WaveColorData> waveColourOf (const juce::File& f) { return waveColour ? waveColors.get (f) : nullptr; }
 

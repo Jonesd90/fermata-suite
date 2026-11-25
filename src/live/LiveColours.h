@@ -51,8 +51,9 @@ public:
             const juce::int64 a = first + (juce::int64) std::floor ((double) i * perPixel), b = first + (juce::int64) std::ceil ((double) (i + 1) * perPixel);
             juce::int64 b0 = juce::jmax ((juce::int64) 0, a / kBlock), b1 = juce::jmin (nb, juce::jmax (b0 + 1, (b + kBlock - 1) / kBlock));
             float best = -1.0f; juce::uint32 c = 0;
-            for (juce::int64 k = b0; k < b1; ++k)
-                if (t.argb[(size_t) k] != 0 && t.level[(size_t) k] > best) { best = t.level[(size_t) k]; c = t.argb[(size_t) k]; }
+            for (juce::int64 k = b0; k < b1; ++k)                                // (0.10.11: as the knock weighting draws it)
+                if (t.argb[(size_t) k] != 0 && t.level[(size_t) k] > best)
+                { best = t.level[(size_t) k]; c = knockweight::shownAt (t.argb, t.level, t.low, (size_t) k); }
             if (c != 0) { out[(size_t) i] = juce::Colour (c); any = true; }
         }
         return any;
@@ -67,7 +68,7 @@ private:
         WaveColorCache::BlockAnalyser an;
         ChunkTimeline timeline;
         std::vector<std::vector<float>> chans;
-        std::vector<double> mono ((size_t) kBlock);
+        std::vector<double> mono ((size_t) kBlock), before ((size_t) kBlock / 2);
         while (! threadShouldExit())
         {
             juce::File f; juce::int64 w = 0; std::vector<std::pair<juce::int64, juce::int64>> sp;
@@ -91,28 +92,33 @@ private:
                 if (from >= lastFull) continue;
                 const juce::int64 to = juce::jmin (lastFull, from + kBatch);
                 const int n = (int) ((to - from) * kBlock);
+                const int lead = from > 0 ? kBlock / 2 : 0;                    // 3.61.0 (0.10.11): the half block before, for the knock weighting's second window
                 std::vector<std::vector<juce::uint32>> argb ((size_t) numTracks);
                 std::vector<std::vector<float>> level ((size_t) numTracks);
+                std::vector<std::vector<juce::uint8>> low ((size_t) numTracks);
                 for (int ti = 0; ti < numTracks; ++ti)
                 {
                     if (threadShouldExit()) return;
                     const int ch = juce::jmax (1, idx.tracks[(size_t) ti].channels);
                     chans.resize ((size_t) ch);
                     std::vector<float*> dest;
-                    for (auto& c : chans) { c.assign ((size_t) n, 0.0f); dest.push_back (c.data()); }
-                    timeline.read (ti, from * kBlock, n, dest.data());
+                    for (auto& c : chans) { c.assign ((size_t) (lead + n), 0.0f); dest.push_back (c.data()); }
+                    timeline.read (ti, from * kBlock - lead, lead + n, dest.data());
                     const int use = juce::jmin (2, ch);
                     for (juce::int64 b = 0; b < to - from; ++b)
                     {
-                        for (int i = 0; i < kBlock; ++i)
+                        for (int i = -kBlock / 2; i < kBlock; ++i)
                         {
+                            const juce::int64 at = lead + b * kBlock + i;
+                            if (at < 0) continue;
                             double v = 0.0;
-                            for (int c = 0; c < use; ++c) v += chans[(size_t) c][(size_t) (b * kBlock + i)];
-                            mono[(size_t) i] = v / (double) use;
+                            for (int c = 0; c < use; ++c) v += chans[(size_t) c][(size_t) at];
+                            (i < 0 ? before[(size_t) (i + kBlock / 2)] : mono[(size_t) i]) = v / (double) use;
                         }
-                        float rms = 0.0f;
-                        const auto colour = an.colour (mono.data(), sr, rms);
-                        argb[(size_t) ti].push_back (colour.getARGB()); level[(size_t) ti].push_back (rms);
+                        float rms = 0.0f; juce::uint8 lowShare = 0;
+                        const bool haveBefore = from + b > 0;
+                        const auto colour = an.colour (mono.data(), sr, rms, &lowShare, haveBefore ? before.data() : nullptr);
+                        argb[(size_t) ti].push_back (colour.getARGB()); level[(size_t) ti].push_back (rms); low[(size_t) ti].push_back (lowShare);
                     }
                 }
                 {
@@ -122,8 +128,12 @@ private:
                     for (int ti = 0; ti < numTracks; ++ti)
                     {
                         auto& t = tracks[(size_t) ti];
-                        if ((juce::int64) t.argb.size() < to) { t.argb.resize ((size_t) to, 0); t.level.resize ((size_t) to, 0.0f); }
-                        for (juce::int64 b = 0; b < to - from; ++b) { t.argb[(size_t) (from + b)] = argb[(size_t) ti][(size_t) b]; t.level[(size_t) (from + b)] = level[(size_t) ti][(size_t) b]; }
+                        if ((juce::int64) t.argb.size() < to) { t.argb.resize ((size_t) to, 0); t.level.resize ((size_t) to, 0.0f); t.low.resize ((size_t) to, 0); }
+                        for (juce::int64 b = 0; b < to - from; ++b)
+                        {
+                            t.argb[(size_t) (from + b)] = argb[(size_t) ti][(size_t) b]; t.level[(size_t) (from + b)] = level[(size_t) ti][(size_t) b];
+                            t.low[(size_t) (from + b)] = low[(size_t) ti][(size_t) b];
+                        }
                     }
                     scanned[s.first] = to;
                 }
@@ -133,7 +143,7 @@ private:
         }
     }
 
-    struct Track { std::vector<juce::uint32> argb; std::vector<float> level; };      // by block of the session's timeline (argb 0: not worked out)
+    struct Track { std::vector<juce::uint32> argb; std::vector<float> level; std::vector<juce::uint8> low; };      // by block of the session's timeline (argb 0: not worked out)
     mutable std::mutex lock;
     juce::File folder;
     juce::int64 written = 0;

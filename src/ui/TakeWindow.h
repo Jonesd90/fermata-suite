@@ -1,5 +1,6 @@
 #pragma once
 #include "AppContext.h"
+#include "TuningLine.h"
 #include "RecordMonitor.h"
 #include "BarCoverage.h"
 #include "TakeChart.h"
@@ -102,6 +103,8 @@ private:
     LoopButton loopToggle;
     PlayheadModeButton playheadMode;
     RainbowButton waveColourBtn;
+    int shownKnock = -1;                                // (3.61.0: the knock weighting its dots show)
+    tuning::Button tuningBtn;                           // 3.63.0: the tuning line (shown / hidden; right-click: its settings)
     CompressWaveButton waveCompressBtn;                 // 3.27.0: compressed waveforms (the picture only)
     std::unique_ptr<TakeTimeline> timeline;
     std::unique_ptr<juce::Viewport> viewportOwner;

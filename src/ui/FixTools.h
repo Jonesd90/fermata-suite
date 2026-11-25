@@ -65,6 +65,15 @@ void undoLastFix (AppContext&);
 /** Project menu: 'Save as...' (a new folder; then the project continues there) or 'Create copy of entire project...' (a perfect, checked copy of every file, to take elsewhere; the project stays where it is). */
 void copyProject (AppContext&, juce::Component* parent, bool saveAs);
 
+/** 3.63.0 (asked about on 23 November 2026): every track whose audio an edit plays has a row in that edit's window. An edit with a list of rows of its
+    own that leaves out a track it plays (an AAF imported by 3.62.0 or earlier could: the audio played through the mixer but had no row) gets that track
+    added at the bottom. Called when a project opens. Returns how many rows were added. */
+int giveEditRows (Project&);
+
+/** 3.62.0, Project menu: "Import source tracks to project folders..." - copies every audio file the project plays from outside its own folder into
+    it (checked), then points the project at the copies (src/core/AudioGather.h). The originals are not touched. */
+void gatherAudio (AppContext&, juce::Component* parent);
+
 /** Project menu: reads an AAF (from Pyramix etc.), splits its timeline into pieces and makes one edit window per piece from the audio already imported. */
 void importAaf (AppContext&, juce::Component* parent);
 

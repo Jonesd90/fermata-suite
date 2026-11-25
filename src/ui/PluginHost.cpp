@@ -4,6 +4,7 @@
 #include "../core/CrashReport.h"
 #include "WinOwner.h"
 #include "../core/HostTransport.h"
+#include "WindowPlace.h"
 
 namespace td
 {
@@ -367,7 +368,8 @@ public:
         syncBar();
         setContentOwned (holder, true);
         setResizable (resizable, false);
-        centreWithSize (getWidth(), getHeight());
+        if (auto* a = place::anchor()) place::over (*this, a);         // 3.64.0: over the window you clicked in (it was centred on Windows' main screen)
+        else centreWithSize (getWidth(), getHeight());
         if (host.adoptWindow) host.adoptWindow (*this);
         setVisible (true);
         startTimerHz (40);

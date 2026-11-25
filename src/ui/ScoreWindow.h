@@ -35,7 +35,16 @@ namespace td
     the brackets laid out in the PAGE's own measure (layoutOf: the same at any zoom and in the saved PDF), each put on clear paper above
     its system - never on the staves or the notes, off the words where it can be (scorebars::placeAbove); a bracket is dragged to move it
     and made bigger or smaller from its right-click, the a / A keys size them all, and all of that is kept with the bars; the PDF key's
-    menu saves the marked score as a new PDF (saveMarkedPdf: the pages as pictures, the brackets as sharp shapes, written by pdfwrite). */
+    menu saves the marked score as a new PDF (saveMarkedPdf: the pages as pictures, the brackets as sharp shapes, written by pdfwrite).
+
+    3.66.0 (asked for on 24 November 2026: "the PDF I have contains four movements in one single document but the four movements are split over
+    4 separate take and edit windows. Can we make a function to tell fermata which pages of the PDF that edit and take window is referring to"):
+    THIS EDIT'S PAGES. The Pages key (and a right-click on a page) sets the edit's first and last page (EditDef::scoreFirstPage / scoreLastPage).
+    Only those pages are shown (the others take no room) and saved in the marked PDF; the edit's music is taken to begin at the first bar of its
+    first page - unless a bar is marked "This edit's music begins at this bar" - and the piece's length handed to its take windows ends at its
+    last page. The bars of the whole PDF are still found once and kept beside it, shared by every edit that has that PDF. "Bar 1 is the first
+    bar on that page" (ticked unless the movement starts part-way down the page) gives that bar the number 1, as "This bar's number is..." does.
+    The first time a PDF that another edit already has is opened here, the window asks for this edit's pages, starting after the other's. */
 namespace score
 {
 inline juce::String windowKey (const juce::Uuid& editId) { return "score:" + editId.toString(); }
@@ -59,7 +68,7 @@ inline void choosePdf (AppContext& app, const juce::Uuid& editId, juce::Componen
         const auto err = a->project.addScore (*e, f);
         if (err.isNotEmpty())
         {
-            juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon).withTitle ("Score").withMessage (err).withButton ("OK").withAssociatedComponent (safeOver.getComponent()), nullptr);
+            juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon).withTitle ("Score").withMessage (err).withButton ("OK").withAssociatedComponent (place::anchor (safeOver.getComponent())), nullptr);
             return;
         }
         if (done) done();
@@ -83,7 +92,11 @@ public:
     {
         setOpaque (true);
         setWantsKeyboardFocus (true);
-        for (auto* b : { &prevButton, &nextButton, &zoomOutButton, &zoomInButton, &fitButton, &barsButton, static_cast<juce::TextButton*> (&takesButton), &smallerButton, &biggerButton, &fileButton }) { addAndMakeVisible (b); b->setWantsKeyboardFocus (false); }
+        for (auto* b : { &prevButton, &nextButton, &pagesButton, &zoomOutButton, &zoomInButton, &fitButton, &barsButton, static_cast<juce::TextButton*> (&takesButton), &smallerButton, &biggerButton, &fileButton }) { addAndMakeVisible (b); b->setWantsKeyboardFocus (false); }
+        pagesButton.setButtonText ("All pages");
+        pagesButton.setTooltip ("Which pages of the PDF are this edit's music - for a PDF with several movements, each in an edit of its own. Only those pages are shown, "
+                                "and this edit's bars are counted from the first bar of its first page. (Also from a right-click on a page.)");
+        pagesButton.onClick = [this] { askPages (false); };
         smallerButton.setButtonText ("a"); biggerButton.setButtonText ("A");
         smallerButton.setTooltip ("The takes' brackets and numbers smaller, all of them. (One bracket on its own: right-click it. To move one: drag it.)");
         biggerButton.setTooltip ("The takes' brackets and numbers bigger, all of them. (One bracket on its own: right-click it. To move one: drag it.)");
@@ -151,6 +164,7 @@ public:
         auto put = [&bar] (juce::Component& c, int w, int gapAfter) { c.setBounds (bar.removeFromLeft (w)); bar.removeFromLeft (gapAfter); };
         put (prevButton, 30, 2); put (nextButton, 30, 8);
         put (pageLabel, 104, 8);
+        put (pagesButton, 80, 8);
         put (zoomOutButton, 28, 2); put (zoomInButton, 28, 6); put (fitButton, 74, 10);
         put (barsButton, 84, 2); put (takesButton, 56, 2); put (smallerButton, 24, 2); put (biggerButton, 24, 10);
         fileButton.setBounds (bar.removeFromRight (juce::jmin (64, juce::jmax (0, bar.getWidth()))));
@@ -170,8 +184,8 @@ public:
         const int c = k.getKeyCode();
         if (c == juce::KeyPress::pageDownKey) { goToPage (topPage() + 1); return true; }
         if (c == juce::KeyPress::pageUpKey)   { goToPage (topPage() - (atPageTop() ? 1 : 0)); return true; }
-        if (c == juce::KeyPress::homeKey)     { goToPage (0); return true; }
-        if (c == juce::KeyPress::endKey)      { goToPage ((int) sizes.size() - 1); return true; }
+        if (c == juce::KeyPress::homeKey)     { goToPage (firstPage()); return true; }
+        if (c == juce::KeyPress::endKey)      { goToPage (lastPage()); return true; }
         if (c == juce::KeyPress::downKey)     { viewport.setViewPosition (viewport.getViewPositionX(), viewport.getViewPositionY() + 60); return true; }
         if (c == juce::KeyPress::upKey)       { viewport.setViewPosition (viewport.getViewPositionX(), juce::jmax (0, viewport.getViewPositionY() - 60)); return true; }
         const auto ch = k.getTextCharacter();
@@ -200,7 +214,7 @@ private:
     struct MarkHit { const MarkDrawn* mark = nullptr; const MarkItem* item = nullptr; };
     /** The marked score being written as a PDF: per page, the shapes to draw on it (in points, from the page's top left). */
     struct ExportFill { juce::Path path; juce::Colour colour; float opacity = 1.0f; };
-    struct ExportJob { juce::File to; std::vector<std::vector<ExportFill>> pages; };
+    struct ExportJob { juce::File to; std::vector<std::vector<ExportFill>> pages; int first = 0, last = -1; };      // (3.66.0: first / last: the edit's pages, counted from 0)
 
     // ------------------------------------------------------------------------------------------------ the pages (inside the viewport)
     struct Pages : public juce::Component, public juce::TooltipClient
@@ -221,7 +235,7 @@ private:
             for (int i = 0; i < (int) owner.rects.size(); ++i)
             {
                 const auto r = owner.rects[(size_t) i];
-                if (r.getBottom() < clip.getY() || r.getY() > clip.getBottom()) continue;
+                if (r.isEmpty() || r.getBottom() < clip.getY() || r.getY() > clip.getBottom()) continue;      // (3.66.0: a page that is not this edit's is not there)
                 g.setColour (juce::Colours::black.withAlpha (0.35f)); g.fillRect (r.translated (2, 3));
                 g.setColour (juce::Colours::white); g.fillRect (r);
                 const auto it = owner.pictures.find (i);
@@ -255,7 +269,7 @@ private:
     double scaleNow() const
     {
         if (! fitWidth()) return zoom;
-        double widest = 1.0; for (auto& s : sizes) widest = juce::jmax (widest, s.x);
+        double widest = 1.0; for (int i = 0; i < (int) sizes.size(); ++i) if (pageShown (i)) widest = juce::jmax (widest, sizes[(size_t) i].x);
         const int room = viewport.getWidth() - viewport.getScrollBarThickness() - 2 * kEdge;
         return juce::jlimit (0.05, 40.0, (double) juce::jmax (80, room) / widest);
     }
@@ -263,11 +277,14 @@ private:
     {
         rects.clear();
         const double sc = scaleNow();
-        int widest = 0; for (auto& s : sizes) widest = juce::jmax (widest, juce::roundToInt (s.x * sc));
+        int widest = 0; for (int i = 0; i < (int) sizes.size(); ++i) if (pageShown (i)) widest = juce::jmax (widest, juce::roundToInt (sizes[(size_t) i].x * sc));
         const int fullW = juce::jmax (viewport.getWidth() - viewport.getScrollBarThickness(), widest + 2 * kEdge);
         int y = kEdge;
-        for (auto& s : sizes)
+        const int first = firstPage(), last = lastPage();
+        for (int i = 0; i < (int) sizes.size(); ++i)
         {
+            const auto& s = sizes[(size_t) i];
+            if (i < first || i > last) { rects.push_back ({ fullW / 2, y, 0, 0 }); continue; }      // 3.66.0: not this edit's page - no room, never drawn or found by a click
             const int w = juce::jmax (1, juce::roundToInt (s.x * sc)), h = juce::jmax (1, juce::roundToInt (s.y * sc));
             rects.push_back ({ (fullW - w) / 2, y, w, h });
             y += h + kGap;
@@ -281,8 +298,8 @@ private:
         if (rects.empty()) return top;
         const int y = viewport.getViewPositionY();
         for (int i = 0; i < (int) rects.size(); ++i)
-            if (y < rects[(size_t) i].getBottom() + kGap / 2) return (double) i + juce::jlimit (0.0, 0.999, (double) (y - rects[(size_t) i].getY()) / (double) juce::jmax (1, rects[(size_t) i].getHeight()));
-        return (double) rects.size() - 0.001;
+            if (! rects[(size_t) i].isEmpty() && y < rects[(size_t) i].getBottom() + kGap / 2) return (double) i + juce::jlimit (0.0, 0.999, (double) (y - rects[(size_t) i].getY()) / (double) juce::jmax (1, rects[(size_t) i].getHeight()));
+        return (double) juce::jmax (0, lastPage()) + 0.999;
     }
     int topPage() const { return (int) topNow(); }
     bool atPageTop() const { const double t = topNow(); return t - std::floor (t) < 0.02; }
@@ -290,11 +307,12 @@ private:
     {
         top = juce::jmax (0.0, t);
         if (rects.empty()) return;
+        if (top < (double) firstPage() || top >= (double) lastPage() + 1.0) top = (double) firstPage();      // (3.66.0: only this edit's pages)
         const int i = juce::jlimit (0, (int) rects.size() - 1, (int) top);
         const auto r = rects[(size_t) i];
         viewport.setViewPosition (viewport.getViewPositionX(), juce::jmax (0, r.getY() + juce::roundToInt ((top - (double) i) * r.getHeight()) - (top - (double) i < 0.001 ? kGap / 2 : 0)));       // (a page's top: with a little of the gap above it)
     }
-    void goToPage (int i) { if (! rects.empty()) { setTop ((double) juce::jlimit (0, (int) rects.size() - 1, i)); wantPictures(); } }
+    void goToPage (int i) { if (! rects.empty()) { setTop ((double) juce::jlimit (firstPage(), juce::jmax (firstPage(), lastPage()), i)); wantPictures(); } }
     void setZoom (double z)
     {
         const double keep = topNow();
@@ -302,6 +320,144 @@ private:
         layoutPages(); setTop (keep); wantPictures();
     }
     void zoomBy (double f) { if (! sizes.empty()) setZoom (scaleNow() * f); }
+
+    // ------------------------------------------------------------------------------------------------ 3.66.0: this edit's pages of the score
+    /** The first and the last page shown, counted from 0 and both included: the edit's pages (EditDef::scoreFirstPage / scoreLastPage), or all. */
+    int firstPage() const
+    {
+        const auto* e = edit(); const int n = (int) sizes.size();
+        return n == 0 || e == nullptr || e->scoreFirstPage <= 0 ? 0 : juce::jlimit (0, n - 1, e->scoreFirstPage - 1);
+    }
+    int lastPage() const
+    {
+        const auto* e = edit(); const int n = (int) sizes.size();
+        if (n == 0) return -1;
+        return juce::jmax (firstPage(), e == nullptr || e->scoreLastPage <= 0 ? n - 1 : juce::jlimit (0, n - 1, e->scoreLastPage - 1));
+    }
+    bool pageShown (int i) const { return i >= firstPage() && i <= lastPage(); }
+    bool hasPageRange() const { const auto* e = edit(); return e != nullptr && (e->scoreFirstPage > 0 || e->scoreLastPage > 0); }
+    juce::String rangeKey() const { const auto* e = edit(); return e == nullptr ? juce::String() : juce::String (e->scoreFirstPage) + "-" + juce::String (e->scoreLastPage); }
+    /** Where this edit's music begins in barList: the bar marked "This edit's music begins at this bar" (scorebars::startOrdinal), else the first
+        bar of its first page. */
+    int startFrom() const
+    {
+        if (bars.editStarts.count (editId.toString()) > 0) return scorebars::startOrdinal (bars, barList, editId.toString());
+        const int first = firstPage();
+        for (int i = 0; i < (int) barList.size(); ++i) if (barList[(size_t) i].page >= first) return i;
+        return 0;
+    }
+    /** The bars up to the end of this edit's last page: the piece's length is not counted past it. */
+    std::vector<scorebars::Bar> barsToLastPage() const
+    {
+        std::vector<scorebars::Bar> out;
+        const int last = lastPage();
+        for (auto& b : barList) { if (last >= 0 && b.page > last) break; out.push_back (b); }
+        return out;
+    }
+    /** The other edits that have this PDF as their score, and their pages ("'Mvt 1' (pages 1-4)"). */
+    juce::StringArray otherEditsWithThisPdf() const
+    {
+        juce::StringArray out;
+        const auto* me = edit();
+        if (me == nullptr || me->score.isEmpty()) return out;
+        for (auto& e : app.project.edits)
+            if (e.get() != me && e->score == me->score)
+                out.add ("'" + e->name + "'" + (e->scoreFirstPage > 0 || e->scoreLastPage > 0
+                                                  ? " (pages " + juce::String (juce::jmax (1, e->scoreFirstPage)) + "-" + (e->scoreLastPage > 0 ? juce::String (e->scoreLastPage) : juce::String ("the end")) + ")"
+                                                  : juce::String (" (all its pages)")));
+        return out;
+    }
+    /** The Pages key (and, the first time, a PDF another edit already has): which pages are this edit's. 'first' says why it is asked. */
+    void askPages (bool firstTime)
+    {
+        auto* e = edit();
+        if (e == nullptr || sizes.empty()) return;
+        askedPages = true;
+        const int n = (int) sizes.size();
+        int from = firstPage() + 1, to = lastPage() + 1;
+        if (! hasPageRange())                                             // (a suggestion: after the last page another edit of this PDF has)
+        {
+            int after = 0;
+            for (auto& o : app.project.edits) if (o.get() != e && o->score == e->score && o->scoreLastPage > 0) after = juce::jmax (after, o->scoreLastPage);
+            from = after > 0 && after < n ? after + 1 : 1; to = n;
+        }
+        const auto others = otherEditsWithThisPdf();
+        juce::String msg;
+        if (firstTime) msg << "This PDF is also the score of " << others.joinIntoString (", ") << ". Which of its pages are this edit's music?\n\n";
+        else msg << "Which pages of \"" << e->score << "\" are this edit's music?" << (others.isEmpty() ? juce::String() : "  (It is also the score of " + others.joinIntoString (", ") + ".)") << "\n\n";
+        msg << "Only those pages are shown here, and this edit's bars are counted from the first bar of the first one. The PDF has " << n << " pages.\n\n"
+            << "When this edit's music starts part-way down a page, untick \"Bar 1...\" and then right-click its first bar: \"This edit's music begins at this bar\".";
+        auto* aw = new juce::AlertWindow ("This edit's pages", msg, juce::MessageBoxIconType::QuestionIcon, place::anchor (getTopLevelComponent()));
+        aw->addTextEditor ("from", juce::String (from), "From page");
+        aw->addTextEditor ("to", juce::String (to), "To page");
+        auto* one = new juce::ToggleButton ("Bar 1 is the first bar on the first of these pages");
+        one->setName ({});                                                 // (the box writes a custom part's name above it: the tick box says it already)
+        one->setToggleState (true, juce::dontSendNotification);
+        one->setSize (420, 26);
+        aw->addCustomComponent (one);
+        aw->addButton ("Use these pages", 1, juce::KeyPress (juce::KeyPress::returnKey));
+        aw->addButton ("All the pages", 2);
+        aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+        juce::Component::SafePointer<ScoreComponent> safe (this);
+        aw->enterModalState (true, juce::ModalCallbackFunction::create ([safe, aw, one, n] (int res)
+        {
+            const int a = aw->getTextEditorContents ("from").trim().getIntValue(), b = aw->getTextEditorContents ("to").trim().getIntValue();
+            const bool barOne = one->getToggleState();
+            delete aw; delete one;                                         // (the box first: it lays out the tick box while it lives)
+            if (safe == nullptr || res == 0) return;
+            if (res == 2) { safe->setPages (0, 0, false); return; }
+            if (a < 1 || b < 1 || a > n || b > n)
+            {
+                juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon).withTitle ("This edit's pages")
+                                                  .withMessage ("The pages go from 1 to " + juce::String (n) + ". Nothing was changed.").withButton ("OK")
+                                                  .withAssociatedComponent (place::anchor (safe->getTopLevelComponent())), nullptr);
+                return;
+            }
+            safe->setPages (juce::jmin (a, b), juce::jmax (a, b), barOne);
+        }));
+    }
+    /** Sets the edit's pages (counted from 1; 0, 0 = all of them). A marked start of the edit's music outside them is let go. */
+    void setPages (int from, int to, bool barOne)
+    {
+        auto* e = edit();
+        if (e == nullptr) return;
+        const int n = (int) sizes.size();
+        if (from <= 1 && to >= n) { from = 0; to = 0; }                    // (all of them)
+        e->scoreFirstPage = from; e->scoreLastPage = to;
+        app.project.markDirty();
+        if (const auto it = bars.editStarts.find (editId.toString()); it != bars.editStarts.end() && ! pageShown (it->second.page))
+        {
+            bars.editStarts.erase (it); barsDirty = true;
+            juce::Logger::writeToLog ("Score: the start marked for \"" + e->name + "\" was outside its pages " + juce::String (from) + "-" + juce::String (to) + " - let go");
+        }
+        juce::Logger::writeToLog ("Score: \"" + e->name + "\" - " + (from > 0 || to > 0 ? "pages " + juce::String (juce::jmax (1, from)) + "-" + juce::String (to > 0 ? to : n) : juce::String ("all the pages"))
+                                  + " of \"" + shown + "\"");
+        barOneOnPage = -1;
+        if (barOne && from > 1) { barOneOnPage = from - 1; if (barOneOnPage < (int) bars.pages.size() && bars.pages[(size_t) barOneOnPage].done) barOneHere (barOneOnPage); }
+        pagesChanged();
+        goToPage (firstPage());
+        if (barsDirty) barsChanged();
+    }
+    /** "Bar 1 is the first bar on that page": that bar is given the number 1 (as "This bar's number is..." does), unless it is 1 already. */
+    void barOneHere (int page)
+    {
+        barOneOnPage = -1;
+        for (auto& b : barList)
+            if (b.page == page)
+            {
+                if (b.number != 1) { bars.setNumber (b.page, b.system, b.index, 1); juce::Logger::writeToLog ("Score: the first bar of page " + juce::String (page + 1) + " is bar 1 (it was counted " + juce::String (b.number) + ")"); barsChanged(); }
+                return;
+            }
+    }
+    /** The edit's pages changed (here, or by Ctrl + Z, or in another window): laid out again, and the edit's start and length worked out again. */
+    void pagesChanged()
+    {
+        rangeShown = rangeKey();
+        const double keep = topNow();
+        layoutPages(); setTop (keep); updateLabel(); wantPictures();
+        marksKey = "?"; laid.clear(); refreshMarks(); givePieceBars();
+        pages.repaint();
+    }
 
     // ------------------------------------------------------------------------------------------------ the edit's score
     void loadFromEdit()
@@ -341,10 +497,12 @@ private:
         const bool any = ! sizes.empty();
         // the page that fills most of the window's top half is "the page" (a page whose last lines are still at the top is not)
         int page = topPage();
-        if (any && page + 1 < (int) rects.size() && rects[(size_t) page].getBottom() < viewport.getViewPositionY() + viewport.getHeight() / 3) ++page;
+        if (any && page >= 0 && page + 1 < (int) rects.size() && page + 1 <= lastPage() && rects[(size_t) page].getBottom() < viewport.getViewPositionY() + viewport.getHeight() / 3) ++page;     // (not before the pages are laid out)
         const auto text = any ? "Page " + juce::String (page + 1) + " of " + juce::String ((int) sizes.size()) : juce::String();
         if (pageLabel.getText() != text) pageLabel.setText (text, juce::dontSendNotification);
-        for (auto* b : { &prevButton, &nextButton, &zoomOutButton, &zoomInButton, &fitButton }) if (b->isEnabled() != any) b->setEnabled (any);
+        for (auto* b : { &prevButton, &nextButton, &zoomOutButton, &zoomInButton, &fitButton, &pagesButton }) if (b->isEnabled() != any) b->setEnabled (any);
+        const auto keyText = ! any || ! hasPageRange() ? juce::String ("All pages") : "Pages " + juce::String (firstPage() + 1) + (lastPage() > firstPage() ? "-" + juce::String (lastPage() + 1) : juce::String());
+        if (pagesButton.getButtonText() != keyText) pagesButton.setButtonText (keyText);
         if (fitButton.getToggleState() != (any && fitWidth())) fitButton.setToggleState (any && fitWidth(), juce::dontSendNotification);
     }
     void rememberView()
@@ -372,7 +530,7 @@ private:
         m.addItem (2, "Open it in the computer's own PDF program", has);
         m.addItem (3, "Show the project's PDFs folder");
         m.addSeparator();
-        m.addItem (5, exporting ? "Saving the marked score..." : "Save the marked score as a new PDF...   (the pages with the takes' brackets on them; this PDF is not touched)", has && ! sizes.empty() && ! exporting);
+        m.addItem (5, exporting ? "Saving the marked score..." : "Save the marked score as a new PDF...   (" + juce::String (hasPageRange() ? "this edit's pages" : "the pages") + " with the takes' brackets on them; this PDF is not touched)", has && ! sizes.empty() && ! exporting);
         m.addSeparator();
         m.addItem (4, "Take the score off this edit  (the file stays in the PDFs folder)", has);
         juce::Component::SafePointer<ScoreComponent> safe (this);
@@ -383,7 +541,7 @@ private:
             else if (r == 2) safe->openOutside();
             else if (r == 3) { auto dir = safe->app.project.pdfsFolder(); dir.createDirectory(); dir.revealToUser(); }
             else if (r == 5) safe->saveMarkedPdf();
-            else if (r == 4) { if (auto* ed = safe->edit()) { ed->score.clear(); ed->scoreTop = 0.0; ed->scoreZoom = 0.0; safe->app.project.markDirty(); safe->loadFromEdit(); } }
+            else if (r == 4) { if (auto* ed = safe->edit()) { ed->score.clear(); ed->scoreTop = 0.0; ed->scoreZoom = 0.0; ed->scoreFirstPage = ed->scoreLastPage = 0; safe->app.project.markDirty(); safe->loadFromEdit(); } }
         });
     }
 
@@ -395,7 +553,7 @@ private:
         const int y0 = viewport.getViewPositionY(), y1 = y0 + viewport.getHeight();
         int first = -1, last = -1;
         for (int i = 0; i < (int) rects.size(); ++i)
-            if (rects[(size_t) i].getBottom() >= y0 && rects[(size_t) i].getY() <= y1) { if (first < 0) first = i; last = i; }
+            if (! rects[(size_t) i].isEmpty() && rects[(size_t) i].getBottom() >= y0 && rects[(size_t) i].getY() <= y1) { if (first < 0) first = i; last = i; }
         if (first < 0) return;
         // the pictures far from the pages in view are let go (they are big); the page before and the page after are drawn ahead
         for (auto it = pictures.begin(); it != pictures.end();)
@@ -405,7 +563,7 @@ private:
         std::vector<Want> list;
         auto add = [&] (int i)
         {
-            if (i < 0 || i >= (int) rects.size() || failed.count (i) != 0) return;
+            if (i < 0 || i >= (int) rects.size() || failed.count (i) != 0 || rects[(size_t) i].isEmpty()) return;
             const auto r = rects[(size_t) i];
             double w = r.getWidth() * px, h = r.getHeight() * px;
             const double most = 3600.0; if (w > most || h > most) { const double f = most / juce::jmax (w, h); w *= f; h *= f; }      // (never a picture bigger than this: zoomed right in, it is stretched)
@@ -425,6 +583,7 @@ private:
     {
         if (auto* e = edit(); e != nullptr && e->score != shown) { loadFromEdit(); return; }      // (another PDF was chosen from the Edit window's key)
         if (sizes.empty()) return;
+        if (rangeKey() != rangeShown) pagesChanged();                     // (3.66.0)
         const double t = topNow();
         if (! restoreTop) top = t;
         updateLabel();
@@ -523,10 +682,17 @@ private:
         }
         sizes = sz;
         say ({}, false, false);
+        rangeShown = rangeKey();
         layoutPages();
         setTop (top); restoreTop = false;
         updateLabel(); wantPictures();
         loadBars();
+        // 3.66.0: a PDF that another edit already has - the movements of one PDF in edits of their own - asks for this edit's pages once
+        if (auto* e = edit(); e != nullptr && ! askedPages && ! hasPageRange() && sizes.size() > 1 && ! otherEditsWithThisPdf().isEmpty())
+        {
+            juce::Component::SafePointer<ScoreComponent> safe (this);
+            juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->askPages (true); });
+        }
     }
     void drawn (int gen, int page, int w, const juce::Image& img)
     {
@@ -613,7 +779,7 @@ private:
     {
         auto* e = edit();
         if (e == nullptr || ! bars.complete() || barList.empty()) return;
-        const int count = scorebars::pieceLength (barList, scorebars::startOrdinal (bars, barList, editId.toString()));
+        const int count = scorebars::pieceLength (barsToLastPage(), startFrom());      // (3.66.0: from the edit's first page, or its marked start, to its last page)
         bool any = false;
         for (auto* w : tiedWindows (*e))
         {
@@ -635,6 +801,7 @@ private:
     {
         if (gen != generation || page < 0 || page >= (int) bars.pages.size()) return;
         bars.pages[(size_t) page].systems = found.systems; bars.pages[(size_t) page].reads = found.reads; bars.pages[(size_t) page].done = true;
+        if (page == barOneOnPage) { recount(); barOneHere (page); }       // (3.66.0: it waited for this page's bars)
         if (found.levelled) juce::Logger::writeToLog ("Score: page " + juce::String (page + 1) + " of \"" + shown + "\" is a scanned or photographed page (turned " + juce::String (found.tilt, 2) + " degrees; its staves laid level before the bars were looked for)");
         barsDirty = true;
         recount();
@@ -746,11 +913,11 @@ private:
                     key << g.id.toString().substring (0, 10) << ":" << s.number << ":" << s.barIn << (s.inGuessed ? "?" : "") << ":" << s.barOut << (s.outGuessed ? "?" : "") << (s.dud ? "d" : "") << ";";
                     list.push_back (s);
                 }
-            key << "from" << scorebars::startOrdinal (bars, barList, editId.toString());
+            key << "from" << startFrom();
         }
         if (key == marksKey) return;
         marksKey = key; spans = std::move (list);
-        marks = scorebars::brackets (barList, spans, scorebars::startOrdinal (bars, barList, editId.toString()));
+        marks = scorebars::brackets (barList, spans, startFrom());
         laid.clear(); pages.repaint();
     }
     /** A bar that was not typed, from the take's sound: a few layings-over of two takes each time this is called (each is a few hundredths
@@ -1004,7 +1171,7 @@ private:
         auto* g = takeOf (s); if (g == nullptr) return;
         const double from = start ? 0.0 : juce::jmax (0.0, g->lengthSeconds() - 8.0);
         const auto err = app.playTake (s.window, s.take, from);
-        if (err.isNotEmpty()) juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::InfoIcon).withTitle ("Take " + juce::String (s.number)).withMessage (err).withButton ("OK").withAssociatedComponent (getTopLevelComponent()), nullptr);
+        if (err.isNotEmpty()) juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::InfoIcon).withTitle ("Take " + juce::String (s.number)).withMessage (err).withButton ("OK").withAssociatedComponent (place::anchor (getTopLevelComponent())), nullptr);
     }
     /** A take's bars, set from the score (as the take window's own Bars box sets them: the edits' pieces from this take follow). */
     void setTakeBars (const juce::Uuid& windowId, const juce::Uuid& takeId, int in, int out)
@@ -1092,7 +1259,7 @@ private:
             else if (r == 3) safe->setTakeBars (s.window, s.take, s.barIn, s.barOut);
             else if (r == 2)
             {
-                auto* aw = new juce::AlertWindow ("Take " + juce::String (s.number), "The bars this take starts and ends in. (An empty end: not known.)", juce::MessageBoxIconType::NoIcon, safe->getTopLevelComponent());
+                auto* aw = new juce::AlertWindow ("Take " + juce::String (s.number), "The bars this take starts and ends in. (An empty end: not known.)", juce::MessageBoxIconType::NoIcon, place::anchor (safe->getTopLevelComponent()));
                 aw->addTextEditor ("in", s.barIn > 0 ? juce::String (s.barIn) : juce::String(), "From bar");
                 aw->addTextEditor ("out", s.barOut > 0 ? juce::String (s.barOut) : juce::String(), "To bar");
                 aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
@@ -1110,7 +1277,14 @@ private:
     {
         double fx = 0.0, fy = 0.0;
         const int page = pageAt (p, fx, fy);
-        if (page < 0 || page >= (int) bars.pages.size() || ! bars.pages[(size_t) page].done) return;
+        if (page < 0) return;
+        if (page >= (int) bars.pages.size() || ! bars.pages[(size_t) page].done)       // (3.66.0: its bars not found yet - the pages can be set all the same)
+        {
+            juce::PopupMenu pm; addPageItems (pm, page);
+            juce::Component::SafePointer<ScoreComponent> safe (this);
+            pm.showMenuAsync (juce::PopupMenu::Options().withMousePosition(), [safe, page] (int r) { if (safe != nullptr && r >= 20) safe->pageItem (r, page); });
+            return;
+        }
         const int system = bars.systemNear (page, fy);
         const auto* sys = bars.systemAt (page, system);
         const int index = sys != nullptr && fx >= sys->x0 - 0.01 && fx <= sys->x1 + 0.01 ? scorebars::Map::indexAt (*sys, fx) : -1;
@@ -1136,13 +1310,15 @@ private:
             m.addItem (7, "Use the bar numbers printed in the score   (where fermata could read them: the green tabs)", true, bars.useReads);
             m.addItem (5, "Count the bars from 1 again   (take off the numbers given by hand)", ! bars.numbers.empty());
             m.addItem (6, "Find the bars of the whole score again   (what was put right by hand is lost)");
+            m.addSeparator(); addPageItems (m, page);
             m.showMenuAsync (juce::PopupMenu::Options().withMousePosition(), [safe, page, system, index, line, fx, number, startsHere] (int r)
             {
                 if (safe == nullptr || r == 0) return;
+                if (r >= 20) { safe->pageItem (r, page); return; }
                 auto& b = safe->bars;
                 if (r == 1)
                 {
-                    auto* aw = new juce::AlertWindow ("Bar number", "The number printed for this bar in the score. The bars after it count on from it.", juce::MessageBoxIconType::NoIcon, safe->getTopLevelComponent());
+                    auto* aw = new juce::AlertWindow ("Bar number", "The number printed for this bar in the score. The bars after it count on from it.", juce::MessageBoxIconType::NoIcon, place::anchor (safe->getTopLevelComponent()));
                     aw->addTextEditor ("n", juce::String (number));
                     aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
                     aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
@@ -1163,8 +1339,28 @@ private:
             return;
         }
         m.addItem (6, "Find the bars of the whole score again   (what was put right by hand is lost)");
+        m.addSeparator(); addPageItems (m, page);
         juce::Component::SafePointer<ScoreComponent> safe (this);
-        m.showMenuAsync (juce::PopupMenu::Options().withMousePosition(), [safe] (int r) { if (safe != nullptr && r == 6) safe->findBarsAgain(); });
+        m.showMenuAsync (juce::PopupMenu::Options().withMousePosition(), [safe, page] (int r) { if (safe == nullptr) return; if (r == 6) safe->findBarsAgain(); else if (r >= 20) safe->pageItem (r, page); });
+    }
+    /** 3.66.0: a right-click on a page - this edit's pages begin or end here, or all of them again. */
+    void addPageItems (juce::PopupMenu& m, int page)
+    {
+        m.addSectionHeader ("This edit's pages  (page " + juce::String (page + 1) + ")");
+        m.addItem (20, "This edit's pages begin at this page", page != firstPage() || ! hasPageRange());
+        m.addItem (21, "This edit's pages end at this page", page != lastPage() || ! hasPageRange());
+        m.addItem (22, "Which pages...");
+        m.addItem (23, "Show all the PDF's pages again", hasPageRange());
+    }
+    void pageItem (int r, int page)
+    {
+        const int n = (int) sizes.size();
+        if (n == 0) return;
+        const int from = firstPage() + 1, to = lastPage() + 1;
+        if (r == 20) setPages (page + 1, juce::jmax (page + 1, to), false);
+        else if (r == 21) setPages (juce::jmin (from, page + 1), page + 1, false);
+        else if (r == 22) askPages (false);
+        else if (r == 23) setPages (0, 0, false);
     }
     void findBarsAgain()
     {
@@ -1196,7 +1392,7 @@ private:
             if (to == source)
             {
                 juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon).withTitle ("Marked score")
-                                                  .withMessage ("That is the score itself. Choose another name: the marked score is a new PDF, and the score stays as it is.").withButton ("OK").withAssociatedComponent (safe->getTopLevelComponent()), nullptr);
+                                                  .withMessage ("That is the score itself. Choose another name: the marked score is a new PDF, and the score stays as it is.").withButton ("OK").withAssociatedComponent (place::anchor (safe->getTopLevelComponent())), nullptr);
                 return;
             }
             safe->startExport (to);
@@ -1207,10 +1403,11 @@ private:
         if (exporting || sizes.empty()) return;
         refreshMarks();
         auto job = std::make_shared<ExportJob>();
-        job->to = to;
+        job->to = to; job->first = firstPage(); job->last = lastPage();
         for (int p = 0; p < (int) sizes.size(); ++p)
         {
             std::vector<ExportFill> fills;
+            if (! pageShown (p)) { job->pages.push_back ({}); continue; }       // (3.66.0: only this edit's pages are saved)
             const juce::Rectangle<float> pageRect (0.0f, 0.0f, (float) (sizes[(size_t) p].x * 0.75), (float) (sizes[(size_t) p].y * 0.75));      // in points (the pages' own unit is 1/96 inch)
             if (takesButton.getToggleState())
                 for (auto& d : layoutOf (p))
@@ -1235,7 +1432,7 @@ private:
             job->pages.push_back (std::move (fills));
         }
         exporting = true; exportDone = 0;
-        fileButton.setButtonText ("PDF 0/" + juce::String ((int) sizes.size()));
+        fileButton.setButtonText ("PDF 0/" + juce::String (lastPage() - firstPage() + 1));
         { const juce::ScopedLock sl (lock); exportWanted = job; }
         notify();
     }
@@ -1275,8 +1472,9 @@ private:
                 stream.setPosition (0); stream.truncate();
                 pdfwrite::Writer writer (stream);
                 const int n = pdfpages::pageCount (doc);
+                const int first = juce::jlimit (0, juce::jmax (0, n - 1), job.first), last = job.last < 0 ? n - 1 : juce::jlimit (first, juce::jmax (first, n - 1), job.last);     // (3.66.0: the edit's pages)
                 ok = n > 0;
-                for (int p = 0; p < n && ok; ++p)
+                for (int p = first; p <= last && ok; ++p)
                 {
                     bool stale = threadShouldExit();
                     { const juce::ScopedLock sl (lock); stale = stale || generation != gen; }
@@ -1292,8 +1490,8 @@ private:
                     if (p < (int) job.pages.size()) for (auto& fill : job.pages[(size_t) p]) addFill (drawing, fill);
                     ok = writer.addPage (uw * 0.75, uh * 0.75, grey.data(), gw, gh, gw, &drawing);
                     if (! ok) error = "The drive would not take the file (is it full?).";
-                    const int done = p + 1;
-                    juce::MessageManager::callAsync ([safe, gen, done] { if (safe != nullptr && gen == safe->generation && safe->exporting) { safe->exportDone = done; safe->fileButton.setButtonText ("PDF " + juce::String (done) + "/" + juce::String ((int) safe->sizes.size())); } });
+                    const int done = p - first + 1, all = last - first + 1;
+                    juce::MessageManager::callAsync ([safe, gen, done, all] { if (safe != nullptr && gen == safe->generation && safe->exporting) { safe->exportDone = done; safe->fileButton.setButtonText ("PDF " + juce::String (done) + "/" + juce::String (all)); } });
                 }
                 if (ok) { ok = writer.finish (job.to.getFileNameWithoutExtension()); if (! ok) error = "The drive would not take the file (is it full?)."; }
                 stream.flush();
@@ -1308,16 +1506,16 @@ private:
         exporting = false;
         fileButton.setButtonText ("PDF...");
         if (error == "stopped") return;
-        juce::Logger::writeToLog (ok ? "Score: the marked score saved as " + to.getFullPathName() + " (" + juce::String ((int) sizes.size()) + " pages, " + juce::File::descriptionOfSizeInBytes (to.getSize()) + ")"
+        juce::Logger::writeToLog (ok ? "Score: the marked score saved as " + to.getFullPathName() + " (" + juce::String (lastPage() - firstPage() + 1) + " pages, " + juce::File::descriptionOfSizeInBytes (to.getSize()) + ")"
                                      : "Score: the marked score could not be saved to " + to.getFullPathName() + ": " + error);
         if (! ok)
         {
-            juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon).withTitle ("Marked score").withMessage ("The marked score could not be saved.\n" + error).withButton ("OK").withAssociatedComponent (getTopLevelComponent()), nullptr);
+            juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon).withTitle ("Marked score").withMessage ("The marked score could not be saved.\n" + error).withButton ("OK").withAssociatedComponent (place::anchor (getTopLevelComponent())), nullptr);
             return;
         }
         juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::InfoIcon).withTitle ("Marked score")
                                           .withMessage ("Saved: " + to.getFileName() + "\n(" + to.getParentDirectory().getFullPathName() + ")\n\nIts pages are pictures of the score with the takes' brackets on top; the score's own PDF is as it was.")
-                                          .withButton ("Open it").withButton ("Show it in its folder").withButton ("Close").withAssociatedComponent (getTopLevelComponent()),
+                                          .withButton ("Open it").withButton ("Show it in its folder").withButton ("Close").withAssociatedComponent (place::anchor (getTopLevelComponent())),
                                       [to] (int r) { if (r == 1) to.startAsProcess(); else if (r == 2) to.revealToUser(); });
     }
 
@@ -1356,7 +1554,11 @@ private:
     Pages pages;
     juce::Viewport viewport;
     juce::TextButton prevButton, nextButton, zoomOutButton, zoomInButton, fitButton, barsButton, smallerButton, biggerButton, fileButton, chooseButton, outsideButton;
+    juce::TextButton pagesButton;                                          // 3.66.0: this edit's pages
     ScoreMenuKey takesButton;
+    juce::String rangeShown = "?";                                         // 3.66.0: the edit's pages as laid out ("5-8", "" for all of them)
+    int barOneOnPage = -1;                                                 // ... "Bar 1 is the first bar on that page", waiting for that page's bars to be found
+    bool askedPages = false;                                               // ... the window has asked for this edit's pages once
     juce::Label pageLabel, message;
 };
 

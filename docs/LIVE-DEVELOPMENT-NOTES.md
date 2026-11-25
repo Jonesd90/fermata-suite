@@ -2,6 +2,24 @@
 
 The brief is in `docs/LIVE-BRIEF.md`, and the rules shared with fermata are in `COMPATIBILITY.md`. Newest entries come first.
 
+## 0.10.11: the Fixer's coloured waveforms; the knock weighting (23 November 2026, with Claude Opus)
+
+Asked for on 23 November: "fermata:live should have the coloured waveform display too", and the knock weighting of fermata 3.61.0. The Primary
+has had its Colours button since 0.5.0; the Fixer had none. `FixerComponent` now has the same pieces as the Primary: `colourBtn`
+(`MenuTextButton`, new in `LiveTakeView.h`: a TextButton with a right-click), on the status line beside Look...; `fileColours`
+(`WaveColorCache`, the project's Waveforms folder - finished takes) and `liveColours` (`LiveColours` - a take recording, from the session's chunks;
+only when the layout knows the session's folder, i.e. the session is on this computer: `feedColours`, called on the view's timer); both stopped
+first in the destructor and declared before the view. `FixerApp::colourWaves` / `knockWeight` (the station's own settings). The knock weighting
+(`knockweight`, `src/ui/WaveColor.h`, shared): `showKnockMenu` (`LiveTakeView.h`) on right-click of Colours, in both stations; the weighting is
+stored per station (`knockWeight`) and set into `knockweight::level()` when the window is made and when chosen. `LiveColours` keeps each block's
+share below 100 Hz (`Track::low`) and draws with `knockweight::shownAt`; each batch of blocks is read from half a block earlier (`lead`), so
+every block but the session's first is analysed with the half block before it (`BlockAnalyser::colour`'s `before`: the second window that
+measures a knock at a block's edge fully - see fermata's DEVELOPMENT-NOTES 3.61.0).
+
+**Checked** (Linux, trial only): fermata:Live compiles and links; the shared analysis and weighting are tested in fermata (3.61.0). Not
+tried: the Fixer's Colours button on screen, `LiveColours` with the half block before (no session could be recorded and read here; the
+read is from `from * kBlock - lead`, lead = half a block, 0 at the session's start).
+
 ## 0.9.0: fermata's looks in fermata:Live (10 November 2026, with Claude Fable)
 
 - **`src/live/LiveLook.h`** is all of it: `look::install (settings)` (called in `PrimaryApp`'s and `FixerApp`'s constructors, right after the

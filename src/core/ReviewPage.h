@@ -48,6 +48,7 @@ struct Spec
     double       durationSeconds = 0;
     std::vector<int> peaks;          // min, max pairs, -100..100 (see computePeaks)
     std::vector<PastLane> history;   // 3.51.0: the comments so far, a lane for each version that has any (empty: the page looks as it did)
+    juce::String editor;             // 3.61.0: the piece editor's name (the page shows their replies as "Name (Piece Editor)"; empty: "Editor")
 };
 
 /** Min / max of the louder of the two channels in 'columns' slices of 'file' (times 'gain'), as pairs in -100..100. */

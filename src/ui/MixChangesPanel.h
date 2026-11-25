@@ -145,7 +145,7 @@ private:
         juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::QuestionIcon)
             .withTitle ("Put back the whole mix")
             .withMessage ("Set this mixer as it was when " + e->versionTitle (n) + " was frozen - every fader, pan, send, low cut and plug-in?")
-            .withButton ("Put back").withButton ("Cancel").withAssociatedComponent (this),
+            .withButton ("Put back").withButton ("Cancel").withAssociatedComponent (place::anchor (this)),
             [safe, n] (int r)
             {
                 if (safe == nullptr || r != 1) return;

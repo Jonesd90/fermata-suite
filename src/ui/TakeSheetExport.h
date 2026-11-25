@@ -18,11 +18,11 @@ inline void exportTakeSheet (AppContext& app, const juce::Uuid& windowId)
     int takes = 0; for (auto& s : sections) takes += (int) s.rows.size();
     if (takes == 0)
     {
-        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Take sheet", windowId.isNull() ? "No takes have been recorded in this project yet." : "No takes have been recorded in this take window yet.");
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Take sheet", windowId.isNull() ? "No takes have been recorded in this project yet." : "No takes have been recorded in this take window yet.", {}, place::anchor());
         return;
     }
     auto folder = (P.projectFolder() != juce::File() ? P.projectFolder() : juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)).getChildFile ("Take Sheets");
-    if (! folder.createDirectory()) { juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Take sheet", "Could not make the folder " + folder.getFullPathName()); return; }
+    if (! folder.createDirectory()) { juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Take sheet", "Could not make the folder " + folder.getFullPathName(), {}, place::anchor()); return; }
     const auto what = windowId.isNull() ? P.name : (P.findTakeWindow (windowId) != nullptr ? P.findTakeWindow (windowId)->name : juce::String ("Takes"));
     const auto base = juce::File::createLegalFileName (what + " - take sheet " + juce::Time::getCurrentTime().formatted ("%Y-%m-%d"));
     const auto pdfFile = folder.getChildFile (base + ".pdf"), csvFile = folder.getChildFile (base + ".csv");
@@ -45,7 +45,7 @@ inline void exportTakeSheet (AppContext& app, const juce::Uuid& windowId)
     }
     if (! okPdf || ! okCsv || ! okChart)
     {
-        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Take sheet", "Could not write " + (! okPdf ? pdfFile : ! okCsv ? csvFile : chartFile).getFullPathName() + " (is it open in another program?)");
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Take sheet", "Could not write " + (! okPdf ? pdfFile : ! okCsv ? csvFile : chartFile).getFullPathName() + " (is it open in another program?)", {}, place::anchor());
         return;
     }
     juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::InfoIcon).withTitle ("Take sheet")

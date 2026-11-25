@@ -18,6 +18,27 @@
 
 namespace td::live
 {
+/** 0.10.11: a text button that also has a right-click menu (the Colours button: the knock weighting). */
+class MenuTextButton final : public juce::TextButton
+{
+public:
+    using juce::TextButton::TextButton;
+    std::function<void()> onMenu;
+    void mouseDown (const juce::MouseEvent& e) override { if (e.mods.isPopupMenu()) { menuPress = true; if (onMenu) onMenu(); return; } juce::TextButton::mouseDown (e); }
+    void mouseUp (const juce::MouseEvent& e) override { if (menuPress) { menuPress = false; return; } juce::TextButton::mouseUp (e); }
+private:
+    bool menuPress = false;
+};
+
+/** 0.10.11: the Colours button's right-click menu - how readily a knock is drawn black (knockweight, src/ui/WaveColor.h). 'chosen' gets 0 - 3. */
+inline void showKnockMenu (juce::Component* target, int current, std::function<void (int)> chosen)
+{
+    juce::PopupMenu m;
+    m.addSectionHeader (knockweight::menuHeading());
+    for (int i = 0; i < 4; ++i) m.addItem (1 + i, knockweight::menuItem (i), true, i == current);
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (target), [chosen] (int r) { if (r >= 1 && r <= 4 && chosen) chosen (r - 1); });
+}
+
 class LiveTakeView final : public juce::Component, public juce::SettableTooltipClient, private juce::ScrollBar::Listener
 {
 public:

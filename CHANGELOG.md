@@ -6,6 +6,256 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.66.0
+Built 24 November 2026 (the conversation for both programs), with Claude Opus. Asked for on 24 November: "in the PDF viewer ... the PDF I have
+contains four movements in one single document but the four movements are split over 4 separate take and edit windows. Can we make a function
+to tell fermata which pages of the PDF that edit and take window is referring to".
+- **Each edit can have its own pages of the score.** The score window has a new **Pages** key (it says "All pages", or e.g. "Pages 5-8"):
+  click it to set this edit's first and last page. Or right-click any page: "This edit's pages begin at this page", "... end at this page",
+  "Which pages..." and "Show all the PDF's pages again".
+  - Only those pages are shown (Page Up / Page Down, Home and End stay within them), and Save the marked score saves only those pages.
+  - This edit's bars are counted from the first bar of its first page, so the takes' brackets land in this movement and not in the first
+    one, and the "bars in the piece" given to its take window is this movement's (it stops at the edit's last page).
+  - **"Bar 1 is the first bar on the first of these pages"** (ticked) gives that bar the number 1, as "This bar's number is..." does, so
+    the movement's bars are numbered from 1. Untick it when the movement starts part-way down a page, then right-click its first bar: "This
+    edit's music begins at this bar" (as before) - and "This bar's number is..." if it is not counted as 1.
+  - **The first time a PDF that another edit already has is opened in an edit's score window, fermata asks for this edit's pages** and
+    suggests the pages after the other edit's (pages 4-6 taken: it offers 7 to the end).
+  - The bars are still found once for the whole PDF and shared by every edit that has it. Choosing another PDF for an edit, or taking the
+    score off, sets its pages back to all of them.
+- **Shared:** `EditDef::scoreFirstPage` / `scoreLastPage` (`src/core/Edit.h`), saved in the edit's file only when set, a view like where
+  the score window was looking (not undone) - `src/core/Project.cpp`. fermata:Live is rebuilt as 0.10.12 (nothing of its own changed).
+- Checked here, on the Linux build (trial only), with a 12-page PDF of four pieces given to two edits: the first edit's score window asking
+  for its pages (another edit had the PDF); pages 4-6 - only they shown, Page Down / End stopping at page 6 and Page Up / Home at 4, the first
+  bar of page 4 made bar 1 (it was counted 39), the take window given 38 bars instead of 152; the second edit asking with 7-12 suggested;
+  the pages kept when the project was saved and opened again; a take with bars 2-5 bracketed on page 4 (not page 1); the marked PDF saved
+  with pages 4-6 only (3 pages); the right-click page items. Run again for the shared change: the compatibility check, the core tests (with
+  new checks: the pages saved and read back, kept when the same PDF is chosen again, cleared by another), both programs' window code (no
+  warnings) and the Windows-only code - all passed. Not checked: Windows (its PDF reader is Windows' own; GitHub builds it).
+- A crash found in the trial and mended before delivery: the page line was read before the pages were laid out (the window closed fermata as
+  it opened a score). It never reached a build you had.
+
+## 3.65.0
+Built 24 November 2026 (the conversation for both programs), with Claude Opus. Asked for on 24 November, with a screenshot of a take window: "I
+want to know how long the selected take is, as well as the length of time between the 1 and 2 markers. The text that starts: 'EDIT 002 -
+Cathedral 01 - W...' is cut short, but it seems nothing is in the way ... Can we either just use up all the available space there OR make it so
+that hovering over that text brings up a secondary box that writes out the full text there and also shows the length of the take selected?"
+Both are done.
+- **The marks line under the readouts uses all the room there is.** It stopped at the right edge of the time readout whenever the buttons
+  beside the readout took two lines, even though the space to the right of it was empty (the buttons' lines were counted 4 pixels deeper
+  than the buttons). It now runs to the window's right edge whenever no button is beside it. In a window so narrow that the buttons take three
+  lines, it still stops at the readout's edge.
+- **It also says how long the take is, and the time from Mark 1 to Mark 2 in minutes and seconds:** "EDIT 002 - Cathedral 01 - West Door
+  (03:52.416 long):  Mark 1 03:19.204   Mark 2 03:56.324   (1 to 2: 00:37.120)". Before, the 1-to-2 time was in seconds at the very end
+  ("(37.12 s)"), the part that was cut off. With no marks: "Playhead: 003 - ... (02:10.500 long)  01:02.250".
+- **Hovering over the line opens a box with it all written out:** the take's full name, its length, Mark 1 and Mark 2, Mark 1 to Mark 2, and
+  the length of each other selected take (Ctrl + click adds takes to the selection).
+- Checked here, on the Linux build (trial only): a 1900 px wide take window with the buttons on two lines beside the readout - the line written
+  out in full past the readout's edge; the 1440 px window with three lines of buttons - stopped at the readout, as before; the hover box with
+  the marks' take and a second selected take. Not checked: the Windows build (GitHub builds it).
+
+## 3.64.0
+Built 24 November 2026 (the conversation for both programs), with Claude Opus. Asked for on 24 November, after a Make a stereo track box opened
+on a second screen that nothing showed (the PC's HDMI output goes to a fibre distribution box, so Windows always thinks there are two screens) and
+fermata seemed stuck: "WITH THE EXCEPTION of the 'Take Display' screen, we absolutely should make it so that all the windows open over the window
+you clicked in"; and, for moving a track's clips onto another track, "the option to 'remove the current track from take window' and 'Delete track
+from the project' ... It should remember the previously used option (there would also be a 'keep audio track' option too)".
+- **Every window and box opens over the window you clicked in.** Boxes (questions, messages, settings), dialogs (the fix tools, imports,
+  exports), the program's windows (take, edit, mixer, mastering ...), Audio settings and plug-in windows. Why the stereo box went to the other
+  screen: a box was centred on the middle of the take window's timeline, which is much wider than the window (it scrolls inside it), so the middle
+  could be far to the right - on the other screen. And a window with nothing to go by opened in the middle of Windows' main screen, whichever
+  screen fermata was on.
+  - A window that remembers where it was (a mixer, a take window ...) goes back there only when that place is on the same screen as the window
+    you clicked in; otherwise it opens over that window, at its remembered size. (So a window you keep on the other screen comes back to the
+    screen you are working on each time it opens.)
+  - Anything else that still opens on another screen is moved over the window you clicked in at once (and fermata-log.txt says so).
+  - The Take Display screens are left alone: they belong on the other screens. Windows' own Open / Save boxes are placed by Windows.
+- **Moving a track's clips asks what then happens to that track.** Right-click a track name > "Move its clips onto ..." (or "onto another
+  track", or "Move the clips of all ... tracks named like this"): the box that asks also has **Keep the track**, **Remove it from this take
+  window** and **Delete it from the project** - the one you chose last time already chosen, so Enter does the same again.
+  - Delete only deletes a track with no audio left anywhere in the project. If it still has some (in another take window, or an edit not made
+    from these takes), it is removed from this take window instead, and the status line says so.
+  - Ctrl + Z puts the clips back (with Remove, the track's row comes back too) - but not after Delete: deleting a track cannot be undone, so
+    its clips stay where they went. The box and the status line say so.
+  - Dragging clips onto another track does not ask (it moves only the clips you drag).
+- Checked here, on the Linux build (trial only), with two screens side by side made for the test: the stereo box from a long take window opens
+  over the take window (with JUCE as fermata used it, the same box lands on the right-hand screen - shown by a small test program); a take window
+  remembered on the right-hand screen opens over the main window at its remembered size; a box made to open on the other screen is moved over
+  its window at once, and one on the right screen is left alone; the move box with its three choices, the last answer already chosen the next
+  time; Move + Delete (the track gone, the status line saying Ctrl + Z cannot bring it back); Move + Remove, then Ctrl + Z (the clip and the row
+  back). Not checked: a real second screen or the fibre box on Windows, and the Windows build (GitHub builds it).
+
+## 3.63.0
+Built 23 November 2026 (the conversation for both programs), with Claude Opus - to be gone over with Claude Fable later ("Build it all now with
+Opus, and then we will do a pass with Fable later to stabilise it all"). Asked for on 23 November: a tuning line ("a tool that is used both
+during the take window use (to show quickly after a take how the pitch of the take is and where it goes up or down) ... process while the take
+is being recorded so the user can see it live and then it gets stored for viewing after and during editing"; "the option to show/hide the
+tuning line ... a fixed pitch called 'Absolute' (i.e. A=440 or any other Hz for A) or ... 'Relative' mode, where the tuning is relative to the
+starting pitch"); and two Import AAF fixes after an imported edit showed one nearly empty row instead of its twenty tracks.
+- **The tuning line.** A new **Tuning** button in the take and edit windows (beside WaveColour: a little line rising and falling). Lit, a lane
+  under the take banners shows the ensemble's tuning across each take: a reading every 2 seconds (each from 4 seconds of music), green on pitch,
+  red going sharp, blue going flat, +-25 cents across the lane. It is measured the way the ReHarmoniser's Ensemble ReCentre measures the choir's
+  own A: the steady, held pitches of the four loudest channels. Each take shows where it ends (Relative) or where it starts and ends (Absolute)
+  at its left; hover over the line for the value at that moment, both ways. The lane's name box (or a right-click on the button) has the
+  settings:
+  - **Relative** (the default): cents from where each take starts - in an edit window, from where the edit starts, so joining a take that has
+    gone flat to one that has not shows as a step. (An edit imported from an AAF finds each piece's take by the file it plays.)
+  - **Absolute**: cents from A = 440 Hz, or the A you set ("Set A for Absolute...": 442, 415, ...).
+  - **Measure from**: the loudest channels at each moment (the default), or the tracks you tick (the main pair, say: a spot mic would show
+    that one player's tuning).
+  - Show / hide; **Measure every take again**.
+  The mode, A and tracks are kept with the project; shown / hidden is remembered on this computer.
+- **Live while recording.** With the tuning line shown when Record is pressed, the take is measured as it comes in and the line grows along it
+  (a running "now -6 c" at its left); when the take is finished its line is kept, without reading the files again. Takes recorded without it,
+  imported takes, and takes measured from other tracks are measured from their files in the background (never while a take records: the
+  lane says "measuring..." until then). Each take's line is kept in the project's Analysis folder, so it is measured once.
+- It needs held, pitched notes - choir, strings, wind, organ. Fast passages, percussion, piano and silence leave gaps. A reading is good to about
+  2 to 3 cents; a drift of more than a quarter-tone still reads as one line.
+- **Import AAF: one Pyramix track, one row.** Each Pyramix track's clips go onto the fermata track that most of its clips' files are on. A clip
+  whose file is a Pyramix render with a name of its own (a pitch correction or a CEDAR ReTouch pass) goes onto that row too, as long as it has
+  the same number of channels - before, it went onto a track of its own (the odd "Ice Shining 018 20 {...}" row). The summary says how many.
+- **Every track an edit plays has a row.** Import AAF gives every track the edit's pieces play a row; and when a project opens, an edit whose list
+  of rows leaves out a track it plays (an AAF imported before this build could) gets that track back as a row, at the bottom. Its audio played
+  all along; now it shows.
+- Checked here: a test program for the measuring (a slow drift read to within 1.6 cents; the live path and the file path giving the same
+  line; A = 442; an 80-cent drift staying one line; silence, white noise and a rumbling room giving no readings; a live reader that falls
+  behind marking its line for measuring again; the store writing each take's line once and then nothing more). On the Linux build (trial
+  only), a made-up project with a drifting take, a sharp one and a Pyramix-style render, and an AAF of an edit of them: the lane in the take
+  window (Relative and Absolute at A = 442 - the sharp take read -9 to -22 c, as it was made), the hover value, the settings menu and the
+  Set A box; the lane in the edit window both ways, on the pieces imported from the AAF too; the AAF import putting the render's piece on its
+  track's row (the summary said so); and an edit saved with a row missing getting it back when the project opened. Not checked: a real
+  recording (there is no audio device here - the live path ran only in the test program, on made-up feeds), and the Windows build (GitHub
+  builds it).
+
+## 3.62.0
+Built 23 November 2026 (the conversation for both programs), with Claude Opus. Asked for on 23 November: the name of each clip's file on the
+clip, "in very small writing ... starting from the top left corner. Just so I can identify which physical file each audio clip refers to";
+and an "import source tracks to project folders" button for audio a project uses from outside its own folder.
+- **Each clip shows its file's name.** In the edit window (every piece and overdub, on every track) and the take window (every take, on every
+  track), the name of the audio file that clip plays is written small on a dark strip at its top-left corner. When a clip starts left of
+  the window the name stays at the window's left edge, so it can still be read; on a narrow clip it is cut short ("..."), and it is left out
+  where the row is too low to hold it. In the take window it keeps clear of the DUD / Bar words along the bottom.
+- **Project > Import source tracks to project folders...** Copies every audio file the project plays from OUTSIDE its own folder into it,
+  and then plays the copies: files imported with "Use the audio files where they are", an AAF import's audio found in another folder, files
+  found again on another drive. First a box lists them (how many, how big, the first ten and where each is used) and asks "Copy them in" /
+  Cancel. Each file is copied, read back and checked against the original before the project uses it: a take's files go into its take
+  window's folder in Recorded Media, files only an edit plays into Recorded Media/From elsewhere; a name already there gets " (2)". The
+  project is saved before and after. **Your original files are not changed or deleted** - delete them yourself once you are happy. Cancel
+  (or closing the window) while it copies deletes the copies made so far and changes nothing. Files that cannot be found are listed and
+  left as they are; parts waiting for corrected audio (Export for Processing) are left alone. Like Find missing audio files, Ctrl+Z does
+  not undo it (the save before is the project's .bak). The import and Import AAF boxes now mention it where they say files are not copied.
+- **Shared:** `src/core/AudioGather.h` is new (fermata only: fermata:Live does not include it and is unchanged at 0.10.11).
+- Checked here: the core tests (all pass; new: what is planned - two files of one name, a file only an edit plays, a file recorded here
+  left alone, a missing one listed -, a cancel part way leaving nothing behind, the copies byte for byte with the originals' dates, the
+  project pointed at them - the takes and the edit's pieces -, saved and read back, a second look finding nothing, a plan not used on
+  another project). On the Linux build (trial only), a project with one take imported "where it is" and one recorded into it, and an edit
+  of both: the file names on every clip in the edit and take windows (a piece starting off screen keeps its name at the left edge); then
+  Import source tracks to project folders: the box listed the two outside files, Copy them in copied them into Recorded Media/Sonata, the
+  saved take and edit files then named the copies, the originals were untouched, and a second try said nothing needs copying.
+
+## 3.61.0
+Built 23 November 2026 (the conversation for both programs), with Claude Opus. Asked for on 23 November: a way to weight WaveColour so that a
+quieter knock on a stand is drawn black too, "in the same way that the waveform button can have a menu about how heavy the waveform display
+compression is"; the same box at the end of every export; and three changes to the listening copies.
+- **How readily a knock is drawn black.** Right-click the rainbow WaveColour button (take window, edit window): Normal (as before), Light,
+  Medium or Strong. Black has always meant a block (about a tenth of a second) whose sound is more than half below 100 Hz. A knock under the
+  music is less than half, so it kept the music's colour. With a weighting, a block is also black when its sound below 100 Hz is a smaller
+  share (Light 30 %, Medium 18 %, Strong 8 %) AND it came suddenly (at least 2.5 times the block before). A sustained deep bass note (organ
+  pedals, double basses) does not come suddenly, so it keeps its colour, though at Strong one that starts suddenly can turn its first moment
+  black. A knock is now measured the same wherever it falls in its tenth of a second: before, one landing near the edge between two blocks
+  was measured at a tenth of its size or less, so the same knock was caught or missed by chance. Near-silence is left alone. Choose the
+  lightest weighting that catches your knocks. The change is drawn at once (nothing is worked out
+  again), in every window, while recording too. Choosing a weighting switches WaveColour on, and black dots on the button show a weighting
+  above Normal (one, two or three). Remembered on this computer.
+- To make that possible each block's colour now keeps how much of it is below 100 Hz (one byte, added to the end of the saved colour files in
+  the Waveforms folder). **A take's colours saved by an earlier version are worked out once more** the first time it is shown: on an existing
+  project the colours come back over a few moments, as when it was first opened.
+- **The same box at the end of every export.** Bounce Out, the Virtual Master (with its stems), the DDP, the listening copies, the Atmos
+  files, Export AAF and Export for video edit: once the bar reaches 100 %, a box says what was exported, what each file is called (the
+  first 15, then how many more) and where it is, with Show the files and OK. Before, some said so in a box and some only on their status
+  line. When the box is closed, the bar empties and reads **Export complete** until the next export starts. (The renders the Mastering
+  window makes by itself for its player are not exports and say nothing.)
+- **Listening copies (the feedback page).**
+  - **Instructions:** the long explanations ("What was said about each version...", how comments are saved and sent back) have gone from
+    the page into an **Instructions** box. It opens by itself the first time the page is opened (in that browser), and the Instructions
+    button at the top brings it back.
+  - **A name before commenting:** a listener has to type their name (top right) before they can add a comment or a reply. Without it,
+    the name box is marked red and the page says why. The Add button is dimmed, with "Type your name at the top right to add comments"
+    beside it.
+  - **The editor's name:** the Listening copy tab has a **Your name** box (the same name your notes in the edit window are written with,
+    kept on this computer). Your replies are then shown as "David Jones (Piece Editor)" instead of "Editor": in the conversation, and on
+    the line above the picture ("Edit 1: David Jones (Piece Editor)", the column of line names widening to fit). Replies written with no
+    name take it too.
+- **Shared:** `knockweight` and each block's share below 100 Hz (`WaveColorData::low`, `BlockAnalyser::colour`'s `lowShare`, the end of a
+  `.fwcol` file) in `src/ui/WaveColor.h`; `AudioEngine::LiveFeed::low` (`src/core/AudioEngine.h`); `RainbowButton::onMenu` and its dots
+  (`src/ui/Uikit.h`); the listening copy page (`src/core/ReviewPageTemplate.inc`, `ReviewPage.h` / `.cpp`: `Spec::editor`) and
+  `MasterJobSpec::editorName` (`src/core/MasterExport.h` / `.cpp`). fermata:Live 0.10.11 uses the colours too. See `COMPATIBILITY.md`.
+- Checked here: the core tests (all pass). The knock weighting's own test: a knock under a chord at 16 places across a block - at 0.10 caught
+  by Strong only, at 0.18 by Medium and Strong, at 0.28 by Light too, never by Normal, never more than two blocks; an organ pedal fading in
+  never black at Normal, Light or Medium (one block at most at Strong); the colour file saved with the shares, read back, an old one worked
+  out again. The 3.59.0 test of the colours while recording: still exactly the file's own, shares too. On the Linux build (trial only), a
+  take with knocks of 0.10 / 0.18 / 0.28 / 0.45 under a chord at 4 / 8 / 12 / 16 s and an organ pedal on another track: Normal blackened
+  the 16 s knock only, Light 12 and 16 s, Medium 8, 12 and 16 s, Strong all four; the organ pedal kept its colour at every weighting; the
+  menu ticked the one in use and the button showed its dots. Bounce Out: the box (Bounce complete, the file's name, the folder, the
+  loudest peak), then OK left the bar empty reading Export complete. The listening copy in a browser: the Instructions box opened the
+  first time and not on a reload, the button brought it back; Add refused without a name (the name box marked red, the reason given) and
+  opened once one was typed; the editor's replies and the line above the picture read "David Jones (Piece Editor)". Not tried on screen:
+  the other exports' boxes (the same code as Bounce Out's) and the Listening copy tab's Your name box.
+
+## 3.60.1
+Built 23 November 2026 (the conversation for both programs), with Claude Opus. Asked for on 23 November, after seeing 3.60.0's stereo link.
+- **ST L / ST R in the middle of the display.** On a stereo-linked input strip the tag now sits centred in the black display, between your
+  name for the input and the driver's name, and your name has the display's whole width again (in 3.60.0 the tag was at the right-hand end
+  of the name line).
+- Checked here: on the Linux build (pretend preamps, trial only), inputs 1 and 3 linked: ST L and ST R centred between "name" and
+  "01-110 Hz" / "03-330 Hz". No change to the shared code; fermata:Live is unchanged (0.10.10).
+
+## 3.60.0
+Built 23 November 2026 (the conversation for both programs), with Claude Opus. Asked for on 23 November: three things for the edit window's
+automation, and three for the meter bridge and the main window's input strips.
+- **Each lane's value at the playhead.** The label at the bottom of each automation lane's name ("Fader v", "Pan v" ...) also shows the lane's
+  value where the playhead is, in gold at its right-hand end ("-3.0 dB", "L30", a plug-in's own words). It follows the playhead while the edit
+  plays and stays at the cursor when it is stopped. A lane with no points shows where its control stands in the mixer, which is what it plays.
+- **Snap for automation.** Each lane has a magnet button beside its padlock. It is on unless you switch it off. With snap on, a click anywhere
+  in the lane puts the new point on the line, at the level already there at that moment, however high or low the click was. Between two
+  points it goes on the slope between them, so nothing changes until you move it. Keep the mouse button held and drag (or click the point
+  again and drag) to move it up or down. It moves by as much as the mouse does, from where it is, and catches the levels of the lane's other
+  points on the way (and its own starting level), shown by a dashed line across the lane. Alt + drag: ten times finer, nothing caught. Click
+  the magnet to switch snap off for that lane: a point then goes where you click, as before. The setting is saved with the project, and
+  Ctrl + Z undoes it.
+- **Every point's value beside it.** Each automation point shows its value in a small box beside it (above and to its right; under the line
+  near the top of the lane; on its left at the right-hand edge). Where two boxes would overlap, or a box would cover another point, those
+  boxes are left out, and only those. Zoom in and they come back. Rows too short to hold them show none.
+- **Meter bridge: "Used I/O only".** A tick box beside Reset peaks. Ticked, the bridge shows only the inputs a track records from (a strip
+  in the mixer) and the outputs something is routed to: an Ext Bus of any mixer, a talkback pair, the click, the pitch pipe and LTC out. It
+  follows the routing by itself as it changes. Each meter keeps its real number, and the captions say how many of how many are shown.
+  Unticked: every input and output of the driver. Remembered.
+- **Input strips with no preamp controls.** The meter runs the length of the strip, from under the name display down to the TALK key, with
+  more marks on its scale (0, -3, -6, -9, -12, -20, -30, -40, -50). Before, it was a short meter under an empty space. The GAIN caption
+  over nothing is gone. Strips with preamp controls are as they were (the knob and keys fill them).
+- **Stereo-linked preamps.** Right-click an input strip in the main window and choose "Make left channel of stereo input", then click the
+  input that becomes the right channel. The right one takes the left one's preamp settings at once, and from then on a preamp control
+  changed on either (gain, 48V, pad, low cut, Mic / Line, phase ...) is changed on both. That includes changes from the Stream Deck and the
+  control surface. Only the preamp controls are linked: tracks, monitoring and everything else treat the two inputs as before. The strips
+  show ST L / ST R, and right-click either to unlink them. Esc, a right-click or a click on the left strip again cancels the pick. Saved with
+  the project.
+- **GitHub:** each build's downloads are now kept for 3 days (GitHub's default is 90), so they no longer fill a free account's 500 MB of
+  artifact storage. When that storage was full, the build still ran but its downloads could not be stored ("Artifact storage quota has
+  been hit").
+- **Shared:** `AutoLane::snap` (`src/core/Automation.h`); stereo-linked preamps (`Project::preampLinks`, `preampPartner`, `isPreampLeft`,
+  `linkPreamps`, `unlinkPreamps`; `setPreamp` sets both inputs of a pair) and the project file's `"snap"` / `"preampLinks"` keys
+  (`src/core/Project.h`, `.cpp`); `desk::DeskScale::fine` (`src/ui/DeskLook.h`). See `COMPATIBILITY.md`.
+- Checked here: the core tests (all pass; new: snap on by default, saved only when off, kept by a reload, its own undo step, and points put
+  on the line - before the first point, on a slope, after the last - changing nothing the lane plays; stereo-linked preamps - the right
+  takes the left's settings and the hardware is told, either one sets both, a pair saved and read back, a new pair replacing the old,
+  unlinking). On the Linux build, with a pretend audio device and pretend preamps on inputs 1 - 8 (trial only): the lane values at the
+  cursor (at 10 s: -5.6 dB on a slope, L43, -6.0, -10.0 dB); a click high above a lane put the point at -3.0, on the line; a new pan point
+  dragged down was caught on another point's centre value, with the dashed line; the boxes beside the points, those too close together
+  left out and shown again after zooming in; the magnet lit on every lane but the one saved with snap off; inputs 9 - 16 (no preamps)
+  with meters the length of the strip; inputs 1 and 3 linked through the right-click and the pick (3 took 11.0 dB, 48V and PAD; gain and
+  low cut changed on 3 were sent to both), ST L / ST R, unlinked again; the meter bridge with Used I/O only ticked showing inputs 1 - 4 of
+  16 and outputs 1 - 2. Not tried: Windows, the real preamps and the routing changing while the bridge is open.
+
 ## 3.59.0
 Built 23 November 2026 (the conversation for both programs), with Claude Opus. Asked for on 23 November: the coloured waveforms (WaveColour)
 while a take is being recorded - they only came once the take was finished.

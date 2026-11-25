@@ -5,17 +5,23 @@
 #include "RxLink.h"
 #include "../core/TrackLayout.h"
 #include "../core/StereoJoin.h"
+#include "../core/AudioGather.h"
+#include "WindowPlace.h"
 
 namespace td { namespace fixtools
 {
 // ======================================================================================================== helpers every tool uses
 void say (const juce::String& title, const juce::String& text)
 {
-    juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::InfoIcon).withTitle (title).withMessage (text).withButton ("OK"), nullptr);
+    juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::InfoIcon).withTitle (title).withMessage (text).withButton ("OK")
+                                      .withAssociatedComponent (place::anchor()), nullptr);            // (3.64.0: over the window you clicked in)
 }
 
 void launchDialog (std::unique_ptr<juce::Component> content, const juce::String& title, juce::Component* around, bool resizable, std::function<bool()> mayClose)
 {
+    // 3.64.0: centred over the WINDOW 'around' is in (or the one you clicked in) - JUCE centres on the middle of the component itself, and a take or edit
+    // window's timeline reaches far past the window, onto another screen
+    around = place::anchor (around);
     juce::DialogWindow* dw = nullptr;
     if (mayClose != nullptr)
     {
@@ -45,7 +51,13 @@ void launchDialog (std::unique_ptr<juce::Component> content, const juce::String&
     {
         const auto key = title.retainCharacters ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789- ");
         auto saved = juce::Rectangle<int>::fromString (uiPrefs().getValue ("win." + key));
-        if (saved.getWidth() >= 300 && saved.getHeight() >= 200)
+        if (saved.getWidth() >= 300 && saved.getHeight() >= 200 && ! place::sameScreen (saved, around))        // 3.64.0: a place on another screen - its size, over this window
+        {
+            const auto area = place::screenOf (around);
+            dw->setSize (juce::jmin (saved.getWidth(), area.getWidth()), juce::jmin (saved.getHeight(), area.getHeight()));
+            place::over (*dw, around);
+        }
+        else if (saved.getWidth() >= 300 && saved.getHeight() >= 200)
         {
             const auto& displays = juce::Desktop::getInstance().getDisplays();
             const auto area = displays.getDisplayForRect (saved)->userArea;
@@ -602,7 +614,8 @@ public:
         if (plan.notes.size() > 0) { t << "\nNotes:\n"; for (auto& note : plan.notes) t << "   " << note << "\n"; }
         if (! editId.isNull()) t << "\nEach take is placed in the edit, one after the other, with every track on its own row of the edit window (ready for mixing).\n";
         if (linking())
-            t << "\nThe files are used where they are, exactly as they are (nothing is copied; if you move or delete them the project cannot find the audio). Left / right pairs joined into a stereo track and the channels of multichannel files still have to be written as new files in this project's folder.";
+            t << "\nThe files are used where they are, exactly as they are (nothing is copied; if you move or delete them the project cannot find the audio). Left / right pairs joined into a stereo track and the channels of multichannel files still have to be written as new files in this project's folder. "
+                 "To copy them in later: Project > Import source tracks to project folders.";
         else
             t << "\nThe audio is copied into this project's folder as 24-bit WAV files; your original files are not touched.";
         summary.setText (t, false);
@@ -1860,6 +1873,154 @@ void copyProject (AppContext& app, juce::Component* parent, bool saveAs)
                                   [choose] (int r) { if (r == 1) choose (true); else if (r == 2) choose (false); });
 }
 
+// ======================================================================================================== every track that plays in an edit has a row
+int giveEditRows (Project& p)
+{
+    int added = 0;
+    for (auto& e : p.edits)
+        withVersions (*e, [&] (EditDef& ed)
+        {
+            if (ed.trackIds.empty()) return;                                       // (empty: every project track is a row)
+            for (auto* rs : { &ed.regions, &ed.overdubs })
+                for (auto& r : *rs)
+                    for (auto& f : r.files)
+                        if (p.findTrack (f.trackId) != nullptr && std::find (ed.trackIds.begin(), ed.trackIds.end(), f.trackId) == ed.trackIds.end())
+                        { ed.trackIds.push_back (f.trackId); ++added; }
+        });
+    return added;
+}
+
+// ======================================================================================================== import source tracks to project folders
+/** 3.62.0: copies the audio the project plays from outside its folder into it (gather::copy), then points the project at the copies (gather::apply)
+    and saves. Closing the window while it copies stops it: the copies made so far are deleted and the project is not changed. */
+class GatherAudioDialog : public JobDialogBase
+{
+public:
+    GatherAudioDialog (AppContext& a, gather::Plan p) : app (a), plan (std::make_shared<gather::Plan> (std::move (p)))
+    {
+        setSize (580, 200);
+        title.setText ("Copying " + juce::String ((int) plan->items.size()) + " audio file(s), " + juce::File::descriptionOfSizeInBytes (plan->bytes)
+                       + ", into " + plan->folder.getFullPathName(), juce::dontSendNotification);
+        title.setColour (juce::Label::textColourId, theme::text); title.setJustificationType (juce::Justification::topLeft);
+        addAndMakeVisible (title);
+        addAndMakeVisible (cancel); addChildComponent (reveal);
+        cancel.onClick = [this] { if (running) job.requestCancel(); else closeDialogOf (this); };
+        reveal.onClick = [this] { if (! plan->items.empty()) plan->items.front().to.revealToUser(); };
+        status.setColour (juce::Label::textColourId, theme::text);
+        status.setText ("Starting...", juce::dontSendNotification);
+        app.saveNow();                                                          // (the project as it was is the .bak of the save that follows)
+        juce::Component::SafePointer<GatherAudioDialog> self (this);
+        auto text = std::make_shared<std::pair<juce::CriticalSection, juce::String>>();
+        shared = text;
+        const auto pl = plan;
+        runJob ([pl, text] (AudioJob& j) -> juce::String
+                {
+                    return gather::copy (*pl, [&] (float p, const juce::String& t)
+                                         { j.setProgress (p); { const juce::ScopedLock sl (text->first); text->second = t; } return ! j.cancelled(); });
+                },
+                [self] (const juce::String& err) { if (self != nullptr) self->finished (err); },
+                [pl] (const juce::String& err) { if (err.isEmpty()) gather::removeCopies (*pl); });       // (closed while copying: nothing is changed)
+    }
+    void resized() override
+    {
+        auto r = getLocalBounds().reduced (14);
+        title.setBounds (r.removeFromTop (44));
+        status.setBounds (r.removeFromTop (22)); r.removeFromTop (4);
+        bar.setBounds (r.removeFromTop (22)); r.removeFromTop (12);
+        auto row = r.removeFromBottom (30);
+        cancel.setBounds (row.removeFromRight (110)); row.removeFromRight (8); reveal.setBounds (row.removeFromRight (150));
+    }
+private:
+    void timerCallback() override
+    {
+        JobDialogBase::timerCallback();
+        if (auto s = shared.lock()) { const juce::ScopedLock sl (s->first); if (running) status.setText (s->second, juce::dontSendNotification); }
+    }
+    void finished (const juce::String& err)
+    {
+        cancel.setButtonText ("Close");
+        status.setBounds (status.getBounds().withHeight (80));
+        if (err.isNotEmpty())
+        {
+            status.setColour (juce::Label::textColourId, theme::warn);
+            status.setText (err == "Cancelled." ? juce::String ("Cancelled. Nothing was changed: the project still plays the original files, and the copies made so far were deleted.") : err,
+                            juce::dontSendNotification);
+            return;
+        }
+        if (! app.hasProject() || app.project.projectFile != plan->projectFile)
+        {   // the project was closed (or another opened) while the files were copied: the copies are nobody's
+            gather::removeCopies (*plan);
+            status.setColour (juce::Label::textColourId, theme::warn);
+            status.setText ("The project was closed while the files were copied, so nothing was changed and the copies were deleted again.", juce::dontSendNotification);
+            return;
+        }
+        if (app.engine.isRecording())
+        {
+            gather::removeCopies (*plan);
+            status.setColour (juce::Label::textColourId, theme::warn);
+            status.setText ("A recording started while the files were copied, so nothing was changed and the copies were deleted again. Try again after recording.", juce::dontSendNotification);
+            return;
+        }
+        app.stopPlayback();
+        const int places = gather::apply (app.project, *plan);
+        app.saveNow (false, nullptr, true);
+        juce::Logger::writeToLog ("Import source tracks to project folders: " + juce::String ((int) plan->items.size()) + " file(s) copied into " + plan->folder.getFullPathName()
+                                  + ", " + juce::String (places) + " place(s) now play the copies");
+        for (auto& it : plan->items) juce::Logger::writeToLog ("   " + it.from.getFullPathName() + "  ->  " + it.to.getFullPathName());
+        status.setText ("Done: " + juce::String ((int) plan->items.size()) + " file(s), " + juce::File::descriptionOfSizeInBytes (plan->bytes)
+                        + ", copied into the project's folder and each checked against its original. The project now plays the copies (and was saved). "
+                        "Your original files were not touched: once you are happy, you can delete them yourself.", juce::dontSendNotification);
+        reveal.setVisible (true);
+    }
+    AppContext& app;
+    std::shared_ptr<gather::Plan> plan;
+    std::weak_ptr<std::pair<juce::CriticalSection, juce::String>> shared;
+    juce::Label title;
+    juce::TextButton cancel { "Cancel" }, reveal { "Show the folder" };
+};
+
+void gatherAudio (AppContext& app, juce::Component* parent)
+{
+    if (! app.hasProject()) return;
+    if (heldByRec (app, "Copying audio into the project's folder", parent, [ap = &app] (juce::Component* p) { gatherAudio (*ap, p); })) return;
+    if (app.engine.isRecording()) { say ("Recording", "Stop recording first."); return; }
+    auto pl = std::make_shared<gather::Plan> (gather::plan (app.project));
+    const juce::String heading = "Import source tracks to project folders";
+    auto listMissing = [&pl] (juce::String& t)
+    {
+        if (pl->missing.isEmpty()) return;
+        t << "\n\n" << juce::String (pl->missing.size()) << " file(s) it plays from outside its folder cannot be found, so they cannot be copied "
+             "(Find missing audio files, in the Takes or Edits menu, looks for them):\n";
+        for (int i = 0; i < pl->missing.size() && i < 6; ++i) t << "   " << pl->missing[i] << "\n";
+        if (pl->missing.size() > 6) t << "   ... and " << juce::String (pl->missing.size() - 6) << " more\n";
+    };
+    if (pl->items.empty())
+    {
+        juce::String t = "Every audio file this project plays is already inside its folder:\n" + pl->folder.getFullPathName() + "\n\nNothing needs copying.";
+        listMissing (t);
+        say (heading, t);
+        return;
+    }
+    juce::String t;
+    t << juce::String ((int) pl->items.size()) << " audio file(s) this project plays are outside its folder (" << juce::File::descriptionOfSizeInBytes (pl->bytes) << " in all):\n";
+    for (size_t i = 0; i < pl->items.size() && i < 10; ++i)
+        t << "   " << pl->items[i].from.getFileName() << "   (" << pl->items[i].usedBy << (pl->items[i].uses > 2 ? " and " + juce::String (pl->items[i].uses - 1) + " more places" : pl->items[i].uses == 2 ? juce::String (" and 1 more place") : juce::String()) << ")\n";
+    if (pl->items.size() > 10) t << "   ... and " << juce::String ((int) pl->items.size() - 10) << " more\n";
+    t << "\nEach is copied into the project's folder - a take's files into its take window's folder in Recorded Media, files that only an edit plays "
+         "into Recorded Media/From elsewhere - read back and checked against the original, and the project then plays the copies. "
+         "Your original files are not changed or deleted.\n\nThe project is saved before and after. Ctrl+Z does not undo this (the save before it is the project's .bak file).";
+    listMissing (t);
+    juce::Component::SafePointer<juce::Component> sp (parent);
+    juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::QuestionIcon).withTitle (heading).withMessage (t)
+                                      .withButton ("Copy them in").withButton ("Cancel"),
+                                  [&app, pl, sp, heading] (int r)
+                                  {
+                                      if (r != 1) return;
+                                      if (app.engine.isRecording()) { say ("Recording", "Stop recording first."); return; }
+                                      launchDialog (std::make_unique<GatherAudioDialog> (app, *pl), heading, sp.getComponent());
+                                  });
+}
+
 // ======================================================================================================== Export for Processing
 /** A small window with a progress bar for a background job; it closes itself when the job has finished fine (after 'onSuccess'), and shows the problem otherwise. */
 class SimpleJobDialog : public JobDialogBase
@@ -2047,7 +2208,7 @@ void roomToneEdit (AppContext& app, const juce::Uuid& eid, juce::Component* pare
 /** Asks for the name of a processing job; 'done' gets the (non-empty) name. */
 static void askProcessingName (const juce::String& message, const juce::String& suggestion, std::function<void (const juce::String&)> done)
 {
-    auto* aw = new juce::AlertWindow ("Export for Processing", message, juce::MessageBoxIconType::NoIcon);
+    auto* aw = new juce::AlertWindow ("Export for Processing", message, juce::MessageBoxIconType::NoIcon, place::anchor());
     aw->addTextEditor ("n", suggestion);
     aw->addButton ("Export", 1, juce::KeyPress (juce::KeyPress::returnKey));
     aw->addButton ("Close", 0, juce::KeyPress (juce::KeyPress::escapeKey));
@@ -2172,7 +2333,7 @@ void planSendOut (AppContext& app, const juce::Uuid& eid, const juce::String& ti
                                              "OUT stream: the take that plays up to the edit point, from mark 1 until it is completely faded out (or mark 2, whichever comes first).\n"
                                              "IN stream: the take that plays from the edit point, from where its fade-in begins (or mark 1) to mark 2.\n\n"
                                              "Each is sent at full volume with no fade applied, so the edit and its crossfade stay in place and each take can be corrected on its own. 'Both' sends two separate sets of files.",
-                                             juce::MessageBoxIconType::QuestionIcon);
+                                             juce::MessageBoxIconType::QuestionIcon, place::anchor());
             w->addButton ("Out stream", 1, juce::KeyPress ('o'));
             w->addButton ("In stream", 2, juce::KeyPress ('i'));
             w->addButton ("Both", 3, juce::KeyPress ('b'));
@@ -2496,7 +2657,8 @@ private:
         t << "\nTracks:  " << res.trackNames.size() << (res.trackNames.empty() ? juce::String() : juce::String ("  (") + res.trackNames.front() + " ... " + res.trackNames.back() + ")") << "\n";
         if (res.notes.size() > 0) { t << "\nNotes:\n"; for (auto& n : res.notes) t << "   " << n << "\n"; }
         t << "\nEach piece becomes its own edit window, with the takes laid out where they sat in the AAF, the track names kept and the cross-fades kept. "
-             "The audio files are NOT copied: the edits use the files you already imported (matched by their original names), or the ones in the extra folder.";
+             "The audio files are NOT copied: the edits use the files you already imported (matched by their original names), or the ones in the extra folder "
+             "(Project > Import source tracks to project folders copies those into the project later).";
         summary.setText (t, false);
         doIt.setButtonText ("Make " + juce::String ((int) res.pieces.size()) + " edit window(s)");
         doIt.setEnabled (! res.pieces.empty());
@@ -2564,9 +2726,47 @@ private:
         std::set<int> usedInputs; for (auto& t : p.tracks) for (int c = 0; c < t.channelCount(); ++c) if (t.inputOf (c) >= 0) usedInputs.insert (t.inputOf (c));
         int newTracks = 0;
         std::map<juce::String, juce::Uuid> madeTrack;                                       // tracks made here for files that are not in a take window (by AAF track name)
-        // a file that is already in a take window keeps that window's track (a stereo track made from Omni-L and Omni-R is one track); any other file gets a track of its own name
+        // 3.63.0 (23 November 2026): ONE AAF (Pyramix) track = ONE row. Each AAF track's home is the take window track that most of its clips' files are on.
+        // A clip on it whose file is somewhere else - a pitch correction or a CEDAR ReTouch that Pyramix rendered into a new file with a name of its own, which
+        // a media import then took in as a take on a track of its own, or which was found in the extra folder - goes on that home row too (when it has the same
+        // number of channels). It used to go on its own take's track, or a new one, so the edit had a row holding only those pieces.
+        std::map<juce::String, juce::Uuid> homeOf;
+        {
+            std::map<juce::String, std::vector<std::pair<juce::Uuid, int>>> votes;        // AAF track -> (take track, clips), in the order first met
+            for (auto& pc : res.pieces)
+                for (auto& ar : pc.regions)
+                    for (auto& af : ar.files)
+                    {
+                        auto it = found.find (af.fileName.toLowerCase());
+                        if (it == found.end() || ! it->second.hasTrack || p.findTrack (it->second.trackId) == nullptr) continue;
+                        if (std::abs (it->second.rate - res.sampleRate) > 0.5) continue;
+                        auto& v = votes[af.trackName];
+                        bool had = false;
+                        for (auto& c : v) if (c.first == it->second.trackId) { ++c.second; had = true; }
+                        if (! had) v.push_back ({ it->second.trackId, 1 });
+                    }
+            for (auto& [aafName, v] : votes)
+            {
+                const auto best = std::max_element (v.begin(), v.end(), [] (const auto& a, const auto& b) { return a.second < b.second; });   // (ties: the first met)
+                if (best != v.end()) homeOf[aafName] = best->first;
+            }
+        }
+        int joinedHome = 0;
+        // a file that is already in a take window keeps that window's track (a stereo track made from Omni-L and Omni-R is one track) - or its AAF track's
+        // home, above; any other file gets a track of its own name
         auto trackFor = [&] (const AafRegionFile& af, const AafFound& fd, juce::Uuid& id, juce::String& name) -> bool
         {
+            if (auto h = homeOf.find (af.trackName); h != homeOf.end())
+                if (auto* ht = p.findTrack (h->second); ht != nullptr)
+                {
+                    const bool own = fd.hasTrack && fd.trackId == h->second;
+                    if (own || ht->channelCount() == juce::jlimit (1, 2, fd.channels))
+                    {
+                        id = h->second; name = ht->name;
+                        if (! own) ++joinedHome;
+                        return true;
+                    }
+                }
             if (fd.hasTrack && p.findTrack (fd.trackId) != nullptr) { id = fd.trackId; name = p.findTrack (fd.trackId)->name; return true; }
             if (madeTrack.count (af.trackName)) { id = madeTrack[af.trackName]; name = af.trackName; return true; }
             const int ch = juce::jlimit (1, 2, fd.channels);
@@ -2625,6 +2825,11 @@ private:
                 auto ti = aafTrackId.find (tn);
                 if (ti != aafTrackId.end() && std::find (e.trackIds.begin(), e.trackIds.end(), ti->second) == e.trackIds.end()) e.trackIds.push_back (ti->second);
             }
+            // 3.63.0: and EVERY track the pieces play gets a row (asked about on 23 November 2026: an imported edit played all its tracks through the
+            // mixer but showed a single, nearly empty row - its list of rows had only that one track in it)
+            for (auto& r : regs)
+                for (auto& f : r.files)
+                    if (std::find (e.trackIds.begin(), e.trackIds.end(), f.trackId) == e.trackIds.end()) e.trackIds.push_back (f.trackId);
             e.regions = std::move (regs); regionsMade += (int) e.regions.size();
             e.insertIndex = -1; e.hardenEnds(); e.clampAll();
             if (edits++ == 0) firstEdit = e.id;
@@ -2645,6 +2850,8 @@ private:
         if (regionsLost > 0) t << juce::String (regionsLost) << " piece(s) were left out because none of their files were found.\n";
         if (rateSkipped > 0) t << juce::String (rateSkipped) << " file(s) were left out because their sample rate is not the AAF's (" << juce::String (res.sampleRate, 0) << " Hz).\n";
         if (shortened > 0) t << juce::String (shortened) << " piece(s) were shortened to the length of their file.\n";
+        if (joinedHome > 0) t << juce::String (joinedHome) << " clip(s) play a file that is not one of their track's takes (a pitch correction or a CEDAR render, say): "
+                                 "each was put on the row of the Pyramix track it sits on.\n";
         return t.trimEnd();
     }
 

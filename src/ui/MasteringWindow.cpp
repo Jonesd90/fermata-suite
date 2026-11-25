@@ -1,4 +1,5 @@
 #include "MasteringWindow.h"
+#include "ExportDone.h"
 #include "../core/AudioFormats.h"
 #include "../core/EditVersions.h"
 
@@ -699,6 +700,15 @@ MasteringComponent::MasteringComponent (AppContext& a)
     formExport.onClick = [this] { startFormExport(); };
     formShow.onClick = [this] { if (lastOutput.exists()) lastOutput.revealToUser(); };
     for (juce::Component* c : std::initializer_list<juce::Component*> { &formSingleBox, &formRateBox, &formBitsBox, &formFolderEditor, &formChoose, &formExport, &formShow, &formProgress }) addChildComponent (c);
+    // 3.61.0 (asked for on 23 November 2026): the editor's name in the listening copies - their replies are shown as "Name (Piece Editor)", not "Editor".
+    // The same name as the editor's notes are written with in the edit window (kept on this computer, "editorName").
+    formEditorCaption.setText ("Your name", juce::dontSendNotification);
+    formEditorCaption.setColour (juce::Label::textColourId, theme::dimText);
+    formEditorName.setTextToShowWhenEmpty ("the piece editor's name, shown with your replies (e.g. David Jones)", juce::Colours::grey);
+    if (auto* st = app.props.getUserSettings()) formEditorName.setText (st->getValue ("editorName"), false);
+    formEditorName.setTooltip ("Shown in the listening copies with your replies to the listeners' comments: \"Your name (Piece Editor)\". The same name as your notes in the edit window.");
+    formEditorName.onTextChange = [this] { if (auto* st = app.props.getUserSettings()) { st->setValue ("editorName", formEditorName.getText().trim()); app.props.saveIfNeeded(); } };
+    addChildComponent (formEditorCaption); addChildComponent (formEditorName);
     formAudioBox.addItem ("WAV (no loss)", 1); formAudioBox.addItem ("FLAC (lossless, about half the size)", 2); formAudioBox.addItem ("MP3 (small, needs LAME)", 3);
     feedbackToggle.setTooltip ("Besides the audio file, Fermata makes ONE .html file per track with the recording inside it. Send it to a listener: they double-click it, "
                                "see the waveform, play it, and press a button to add comments (with an optional bar) at the time they hear something. They save a small file and send it back; "
@@ -1466,6 +1476,7 @@ void MasteringComponent::startFormExport()
     MasterJobSpec spec;
     const auto err = makeFormsSpec (app.project, def(), spec);
     if (err.isNotEmpty()) { formStatus.setColour (juce::Label::textColourId, theme::warn); formStatus.setText (err, juce::dontSendNotification); return; }
+    spec.editorName = formEditorName.getText().trim();                     // (3.61.0)
     startJob (spec, 2);
 }
 
@@ -1501,6 +1512,7 @@ void MasteringComponent::startJob (const MasterJobSpec& spec, int kind)
     status.setText ("Starting...", juce::dontSendNotification);
     (kind == 1 ? ddpShow : kind == 2 ? formShow : showButton).setVisible (false);
     progressValue = 0.0;
+    for (auto* b : { &vmProgress, &ddpProgress, &formProgress }) exportdone::barStart (*b);      // (3.61.0)
     setBusy (true);
     juce::Component::SafePointer<MasteringComponent> safe (this);
     job = std::make_unique<MasterExportJob> (app.project, spec, [safe, kind] (MasterExportResult r) { if (safe != nullptr) safe->jobFinished (r, kind); }, false);
@@ -1512,7 +1524,7 @@ void MasteringComponent::askLoudness (const LoudnessCheck& c)
 {
     if (job == nullptr || ! job->isWaitingForDecision()) return;
     // the window: which pieces cannot reach the target under the ceiling, and by how much; Retain peak / Ignore / Cancel
-    auto* aw = new juce::AlertWindow ("Loudness target", juce::String(), juce::MessageBoxIconType::WarningIcon);
+    auto* aw = new juce::AlertWindow ("Loudness target", juce::String(), juce::MessageBoxIconType::WarningIcon, place::anchor());
     juce::String text;
     text << (c.problems() == 1 ? "One piece cannot" : juce::String (c.problems()) + " pieces cannot") << " reach " << juce::String (c.targetLufs, 1) << " LUFS without the true peak going over "
          << juce::String (c.ceilingDbTp, 1) << " dBTP" << (c.perAlbum ? " (one gain for the album: it is held back by the worst of them)" : "") << ".\n"
@@ -1617,15 +1629,20 @@ void MasteringComponent::showDoneBox (const MasterExportResult& r, int kind)
     // (3.42.0 - 3.51.0 offered here to freeze the versions the listening copies were of. Gone in 3.52.0, the user's workflow: an export freezes nothing;
     // the next edit is started when the comments on this one are imported - EditWindowComponent::importFeedbackFiles.)
     const bool warn = stopped || r.clipped || ! r.clippedStems.isEmpty() || ! r.previousPieces.isEmpty();
-    auto* aw = new juce::AlertWindow (stopped ? "Export stopped" : "Export complete", text, warn ? juce::MessageBoxIconType::WarningIcon : juce::MessageBoxIconType::InfoIcon, this);
-    const auto out = lastOutput;
-    if (! stopped && out.exists()) aw->addButton ("Show the files", 1);
+    if (! stopped)
+    {   // 3.61.0 (asked for on 23 November 2026): the same box as every export - what, each file's name, where - then its bar says Export complete
+        const auto firstLine = text.upToFirstOccurrenceOf ("\n", false, false);
+        auto rest = text.fromFirstOccurrenceOf ("\n", false, false).trim();
+        if (rest.startsWith ("Folder:")) rest = rest.fromFirstOccurrenceOf ("\n", false, false).trim();      // (the folders are in the list now)
+        juce::Component::SafePointer<MasteringComponent> safe (this);
+        auto* bar = kind == 1 ? &ddpProgress : kind == 2 ? &formProgress : &vmProgress;
+        exportdone::show (this, kind == 1 ? "DDP complete" : kind == 2 ? "Listening copies complete" : "Export complete", firstLine, r.files, rest, warn,
+                          [safe, bar] { if (safe != nullptr) exportdone::barDone (*bar, safe->progressValue); });
+        return;
+    }
+    auto* aw = new juce::AlertWindow ("Export stopped", text, juce::MessageBoxIconType::WarningIcon, place::anchor (this));
     aw->addButton ("OK", 0, juce::KeyPress (juce::KeyPress::returnKey), juce::KeyPress (juce::KeyPress::escapeKey));
-    aw->enterModalState (true, juce::ModalCallbackFunction::create ([aw, out] (int res)
-    {
-        if (res == 1 && out.exists()) out.revealToUser();
-        delete aw;
-    }));
+    aw->enterModalState (true, juce::ModalCallbackFunction::create ([aw] (int) { delete aw; }));
 }
 
 namespace
@@ -1761,7 +1778,8 @@ void MasteringComponent::setView (int v)
         c->setVisible (vm);
     showButton.setVisible (vm && showButton.isVisible());
     for (juce::Component* c : std::initializer_list<juce::Component*> { &formCaption, &formIntro, &formSingleCaption, &formSingleBox, &formAudioCaption, &formAudioBox, &formRateCaption, &formRateBox, &formBitsCaption, &formBitsBox,
-                                                                         &formLevelNote, &formLevelBox, &formInfo, &formFolderCaption, &formFolderEditor, &formChoose, &formStatus, &formProgress, &formExport })
+                                                                         &formLevelNote, &formLevelBox, &formInfo, &formFolderCaption, &formFolderEditor, &formChoose, &formStatus, &formProgress, &formExport,
+                                                                         &formEditorCaption, &formEditorName })
         c->setVisible (fm);
     formShow.setVisible (fm && formShow.isVisible());
     formReportButton.setVisible (fm && lastReport.isNotEmpty());
@@ -1935,6 +1953,7 @@ void MasteringComponent::startAtmosExport()
     atmosStatus.setText ("Starting...", juce::dontSendNotification);
     atmosShow.setVisible (false);
     atmosProgressValue = 0.0;
+    exportdone::barStart (atmosProgress);                                  // (3.61.0)
     setBusy (true);
     juce::Component::SafePointer<MasteringComponent> safe (this);
     atmosJob = std::make_unique<AtmosExportJob> (app.project, spec, [safe] (AtmosExportResult r) { if (safe != nullptr) safe->atmosFinished (r); }, false);
@@ -1967,11 +1986,19 @@ void MasteringComponent::atmosFinished (const AtmosExportResult& r)
                 "measure the loudness (-18 LKFS integrated, -1 dBTP) and let it write the delivery files.";
     }
     resized();
-    auto* aw = new juce::AlertWindow (r.error.isNotEmpty() ? "Atmos export stopped" : "Atmos export complete", text, r.error.isNotEmpty() || r.clipped ? juce::MessageBoxIconType::WarningIcon : juce::MessageBoxIconType::InfoIcon, this);
-    const auto out = lastAtmosOutput;
-    if (r.error.isEmpty() && out.exists()) aw->addButton ("Show the files", 1);
+    if (r.error.isEmpty())
+    {   // 3.61.0: the same box as every export - what, each file's name, where - then the bar says Export complete
+        auto firstLine = text.upToFirstOccurrenceOf ("\n", false, false);
+        auto rest = text.fromFirstOccurrenceOf ("\n", false, false).trim();
+        if (rest.startsWith ("Folder:")) rest = rest.fromFirstOccurrenceOf ("\n", false, false).trim();
+        juce::Component::SafePointer<MasteringComponent> safe (this);
+        exportdone::show (this, "Atmos export complete", firstLine, r.files, rest, r.clipped,
+                          [safe] { if (safe != nullptr) exportdone::barDone (safe->atmosProgress, safe->atmosProgressValue); });
+        return;
+    }
+    auto* aw = new juce::AlertWindow ("Atmos export stopped", text, juce::MessageBoxIconType::WarningIcon, place::anchor (this));
     aw->addButton ("OK", 0, juce::KeyPress (juce::KeyPress::returnKey), juce::KeyPress (juce::KeyPress::escapeKey));
-    aw->enterModalState (true, juce::ModalCallbackFunction::create ([aw, out] (int res) { if (res == 1 && out.exists()) out.revealToUser(); delete aw; }));
+    aw->enterModalState (true, juce::ModalCallbackFunction::create ([aw] (int) { delete aw; }));
 }
 
 void MasteringComponent::layoutAtmos (juce::Rectangle<int> area)
@@ -2046,6 +2073,7 @@ void MasteringComponent::layoutForms (juce::Rectangle<int> area)
     formLevelNote.setBounds (row (20));
     formLevelBox.setBounds (row (LevelBox::kHeight));
     { auto x = row (grid::btnH + 2); formFolderCaption.setBounds (x.removeFromLeft (60)); formChoose.setBounds (x.removeFromRight (136)); x.removeFromRight (4); formFolderEditor.setBounds (x); }
+    { auto x = row (grid::btnH + 2); formEditorCaption.setBounds (x.removeFromLeft (110)); formEditorName.setBounds (x.removeFromLeft (juce::jmin (x.getWidth(), 340))); }   // (3.61.0)
 }
 
 static void layoutFieldGrid (juce::OwnedArray<MasterField>& fields, juce::Rectangle<int> area, int cols, int captionW, int& usedHeight)
@@ -2358,7 +2386,7 @@ void MasteringComponent::openIsrcTool()
     else { yy = juce::String (juce::Time::getCurrentTime().getYear() % 100).paddedLeft ('0', 2); }
     auto* aw = new juce::AlertWindow ("ISRCs for the tracks",
                                       "An ISRC looks like GB-XXX-YY-NNNNN: country, label (registrant), year, then the track's own number. Type the first track's number and the other " + juce::String ((int) order.size() - 1) + " track(s) follow in disc order.",
-                                      juce::MessageBoxIconType::NoIcon, this);
+                                      juce::MessageBoxIconType::NoIcon, place::anchor (this));
     aw->addTextEditor ("cc", cc, "Country code (2 letters, e.g. GB)");
     aw->addTextEditor ("reg", reg, "Registrant / label code (3 letters or numbers)");
     aw->addTextEditor ("yy", yy, "Year code (2 digits)");

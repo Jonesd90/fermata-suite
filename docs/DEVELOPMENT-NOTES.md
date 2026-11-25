@@ -2620,6 +2620,381 @@ fermata's `shutdown()` and its static destructors. Our unhandled-exception filte
   right after closing the log, so the PDF reader's unload code never runs. Everything is saved and closed by then.
 (The symbols of Windows' own libraries were not available here: the reading rests on the single thread and the order of the modules.)
 
+## 3.66.0: an edit's pages of its score (24 November 2026, with Claude Opus)
+
+Asked: one PDF with four movements, each movement its own take and edit window - "tell fermata which pages of the PDF that edit and take
+window is referring to". The score belongs to the edit (EditDef::score, 3.51.0), so the pages do too; the take windows tied to the edit get
+the brackets and the bars in the piece from it as before.
+- *What was there.* Project::addScore copies a PDF once (the same file chosen for four edits is one file in PDFs/), so the four edits share one
+  `.bars.json`: the bars are found once and counted through the whole PDF (printed numbers can restart the count; "This bar's number is..."
+  sets it). `Map::editStarts` (3.54.0, per edit id, in the bars file) marks where an edit's music begins; `startOrdinal` found it, else bar 0.
+- *Shared.* `EditDef::scoreFirstPage` / `scoreLastPage` (1-based, 0 = open end). Saved inside the score's keys only when set; read with
+  limits (and swapped if the wrong way round); hashed; view keys (`kEditViewKeys`) and kept from the live edit by an undo (`restorePiece`), as
+  scoreTop / scoreZoom. `addScore` sets them to 0 when the edit's PDF name changes (the same PDF chosen again keeps them). Core test: kept
+  when the same PDF is chosen, cleared by another, saved and read back.
+- *The window* (ScoreWindow.h). `firstPage` / `lastPage` / `pageShown` (0-based, clamped to the PDF). `layoutPages` gives a page outside them an
+  EMPTY rect at the current y (no room); every place that walks `rects` skips empty ones (paint, `topNow`, `wantPictures` and its `add`) or can
+  only meet shown pages (`pageAt` - an empty rect contains nothing; `setTop` / `goToPage` / Home / End clamp to the range). `scaleNow` (fit
+  width) and the width use the shown pages only. `startFrom()`: the marked start (`editStarts`) if there is one, else the first bar whose page is
+  >= firstPage - used by `refreshMarks` / `brackets` and `givePieceBars`; the piece's length is `pieceLength (barsToLastPage(), startFrom())`
+  (bars after the last page cut off). `askPages` (the Pages key; and once, from `opened`, when another edit has this PDF and this one has no
+  pages - suggesting after the highest last page of the others): two text boxes and a tick box (`addCustomComponent`, name cleared - the box
+  writes a custom part's name above it), "Use these pages" / "All the pages" / "Cancel". `setPages`: from <= 1 and to >= n is "all"; a marked
+  start outside the pages is erased; "Bar 1 ..." (`barOneHere`): `Map::setNumber (.., 1)` on the first bar of the first page, at once if that
+  page's bars are known, else when they are found (`barOneOnPage`, checked in `barsFound`). `pagesChanged` (also from the timer when
+  `rangeKey()` differs from what was laid out: Ctrl + Z, another window) lays out, clamps the top, and works the marks and piece length out
+  again. Right-click on a page (`addPageItems`, ids 20 - 23; also before the page's bars are found). The marked PDF: `ExportJob::first / last`,
+  `runExport` writes those pages only (the fills of the others are empty).
+- *A crash found in the trial.* `updateLabel` (called by `say` in `opened` before `layoutPages`) read `rects[page]` with the guard changed to
+  `page + 1 <= lastPage()` - `rects` was still empty. The guard is `page + 1 < rects.size()` again, as well.
+- **Checked** (Linux trial build, Poppler for the pages, `pagestest/Suite.pdf` - four of the generated test scores, 12 pages, given to both
+  trial edits): the question on opening (screenshot), pages 4-6 (only those; End / Page Down stop at 6, Home / Page Up at 4; "the first bar
+  of page 4 is bar 1 (it was counted 39)"; the take window given 38 bars, was 152), the second edit asked with 7-12 suggested, the keys saved
+  (`"scoreFirstPage": 4, "scoreLastPage": 6`) and the window opening on them again, take 1 (bars 2-5) bracketed on page 4, the right-click
+  items, the marked PDF with 3 pages. Run again for the shared change: compat-check
+  (PASSED), sandbox-check (ALL TESTS PASSED, with the new checks), syntax-check-ui (no messages), check-windows-code (OK); fermata:Live's
+  recorder tests were not run again (no recorder code changed). Not checked: Windows.
+
+## 3.65.0: the take window's marks line - all the room, the lengths, a hover box (24 November 2026, with Claude Opus)
+
+Asked with a screenshot: the line "EDIT 002 - Cathedral 01 - W..." cut short with empty space to its right; wanted the take's length and the
+Mark 1 to Mark 2 length (which was there, "(37.12 s)", in the part cut off).
+- *Why it was cut.* `TakeWindowComponent::resized`: `markLabel` runs to the window's edge only when `buttonsBottom <= y - 2` (the buttons beside
+  the readout end above its line), else to `clock.getRight()`. `buttonsBottom` was `r.getY() + flowH`, and `grid::flow` makes each line
+  `max (rowH, h + 8)` tall - 4 px below each 26 px button - so with two lines of buttons the line seemed taken by 2 - 4 px. Now `buttonsBottom` is
+  the lowest `getBottom()` of the visible flowed buttons themselves.
+- *The text* (in the timer that writes it): `(LENGTH long)` after the take's name (`TakeGroup::lengthSeconds`, `formatTimeShort (.., 3)`), and
+  `(1 to 2: MM:SS.mmm)` in place of `(N.NN s)`; the playhead form gets the length too.
+- *The hover box*: `markLabel.setTooltip` (set only when it changes): the take's name, "Take length", the marks, "Mark 1 to Mark 2", and
+  "Selected: NAME - LENGTH long" for up to six other selected takes (`timeline->selectedTakes`, "... and N more").
+- **Checked**: Linux trial build (`placetest/`, the stand-in libXinerama with `FAKEXIN_ONE=1` for one 2880 px screen, the take window at
+  1900 px): the line in full beyond the readout, the hover box with a second selected take; at 1420 px (three lines of buttons) the line still stops
+  at the readout. Not checked: Windows.
+
+## 3.64.0: windows open over the window you clicked in; Move clips asks what happens to the track (24 November 2026, with Claude Opus)
+
+**What was asked** (24 November 2026): a fermata 3.55.0 log sent because "Make a stereo track" seemed to freeze. The log showed no stall (the
+stall watch would have written every thread's stack after 5 s, as it did for the MAD ASIO driver opening at start-up; the main thread was at 2 -
+4 % of a core). The user then found the box on the second screen: the PC's HDMI output is always plugged into a fibre distribution box, so Windows
+sees two screens even when nothing shows the second. Asked: "WITH THE EXCEPTION of the 'Take Display' screen ... all the windows open over the
+window you clicked in"; and the move-clips choice (keep / remove from this take window / delete from the project, the last answer the default).
+
+**(1) Window placement** (`src/ui/WindowPlace.h`, fermata only).
+- *The cause.* `TopLevelWindow::centreAroundComponent (c, w, h)` (JUCE 8.0.9) centres on `c->localPointToGlobal (c->getLocalBounds().getCentre())`
+  and keeps the box within `c->getParentMonitorArea()` - `Displays::getDisplayForRect (c->getScreenBounds())`, the display with most of `c`. The
+  stereo box was given the TakeTimeline: the component inside the viewport, as wide as the whole timeline (`updateSize`: the material and as much
+  again, at least 10 minutes, times pixels per second). Its middle is far right of the window and most of it lies on a screen to the right. Every
+  box given a timeline (or any big inner component) could do the same. Second: `Component::centreWithSize` with no parent uses
+  `getPrimaryDisplay()` - new tool windows, Audio settings and plug-in windows opened in the middle of Windows' main screen.
+- *Tracker* (a singleton started in `initialise` after the main window, stopped in `shutdown` before it goes): a global mouse listener keeps
+  the window last clicked in (`mouseDown`: the event component's top-level component if it is a `TopLevelWindow`; the menu bar - `MenuBarStrip`,
+  marked `place::partOfMain` - stands for the main window; a menu, call-out, tooltip or Take Display screen - marked `place::ownPlace` - changes
+  nothing). `place::anchor (hint)`: the TopLevelWindow `hint` is in, else the last clicked, else `getActiveTopLevelWindow()`, else the main
+  window - each only if showing and not minimised.
+- *At the source.* Every `new juce::AlertWindow`, `showMessageBoxAsync`, `withAssociatedComponent`, `componentToCentreAround` in fermata's own
+  files now passes `place::anchor (x)` (or `place::anchor()` where none was given), so JUCE centres on the window, not the component.
+  `fixtools::launchDialog` (every fix tool's dialog, and the ReTouch window's small dialogs through `openDialogHook`) and `say` likewise; a
+  resizable dialog's remembered place (`uiPrefs` "win.<title>") is used only when `place::sameScreen` with the anchor, else its size centred over
+  it. `showWindow` (Main.cpp: every ToolWindow) uses the project's remembered bounds only on the anchor's screen, else the remembered size (within
+  the screen) and `place::over` (centred on the part of the anchor on its screen, all of it on that screen, room for the native title bar).
+  The meter bridge and recording monitor's first places are the anchor screen's top left (they were 20,20 / 40,60 - the main screen's).
+  Audio settings and plug-in editor windows: `place::over`. The two talkback NativeMessageBoxes are AlertWindows now (native ones are placed by
+  Windows). The shared files (`Uikit.h`'s `showError` / `confirmAsync`, `MarkerStrip.h`, `SpectralWindow.h`) are not changed: their boxes have no
+  component, so JUCE centres them on the active window - and the net below covers them.
+- *The net.* The Tracker's timer (20 Hz) and a focus-change listener (a new box takes the keyboard: looked at at once) look at every desktop
+  component not marked `kSeen` yet: a visible `TopLevelWindow` (boxes, dialogs, document windows - not menus, call-outs, tooltips, the splash,
+  the menu bar or the Take Display screens, which are plain Components) other than the main window and the anchor, not full screen or minimised,
+  whose screen (`getDisplayForRect`) is not the anchor's, is moved over the anchor, with a log line "Window placement: 'X' opened on another
+  screen - moved over 'Y'". One that opened on the anchor's screen is never moved (no jump). The mark is a property on the window itself, so a
+  new window at a freed window's address is still new.
+- *Not changed.* The main window's own placing; the Display Organiser (it places open windows on the main window's screen on purpose); Take
+  Display screens (`TakeDisplayHub::setOpen`, on the display chosen); call-outs (they point at a button); Windows' native file choosers (JUCE
+  owns them with a zero-size window on the primary display; Windows places the dialog).
+
+**(2) Move clips** (TakeWindow.cpp). `ThenTrackChoice` (three radio ToggleButtons in the AlertWindow, `addCustomComponent` - not owned by the
+box: deleted after it). `askMoveClips (from, to)` (the track menu's "Move its N clips onto X..." and the "onto another track" submenu, which
+called `moveClips` at once before): checks `canMoveTakeClips` first, asks, remembers the answer (user settings "moveClipsThen" 0 / 1 / 2), moves
+(`moveClips`, which now hands back its status text), then `applyThen`. `moveAllByName` asks the same in its one box (it asked to delete the
+emptied tracks afterwards). `applyThen`: a track that still has a clip in this window is skipped (removing it would take the clip out);
+erase = `removeEmptyTracks` for those with no audio anywhere (`trackHasAudio`), the others `removeTrackClips` (with no clips it only hides the
+track); remove = `removeTrackClips`. One undo step (the move: hidden tracks are view state). Drags (`moveTakes`) are unchanged.
+- *Ctrl + Z.* `restorePiece` (Project.cpp) already does the right thing: clips whose track was deleted since stay where they are (so after
+  Delete the move cannot be undone - said in the box and on the status line, which no longer says "Ctrl + Z puts them back" then), and a track
+  whose clips come back is unhidden (Remove: Ctrl + Z brings the row back - tried). A first version of this build also brought deleted tracks back
+  after an undo (`AppContext::mendTracksAfterUndo`); the trial showed `restorePiece` never puts clips on a deleted track, so it could not act,
+  and it was taken out. Bringing a deleted track back with Ctrl + Z would be a change to `restorePiece` (shared core): not done.
+
+**Checked** (Linux, JUCE 8.0.9, trial builds only): fermata compiles and links (every `.o.log` clean); fermata:Live unchanged (no shared file
+changed). Two screens: the trial JUCE build had `JUCE_USE_XINERAMA=0` and Xvfb's `+xinerama` puts both screens at 0,0, so a scratch
+`juce_gui_basics` with Xinerama on (a stand-in `Xinerama.h` - libxinerama-dev is not installed - JUCE loads the library itself) and a stand-in
+`libXinerama.so.1` reporting one 2880x900 Xvfb screen as two 1440x900 screens side by side (`placetest/`). `placetest/why.cpp` (JUCE alone): a
+window at 100,100 1100x500 on the left screen with a 9000 px wide timeline in a Viewport - an AlertWindow given the timeline opens at
+2518,252 (the right screen), given the window at 475,275. `placetest/net.cpp`: the Tracker moves the first over the window within a tick (and logs
+it), and leaves a box opened on the window's own screen where it is. fermata itself: the stereo box over the take window (408,261, its middle the
+window's); the take window remembered at 1600,200 1100x500 opened at 170,200 1100x500 over the main window; the move box (screenshots), its
+remembered answer, Move + Delete, Move + Remove + Ctrl + Z. Not checked: Windows (a real second screen, the fibre box, MSVC); plug-in windows
+(no plug-ins on Linux); the shared `showError` / `confirmAsync` boxes on Windows (they rely on the active window, and the net).
+
+## 3.63.0: the tuning line; Import AAF - one Pyramix track, one row (23 November 2026, with Claude Opus; a Fable pass to follow)
+
+**What was asked** (23 November 2026): a tuning line live while a take records, kept for viewing after and while editing; show / hide;
+"Absolute" (A = 440 or any Hz) or "Relative" (to the starting pitch). "Build it all now with Opus, and then we will do a pass with Fable later
+to stabilise it all." And, after an AAF imported edit showed a single, nearly empty row "instead of like 20" (its `.fmedit` had 16 tracks with
+audio in 19 of its 21 pieces but `trackIds` held only one, a track named "Ice Shining 018 20 {01A177F8 FF08 482C A27E 575AA191E6C0}" carrying two
+pieces whose file was take 034's "Ch 1" - a Pyramix render of a pitch correction / CEDAR ReTouch with a name of its own, which the media
+import had taken in as a take on its own track): fix the import.
+
+**(1) The tuning line** (`src/ui/TuningLine.h`, fermata only, header only - no CMakeLists change).
+- *Measurement* (`tuning::measure`): rehar::refPoints step for step (the four loudest channels by energy; Hann ~0.34 s - 2048 points at
+  ~8 kHz - every 0.1 s, padded twice; `rehar::findPeaks` 10 dB proud within 45 dB of the loudest, 60 - 1100 Hz, parabolic peak, cents from
+  A = 440; folded to -50..50) and `rehar::refStats (D, W, 12)` - except that a peak is kept only when there is one within 25 c in each of the
+  TWO frames either side (refPoints: one). On a whole take refPoints' rule let noise through: white noise at -26 and -46 dBFS, and a rumbling
+  room, each gave a reading every 2 s (12 - 36 peaks a window, spread 8 - 11 c - the spread does not tell them apart: vibrato spreads music as
+  much). With two frames: no readings from any of them; a four-part chord with vibrato keeps 56 - 77 peaks a window, a solo voice 33 - 84. It is done again
+  here rather than calling refPoints because refPoints' `decimateAll` uses `parallelFor`, which starts threads (normal priority) on every call:
+  not beside a recording. -60 dBFS (the loudest channel's mean square under 1e-6) gives no reading.
+- *Windows* (`tuning::Meter`): 4 s windows every 2 s (refSeries' windows); a reading's time is the window's middle. Channels are pushed side by
+  side; a window is measured when every channel has reached its end (ring of W + S + 4096 samples each; a channel more than that ahead of the
+  slowest loses the window - `lost`).
+- *Decimator*: to sr / round (sr / 8000) (8 kHz from 48 / 96 / 192k, 7.35 kHz from 44.1k), a Blackman-windowed sinc whose pass band ends at
+  1.5 kHz and whose stop band starts at the new rate - 1.15 kHz (only a fold-back into 60 - 1100 Hz matters), 50 - 200 taps; the history is
+  kept twice over so the last L samples are contiguous.
+- *The line* (`appendPoint`): each reading moved by whole 100 c to sit within 50 c of the one before, so a drift past a quarter-tone stays one
+  line. Shown (`shown`): Relative = cents - the median of the first three readings; Absolute = cents - 1200 log2 (A / 440), the first reading
+  brought within 50 c of A by whole semitones and the rest following. Edit window, Relative: from the edit's first reading (the first piece,
+  in time, with a reading in the part it plays); each piece's take line moved by whole semitones so its median sits nearest that
+  (`EditTimeline::tuningValue`).
+- *Live* (`tuning::Live`): `AppContext::watchTuning`, from the take window's timer while it records, finds the engine's feeds of the take's
+  files (`AudioEngine::liveFeeds`, matched by `LiveFeed::file`; the tracks chosen in Measure from, else all) and starts a job once all of them
+  exist. Its thread (low priority) reads each feed from where it got to every 150 ms; a read that fails (written over: it fell behind the
+  1.5 s ring) pushes silence up to half a ring behind the writer and marks the line not whole. When every feed has `ended` and been read, the
+  line goes to the message thread (`onTakeDone` -> `Store::put`), which keeps a whole line (and writes it) and drops one that is not (the files
+  are then measured). The feeds now run while WaveColour OR the tuning line is shown (`engine.setLiveFeeds (waveColour || tuningShow)`).
+- *Store* (`tuning::Store`): `get (take, source)` from the paints (only takes inside the clip); the key is "loudest" or "tracks" with a hash
+  of the files' paths, so another choice of tracks, or new files, is measured again. Its thread reads `Analysis/<take id>.ftune` (text: a
+  header, the key, whole, then "t cents spread n" lines) or measures the files (16384 samples at a time from each, the first two channels'
+  mean, as the feed) - never while `holdOff` (`engine.isRecording()`, as the waveform colours): the job goes back in the queue. `measureAgain`
+  deletes the `.ftune` files. `generation` goes up with every new line; the take and edit windows' timers repaint their band then.
+- *A bug found in the trial (fixed before delivery)*: the Store's `Job` had `juce::Uuid takeId;` - juce::Uuid's default constructor makes a NEW
+  random id, not a null one - so the idle thread never waited: it "measured" an empty job and wrote an empty `<random id>.ftune` on every turn,
+  and filled the disk in minutes. `takeId = juce::Uuid::null()` (and the Live job's), and a job with nothing to measure is skipped; the test now
+  checks that after one take is measured the thread writes nothing more. Worth the Fable pass looking for the same mistake elsewhere.
+- *Settings*: `tuningShow` in the user settings; mode, A and the tracks in `Analysis/Tuning.settings` (JSON), read in `afterProjectReplaced`.
+- *Windows*: the take window's band under the ruler is now `laneH` (`kBannerH` 50 + `tuning::kLaneH` 60 when shown; 46 at first, too flat to see a 12 c drift) - every former use of
+  `kLaneH` in TakeTimeline is `laneH`, except the In / Out flags and the fade handles, which belong to the banner (`kBannerH`). The lane is
+  drawn in `paintAll` (so the sticky header pass draws it too), its name box with the name column; a click on the name box is the menu;
+  `getTooltip` gives the reading nearest the mouse both ways. The edit window: `bandH()` adds `tuneH()`, the lane under the guide
+  (`tuneTop()`), each piece (`tuningSegs`: its take by `takeId`; a piece imported from an AAF has none, so its take is the one whose file it plays, by
+  path, when the file is the whole take - `fileStart` 0) showing its take's readings within the part it plays; EditTimeline is now a TooltipClient for the lane only.
+
+**(2) Import AAF** (`AafImportDialog::build`, FixTools.cpp). `homeOf`: for each AAF track name, the take window track most of its clips' found
+files are on (ties: the first met). `trackFor` puts a clip on its track's home when the file is that track's own, or has the home track's
+channel count (otherwise as before: its own take's track, else a track of the AAF track's name); `joinedHome` counts those that were not the
+home's own files, and the summary says so. The edit's rows: the AAF tracks' in order as before, then every track a piece plays that is not yet
+a row. `fixtools::giveEditRows (Project&)`, called in `openProject` after the stashed mixers: every edit (and frozen version) with rows of its
+own gets any track a piece or overdub plays that exists in the project (the user's edit: 16 rows come back below the odd one).
+
+**Checked** (Linux, JUCE 8.0.9, trial builds only): fermata compiles and links (every `.o.log` clean - the link script links old objects when a
+compile fails, so the logs were read); fermata:Live builds unchanged (no shared file changed; it does not include `TuningLine.h`). The scratch
+test `tuning/tune.cpp` (ALL TUNING TESTS PASSED): the decimator's pass and stop bands; a 0 -> -12 c drift read within 1.6 c; the Meter fed in
+uneven blocks giving the same line as `measureFiles`; A = 442; an 80 c drift unwrapped; silence, white noise at -26 / -46 dBFS and a rumbling
+room giving no readings; `Live` on fake feeds (kept up: whole; written over: not whole, so measured from the files) run through the message
+loop; `Store` writing exactly one `.ftune` and then nothing (the Uuid bug). On screen (Xvfb, the scratch `aaftrial/mkaaf.cpp` project: take 1
+drifting, take 3 sharp, take 2 a render on the odd track, and `Sonata.aaf`): the take window lane Relative and Absolute (A = 442: -9 -> -22 c,
+as made), tooltip, menu, Set A box; the edit window lane both ways, the AAF pieces finding their take by file; the AAF summary line and the
+render's piece on Vl1's row; an `.fmedit` with Vl1 taken out of `trackIds` getting it back on opening ("1 track row(s) given back"). Core
+tests not re-run (no core file changed). Not checked: a real recording (no audio device on Linux - the live path only in the scratch test),
+MSVC (GitHub builds it).
+
+## 3.62.0: each clip's file name; Import source tracks to project folders (23 November 2026, with Claude Opus)
+
+**What was asked** (23 November 2026): "put, in very small writing, the actual file names of each audio region onto the region, perhaps
+starting from the top left corner. Just so I can identify which physical file each audio clip refers to" (for the next build); then "an
+'import source tracks to project folders' button. Basically if any audio file is being used by fermata that isn't in its own project folder
+system, it will copy a version into them and use that copied files, rather than the original. For example, if a user imports files but
+doesn't copy them over. The user has the option to copy them over at a later time."
+
+**(1) The file names** (`src/ui/ClipName.h`, fermata only): `clipname::draw (g, clip, file, visibleLeft)` - the file's name in 9.5 px type on a
+dark strip (0xb0000000, as the take strip's words) 2 px in from the clip's top-left; x is the larger of the clip's left and the visible
+timeline's left (`viewport.getViewPositionX() + kNameW`), so a clip that starts off screen still shows its name; cut with "..." to the clip's
+width; nothing when the clip is under 22 px high or leaves under 26 px. It returns before measuring when the strip is outside the paint's clip
+(the playhead's narrow repaints measure nothing). Edit window: a pass of its own after the crossfades (which are drawn over the pieces' starts),
+every piece on every track but LTC; overdubs after their frame. Take window: after each take track's frame, above the DUD / Bar strip (its 16 px
+are taken off the clip's height when the take has one).
+
+**(2) Import source tracks to project folders** (`src/core/AudioGather.h`, header only, shared folder but fermata only; the dialog
+`GatherAudioDialog` and `fixtools::gatherAudio` in `FixTools.cpp`; Project menu item 25). `gather::plan (Project&)`: every file played from
+outside `projectFolder()` (`isAChildOf`), once each by full path - take files (`TakeFile::file`, first, so a take's file goes to
+`takeFolder (window)`), then edit pieces, overdubs and visual guides of every edit and its frozen versions (`withVersions`) - into
+`audioFolder()/From elsewhere` when no take plays them (the folder Create copy of entire project uses for such files). A name taken (on disk or
+by an earlier item) gets " (2)" ... Missing files are listed, not planned. Waiting files (Export for Processing) are not touched: they are the
+other program's. `gather::copy (plan, progress)` (any thread): free space checked (the plan's bytes + 200 MB); each file copied into a
+`juce::TemporaryFile` beside its place with a CRC-32 (`projectcopy::detail::crcUpdate`) of what was read, read back and compared, its date set
+to the original's, and only then renamed into place; on a cancel or any failure every copy made so far is deleted ("Nothing was changed").
+`gather::apply (Project&, plan)` (message thread): only for the project the plan was made for; every reference whose path is a planned original
+and whose copy exists is pointed at the copy (take files - `verified` cleared on those takes, so the next open looks at them -, pieces,
+overdubs, guides, frozen versions too); then `structureChanged`, `undoReset`, `keepAllWindows` - as `relinkAudio`, not an undo step and not a
+change the quit box asks about. The dialog: `app.saveNow()` before; the copy on a job (progress, Cancel); at the end, if the project was closed
+(or another opened) or a recording started meanwhile, the copies are deleted and nothing changes; otherwise `stopPlayback`, `apply`, a save
+keeping every window, every copy logged. Closing the dialog while it copies stops the job (`JobDialogBase` releases it) and its `ifGone`
+deletes copies that were finished. The multitrack import's summary (when linking) and Import AAF's summary now name the menu item.
+
+**Checked** (Linux, JUCE 8.0.9, trial builds only): the core tests (ALL TESTS PASSED, with the new 3.62.0 section); fermata compiles and links
+(fermata:Live's build is unchanged: it does not include `AudioGather.h`). On screen (Xvfb, the scratch `gathertrial/mkgather.cpp` project): the
+names in both windows, the off-screen start keeping its name at the left edge, the menu item, the box, the copy, the saved `.fmtake` / `.fmedit`
+paths, the second try. Not checked: MSVC (GitHub builds it), a copy of many gigabytes, a cancel from the window (the core test cancels).
+
+## 3.61.0: the knock weighting; the same box at the end of every export; the listening copy's instructions, names (23 November 2026, with Claude Opus)
+
+**What was asked** (23 November 2026): (1) "some stand knocks and bangs don't register properly as black/dark as they are a little too quiet,
+I want the user to be able to weight the colours so that a quieter level of knock triggers the dark/black colour ... in the same way that the
+waveform button can have a menu about how heavy the waveform display compression is" (and fermata:Live to have the coloured waveforms - see
+LIVE-DEVELOPMENT-NOTES 0.10.11); (2) "ANY bounce out or mastering function where fermata writes new files ... all bouncing out should show a
+dialogue box saying what has been exported, what it's called and where it is. Clicking OK should make the progress bar ... empty and show
+'Export Complete' until a new export is started again"; (3) the listening copy: the "What was said about each version ..." text into "a little
+popup window that opens the first time ... All the instructions of how to use it are there ... an 'Instructions' button"; "a user HAS to insert
+their name ... before they can comment"; "allow the editor in fermata to put their name in ... by their name and then in brackets (Piece
+Editor)". Also asked: could an MBIT+ dither be added (answered, nothing built: MBIT+ is iZotope's own; see the delivery message).
+
+**(1) The knock weighting** (`knockweight` in `src/ui/WaveColor.h`, shared). Black at Normal is unchanged (more than half of a block's energy
+below 100 Hz, decided when the colours are worked out, so the stored colour is black). Each block now also keeps its share below 100 Hz as a
+byte (`WaveColorData::low`, from `BlockAnalyser::colour (..., &lowShare)`, 0 for silence), so a weighting is applied when DRAWING
+(`knockweight::shownAt`), at once and without working anything out again. A weighting (Light / Medium / Strong: 30 / 18 / 8 %) makes a block
+black when (a) its share is above that, (b) its energy below 100 Hz (level squared times the share) is at least 2.5 times the block before's, and
+(c) it is above -60 dBFS. (b) is what keeps a sustained bass note (organ pedals, double basses) in its colour: a share-only threshold blackened
+a 55 Hz note at half the melody's level (16 %) as readily as a knock; only a note's sudden start can turn its first block black. (b) also
+passes a knock that fell across two blocks: when the block before is itself under the weighting's share, the block is black if it is 2.5 times
+the block two before AND the block after has already fallen below half of it (a knock dies away; a bass note fading in, which also rises over
+two blocks, does not - so `shownAt` looks one block ahead there, and while recording the newest block waits for the next).
+
+**Where a knock falls in a block.** The colours' FFT window (Hann, 4096) hears a block's middle fully and its edges hardly at all. On screen
+(the Knock Trial project: knocks of 0.10 / 0.18 / 0.28 / 0.45 under a four-note chord at 4 / 8 / 12 / 16 s) Strong caught only the 12 and 16 s
+knocks: the 8 s one lay three quarters into its block and measured 2 % and 5 % in its two blocks; in the middle of a block the same knock
+measures over 20 %. So `BlockAnalyser::colour` takes `before` (the kBlock / 2 samples before the block) and also measures the share over a
+Hann window centred on the block's START edge (`edgeShare`: the bins below 100 Hz by Goertzel - 8 or 9 of them - and the total from the
+windowed samples by Parseval, so no second FFT), keeping the larger share. The two windows overlap by half, so every moment is heard at half
+strength or more by one of them. The block's colour and Normal's black still come from its own window alone (Normal is exactly as before).
+The callers give the half block before: `WaveColorCache::analyse` (the block before, kept), `LiveWaveColours` (read again from the feed's ring;
+nullptr when the ring no longer holds it - its live colours still match the file's exactly: the 3.59.0 test, shares 0 / 255 apart) and
+fermata:Live's `LiveColours` (each batch is read from half a block earlier). The test (`knock.cpp`, scratch): a knock under the chord at 16
+places across a block is caught at 0.10 by Strong at 12 places (Medium none), at 0.18 by Medium at 14 and Strong at all 16 (Light none), at
+0.28 by Light, Medium and Strong at all 16; Normal at none; never more than two blocks; a 55 Hz organ pedal fading in over half a second
+(starting at four places in a block) is never black at Normal, Light or Medium, and one block at most at Strong (its menu line says so). Where it is drawn: `WaveColorData::colourFor` (every window drawing a file's colours), `LiveWaveColours::colours` (fermata, while
+recording), fermata:Live's `LiveColours::colours`. The colour file (`.fwcol`) gains the shares at its END, one byte a block: an older program
+reads the colours and levels and stops; this one, reading a file without them, returns nothing and the file is worked out again once (so the
+weighting works on old takes too - their colours come back over a moment the first time). `AudioEngine::LiveFeed::low` (shared core) carries the
+shares while recording, handed over with the colours (3.59.0). In fermata: `AppContext::waveKnock` / `setWaveKnock` / `showWaveColourMenu`
+(settings `waveKnock`), `RainbowButton::onMenu` (shared `Uikit.h`) in the take and edit windows, one black dot on the button per step;
+choosing a weighting switches WaveColour on.
+
+**(2) The box at the end of an export** (`src/ui/ExportDone.h`, fermata only): `exportdone::describe` (what, each file's name - 15, then how
+many more - the folder, or each folder when there are several, e.g. stems; notes), `show` (title, Show the files / OK, a callback when it is
+closed whichever way), `barDone` (the value to 0, the bar's text "Export complete", shown) and `barStart` (the percentage again). Used by
+Bounce Out (`BounceComponent::finished`), the Mastering window's masters / DDP / listening copies (`showDoneBox`: the success path now goes
+through `exportdone::show`; a stopped export keeps its own box) and Atmos (`atmosFinished`), Export AAF and Export for video edit (their bars
+now stay shown at the end, at 100 % under the box). The three Mastering exports share one progress value: barDone sets it to 0 for all three
+bars, and only the exported one says Export complete. The Mastering window's own renders give no box (they are not exports and start by
+themselves).
+
+**(3) The listening copy** (`src/core/ReviewPageTemplate.inc`, shared, with `ReviewPage`): the three explanation paragraphs and the hint beside
+Add a comment are gone from the page; a `<dialog id="help">` holds all the instructions (listening, commenting, the conversation so far,
+saving and sending back). It opens at start when `fermata-review-help-seen` is not in the browser's storage (then set), and the Instructions
+button in the header opens it again. `openComposer` (Add, the C key, Reply, Change) needs a name: `needName` marks the name box red, focuses it,
+says why; `nameState` dims Add and writes the hint beside it. The editor's name: `Spec::editor` (from `MasterJobSpec::editorName`, from the
+Listening copy tab's new **Your name** box = the setting `editorName` the edit window's note dialog already used) is written into the page as
+`META.editor`; at start every editor note's `who` becomes "Name (Piece Editor)" (a note written as "Editor" or with no name takes the
+page's name); the "editor" tag is gone; the line names above the picture read "Edit N: Name (Piece Editor)" and the column of line names
+widens to its longest name (104 px to 260 px) - each piece of the template stays under MSVC's 16 kB string limit (largest 7.8 kB).
+
+**Checked** (Linux, JUCE 8.0.9, trial builds only): the core tests (every core object rebuilt: ALL TESTS PASSED); `knock.cpp` (scratch: the
+weighting, the 16-place sweep, the organ pedal fading in, the colour file - all pass); `livecol.cpp` (3.59.0's, now also comparing the
+shares: 0 / 255 apart); both programs compile and link. On screen (Xvfb): the knock trial at each weighting (see CHANGELOG), the menu and
+the dots; Bounce Out's box and the bar after it. The page: `review361/page.cpp` writes a page with a history and an editor's name, and
+Playwright (`shoot.py`) checked the Instructions box (first visit only, the button), the name rule (marked, the status line, Add enabled
+once named) and the editor's name in the history and the gutter (182 px). Not checked: the other exports' boxes on screen, the Listening
+copy tab's name box on screen, MSVC (GitHub builds it).
+
+## 3.60.1: ST L / ST R between the two names (23 November 2026, with Claude Opus)
+
+Asked for on 23 November: "make sure it goes in the middle directly between the user insertable name and the ASIO derived name". `InputRow::
+resized`: the name box has the display's width again; the tag (30 px wide, 9 - 12 px high as the squeeze allows) is centred across the display
+and vertically half way between the bottom of the name's line of text (`alias.getY()` + its font's height) and the top of the driver name's
+text. Checked on the Linux trial build (inputs 1 and 3 linked).
+
+## 3.60.0: automation snap, values and boxes; the meter bridge's used I/O; the input strips' long meter; stereo-linked preamps (23 November 2026, with Claude Opus)
+
+**What was asked** (23 November 2026): in the edit window's automation, (1) the area showing a lane's name to show its current value at the
+playhead; (2) a per-lane snap button, on by default: "click anywhere in the automation lane and the point automatically places itself at the
+value that it was already set at ... keep the mouse clicked and move it or click on it again to move it up and down. It should also snap to the
+value of other set points"; (3) each point's value permanently in a small box beside it, the boxes that would overlap left out (only those).
+Then, in the same build: (4) a tick box in the meter bridge to show only the used I/O - outputs with routing to them, inputs "linked to an actual
+strip in the mixer", following changes by itself; (5) the input strip's meter to run the strip's full length (the user's picture: a strip with
+no preamp controls, a short meter under an empty space); (6) stereo-linked preamps: right-click a strip, "Make left channel of stereo input",
+then click the right channel, which takes the left's settings; "no other effect on the way fermata handles the channels, just the preamp
+controls". And a GitHub question: "Artifact storage quota has been hit" on the build.
+
+**(1) The value at the playhead** (`EditWindow.cpp`, the name column in `paintAll`): `headSeconds` (the moving playhead while this edit
+plays, else the cursor) and `laneValueAt` (the lane's `valueAt`, stepped for a switch; no points: `controlNow`, what the lane plays); the
+text (`shortValueText`, with " dB") is drawn bold gold at the right-hand end of the lane's label box, the label taking what is left. The name
+column is already repainted on every timer tick while the edit plays, so it follows the playhead.
+
+**(2) Snap** (`AutoLane::snap`, shared; saved only when off). The magnet (`snapRect`, `drawSnapButton`) sits between the label and the padlock
+(the label box is 19 px narrower). With snap on, `automationMouseDown` puts a new point at `valueAt (time)` - nothing the lane plays changes -
+and every drag of a point (new or clicked) is relative (`snapDraggedValue`): `autoVirtY` starts at the point's own height and moves by the
+mouse's movement (Alt: a tenth), so a point put on the line by a click far above it does not jump to the mouse. The catch: the value of any
+other point of the lane, or the drag's starting value, within a zone of `clamp (1, 3, cap * px per unit)` pixels (cap 1.5 dB / 5 % pan / 0.02
+of a plug-in's range): at the default row height (52 px: 0.58 px per dB) that is the one pixel row nearest the target, so a value just beside
+another can still be set, and since the virtual height moves in whole pixels from the start, the start value is caught for a wobble of a pixel.
+While caught, a dashed white line runs across the lane at the value and the drag box has a white border. A lane's first point (no points yet)
+goes where its control stands, as in 3.48.0; with snap on the drag then moves it from there (`autoDragHold` only with snap off). Snap off:
+exactly the old code.
+
+**(3) The value boxes** (`paintPointValues`): per point, text from `shortValueText` (no " dB"; a plug-in's own words, else 0.000), a box
+13 px high above-right of the point (below the line when it would leave the row's top; on the left near the window's right-hand edge). A box
+is left out when it meets another box or another point's dot (10 px); the rest stay. The decision for a point only involves points within
+`kReach` (250 px) of it, and every point within that reach of the clip is considered, so a partial redraw (the playhead's strip) draws the
+same boxes as a whole one. The dragged point's box is left out (its big box shows). Rows under 26 px: no boxes.
+
+**(4) The meter bridge** (`MeterBridge.h`, fermata only): `usedInputs` - every channel of every track (`TrackDef::inputOf`); `usedOutputs` -
+for every mixer, each Ext Bus's `outFirst` + its speaker channels and a surround monitor bus's headphone pair (as `Project::outputFedBy`), the
+talkback pairs (an output and the next), the click's and the pitch pipe's outputs, LTC out when on. The cells keep the index they show
+(`inIdx` / `outIdx`) for the peaks and their numbers. A 2 Hz timer compares the used lists with the shown ones (the routing changes without
+a message: `outFirst` is an atomic). The tick is kept in the user settings (`bridgeUsedOnly`).
+
+**(5) The input strip** (`MainWindow.cpp`, `InputRow::resized`): with no preamp controls (`! preampShown`) the meter and its scale fill the
+height the gain caption, knob, readout, keys and meter took, the monitor keys at their usual place at the bottom; no GAIN caption.
+`desk::DeskScale::fine` (shared, off unless set): on a scale 180 px or taller, marks at 0, -3, -6, -9, -12, -20, -30, -40, -50. Strips with
+preamp controls are unchanged (the knob and keys fill them; a longer meter there would need wider strips).
+
+**(6) Stereo-linked preamps** (shared: `Project::preampLinks`, `preampPartner`, `isPreampLeft`, `linkPreamps`, `unlinkPreamps`). `setPreamp`
+applies the settings to the input and, in a pair, to its partner (each keeps what its own hardware can do: `lineOnly`, `steppedPad` ...), and
+sends both to the hardware; so the main window's keys and knob, the Stream Deck (`RemoteDesk`) and the control surface all move both.
+`adoptPreamp` (what the hardware reports by itself) is not copied, so a change made on the device's own page does not bounce. `linkPreamps`
+drops any pair either input was in, adds (left, right) and sets the left's settings again (the right takes them). Saved as `"preampLinks"`;
+on loading, a pair with an input out of range, or one that would share an input with another, is dropped; one whose input the driver no longer
+has does nothing (`preampPartner` checks the range). In the main window: the strip's right-click menu (`InputRow::mouseDown`, listening to its
+children - not the keys, the knob or the readout; the name box's own menu is off), "Make left channel of stereo input" (only on an input with
+preamp controls) or "Unlink stereo input"; `MainComponent::startStereoPick` lays `StereoPickOverlay` over the inputs: L on the left strip,
+R under the mouse, a banner; a click on a strip with preamp controls links (one without is refused and the pick goes on); Esc, a right-click or
+the left strip itself cancels; the wheel still scrolls the strips. A linked strip shows ST L / ST R (with the partner in its tooltip).
+
+**GitHub** (the user's build log): the build compiled; `upload-artifact` failed with "Artifact storage quota has been hit". A free account's
+private repositories have 500 MB of artifact (and package) storage, and downloads are kept 90 days by default. Advised: delete old artifacts or
+runs, set the repository's artifact retention lower, wait for the recount (GitHub says 6-12 hours; reports vary), re-run the job. The workflow
+now keeps each build's downloads 3 days (`retention-days: 3`). The user's log shows `upload-artifact@v4` where this repository's workflow has
+`@v6`: the workflow on GitHub may be older than this copy - this delivery's workflow replaces it.
+
+**Checked here:** the core tests, sections "3.60.0 automation snap" and "3.60.0 stereo-linked preamps" (all pass), and the undo hash's list
+("lane snap off"). On the Linux build with a trial-only `AppContext` (fermata:Live's test signal device, and a pretend preamp driver that
+controls inputs 1 - 8 and logs what it is sent) on a trial project (`mksnap`: four tracks, lanes with points far apart and close together, one
+lane with snap off): the values at the cursor (10 s: PnR -5.6 dB on its slope, pan L43, Solo -6.0, Spots -10.0); a click near the top of
+PnC's lane at 20 s put a point at -3.0; a new pan point at 117 s (R30) dragged 6 px down was caught at C (dashed line, white box); the
+boxes (Solo's four points 1 - 1.5 s apart: none at 12 px per second, all four after zooming in; Spots' points 0.25 - 0.3 s apart: left out at
+both); inputs 9 - 16 with the long meter; inputs 1 and 3 linked (the log: input 3 sent 11.0 dB 48V PAD; then 19.0 dB and LC sent to 1 and 3),
+ST L / ST R, the unlink item; the bridge's tick (4 of 16 inputs, 2 of 2 outputs). In the trial, the meter bridge's window took clicks over
+its area after it was closed (the trial window manager): the lanes were tried outside it. **Not checked:** Windows, real preamps (Hapi, MT48,
+Anubis), the bridge following a routing change while open (its 2 Hz check), the Stream Deck and the S1 moving a linked pair.
+
 ## 3.59.0: WaveColour while a take records (23 November 2026, with Claude Opus)
 
 **What was asked** (23 November 2026, after 3.58.0): "the coloured waveform does work in the take window once the recording is finished, but

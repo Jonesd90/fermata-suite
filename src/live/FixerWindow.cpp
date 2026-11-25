@@ -544,7 +544,7 @@ public:
         setWantsKeyboardFocus (true);
         for (auto* c : std::initializer_list<juce::Component*> { &badge, &pieceLabel, &followBtn, &delayLabel, &delayBox, &backBtn, &playBtn, &fwdBtn, &playhead, &behind, &mixerBtn,
                                                                  &status, &flags, &view, &fixTitle, &selLabel, &fixKind, &amount, &amountLabel, &tryBtn, &abBtn, &saveBtn, &fixNote, &tellPrimary, &retouchBtn,
-                                                                 &versions, &progressLabel, &noteBtn, &todBtn, &nameLabel, &nameBox, &seatBtn, &lookBtn })
+                                                                 &versions, &progressLabel, &noteBtn, &todBtn, &nameLabel, &nameBox, &seatBtn, &lookBtn, &colourBtn })
             addAndMakeVisible (c);
         addChildComponent (notePanel);
         // 0.5.0: notes, the name, the time of day
@@ -562,7 +562,27 @@ public:
         notePanel.onSave = [this] (const juce::String& id, const juce::String& text) { app.setNoteText (id, text); };
         notePanel.onDelete = [this] (const juce::String& id) { app.removeNote (id); };
         notePanel.onClosed = [this] { view.selectedNote.clear(); resized(); grabKeyboardFocus(); if (seat != nullptr && seat->dispatching()) seat->setKeyTarget (this); view.repaint(); };
-        for (juce::Button* b : std::initializer_list<juce::Button*> { &noteBtn, &todBtn, &seatBtn, &lookBtn }) b->setWantsKeyboardFocus (false);
+        for (juce::Button* b : std::initializer_list<juce::Button*> { &noteBtn, &todBtn, &seatBtn, &lookBtn, &colourBtn }) b->setWantsKeyboardFocus (false);
+        // 0.10.11 (asked for on 23 November 2026): the coloured waveforms, as on the Primary - a take recording is coloured from the session's chunks on
+        // the drive (when the session is on this computer), a finished one from its files; right-click: how readily a knock is drawn black
+        colourBtn.setClickingTogglesState (true); colourBtn.setToggleState (app.colourWaves(), juce::dontSendNotification);
+        colourBtn.setTooltip ("Coloured waveforms (fermata's WaveColour): the colour says how high the sound is (red low, green middle, blue high), how vivid how tonal it is; "
+                              "a thump below 100 Hz (a kicked stand, a door) is black. Right-click: how readily a quieter knock is drawn black.");
+        colourBtn.onClick = [this] { app.setColourWaves (colourBtn.getToggleState()); applyColours(); view.repaint(); };
+        knockweight::level().store (app.knockWeight());
+        colourBtn.onMenu = [this]
+        {
+            showKnockMenu (&colourBtn, app.knockWeight(), [safe = juce::Component::SafePointer<juce::Component> (this), this] (int w)
+            {
+                if (safe == nullptr) return;
+                app.setKnockWeight (w);
+                if (! app.colourWaves()) { app.setColourWaves (true); colourBtn.setToggleState (true, juce::dontSendNotification); applyColours(); }
+                view.repaint();
+            });
+        };
+        fileColours.folder = [this] { return app.hasProject() ? app.project.projectFolder().getChildFile ("Waveforms") : juce::File(); };
+        fileColours.onReady = [this] { view.repaint(); };
+        applyColours();
         // 0.9.0: fermata's looks, for the Fixer's own windows (the Primary has them in its Project menu; each station keeps its own)
         lookBtn.setTooltip ("The look of the Fixer's windows: the UI style (fermata's desk, or the Manuscript UI) and the desk's colour. The sun / moon in a window's corner switches between light and dark.");
         lookBtn.onClick = [this] { showLookMenu(); };
@@ -661,6 +681,7 @@ public:
     }
     ~FixerComponent() override
     {
+        liveColours.stop(); fileColours.stop();                           // (0.10.11: their threads first)
         seatWindow.reset();
         seat.reset();                                                     // (first: the Fixer's keyboard and mouse are Windows' again before anything else goes)
         app.removeChangeListener (this);
@@ -714,7 +735,7 @@ public:
             auto x = col.removeFromTop (28); nameLabel.setBounds (x.removeFromLeft (72)); nameBox.setBounds (x.reduced (0, 2));
         }
         r.removeFromTop (4);
-        { auto x = r.removeFromTop (22); lookBtn.setBounds (x.removeFromRight (66)); x.removeFromRight (8); status.setBounds (x); }     // (0.9.0: the Look key at the right end of the status line - the top row is full)
+        { auto x = r.removeFromTop (22); lookBtn.setBounds (x.removeFromRight (66)); x.removeFromRight (8); colourBtn.setBounds (x.removeFromRight (76)); x.removeFromRight (8); status.setBounds (x); }     // (0.9.0: the Look key at the right end of the status line - the top row is full)
         r.removeFromTop (4);
         auto fix = r.removeFromBottom (150);
         {
@@ -885,6 +906,7 @@ private:
     {
         const auto L = app.layout();
         view.layout = L;
+        if (view.colourWaves) feedColours();
         if (auto* w = app.pieceWindow()) { view.projectFlags.clear(); for (auto& m : w->markers) if (m.flag) view.projectFlags.push_back (m); }
         pieceLabel.setText (app.hasProject() ? app.project.name + "  -  " + app.pieceName() : juce::String ("No project yet"), juce::dontSendNotification);
         const double we = app.writtenEndSeconds(), live = app.liveEndSeconds();
@@ -1312,6 +1334,25 @@ private:
     juce::ComboBox fixKind;
     juce::Slider amount;
     FixerFlags flags;
+    MenuTextButton colourBtn { "Colours" };                               // 0.10.11: the coloured waveforms (and, right-click, the knock weighting)
+    WaveColorCache fileColours;                                          // (before the view: it goes after the view that draws from them)
+    LiveColours liveColours;
+    void applyColours()
+    {
+        view.colourWaves = app.colourWaves();
+        view.fileColours = &fileColours;
+        view.sessionColours = &liveColours;
+        if (! view.colourWaves) liveColours.want ({}, 0, {});
+    }
+    /** The session's takes, coloured from its chunks as far as the drive has written - only when the session is on this computer (its folder known). */
+    void feedColours()
+    {
+        const auto L = app.layout();
+        if (L == nullptr || L->sessionFolder == juce::File()) { liveColours.want ({}, 0, {}); return; }
+        std::vector<std::pair<juce::int64, juce::int64>> spans;
+        for (auto& t : app.model.takes) spans.push_back ({ t.start, t.end });
+        liveColours.want (L->sessionFolder, app.model.writtenTo(), std::move (spans));
+    }
     LiveTakeView view;
     juce::ListBox versions;
     double selA = -1.0, selB = -1.0;

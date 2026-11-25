@@ -385,11 +385,14 @@ class DeskScale : public juce::Component
 {
 public:
     DeskScale() { setInterceptsMouseClicks (false, false); }
+    bool fine = false;                                         // (3.60.0: more marks when it is tall - off unless a strip asks for it)
     void paint (juce::Graphics& g) override
     {
         auto b = getLocalBounds().toFloat();
         g.setColour (pal().cream); g.setFont (theme::figureFont (8.0f, juce::Font::plain));
-        for (int db : { 0, -9, -20, -40 })
+        // 3.60.0: 'fine' and tall enough (fermata's input strip with no preamp keys, where the meter runs the strip's length): more marks
+        const bool many = fine && b.getHeight() >= 180.0f;
+        for (int db : many ? std::initializer_list<int> { 0, -3, -6, -9, -12, -20, -30, -40, -50 } : std::initializer_list<int> { 0, -9, -20, -40 })
         {
             const float y = b.getBottom() - b.getHeight() * LevelMeter::frac ((float) db);
             g.drawText (juce::String (db), juce::Rectangle<float> (b.getX(), juce::jlimit (b.getY(), b.getBottom() - 10.0f, y - 5.0f), b.getWidth(), 10.0f), juce::Justification::centredLeft, false);

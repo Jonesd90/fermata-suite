@@ -448,7 +448,18 @@ public:
     bool readOnlyLoads = false;
 
     // --- preamps ---
+    /** Sets an input's preamp (and sends it to the hardware). 3.60.0: on an input of a stereo-linked pair, the other input is set the same. */
     void setPreamp (int inputIndex, const PreampSettings&);
+    /** 3.60.0 (asked for on 23 November 2026): stereo-linked preamps - pairs of driver inputs (left, right) whose preamp controls move together:
+        whatever the program sets on one (setPreamp: the main window's strips, the Stream Deck, the control surface) is set on the other too.
+        Only the preamp controls: tracks, monitoring and everything else treat the two inputs as before. What the hardware reports by itself
+        (adoptPreamp) is not copied. Saved with the project ("preampLinks"); a pair with an input the driver no longer has does nothing. */
+    std::vector<std::pair<int, int>> preampLinks;
+    int  preampPartner (int input) const noexcept;        // the other input of its pair, or -1
+    bool isPreampLeft (int input) const noexcept;         // the left input of a pair
+    /** Makes a pair (any pair either input was in goes); the right input takes the left one's settings at once. False if they cannot be paired. */
+    bool linkPreamps (int left, int right);
+    void unlinkPreamps (int input);
     /** Records what the hardware reports, without sending anything back to it. */
     void adoptPreamp (int inputIndex, const PreampSettings&);
     std::vector<PreampDeviceCfg> preampDevices;       // the Merging devices whose preamps Fermata controls (see Ravenna.h)

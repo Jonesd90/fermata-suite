@@ -36,6 +36,7 @@ struct MasterJobSpec
     bool         formsOnly = false; // Files: make only the listening copies (one .html per piece, with its audio inside), no audio files
     bool         formSingle = false;// the listening copies: all the pieces in ONE .html (named after formTitle) instead of one per piece
     juce::String formTitle;         // the name of that one page (the album title, or the project's name)
+    juce::String editorName;        // 3.61.0: the listening copies - the piece editor's name, shown with their replies ("Name (Piece Editor)")
     juce::String discName;
     /** 3.26.0, Files only: buses exported with the master, each as its own stereo file per piece (stems) in a "Stems" folder in destFolder - rendered in the
         same pass as the master, at the master's gain (so they keep its balance), in its main format. stemNames: what the files are named after. */

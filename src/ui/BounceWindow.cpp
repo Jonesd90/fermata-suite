@@ -1,4 +1,5 @@
 #include "BounceWindow.h"
+#include "ExportDone.h"
 
 namespace td
 {
@@ -387,6 +388,7 @@ void BounceComponent::start()
     status.setText ("Bouncing...", juce::dontSendNotification);
     showButton.setVisible (false);
     progressValue = 0.0;
+    exportdone::barStart (progressBar);                                    // (3.61.0: the bar shows its percentage again)
     setBusy (true);
     auto safe = juce::Component::SafePointer<BounceComponent> (this);
     job = std::make_unique<BounceJob> (app.project, bs, [safe] (BounceResult r) { if (safe != nullptr) safe->finished (r); });
@@ -433,6 +435,15 @@ void BounceComponent::finished (const BounceResult& r)
                         + juce::File (r.files[0]).getFileName() + (r.files.size() > 1 ? "  ..." : "") + atmosLeftOutNote (app.project), juce::dontSendNotification);
         lastFile = juce::File (r.files[0]);
         showButton.setVisible (true);
+        // 3.61.0 (asked for on 23 November 2026): the box at the end - what was bounced, each file's name, where - then the bar says Export complete
+        juce::String notes;
+        notes << "Loudest peak: " << juce::String (r.peakDb, 1) << " dBFS"
+              << (r.clipped ? "  -  THIS CLIPPED (over 0 dBFS). Bounce again with Normalise ticked, or lower the faders." : ".");
+        if (const auto left = atmosLeftOutNote (app.project).trim(); left.isNotEmpty()) notes << "\n\n" << left;
+        const juce::String what = juce::String (r.files.size()) + (r.files.size() == 1 ? " file bounced" : " files bounced")
+                                  + (isEdit ? " from the edit" : " from the take window") + (ctx.defaultName.isNotEmpty() ? " (" + ctx.defaultName + ")." : juce::String ("."));
+        juce::Component::SafePointer<BounceComponent> safe (this);
+        exportdone::show (this, "Bounce complete", what, r.files, notes, r.clipped, [safe] { if (safe != nullptr) exportdone::barDone (safe->progressBar, safe->progressValue); });
     }
 }
 

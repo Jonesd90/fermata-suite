@@ -428,6 +428,11 @@ struct EditDef
     juce::String         score;
     double               scoreTop = 0.0;        // the page at the top of the score window, and how far down it (2.25 = a quarter of the way down the third page)
     double               scoreZoom = 0.0;       // 0 = the page fits the window's width; otherwise the width of a page in pixels for each point (1/72 inch) of it
+    /** 3.66.0 (asked for on 24 November 2026: "the PDF I have contains four movements in one single document but the four movements are split over
+        4 separate take and edit windows ... tell fermata which pages of the PDF that edit and take window is referring to"): this edit's pages of
+        its score, counted from 1, both included (0 = from the first page / to the last). The score window shows only these, and the edit's bars
+        are counted from the first bar of scoreFirstPage (unless a bar is marked "This edit's music begins at this bar"). A view, like the two above. */
+    int                  scoreFirstPage = 0, scoreLastPage = 0;
     bool                 showMarkers = true;          // the Markers tick box in the edit window
     EditGuide            guide;                       // the visual guide above the tracks (see EditGuide); part of undo
     bool                 showGuide = true;            // the Guide button at the top of the edit window: the guide's lane is shown (a view: not part of undo)

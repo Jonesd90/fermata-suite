@@ -4,6 +4,7 @@
 #include "Uikit.h"
 #include "FixTools.h"
 #include "../core/VideoExport.h"
+#include "ExportDone.h"
 #include "../core/AudioFormats.h"
 #include "../core/Ltc.h"
 
@@ -119,6 +120,7 @@ private:
         if (bouncer->getPrepareError().isNotEmpty()) { say (bouncer->getPrepareError(), true); return; }
         say ("Exporting...", false);
         bar.setVisible (true); show.setVisible (false); progressValue = 0.0; go.setButtonText ("Cancel"); close.setEnabled (false);
+        exportdone::barStart (bar);                                            // (3.61.0)
         for (auto* c : std::initializer_list<juce::Component*> { &folderEditor, &nameEditor, &gapEditor, &browse, &overdubs }) c->setEnabled (false);
         startTimerHz (10);
         juce::Component::SafePointer<VideoExportComponent> safe (this);
@@ -156,9 +158,10 @@ private:
         stopTimer();
         job.reset();
         const auto& err = r.error;
-        bar.setVisible (false); go.setButtonText ("Export"); close.setEnabled (true);
+        go.setButtonText ("Export"); close.setEnabled (true);
         for (auto* c : std::initializer_list<juce::Component*> { &folderEditor, &nameEditor, &gapEditor, &browse, &overdubs }) c->setEnabled (true);
-        if (err.isNotEmpty()) { say (err, true); juce::Logger::writeToLog ("Export for video edit: " + err); return; }
+        if (err.isNotEmpty()) { bar.setVisible (false); say (err, true); juce::Logger::writeToLog ("Export for video edit: " + err); return; }
+        progressValue = 1.0;                                                   // (3.61.0: the bar stays, at 100 %, under the box)
         lastFolder = r.mixFile.getParentDirectory(); show.setVisible (true);
         juce::String text;
         text << "Done: " << juce::String ((double) r.lengthSamples / juce::jmax (1.0, app.project.findEdit (editId) != nullptr ? app.project.findEdit (editId)->sampleRate : 48000.0), 2) << " s, "
@@ -170,6 +173,17 @@ private:
         for (auto& n : r.notes) text << "   " << n << "\n";
         say (text, r.withoutCode > 0);
         juce::Logger::writeToLog ("Export for video edit: " + text.replace ("\n", " | "));
+        {   // 3.61.0 (asked for on 23 November 2026): the box at the end - what, each file's name, where - then the bar says Export complete
+            juce::String what;
+            what << "Three files for the video edit, each as long as the edit: the edit's stereo mix, its LTC timecode, and the mono mix with the LTC (for checking the sync).";
+            juce::StringArray files { r.mixFile.getFullPathName(), r.ltcFile.getFullPathName(), r.checkFile.getFullPathName() };
+            auto notes = text.upToFirstOccurrenceOf ("\n", false, false).fromFirstOccurrenceOf ("Done: ", false, false);
+            juce::StringArray more; more.addLines (text.fromFirstOccurrenceOf ("\n", false, false));
+            for (auto& l : more) if (l.trim().isNotEmpty() && ! l.startsWith ("   " + r.mixFile.getFileName()) && ! l.startsWith ("   " + r.ltcFile.getFileName()) && ! l.startsWith ("   " + r.checkFile.getFileName())) notes << "\n" << l.trim();
+            juce::Component::SafePointer<VideoExportComponent> safe (this);
+            exportdone::show (this, "Export for video edit complete", what, files, notes, r.withoutCode > 0,
+                              [safe] { if (safe != nullptr) exportdone::barDone (safe->bar, safe->progressValue); });
+        }
 
     }
     void timerCallback() override { if (job != nullptr) progressValue = (double) job->getProgress(); }

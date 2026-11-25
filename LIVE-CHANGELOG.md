@@ -8,6 +8,41 @@ fermata:Live is the live-concert recorder that goes with fermata (see `docs/LIVE
 
 A line that starts with **Shared:** is a change to the code fermata shares (see `COMPATIBILITY.md`), so fermata's next build mentions it too.
 
+## 0.10.12
+Built 24 November 2026 (the conversation for both programs), with Claude Opus. No change to fermata:Live's own code: what the shared folder
+gained for fermata 3.66.0 (which pages of a score's PDF are an edit's).
+- **Shared (fermata 3.66.0):** an edit remembers which pages of its score are its own (`EditDef::scoreFirstPage` / `scoreLastPage`,
+  `src/core/Edit.h`); the project file gains `"scoreFirstPage"` / `"scoreLastPage"` on an edit that has them set, and nothing for the others
+  (`src/core/Project.cpp`). fermata:Live has no score window; a project it saves keeps the keys as they are. Rebuild and check that a
+  concert's project opens and saves as before.
+
+## 0.10.11
+Built 23 November 2026 (the conversation for both programs), with Claude Opus. Asked for on 23 November: "fermata:Live should have the coloured
+waveform display too", and the same knock weighting as fermata 3.61.0.
+- **The Fixer has the coloured waveforms.** The Fixer now has a Colours button too, beside Look... on its status line. It shows the same
+  coloured waveforms as the Primary's Colours button (there since 0.5.0): a take still recording is coloured from the session's chunks on
+  the drive when the session is on this computer, and a finished one from its files. Each station remembers its own setting.
+- **How readily a knock is drawn black.** Right-click Colours (Primary or Fixer): Normal (as before), Light, Medium or Strong. It is the same
+  as fermata 3.61.0's: a stronger weighting catches a quieter knock under the music (a sudden rise of sound below 100 Hz; a sustained bass
+  note keeps its colour), measured the same wherever the knock falls in its tenth of a second. Choosing a weighting switches the colours on.
+  Each station remembers its own.
+- **Shared (fermata 3.61.0):** `knockweight` and each block's share below 100 Hz in `src/ui/WaveColor.h` (a colour file saved before is worked
+  out once more); `AudioEngine::LiveFeed::low`; `RainbowButton::onMenu` in `src/ui/Uikit.h` (fermata's button only); the listening copy page
+  and `MasterJobSpec::editorName` (fermata's Mastering window only). The recorder is unchanged.
+- Checked here: fermata:Live builds on Linux (trial only); the knock weighting is fermata's code and was tested there (fermata 3.61.0).
+  Not tried on screen: the Fixer's Colours button and its colours (a Primary and a Fixer recording a session could not be run here) - please
+  try both stations.
+
+## 0.10.10
+Built 23 November 2026 (the conversation for both programs), with Claude Opus. No change to fermata:Live's own code: what the shared folder
+gained for fermata 3.60.0 (snap for the edit window's automation, stereo-linked preamps).
+- **Shared (fermata 3.60.0):** an automation lane remembers whether its snap is on (`AutoLane::snap`, `src/core/Automation.h`, on unless
+  switched off); the project file gains `"snap": false` on a lane that has it off, and nothing for the others (`src/core/Project.cpp`).
+  fermata:Live writes no automation, so its projects are unchanged. Stereo-linked preamps (`Project::preampLinks`, set up in fermata's
+  main window): `setPreamp` sets both inputs of a pair, so a pair saved in a project is honoured by fermata:Live's strips as well; the
+  project file gains `"preampLinks"` only when there are pairs. `desk::DeskScale::fine` (`src/ui/DeskLook.h`) is off unless set, and
+  fermata:Live does not set it. Rebuild and check that its preamp strips and a concert's project are unchanged.
+
 ## 0.10.9
 Built 23 November 2026 (the conversation for both programs), with Claude Opus. No change to fermata:Live's own code: what the shared folder
 gained for fermata 3.59.0 (its take window colours a take while it records).

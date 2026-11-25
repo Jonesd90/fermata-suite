@@ -11,6 +11,7 @@
 #include "Player.h"
 #include "../core/Project.h"
 #include "../core/Ravenna.h"
+#include "../ui/WaveColor.h"                         // (0.10.11: knockweight - the colours' knock weighting)
 #include <juce_gui_extra/juce_gui_extra.h>
 #include <set>
 
@@ -111,6 +112,9 @@ public:
     void setTimeOfDay (bool on)                                 { settings->setValue ("timeOfDay", on); rebuildLayout(); sendChangeMessage(); }
     bool colourWaves() const                                    { return settings->getBoolValue ("colourWaves", false); }
     void setColourWaves (bool on)                               { settings->setValue ("colourWaves", on); sendChangeMessage(); }
+    /** 0.10.11: how readily a knock is drawn black (0 Normal ... 3 Strong; knockweight in src/ui/WaveColor.h). Set into knockweight::level(). */
+    int knockWeight() const                                     { return juce::jlimit (0, 3, settings->getIntValue ("knockWeight", 0)); }
+    void setKnockWeight (int w)                                 { settings->setValue ("knockWeight", juce::jlimit (0, 3, w)); settings->saveIfNeeded(); knockweight::level().store (knockWeight()); sendChangeMessage(); }
     /** 0.5.0: the recording's report (a PDF in the project's Reports folder): every take of the piece with all the notes and flags at their places,
         who wrote them, the replies and the fix versions. False and why when it could not be written. */
     bool writeReport (juce::File& written, juce::String& error);

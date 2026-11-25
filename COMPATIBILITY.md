@@ -246,3 +246,28 @@ copies it like everything else, which is fine.
     wherever the take's file and live waveform are (`deliverFromRing`, the direct path, the silence for a device that was away); the direct
     path's outsize block (written to the file as silence) now gives the live waveform and the feed that silence too. `WaveColorCache::put`
     (`src/ui/WaveColor.h`): colours for a file worked out elsewhere, kept and saved as its own (fermata only).
+  - Still contract 3 (fermata 3.60.0, fermata:Live 0.10.10): automation snap. `AutoLane::snap` (on by default). The project file (an edit's
+    automation lane) gains `"snap": false` only on a lane with snap off; a lane without the key has it on, so older files read as before and an
+    older fermata ignores the key. The undo hash changes only for a lane with snap off. Stereo-linked preamps: `Project::preampLinks` (pairs of
+    driver inputs, left and right), saved as `"preampLinks": [ { "left", "right" } ]` only when there are any (an older program ignores it);
+    `setPreamp` on an input of a pair sets the other the same (fermata:Live's strips call it too, so a pair made in fermata is honoured there);
+    `adoptPreamp` (what the hardware reports) is not copied. `desk::DeskScale::fine` (`src/ui/DeskLook.h`): more marks on a tall scale, off unless
+    set (fermata's input strip with no preamp controls); fermata:Live does not set it.
+  - Still contract 3 (fermata 3.61.0, fermata:Live 0.10.11): the knock weighting. Nothing in the project file changed. `src/ui/WaveColor.h`:
+    `knockweight` (a weighting 0 - 3 each program sets from its own settings, read when drawing: `shownAt (argb, levels, lows, k)`); every
+    block's share of sound below 100 Hz (`WaveColorData::low`, `BlockAnalyser::colour (..., lowShare, before)` - `before`, the half block before
+    the block, lets a knock at a block's edge be measured fully; each program's live colours pass it), written as one byte a block at the END of a `.fwcol`
+    colour file - an older program reads the colours and levels and stops there; a file without the shares is worked out again by the new one.
+    `AudioEngine::LiveFeed::low` (fermata's colours while recording). `src/ui/Uikit.h`: `RainbowButton::onMenu` (right-click) and its dots.
+    The listening copy (`src/core/ReviewPage*`): `Spec::editor`, written into the page as `"editor"` when given; `MasterJobSpec::editorName`.
+    Notes returned from a page (`.fmnotes`) are unchanged.
+  - Still contract 3 (fermata 3.62.0; fermata:Live unchanged at 0.10.11): `src/core/AudioGather.h` is new - "Import source tracks to project
+    folders" (the audio a project plays from outside its folder, copied in, checked, and the project pointed at the copies). Header only and
+    included by fermata only, so fermata:Live's build is unchanged. Nothing in the project file changed: the copies are ordinary paths inside
+    the folder, saved as before.
+  - Still contract 3 (fermata 3.66.0, fermata:Live 0.10.12): an edit's pages of its score. `EditDef::scoreFirstPage` / `scoreLastPage` (counted
+    from 1; 0 = from the first page / to the last). An edit in the project file gains `"scoreFirstPage"` and `"scoreLastPage"` only when they
+    are set (inside the score's keys, so only for an edit with a score); an edit without them reads as before (the whole PDF), and an older
+    program ignores them. They are view keys (`kEditViewKeys`: saved, never undone; an undo keeps the live edit's). `Project::addScore` sets
+    them back to 0 when the edit gets another PDF. fermata:Live has no score window and no edits of its own; it reads and writes the keys
+    like the others. Nothing else changed.

@@ -39,6 +39,7 @@
 #include "../src/core/ReviewPage.h"
 #include "../src/core/ReviewHistory.h"
 #include "../src/core/FileSync.h"
+#include "../src/core/AudioGather.h"
 #include "../src/core/AudioRelink.h"
 #include "../src/core/AudioOps.h"
 #include "../src/core/Mcu.h"
@@ -3992,6 +3993,7 @@ int main()
         expectE ("lane param", [&] { e.lanes[0].param = "pan"; }, true);
         expectE ("lane mixer", [&] { e.lanes[0].mixerId = juce::Uuid(); }, true);
         expectE ("lane locked", [&] { e.lanes[0].locked = true; }, true);
+        expectE ("lane snap off", [&] { e.lanes[0].snap = false; }, true);                              // (3.60.0)
         expectE ("point time", [&] { e.lanes[0].pts[0].time = 2000; }, true);
         expectE ("point value", [&] { e.lanes[0].pts[0].value = -6.0f; }, true);
         expectE ("point region / take / src", [&] { e.lanes[0].pts[0].region = juce::Uuid(); e.lanes[0].pts[0].take = juce::Uuid(); e.lanes[0].pts[0].srcPos = 9; }, true);
@@ -15614,12 +15616,18 @@ int main()
         CHECK (q.pdfsFolder().getNumberOfChildFiles (juce::File::findFiles) == 2);
         const auto second = e.score;
         CHECK (q.addScore (e, q.pdfsFolder().getChildFile ("Lion full score.pdf")).isEmpty() && e.score == "Lion full score.pdf" && q.pdfsFolder().getNumberOfChildFiles (juce::File::findFiles) == 2);   // chosen from the folder itself
-        e.score = second; e.scoreTop = 2.25; e.scoreZoom = 1.5;
+        // 3.66.0: the edit's pages of its score stay when the same PDF is chosen again, and go when another one is
+        e.scoreFirstPage = 5; e.scoreLastPage = 8;
+        CHECK (q.addScore (e, pdf).isEmpty() && e.score == "Lion full score.pdf" && e.scoreFirstPage == 5 && e.scoreLastPage == 8);
+        CHECK (q.addScore (e, q.pdfsFolder().getChildFile (second)).isEmpty() && e.score == second && e.scoreFirstPage == 0 && e.scoreLastPage == 0);
+        CHECK (q.pdfsFolder().getNumberOfChildFiles (juce::File::findFiles) == 2);
+        e.score = second; e.scoreTop = 2.25; e.scoreZoom = 1.5; e.scoreFirstPage = 5; e.scoreLastPage = 8;
         // saved and read back: the answers, whom they answer, the score and where its window was; an edit with none writes no such keys
         juce::String err; CHECK (q.save (err));
         Project q2; CHECK (q2.load (q.projectFile, err));
         auto* e2 = q2.findEdit (e.id);
         CHECK (e2 != nullptr && e2->score == second && e2->scoreTop == 2.25 && e2->scoreZoom == 1.5 && q2.scoreFileFor (*e2).existsAsFile());
+        CHECK (e2 != nullptr && e2->scoreFirstPage == 5 && e2->scoreLastPage == 8);       // 3.66.0: the edit's pages of the score
         CHECK (e2 != nullptr && e2->feedback.size() == 1 && e2->feedback[0].editor && e2->feedback[0].replyTo.isEmpty() && e2->versions.size() == 1);
         if (e2 != nullptr && e2->versions.size() == 1 && e2->versions[0].edit != nullptr && e2->versions[0].edit->feedback.size() == 4)
         {
@@ -16352,6 +16360,215 @@ int main()
                 CHECK (worst < 1e-5);                                        // (24-bit in the file)
             }
         }
+    }
+
+    SECTION ("3.60.0 automation snap: on by default, saved only when off, kept by a reload; a point put on the line changes nothing it plays");
+    {
+        auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("fermata_test_snap");
+        dir.deleteRecursively(); dir.createDirectory();
+        Project q;
+        q.projectFile = dir.getChildFile ("S").getChildFile ("S.fermata");
+        q.setInputCount (4); q.setOutputCount (2);
+        q.tracks.clear();
+        const auto tA = q.addTrack ("a", TrackFormat::Mono, 0).id, tB = q.addTrack ("b", TrackFormat::Mono, 1).id;
+        auto& ed = q.addEdit ("E", juce::Uuid::null());
+        ed.sampleRate = 48000.0;
+        AutoLane fresh;
+        CHECK (fresh.snap);                                                  // a new lane: snap on
+        ed.addLane (tA, autoparam::fader, juce::Uuid::null());
+        ed.addLane (tB, autoparam::pan, juce::Uuid::null());                 // (the second may move the first: found again by name below)
+        auto& la = *ed.findLane (tA, autoparam::fader, juce::Uuid::null());
+        auto& lb = *ed.findLane (tB, autoparam::pan, juce::Uuid::null());
+        CHECK (la.snap && lb.snap);
+        ed.addPoint (la, 10 * 48000, -3.0f); ed.addPoint (la, 40 * 48000, -9.0f);
+        lb.snap = false;
+        juce::String err;
+        CHECK (q.save (err));
+        int keys = 0, files = 0;                                             // (the edit is in its own .fmedit file)
+        for (auto& f : dir.findChildFiles (juce::File::findFiles, true, "*.fermata;*.fmedit"))
+        {
+            ++files;
+            const auto text = f.loadFileAsString();
+            for (int at = text.indexOf ("\"snap\""); at >= 0; at = text.indexOf (at + 1, "\"snap\"")) ++keys;
+        }
+        CHECK (files >= 2 && keys == 1);                                     // only the lane with it off says so
+        Project r;
+        CHECK (r.load (q.projectFile, err));
+        auto* re = r.edits.empty() ? nullptr : r.edits.front().get();
+        CHECK (re != nullptr);
+        if (re != nullptr)
+        {
+            const auto* ra = re->findLane (tA, autoparam::fader, juce::Uuid::null());
+            const auto* rb = re->findLane (tB, autoparam::pan, juce::Uuid::null());
+            CHECK (ra != nullptr && ra->snap && rb != nullptr && ! rb->snap);
+        }
+        // the click with snap on: a point at the line's own value where it is clicked - before the first point, between two, after the last -
+        // and the lane plays exactly what it played before
+        AutoLane copy = la;
+        std::vector<float> before;
+        for (int s = 0; s <= 60; ++s) before.push_back (copy.valueAt ((juce::int64) s * 48000, 0.0f));
+        for (const double at : { 4.0, 25.0, 55.0 })
+        {
+            const auto t = (juce::int64) (at * 48000.0);
+            ed.addPoint (copy, t, copy.valueAt (t, 0.0f));
+        }
+        CHECK (copy.pts.size() == 5);
+        float worst = 0.0f;
+        for (int s = 0; s <= 60; ++s) worst = juce::jmax (worst, std::abs (copy.valueAt ((juce::int64) s * 48000, 0.0f) - before[(size_t) s]));
+        CHECK (worst < 1e-4f);
+        CHECK (std::abs (copy.valueAt ((juce::int64) 25 * 48000, 0.0f) + 6.0f) < 1e-4f);     // (half way from -3 to -9)
+        dir.deleteRecursively();
+    }
+
+    SECTION ("3.60.0 stereo-linked preamps: the right takes the left's settings, either one sets both, unlinking, saved, a second pair replaces the first");
+    {
+        struct Recorder : PreampDriver
+        {
+            std::vector<std::pair<int, PreampSettings>> sent;
+            juce::String getName() const override { return "test"; }
+            bool isConnected() const override { return true; }
+            bool controls (int) const override { return true; }
+            bool apply (int input, const PreampSettings& s) override { sent.push_back ({ input, s }); return true; }
+        };
+        auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("fermata_test_links");
+        dir.deleteRecursively(); dir.createDirectory();
+        Project q;
+        q.projectFile = dir.getChildFile ("L").getChildFile ("L.fermata");
+        q.setInputCount (8); q.setOutputCount (2);
+        auto rec = std::make_shared<Recorder>();
+        q.preampDriver = rec;
+        PreampSettings a; a.gainDb = 34.5f; a.phantom = true; a.lowCut = true; a.pad = true;
+        q.setPreamp (2, a);
+        PreampSettings b; b.gainDb = 10.0f;
+        q.setPreamp (5, b);
+        CHECK (q.preampPartner (2) == -1 && q.inputs[5].preamp.gainDb == 10.0f);
+        rec->sent.clear();
+        CHECK (q.linkPreamps (2, 5));
+        CHECK (q.preampPartner (2) == 5 && q.preampPartner (5) == 2 && q.isPreampLeft (2) && ! q.isPreampLeft (5));
+        CHECK (q.inputs[5].preamp.gainDb == 34.5f && q.inputs[5].preamp.phantom && q.inputs[5].preamp.lowCut && q.inputs[5].preamp.pad);   // the left's settings
+        bool told5 = false; for (auto& s : rec->sent) told5 = told5 || (s.first == 5 && s.second.gainDb == 34.5f && s.second.phantom);
+        CHECK (told5);                                                       // (and the hardware was told)
+        PreampSettings c = q.inputs[5].preamp; c.gainDb = 40.0f; c.phantom = false;
+        q.setPreamp (5, c);                                                  // the right one changed: the left follows
+        CHECK (q.inputs[2].preamp.gainDb == 40.0f && ! q.inputs[2].preamp.phantom);
+        CHECK (! q.linkPreamps (3, 3) && ! q.linkPreamps (1, 99));
+        juce::String err;
+        CHECK (q.save (err));
+        Project r;
+        CHECK (r.load (q.projectFile, err));
+        CHECK (r.preampPartner (2) == 5 && r.isPreampLeft (2));
+        CHECK (q.linkPreamps (5, 6));                                        // a new pair with one of them: the old pair goes
+        CHECK (q.preampPartner (2) == -1 && q.preampPartner (5) == 6 && q.isPreampLeft (5) && q.preampLinks.size() == 1);
+        CHECK (q.inputs[6].preamp.gainDb == 40.0f);
+        q.unlinkPreamps (6);
+        CHECK (q.preampPartner (5) == -1 && q.preampLinks.empty());
+        PreampSettings d = q.inputs[5].preamp; d.gainDb = 12.0f;
+        q.setPreamp (5, d);
+        CHECK (q.inputs[6].preamp.gainDb == 40.0f);                          // unlinked: only its own
+        q.preampDriver = std::make_shared<NullPreampDriver>();
+        dir.deleteRecursively();
+    }
+
+    SECTION ("3.62.0 import source tracks to project folders: audio played from outside the folder copied in (checked), the project pointed at the copies, the originals untouched");
+    {
+        auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("fermata_test_gather");
+        dir.deleteRecursively(); dir.createDirectory();
+        const auto outside = dir.getChildFile ("Elsewhere"); outside.getChildFile ("Other").createDirectory();
+        auto wav = [] (const juce::File& f, int frames, float value)
+        {
+            f.getParentDirectory().createDirectory();
+            juce::WavAudioFormat fmt;
+            std::unique_ptr<juce::OutputStream> os (f.createOutputStream().release());
+            auto w = fmt.createWriterFor (os, juce::AudioFormatWriterOptions().withSampleRate (48000.0).withNumChannels (1).withBitsPerSample (24));
+            juce::AudioBuffer<float> b (1, frames); for (int i = 0; i < frames; ++i) b.setSample (0, i, value * (float) ((i % 50) - 25) / 25.0f);
+            w->writeFromAudioSampleBuffer (b, 0, frames);
+        };
+        auto data = [] (const juce::File& f) { juce::MemoryBlock m; f.loadFileAsData (m); return m; };
+        Project q;
+        q.projectFile = dir.getChildFile ("G").getChildFile ("G.fermata");
+        q.projectFile.getParentDirectory().createDirectory();
+        q.createDefaultDesign(); q.tracks.clear(); q.buses.clear();
+        const auto tA = q.addTrack ("Violin", TrackFormat::Mono, 0).id, tB = q.addTrack ("Cello", TrackFormat::Mono, 1).id;
+        auto& tw = q.addTakeWindow ("Sonata");
+        const auto inProject = q.takeFolder (tw).getChildFile ("002 - Sonata - Cello.wav");      // recorded here: stays
+        wav (outside.getChildFile ("Violin.wav"), 4800, 0.5f);
+        wav (outside.getChildFile ("Other").getChildFile ("Violin.wav"), 4800, 0.25f);          // another file of the same name
+        wav (outside.getChildFile ("Cello.wav"), 4800, 0.4f);
+        wav (inProject, 4800, 0.3f);
+        wav (outside.getChildFile ("AAF only.wav"), 2400, 0.2f);                                  // played only by an edit (an AAF import's audio)
+        auto take = [&] (int number, const juce::File& violin, const juce::File& cello)
+        {
+            TakeGroup g; g.id = juce::Uuid(); g.number = number; g.sampleRate = 48000.0; g.lengthSamples = 4800; g.verified = true;
+            TakeFile a; a.trackId = tA; a.trackName = "Violin"; a.file = violin; a.sourceName = violin.getFileName(); g.files.push_back (a);
+            TakeFile b; b.trackId = tB; b.trackName = "Cello"; b.file = cello; g.files.push_back (b);
+            tw.groups.push_back (g);
+        };
+        take (1, outside.getChildFile ("Violin.wav"), outside.getChildFile ("Cello.wav"));
+        take (2, outside.getChildFile ("Other").getChildFile ("Violin.wav"), inProject);
+        take (3, outside.getChildFile ("Gone.wav"), inProject);                                   // not to be found: left as it is
+        auto& ed = q.addEdit ("Edit 1", tw.id);
+        {
+            EditRegion r; r.id = juce::Uuid(); r.takeName = "001 - Sonata"; r.sampleRate = 48000.0; r.sourceLength = 4800; r.srcIn = 0; r.srcOut = 4800; r.takeId = tw.groups[0].id;
+            for (auto& tf : tw.groups[0].files) { RegionFile rf; rf.trackId = tf.trackId; rf.trackName = tf.trackName; rf.file = tf.file; r.files.push_back (rf); }
+            ed.regions.push_back (r);
+            EditRegion o; o.id = juce::Uuid(); o.takeName = "AAF"; o.sampleRate = 48000.0; o.sourceLength = 2400; o.srcIn = 0; o.srcOut = 2400; o.startSample = 4800;
+            RegionFile rf; rf.trackId = tA; rf.trackName = "Violin"; rf.file = outside.getChildFile ("AAF only.wav"); o.files.push_back (rf);
+            ed.regions.push_back (o);
+        }
+        const auto before = data (outside.getChildFile ("Violin.wav"));
+
+        auto pl = gather::plan (q);
+        CHECK (pl.items.size() == 4);                                                             // two violins, the cello, the edit's own file (each once)
+        CHECK (pl.missing.size() == 1 && pl.missing[0].startsWith ("Gone.wav"));
+        CHECK (pl.items.size() == 4 && pl.items[0].to == q.takeFolder (tw).getChildFile ("Violin.wav") && pl.items[0].uses == 2);   // the take and the edit's piece
+        CHECK (pl.items.size() == 4 && pl.items[1].to == q.takeFolder (tw).getChildFile ("Cello.wav"));
+        CHECK (pl.items.size() == 4 && pl.items[2].to == q.takeFolder (tw).getChildFile ("Violin (2).wav"));                         // the same name again
+        CHECK (pl.items.size() == 4 && pl.items[3].to == q.audioFolder().getChildFile ("From elsewhere").getChildFile ("AAF only.wav") && ! pl.items[3].take);
+        juce::int64 sum = 0; for (auto& it : pl.items) sum += it.size;
+        CHECK (pl.bytes == sum && sum > 0);
+
+        // a cancel part way: nothing is left behind and the project is not changed
+        int calls = 0;
+        CHECK (gather::copy (pl, [&] (float, const juce::String&) { return ++calls < 4; }) == "Cancelled.");
+        for (auto& it : pl.items) CHECK (! it.to.exists());
+        CHECK (q.takeFolder (tw).findChildFiles (juce::File::findFiles, false, "*temp*").isEmpty());
+
+        // the copy
+        juce::StringArray said;
+        CHECK (gather::copy (pl, [&] (float, const juce::String& t) { said.addIfNotAlreadyThere (t.upToFirstOccurrenceOf (" ", false, false)); return true; }).isEmpty());
+        CHECK (said.contains ("Copying") && said.contains ("Checking"));
+        for (auto& it : pl.items) CHECK (it.to.existsAsFile() && it.to.getSize() == it.from.getSize() && data (it.to) == data (it.from));
+        CHECK (pl.items[0].to.getLastModificationTime() == pl.items[0].from.getLastModificationTime());
+
+        // pointed at the copies: the takes, the edit's pieces; the file recorded here and the missing one as they were
+        q.keepAllWindows();
+        const int places = gather::apply (q, pl);
+        CHECK (places == 6);                                                                       // take 1's two files and take 2's violin; the edit's first piece's two files and its AAF piece
+        CHECK (tw.groups[0].files[0].file == q.takeFolder (tw).getChildFile ("Violin.wav") && tw.groups[0].files[1].file == q.takeFolder (tw).getChildFile ("Cello.wav"));
+        CHECK (tw.groups[1].files[0].file == q.takeFolder (tw).getChildFile ("Violin (2).wav") && tw.groups[1].files[1].file == inProject);
+        CHECK (tw.groups[2].files[0].file == outside.getChildFile ("Gone.wav"));
+        CHECK (! tw.groups[0].verified && ! tw.groups[1].verified && tw.groups[2].verified);       // (looked at again at the next open)
+        CHECK (ed.regions[0].files[0].file == tw.groups[0].files[0].file && ed.regions[0].files[1].file == tw.groups[0].files[1].file);
+        CHECK (ed.regions[1].files[0].file == q.audioFolder().getChildFile ("From elsewhere").getChildFile ("AAF only.wav"));
+        CHECK (q.windowsChangedSinceKept().empty());                                              // (not a change to ask about at quit, as a relink)
+        CHECK (data (outside.getChildFile ("Violin.wav")) == before);                    // the original untouched
+        // saved and read back: the copies are where the project expects them (paths kept relative to the folder)
+        juce::String err;
+        CHECK (q.save (err));
+        Project r;
+        CHECK (r.load (q.projectFile, err));
+        const TakeWindowDef* rw = nullptr; for (auto& x : r.takeWindows) if (x->name == "Sonata") rw = x.get();
+        CHECK (rw != nullptr && rw->groups.size() == 3 && rw->groups[0].files[0].file == q.takeFolder (tw).getChildFile ("Violin.wav"));
+        CHECK (rw != nullptr && rw->groups.size() == 3 && rw->groups[1].files[1].file == inProject && rw->groups[2].files[0].file == outside.getChildFile ("Gone.wav"));
+        const EditDef* re = r.edits.empty() ? nullptr : r.edits.front().get();
+        CHECK (re != nullptr && re->regions.size() == 2 && re->regions[1].files[0].file == q.audioFolder().getChildFile ("From elsewhere").getChildFile ("AAF only.wav"));
+        // a second look finds only the missing file
+        auto again = gather::plan (q);
+        CHECK (again.items.empty() && again.missing.size() == 1);
+        // a plan for another project is not applied
+        Project other; other.projectFile = dir.getChildFile ("H").getChildFile ("H.fermata");
+        CHECK (gather::apply (other, pl) == 0);
+        dir.deleteRecursively();
     }
 
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);

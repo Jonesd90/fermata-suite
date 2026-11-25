@@ -4,6 +4,7 @@
 #include "Uikit.h"
 #include "FixTools.h"
 #include "../core/AafExport.h"
+#include "ExportDone.h"
 #include "../core/AudioFormats.h"
 #include "../core/Ltc.h"
 
@@ -119,6 +120,7 @@ private:
         }
         say (plan->noLtcTrack ? "Exporting... (the project has no LTC track, so no file will carry a source timecode)" : "Exporting...", plan->noLtcTrack);
         bar.setVisible (true); show.setVisible (false); progressValue = 0.0; go.setButtonText ("Cancel"); close.setEnabled (false);
+        exportdone::barStart (bar);                                            // (3.61.0)
         for (auto* c : std::initializer_list<juce::Component*> { &fileEditor, &tcEditor, &browse, &overdubs }) c->setEnabled (false);
         startTimerHz (10);
         juce::Component::SafePointer<AafExportComponent> safe (this);
@@ -155,9 +157,10 @@ private:
     {
         stopTimer();
         job.reset();
-        bar.setVisible (false); go.setButtonText ("Export"); close.setEnabled (true);
+        go.setButtonText ("Export"); close.setEnabled (true);
         for (auto* c : std::initializer_list<juce::Component*> { &fileEditor, &tcEditor, &browse, &overdubs }) c->setEnabled (true);
-        if (r.error.isNotEmpty()) { say (r.error, true); juce::Logger::writeToLog ("Export AAF: " + r.error); return; }
+        if (r.error.isNotEmpty()) { bar.setVisible (false); say (r.error, true); juce::Logger::writeToLog ("Export AAF: " + r.error); return; }
+        progressValue = 1.0;                                                   // (3.61.0: the bar stays, at 100 %, under the box)
         lastFile = r.file; show.setVisible (true);
         juce::String text;
         text << "Done: " << r.file.getFileName() << " - " << r.tracks << (r.tracks == 1 ? " track, " : " tracks, ") << r.clips << (r.clips == 1 ? " clip, " : " clips, ")
@@ -167,6 +170,14 @@ private:
         for (auto& n : r.notes) text << "   " << n << "\n";
         say (text, r.withoutCode > 0 || r.unreadable > 0);
         juce::Logger::writeToLog ("Export AAF: " + text.replace ("\n", " | "));
+        // 3.61.0 (asked for on 23 November 2026): the box at the end - what, its name, where - then the bar says Export complete
+        juce::String what, notes;
+        what << "The edit exported as AAF: " << r.tracks << (r.tracks == 1 ? " track, " : " tracks, ") << r.clips << (r.clips == 1 ? " clip, " : " clips, ")
+             << r.files << (r.files == 1 ? " linked audio file" : " linked audio files") << " (they stay where they are: the AAF points to them).";
+        notes = text.fromFirstOccurrenceOf ("\n", false, false).trim();
+        juce::Component::SafePointer<AafExportComponent> safe (this);
+        exportdone::show (this, "AAF export complete", what, juce::StringArray (r.file.getFullPathName()), notes, r.withoutCode > 0 || r.unreadable > 0,
+                          [safe] { if (safe != nullptr) exportdone::barDone (safe->bar, safe->progressValue); });
     }
     void timerCallback() override { if (job != nullptr) progressValue = (double) job->getProgress(); }
 

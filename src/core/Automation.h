@@ -48,6 +48,8 @@ struct AutoLane
     juce::String param { autoparam::fader };
     juce::Uuid   mixerId = juce::Uuid::null();              // null = the Edit's own mixer (the processing mixer if it has none)
     bool         locked = false;       // the padlock: a locked lane cannot be edited
+    bool         snap = true;          // 3.60.0: the magnet beside the padlock - a click puts a point on the line (the value already there), a drag catches the
+                                       // values of the lane's other points. Saved only when off ("snap": false), so a lane from before 3.60.0 has it on.
     std::vector<AutoPoint> pts;        // sorted by 'time'
 
     static constexpr float kFaderOff = -100.0f, kFaderMax = 12.0f;

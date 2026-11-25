@@ -189,7 +189,7 @@ inline void showVolumeChange (AppContext& app, const juce::Uuid& editId, const j
     juce::DialogWindow::LaunchOptions o;
     o.dialogTitle = "Change volume";
     o.content.setOwned (panel.release());
-    o.componentToCentreAround = nullptr;
+    o.componentToCentreAround = place::anchor ();
     o.dialogBackgroundColour = theme::panel;
     o.escapeKeyTriggersCloseButton = true; o.useNativeTitleBar = true; o.resizable = false; o.useBottomRightCornerResizer = false;
     holder->w = o.launchAsync();
@@ -492,7 +492,7 @@ inline void launchVolumeArea (AppContext& app, const juce::Uuid& editId, const V
     juce::DialogWindow::LaunchOptions o;
     o.dialogTitle = title;
     o.content.setOwned (panel.release());
-    o.componentToCentreAround = nullptr;
+    o.componentToCentreAround = place::anchor ();
     o.dialogBackgroundColour = theme::panel;
     o.escapeKeyTriggersCloseButton = true; o.useNativeTitleBar = true; o.resizable = false; o.useBottomRightCornerResizer = false;
     o.launchAsync();

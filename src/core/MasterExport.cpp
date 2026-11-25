@@ -777,6 +777,7 @@ MasterExportResult MasterExportJob::executeInner()
                 reviewpage::Spec ps;
                 ps.audio = audioFile; ps.mime = fmtForm == MasterFormat::Mp3 ? "audio/mpeg" : fmtForm == MasterFormat::Flac ? "audio/flac" : "audio/wav";
                 ps.piece = item.tags.title.isNotEmpty() ? item.tags.title : item.editName; ps.project = item.projectName; ps.editId = item.editId.toString(); ps.version = item.editVersion; ps.history = item.history;
+                ps.editor = spec.editorName;                                   // (3.61.0)
                 ps.offsetSeconds = item.editOffsetSeconds; ps.durationSeconds = (double) R.frames[(size_t) i] / juce::jmax (1.0, rates[(size_t) i]);
                 ps.peaks = reviewpage::computePeaks (proc[(size_t) i], gain, reviewpage::peakColumnsFor (ps.durationSeconds), &cancelFlag);
                 if (single) onePage.push_back (ps);                                   // written once every piece is ready (below); its audio waits till then

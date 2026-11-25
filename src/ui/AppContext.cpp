@@ -7,6 +7,7 @@
 #include "BusyWindow.h"
 #include "TimeReadout.h"
 #include "ProjectRateDialog.h"
+#include "FixTools.h"
 
 namespace td
 {
@@ -18,6 +19,12 @@ AppContext::AppContext()
     waveColors.setWorkers (juce::SystemStats::getNumCpus() - 2);
     waveColors.holdOff = [this] { return engine.isRecording(); };
     liveColours.onFileColoured = [this] (const juce::File& f, std::shared_ptr<WaveColorData> d) { waveColors.put (f, std::move (d)); };     // 3.59.0
+    tuningStore.holdOff = [this] { return engine.isRecording(); };                // 3.63.0: the tuning line - no take files read while a take records
+    liveTuning.onTakeDone = [this] (const juce::Uuid& id, std::shared_ptr<const tuning::Line> l, const juce::String& key)
+    {
+        tuningStore.put (id, std::move (l), key);                                   // (a take measured while it recorded: kept, not measured again)
+        project.sendChangeMessage();
+    };
     remoteCrKey.holdMs = 1000;                     // the remote Talk key: under 1 second latches, longer is momentary
     project.newStripsToMain = true;
     juce::PropertiesFile::Options o;
@@ -65,7 +72,7 @@ AppContext::AppContext()
         h.ask = [] (const juce::String& title, const juce::String& message, const juce::StringArray& buttons, std::function<void (int)> answer)
         {
             // (the first button is also Escape and the window's close: it is always the one that changes nothing)
-            auto* aw = new juce::AlertWindow (title, message, juce::MessageBoxIconType::QuestionIcon);
+            auto* aw = new juce::AlertWindow (title, message, juce::MessageBoxIconType::QuestionIcon, place::anchor());
             for (int i = 0; i < buttons.size(); ++i)
                 aw->addButton (buttons[i], i + 1, i == 0 ? juce::KeyPress (juce::KeyPress::escapeKey) : juce::KeyPress());
             aw->enterModalState (true, juce::ModalCallbackFunction::create ([answer] (int r) { if (answer) answer (juce::jmax (0, r - 1)); }), true);
@@ -130,6 +137,10 @@ AppContext::AppContext()
         playheadFollows = st->getBoolValue ("playheadFollows", true);
         waveCompress = juce::jlimit (0, 3, st->getIntValue ("waveCompress", 0));                          // 3.27.0
         waveCompressLast = juce::jlimit (1, 3, st->getIntValue ("waveCompressLast", 2));
+        waveKnock = juce::jlimit (0, 3, st->getIntValue ("waveKnock", 0));                                 // 3.61.0
+        knockweight::level().store (waveKnock);
+        tuningShow = st->getBoolValue ("tuningShow", false);                                               // 3.63.0
+        engine.setLiveFeeds (waveColour || tuningShow);
         trimWaveZoom = juce::jlimit (0.25f, 40.0f, (float) st->getDoubleValue ("trimWaveZoom", 1.0));
         trimSlipLeft = st->getBoolValue ("trimSlipLeft", true);
         trimSlipRight = st->getBoolValue ("trimSlipRight", true);
@@ -147,6 +158,7 @@ AppContext::AppContext()
 AppContext::~AppContext()
 {
     liveColours.stop();                              // 3.59.0: the colours of a take being recorded (its thread)
+    liveTuning.stop(); tuningStore.stop();           // 3.63.0: the tuning line's threads
     waveColors.stop();                               // 3.18.2: first - a colouring job still queued would ask the project for its folder after the project has gone
     project.settleBackgroundSaves = nullptr;
     *saverAlive = false;                             // (what it finishes from here on is not taken in: the program is closing, and shutdown() saved)
@@ -183,7 +195,7 @@ void AppContext::takeInFinishedTakes (bool tellPerson)
                 recordMonitor.writeFailed = true;
                 if (! tellPerson) { juce::Logger::writeToLog ("Recording: " + text); continue; }      // (closing: no box can be shown - the take is marked, and it is in the log)
                 setNotice (text);
-                juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Recording", text);
+                juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Recording", text, {}, place::anchor());
             }
     project.sendChangeMessage();
 }
@@ -776,7 +788,7 @@ void AppContext::tickRecordMonitor()
     if (const auto note = engine.takeDeviceNote(); note.isNotEmpty())
     {
         setNotice (note);
-        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Recording", note);
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Recording", note, {}, place::anchor());
         event (note, true);
     }
     if (! rec && m.recording)                                                  // the take has stopped: its outcome stays on the lamps until the next one
@@ -970,6 +982,126 @@ void AppContext::setWaveCompress (int strength)
     if (auto* st = props.getUserSettings()) { st->setValue ("waveCompress", waveCompress); st->setValue ("waveCompressLast", waveCompressLast); props.saveIfNeeded(); }
     project.sendChangeMessage();                                          // (the take and edit windows draw again)
     trimWaveZoomChanged.sendChangeMessage();                              // (and the Trim windows)
+}
+
+void AppContext::setWaveKnock (int weight)
+{
+    waveKnock = juce::jlimit (0, 3, weight);
+    knockweight::level().store (waveKnock);
+    if (auto* st = props.getUserSettings()) { st->setValue ("waveKnock", waveKnock); props.saveIfNeeded(); }
+    if (! waveColour) setWaveColour (true);                               // (a weighting chosen: the colours are wanted)
+    project.sendChangeMessage();                                          // (the take and edit windows draw again: nothing is worked out again)
+    trimWaveZoomChanged.sendChangeMessage();                              // (and the Trim windows)
+}
+
+void AppContext::showWaveColourMenu (juce::Component* target)
+{
+    juce::PopupMenu m;
+    m.addSectionHeader (knockweight::menuHeading());
+    for (int k = 0; k <= 3; ++k) m.addItem (k + 1, knockweight::menuItem (k), true, waveKnock == k);
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (target), [this] (int r) { if (r > 0) setWaveKnock (r - 1); });
+}
+
+// ---------------------------------------------------------------------------------------------------- 3.63.0: the tuning line
+void AppContext::setTuningShow (bool on)
+{
+    tuningShow = on;
+    engine.setLiveFeeds (waveColour || tuningShow);                       // (the takes started from now on are measured while they record)
+    if (auto* st = props.getUserSettings()) { st->setValue ("tuningShow", tuningShow); props.saveIfNeeded(); }
+    project.sendChangeMessage();
+}
+
+void AppContext::setTuningSettings (const tuning::Settings& s)
+{
+    const bool fromChanged = s.from != tuningSet.from;
+    tuningSet = s;
+    if (project.projectFile != juce::File())
+    {
+        auto* o = new juce::DynamicObject();
+        o->setProperty ("mode", s.mode == tuning::Mode::absolute ? 1 : 0);
+        o->setProperty ("a", s.aHz);
+        juce::Array<juce::var> from; for (auto& u : s.from) from.add (u.toString());
+        o->setProperty ("from", from);
+        const auto f = project.projectFolder().getChildFile ("Analysis").getChildFile ("Tuning.settings");
+        f.getParentDirectory().createDirectory();
+        f.replaceWithText (juce::JSON::toString (juce::var (o)));
+    }
+    if (fromChanged) ++tuningStore.generation;                            // (the lines are asked for again: measured from the tracks now chosen)
+    if (! tuningShow) setTuningShow (true);                               // (a setting chosen: the line is wanted)
+    project.sendChangeMessage();
+}
+
+void AppContext::showTuningMenu (juce::Component* target, bool editWindow)
+{
+    juce::PopupMenu m;
+    m.addSectionHeader ("Tuning line: the ensemble's pitch across each take");
+    m.addItem (1, "Show the tuning line", true, tuningShow);
+    m.addSeparator();
+    m.addSectionHeader ("Measured against");
+    m.addItem (2, editWindow ? "Relative: from where the edit starts (in a take window: where each take starts)"
+                             : "Relative: from where each take starts (in an edit window: where the edit starts)", true, tuningSet.mode == tuning::Mode::relative);
+    m.addItem (3, "Absolute: from A = " + juce::String (tuningSet.aHz, tuningSet.aHz == std::floor (tuningSet.aHz) ? 0 : 1) + " Hz", true, tuningSet.mode == tuning::Mode::absolute);
+    m.addItem (4, "Set A for Absolute...");
+    m.addSeparator();
+    juce::PopupMenu from;
+    from.addItem (100, "The loudest channels at each moment (the default)", true, tuningSet.from.empty());
+    from.addSeparator();
+    for (size_t i = 0; i < project.tracks.size(); ++i)
+        if (! project.tracks[i].isLtc)
+            from.addItem (200 + (int) i, project.tracks[i].name, true, std::find (tuningSet.from.begin(), tuningSet.from.end(), project.tracks[i].id) != tuningSet.from.end());
+    m.addSubMenu ("Measure from", from);
+    m.addItem (5, "Measure every take again");
+    const auto opts = target != nullptr ? juce::PopupMenu::Options().withTargetComponent (target) : juce::PopupMenu::Options().withMousePosition();
+    m.showMenuAsync (opts, [this, target = juce::Component::SafePointer<juce::Component> (target)] (int r)
+    {
+        if (r <= 0) return;
+        auto s = tuningSet;
+        if (r == 1) { setTuningShow (! tuningShow); return; }
+        if (r == 2) { s.mode = tuning::Mode::relative; setTuningSettings (s); return; }
+        if (r == 3) { s.mode = tuning::Mode::absolute; setTuningSettings (s); return; }
+        if (r == 5) { tuningStore.measureAgain(); project.sendChangeMessage(); return; }
+        if (r == 100) { s.from.clear(); setTuningSettings (s); return; }
+        if (r >= 200 && r - 200 < (int) project.tracks.size())
+        {
+            const auto id = project.tracks[(size_t) (r - 200)].id;
+            auto it = std::find (s.from.begin(), s.from.end(), id);
+            if (it == s.from.end()) s.from.push_back (id); else s.from.erase (it);
+            setTuningSettings (s);
+            return;
+        }
+        if (r == 4)
+        {
+            auto* aw = new juce::AlertWindow ("Absolute tuning", "The pitch of A the tuning line is measured against, in Hz (440, 442, 415 ...).", juce::MessageBoxIconType::QuestionIcon,
+                                              place::anchor (target.getComponent()));
+            aw->addTextEditor ("a", juce::String (tuningSet.aHz, tuningSet.aHz == std::floor (tuningSet.aHz) ? 0 : 1), "A =");
+            aw->addButton ("Use it", 1, juce::KeyPress (juce::KeyPress::returnKey));
+            aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+            aw->enterModalState (true, juce::ModalCallbackFunction::create ([this, aw] (int res)
+            {
+                const auto t = aw->getTextEditorContents ("a").trim();
+                delete aw;
+                if (res != 1) return;
+                const double a = t.getDoubleValue();
+                if (a < 300.0 || a > 600.0) { juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Absolute tuning", "Please give A between 300 and 600 Hz.", {}, place::anchor()); return; }
+                auto s2 = tuningSet; s2.aHz = a; s2.mode = tuning::Mode::absolute;
+                setTuningSettings (s2);
+            }));
+        }
+    });
+}
+
+void AppContext::watchTuning (const TakeGroup& recording)
+{
+    if (! tuningShow) return;
+    const auto src = tuning::sourceOf (recording, tuningSet);
+    std::vector<std::shared_ptr<AudioEngine::LiveFeed>> feeds;
+    const auto all = engine.liveFeeds();
+    for (auto& [file, ch] : src.files)
+    {
+        juce::ignoreUnused (ch);
+        for (auto& f : all) if (f != nullptr && f->file == file) { feeds.push_back (f); break; }
+    }
+    if (feeds.size() == src.files.size()) liveTuning.watch (recording.id, feeds, src.key);    // (all of them, or not yet: they come as the take starts)
 }
 
 void AppContext::showWaveCompressMenu (juce::Component* target)
@@ -1215,6 +1347,19 @@ void AppContext::afterProjectReplaced()
     ++saveGeneration;                                  // (what a save handed over before this did is not this project's)
     takeMatch.projectReplaced();                       // (the takes' fingerprints were the old project's; the new one's are found by its sweep)
     waveColors.clear();                                // (3.18.2: and so were the waveform colours - they were kept for the whole run)
+    tuningStore.setFolder (project.projectFile == juce::File() ? juce::File() : project.projectFolder().getChildFile ("Analysis"));     // 3.63.0
+    {
+        tuning::Settings ts;                           // 3.63.0: the project's own tuning settings (Analysis/Tuning.settings)
+        const auto f = project.projectFile == juce::File() ? juce::File() : project.projectFolder().getChildFile ("Analysis").getChildFile ("Tuning.settings");
+        if (f.existsAsFile())
+        {
+            const auto v = juce::JSON::parse (f.loadFileAsString());
+            ts.mode = (int) v.getProperty ("mode", 0) == 1 ? tuning::Mode::absolute : tuning::Mode::relative;
+            ts.aHz = juce::jlimit (300.0, 600.0, (double) v.getProperty ("a", 440.0));
+            if (auto* arr = v.getProperty ("from", juce::var()).getArray()) for (auto& x : *arr) { juce::Uuid u (x.toString()); if (! u.isNull()) ts.from.push_back (u); }
+        }
+        tuningSet = ts;
+    }
     wholeSaveNext = false; quickSaveWanted = false; lastFailedJob.reset();
     onceSaved.forget();                                // (3.46.1: what the project before did not get saved without stays on the disk - its file may name it)
     fixUndo = nullptr; fixUndoLabel.clear(); fixUndoHash = 0;      // (the last fix was in the project that was open before: 3.1.4)
@@ -1295,7 +1440,7 @@ void AppContext::askRestorePreamps (const PreampMemory& stored, const std::vecto
     auto* w = new juce::AlertWindow ("Preamp settings",
                                      "Keep preamp settings or load stored preamp settings from last time this project was used?\n\n(" + juce::String ((int) differing.size())
                                          + (differing.size() == 1 ? " input differs.)" : " inputs differ.)"),
-                                     juce::MessageBoxIconType::QuestionIcon);
+                                     juce::MessageBoxIconType::QuestionIcon, place::anchor());
     w->addComboBox ("choice", { "Keep the preamp settings as they are now", "Load the stored preamp settings from last time this project was used" });
     w->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
     w->addButton ("Close (keep as they are)", 0, juce::KeyPress (juce::KeyPress::escapeKey));
@@ -1492,6 +1637,8 @@ bool AppContext::openProject (const juce::File& file)
     openStep ("messages about unread files and plug-ins prepared");
     project.slowTakeLog = [this] (const juce::String& what) { openStep (what); };     // (a take that takes long to check is named)
     restoreStashedMixers();                                          // 3.54.0: a mixer left with an older version's settings
+    if (const int rows = fixtools::giveEditRows (project); rows > 0)  // 3.63.0: a track an edit plays always has a row there
+        openStep (juce::String (rows) + " track row(s) given back to edits that played them without one");
     const auto mended = project.repairInterruptedRecordings();      // the program or the computer stopped while recording: keep everything that was recorded
     project.slowTakeLog = nullptr;
     const auto tChecked = juce::Time::getMillisecondCounterHiRes();

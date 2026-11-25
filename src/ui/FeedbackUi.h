@@ -1,6 +1,7 @@
 #pragma once
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "MarkerStrip.h"
+#include "WindowPlace.h"
 #include "../core/Edit.h"
 #include "../core/Feedback.h"
 #include "../core/TimeFormat.h"
@@ -75,7 +76,7 @@ struct ReplyEditor : public juce::TextEditor
 inline void askEditorNote (const juce::String& title, const juce::String& about, const juce::String& text, const EditorHand& hand, bool changing,
                            std::function<void (const juce::String& who, const juce::String& text)> done)
 {
-    auto* w = new juce::AlertWindow (title, about + (about.isNotEmpty() ? "\n" : "") + "Enter adds it; Shift + Enter starts a new line.", juce::MessageBoxIconType::NoIcon, hand.over.getComponent());
+    auto* w = new juce::AlertWindow (title, about + (about.isNotEmpty() ? "\n" : "") + "Enter adds it; Shift + Enter starts a new line.", juce::MessageBoxIconType::NoIcon, place::anchor (hand.over.getComponent()));
     auto* words = new ReplyEditor();
     words->setMultiLine (true, true); words->setReturnKeyStartsNewLine (false); words->setScrollbarsShown (true);
     words->onEnter = [w, words] { if (words->getText().trim().isNotEmpty()) w->exitModalState (1); };       // (Enter with nothing written does nothing)

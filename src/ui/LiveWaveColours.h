@@ -90,8 +90,9 @@ public:
             const auto b0 = juce::jmax ((juce::int64) 0, (juce::int64) std::floor (t0 / blockSeconds));
             const auto b1 = juce::jmin (nb, juce::jmax (b0 + 1, (juce::int64) std::ceil (t1 / blockSeconds)));
             float best = -1.0f; juce::uint32 c = 0;
-            for (auto k = b0; k < b1; ++k)
-                if (f.argb[(size_t) k] != 0 && f.level[(size_t) k] > best) { best = f.level[(size_t) k]; c = f.argb[(size_t) k]; }
+            for (auto k = b0; k < b1; ++k)                                       // (3.61.0: as the knock weighting draws it)
+                if (f.argb[(size_t) k] != 0 && f.level[(size_t) k] > best)
+                { best = f.level[(size_t) k]; c = knockweight::shownAt (f.argb, f.level, f.low, (size_t) k); }
             if (c != 0) { out[(size_t) i] = juce::Colour (c); any = true; }
         }
         return any;
@@ -109,8 +110,15 @@ private:
     void run() override
     {
         WaveColorCache::BlockAnalyser an;
-        std::vector<float> buf ((size_t) kBlock);
-        std::vector<double> mono ((size_t) kBlock);
+        std::vector<float> buf ((size_t) kBlock), half ((size_t) kBlock / 2);
+        std::vector<double> mono ((size_t) kBlock), before ((size_t) kBlock / 2);
+        // 3.61.0: the half block before the one worked out, for the knock weighting's second window (nullptr when the ring no longer holds it)
+        auto beforeOf = [&] (const Feed& f, juce::int64 at) -> const double*
+        {
+            if (at < kBlock / 2 || ! f.read (at - kBlock / 2, half.data(), kBlock / 2)) return nullptr;
+            for (int i = 0; i < kBlock / 2; ++i) before[(size_t) i] = half[(size_t) i];
+            return before.data();
+        };
         while (! threadShouldExit())
         {
             std::vector<std::pair<std::shared_ptr<Feed>, juce::int64>> todo;     // (copies: the list may change meanwhile)
@@ -132,7 +140,7 @@ private:
                     }
                     const auto w = f.written();
                     const bool ended = f.ended.load (std::memory_order_acquire) && w == f.written();
-                    juce::uint32 argb = 0; float level = 0.0f; int blocks = 1;
+                    juce::uint32 argb = 0; float level = 0.0f; juce::uint8 low = 0; int blocks = 1;
                     if (w - taken >= kBlock)
                     {
                         if (! f.read (taken, buf.data(), kBlock))
@@ -140,13 +148,13 @@ private:
                             const auto next = juce::jmax (taken + kBlock, ((w - f.capacity() + kBlock - 1) / kBlock + 1) * kBlock);
                             blocks = (int) ((next - taken) / kBlock);
                             const std::lock_guard<std::mutex> g (f.lock);
-                            f.argb.insert (f.argb.end(), (size_t) blocks, 0u); f.level.insert (f.level.end(), (size_t) blocks, 0.0f);
+                            f.argb.insert (f.argb.end(), (size_t) blocks, 0u); f.level.insert (f.level.end(), (size_t) blocks, 0.0f); f.low.insert (f.low.end(), (size_t) blocks, (juce::uint8) 0);
                             f.gap = true;
                             taken = next; didSome = true;
                             continue;
                         }
                         for (int i = 0; i < kBlock; ++i) mono[(size_t) i] = buf[(size_t) i];
-                        argb = an.colour (mono.data(), f.sampleRate, level).getARGB();
+                        argb = an.colour (mono.data(), f.sampleRate, level, &low, beforeOf (f, taken)).getARGB();
                     }
                     else if (ended)
                     {   // the end of the take: its last part-block, padded with silence (as the file's own colours are), then complete
@@ -155,10 +163,10 @@ private:
                         {
                             if (! f.read (taken, buf.data(), rest)) { const std::lock_guard<std::mutex> g (f.lock); f.gap = true; f.complete = true; finished = true; break; }
                             for (int i = 0; i < kBlock; ++i) mono[(size_t) i] = i < rest ? buf[(size_t) i] : 0.0;
-                            argb = an.colour (mono.data(), f.sampleRate, level).getARGB();
+                            argb = an.colour (mono.data(), f.sampleRate, level, &low, beforeOf (f, taken)).getARGB();
                         }
                         const std::lock_guard<std::mutex> g (f.lock);
-                        if (rest > 0) { f.argb.push_back (argb); f.level.push_back (level); }
+                        if (rest > 0) { f.argb.push_back (argb); f.level.push_back (level); f.low.push_back (low); }
                         f.complete = true;
                         taken = w; finished = true; didSome = true;
                         break;
@@ -166,7 +174,7 @@ private:
                     else break;                                                  // (the next block has not come yet)
                     {
                         const std::lock_guard<std::mutex> g (f.lock);
-                        f.argb.push_back (argb); f.level.push_back (level);
+                        f.argb.push_back (argb); f.level.push_back (level); f.low.push_back (low);
                     }
                     taken += kBlock; didSome = true;
                 }
@@ -218,7 +226,7 @@ private:
     {
         auto d = std::make_shared<WaveColorData>();
         d->blockSeconds = (double) kBlock / f.sampleRate;
-        { const std::lock_guard<std::mutex> g (f.lock); d->argb = f.argb; d->level = f.level; }
+        { const std::lock_guard<std::mutex> g (f.lock); d->argb = f.argb; d->level = f.level; d->low = f.low; }
         if (onFileColoured != nullptr && ! d->argb.empty()) onFileColoured (f.file, d);
     }
 

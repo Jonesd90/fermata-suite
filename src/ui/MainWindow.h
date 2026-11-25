@@ -102,6 +102,7 @@ public:
     {
         setOpaque (true);
         addToDesktop (juce::ComponentPeer::windowIsTemporary);          // no title bar, no taskbar button. It is OWNED by the main window (see MainComponent::syncMenuStrip): above it and the other Fermata windows, but not above other programs
+        place::partOfMain (*this);                                       // (3.64.0: a click here counts as a click in the main window - WindowPlace.h)
     }
     void paint (juce::Graphics& g) override
     {
@@ -362,6 +363,8 @@ private:
     void timerCallback() override;
     void peaksUpdated() override;
     void rebuildRows();
+    void startStereoPick (int leftInput);                  // 3.60.0: the next click on another input strip makes it the right channel
+    std::unique_ptr<juce::Component> stereoPick;
     void showProjectMenu();
     void showTakesMenu();
     void importWindowFileDialog (bool isEdit);

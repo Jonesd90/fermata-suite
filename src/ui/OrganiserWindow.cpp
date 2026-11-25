@@ -467,7 +467,7 @@ void OrganiserComponent::saveAs()
     const auto defaultName = loadedBuiltIn || loadedName.isEmpty() ? juce::String ("My layout") : loadedName;     // (3.30.1: read before the screen is read in, which clears the loaded name)
     bool readFirst = false;
     if (! screenMatchesPicture()) { saveFromScreen(); readFirst = true; }
-    auto* aw = new juce::AlertWindow ("Save layout", "A name for this layout (saved with the project):", juce::MessageBoxIconType::NoIcon);
+    auto* aw = new juce::AlertWindow ("Save layout", "A name for this layout (saved with the project):", juce::MessageBoxIconType::NoIcon, place::anchor());
     aw->addTextEditor ("n", defaultName);
     aw->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
     aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));

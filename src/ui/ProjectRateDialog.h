@@ -114,7 +114,7 @@ inline void chooseProjectRate (AppContext& app, const juce::String& heading, con
     o.escapeKeyTriggersCloseButton = cancellable;
     o.useNativeTitleBar = true;
     o.resizable = false;
-    o.componentToCentreAround = around;
+    o.componentToCentreAround = place::anchor (around);
     if (auto* dw = o.launchAsync())
     {
         dw->setAlwaysOnTop (true);

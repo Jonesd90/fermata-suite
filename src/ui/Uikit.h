@@ -1307,6 +1307,10 @@ class RainbowButton : public juce::Button
 {
 public:
     RainbowButton() : juce::Button ({}) { setClickingTogglesState (false); }
+    /** 3.61.0: right-click (fermata: the knock weighting menu). */
+    std::function<void()> onMenu;
+    void mouseDown (const juce::MouseEvent& e) override { if (e.mods.isPopupMenu() && onMenu) { menuPress = true; onMenu(); return; } juce::Button::mouseDown (e); }
+    void mouseUp (const juce::MouseEvent& e) override { if (menuPress) { menuPress = false; return; } juce::Button::mouseUp (e); }
     void paintButton (juce::Graphics& g, bool over, bool down) override
     {
         auto b = getLocalBounds().toFloat().reduced (0.5f);
@@ -1323,7 +1327,16 @@ public:
             g.setColour (juce::Colour (cols[i]).withAlpha (on ? 1.0f : 0.38f));
             g.strokePath (arc, juce::PathStrokeType (1.7f));
         }
+        if (const int k = knockweight::level().load(); k > 0)            // 3.61.0: a knock weighting above Normal - one black dot for each step
+            for (int i = 0; i < k; ++i)
+            {
+                const auto d = juce::Rectangle<float> (4.0f, 4.0f).withCentre ({ b.getRight() - 5.0f - 5.0f * (float) i, b.getBottom() - 5.0f });
+                g.setColour (juce::Colours::black.withAlpha (on ? 1.0f : 0.5f)); g.fillEllipse (d);
+                g.setColour (juce::Colours::white.withAlpha (on ? 0.7f : 0.35f)); g.drawEllipse (d, 0.8f);
+            }
     }
+private:
+    bool menuPress = false;
 };
 
 /** 3.27.0: the compress-waveforms button: a waveform that swings from loud to quiet - drawn evened out, in the accent colour, when it is on. A click is onClick

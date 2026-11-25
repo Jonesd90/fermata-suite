@@ -158,6 +158,7 @@ private:
     juce::TextEditor formFolderEditor;
     juce::TextButton formChoose { "Choose folder..." }, formExport { "Make listening copies" }, formShow { "Show in folder" };
     juce::ProgressBar formProgress;
+    juce::Label formEditorCaption; juce::TextEditor formEditorName;        // 3.61.0: the editor's name, shown with their replies in the copies
     // ---- 3.40.0: the Atmos page
     juce::Label atmosCaption, atmosIntro, atmosBusesCaption, atmosLfeUnit, atmosNotes, atmosFolderCaption, atmosStatus;
     juce::TextButton atmosBusesButton, atmosChoose { "Choose folder..." }, atmosExport { "Export Atmos files" }, atmosShow { "Show in folder" };

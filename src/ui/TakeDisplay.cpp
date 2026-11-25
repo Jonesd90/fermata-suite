@@ -163,6 +163,7 @@ TakeDisplayWindow::TakeDisplayWindow (AppContext& a, TakeDisplayHub& h, int disp
     setWantsKeyboardFocus (true);
     setMouseCursor (juce::MouseCursor::NoCursor);
     addAndMakeVisible (view);
+    place::ownPlace (*this);                             // (3.64.0: the one window that belongs on another screen: never moved, and a click here is not "where you are")
     addToDesktop (0);                                    // no title bar, no border, no task bar button
     setBounds (area);
     setAlwaysOnTop (true);

@@ -91,6 +91,7 @@ juce::String writeMany (const juce::File& html, const juce::String& title, const
     meta->setProperty ("id", juce::Uuid().toString().retainCharacters ("0123456789abcdef").substring (0, 16));
     meta->setProperty ("title", title); meta->setProperty ("project", project);
     meta->setProperty ("name", html.getFileNameWithoutExtension());          // the returned notes are named after this ("... listening copy" -> "... listening notes")
+    if (pieces.front().editor.trim().isNotEmpty()) meta->setProperty ("editor", pieces.front().editor.trim());     // 3.61.0: the piece editor's name
     juce::Array<juce::var> tracks;
     for (auto& s : pieces)
     {
