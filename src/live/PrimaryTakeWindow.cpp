@@ -197,7 +197,10 @@ public:
         knockweight::level().store (app.knockWeight());                    // (0.10.11: the weighting kept on this computer)
         colourBtn.onMenu = [this]                                          // 0.10.11: right-click - how readily a knock is drawn black
         {
-            showKnockMenu (&colourBtn, app.knockWeight(), [safe = juce::Component::SafePointer<juce::Component> (this), this] (int w)
+            // (0.10.13: 'safe' is made here and not in the capture below - Microsoft's compiler takes 'this' in the capture of a lambda inside a lambda
+            // for the outer lambda itself, and the Windows build of 0.10.11 / 0.10.12 stopped there)
+            const juce::Component::SafePointer<juce::Component> safe (this);
+            showKnockMenu (&colourBtn, app.knockWeight(), [safe, this] (int w)
             {
                 if (safe == nullptr) return;
                 app.setKnockWeight (w);

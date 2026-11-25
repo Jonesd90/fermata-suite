@@ -8,6 +8,19 @@ fermata:Live is the live-concert recorder that goes with fermata (see `docs/LIVE
 
 A line that starts with **Shared:** is a change to the code fermata shares (see `COMPATIBILITY.md`), so fermata's next build mentions it too.
 
+## 0.10.13
+Built 25 November 2026 (the conversation for both programs), with Claude Fable. The Windows build of 0.10.11 and 0.10.12 stopped: fermata:Live
+did not compile there (fermata itself did), so there has been no fermata-Live.exe since 0.10.10. This is the mend.
+- **fermata:Live builds on Windows again.** Two lines of the Colours button's right-click menu (0.10.11, in the Primary's take window and the
+  Fixer's window) used `this` in the capture of a lambda inside another lambda. Microsoft's compiler (14.52, Visual Studio 18 - GitHub's Windows
+  machines now use it) takes that `this` for the outer lambda and stops with "cannot convert from 'const <lambda> *' to
+  'juce::Component::SafePointer<juce::Component>'"; GCC, which the checks here use, accepts it. The value is now made in the outer lambda's
+  body. Nothing the program does has changed.
+- `tools/check-windows-code.sh` now looks for that shape in every source file (it found these two lines and no others), so the checks here
+  notice the next one.
+- Checked here: both files compile and fermata:Live links on Linux; the Windows-code check fails on the old lines and passes on the new.
+  **Not checked: the Windows build itself** - only GitHub can say. If it stops again, the lines with `error` in the Build step are what is needed.
+
 ## 0.10.12
 Built 24 November 2026 (the conversation for both programs), with Claude Opus. No change to fermata:Live's own code: what the shared folder
 gained for fermata 3.66.0 (which pages of a score's PDF are an edit's).

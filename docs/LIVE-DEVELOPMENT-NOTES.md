@@ -2,6 +2,19 @@
 
 The brief is in `docs/LIVE-BRIEF.md`, and the rules shared with fermata are in `COMPATIBILITY.md`. Newest entries come first.
 
+## 0.10.13: the Windows build mended - 'this' in the capture of a lambda inside a lambda (25 November 2026, with Claude Fable)
+
+GitHub's build of 3.66.0 / 0.10.12 (the first upload since 3.55.0 / 0.10.5) built Fermata.exe and stopped in FermataLive:
+`PrimaryTakeWindow.cpp(200)` and `FixerWindow.cpp(575)`, error C2440 "cannot convert from 'const <lambda> *' to
+'juce::Component::SafePointer<juce::Component>'" (then C2119, C2446, C2439, C2660 from the same line). The line, from 0.10.11:
+`colourBtn.onMenu = [this] { showKnockMenu (&colourBtn, app.knockWeight(), [safe = juce::Component::SafePointer<juce::Component> (this), this] (int w) {...}); };`
+MSVC 14.52 (Visual Studio 18, on GitHub's windows-latest since November 2026) resolves `this` in the INIT-CAPTURE of the inner lambda to the
+outer lambda's closure object. (In the inner lambda's body, and in an init-capture that is not inside a lambda - there are a dozen of those,
+which build - it is the component.) Mend: `const juce::Component::SafePointer<juce::Component> safe (this);` in the outer lambda's body,
+captured by name. The rule from now on: no `this` in the capture list's initialisers of a lambda written inside a lambda.
+`tools/check-windows-code.sh` scans for it (a capture with "=" and "this", at a place inside a lambda's braces): it flags exactly those two
+lines of the old code and nothing else in src. **Not checked:** MSVC itself. Linux: both files compile, fermata-Live links.
+
 ## 0.10.11: the Fixer's coloured waveforms; the knock weighting (23 November 2026, with Claude Opus)
 
 Asked for on 23 November: "fermata:live should have the coloured waveform display too", and the knock weighting of fermata 3.61.0. The Primary

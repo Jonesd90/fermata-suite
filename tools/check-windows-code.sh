@@ -31,4 +31,39 @@ for f in glob.glob(root + '/src/**/*.cpp', recursive=True) + glob.glob(root + '/
 if bad:
     print('identifiers that are Windows macro names (rename them):'); print('\n'.join(bad)); sys.exit(1)
 PY
+# Live 0.10.13 (25 November 2026): 'this' in the capture of a lambda that is itself inside a lambda ("[safe = SafePointer<X> (this)]" in a lambda's body). Microsoft's
+# compiler (14.52, Visual Studio 18) takes that 'this' for the outer lambda's own object and stops ("cannot convert from 'const <lambda> *'");
+# GCC accepts it, so nothing here noticed: the Windows build of fermata:Live 0.10.11 / 0.10.12 failed on two such lines. Make the value in the
+# outer lambda's body and capture it by name instead.
+python3 - "$HERE" <<'PY' || exit 1
+import re, sys, glob, os
+root = sys.argv[1]
+lam = re.compile(r'\]\s*(\((?:[^()]|\([^()]*\))*\))?\s*(?:mutable\s*|noexcept\s*|constexpr\s*)*(?:->\s*[\w:<>*&,\s]+?)?\s*$')
+cap = re.compile(r'\[([^\[\]]*=[^\[\]]*\bthis\b[^\[\]]*)\]\s*(?:\(|\{|mutable)')
+bad = []
+for f in glob.glob(root + '/src/**/*.cpp', recursive=True) + glob.glob(root + '/src/**/*.h', recursive=True):
+    if 'third_party' in f: continue
+    code = open(f, encoding='utf-8', errors='replace').read()
+    code = re.sub(r'/\*.*?\*/', lambda m: re.sub(r'[^\n]', ' ', m.group(0)), code, flags=re.S)
+    code = re.sub(r'//[^\n]*', lambda m: ' ' * len(m.group(0)), code)
+    code = re.sub(r'"(\\.|[^"\\\n])*"', lambda m: '"' + ' ' * (len(m.group(0)) - 2) + '"', code)
+    code = re.sub(r"'(\\.|[^'\\\n])'", lambda m: "' '" if len(m.group(0)) == 3 else "'" + ' ' * (len(m.group(0)) - 2) + "'", code)
+    hits = [m.start() for m in cap.finditer(code)]
+    if not hits: continue
+    stack = []; opened = {}                    # for each position: is it inside a lambda's body?
+    inside = [False] * (len(code) + 1); depth_l = 0
+    for i, ch in enumerate(code):
+        inside[i] = depth_l > 0
+        if ch == '{':
+            is_l = lam.search(code[max(0, i - 400):i]) is not None
+            stack.append(is_l); depth_l += 1 if is_l else 0
+        elif ch == '}' and stack:
+            if stack.pop(): depth_l -= 1
+    for h in hits:
+        if inside[h]:
+            line = code.count('\n', 0, h) + 1
+            bad.append(f'{os.path.relpath(f, root)}:{line}')
+if bad:
+    print("'this' in the capture of a lambda inside a lambda (Microsoft's compiler stops there - make the value in the outer lambda's body):"); print('\n'.join(bad)); sys.exit(1)
+PY
 echo "Windows code: OK"
