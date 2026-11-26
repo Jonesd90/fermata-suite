@@ -52,7 +52,7 @@ inline void openSmallDialog (std::unique_ptr<juce::Component> content, const juc
     juce::DialogWindow::LaunchOptions o;
     o.content.setOwned (content.release()); o.dialogTitle = title; o.componentToCentreAround = around; o.dialogBackgroundColour = theme::window;
     o.escapeKeyTriggersCloseButton = true; o.useNativeTitleBar = true; o.resizable = false;
-    o.launchAsync();
+    td::fit::launchAsync (o);
 }
 
 /** 3.35.0: how a window that closes itself asks its DialogWindow to go. A program with windows of its own kind sets the hook (fermata: an OUT / IN STREAM
@@ -83,6 +83,7 @@ public:
     {
         getProperties().set (ownsRKeyProperty(), true);     // R here runs the window's own job (audition / do the fix): it does not start a recording
         addChildComponent (bar); addAndMakeVisible (status);
+        fit::markMayShrink (status);                     // (3.71.0: a status line - cut off on a narrow window, never a reason to scroll it: FitLayout.h)
         status.setColour (juce::Label::textColourId, theme::warn); status.setMinimumHorizontalScale (1.0f);
         ProcessWindows::get().add (this);                   // 3.52.0: while this window is worked in and plays, the windows behind it hold their picture (Uikit.h)
     }
@@ -1605,6 +1606,7 @@ public:
                          "it is). Whatever this is, no box reaches more than 45 % of the way to the next harmonic. Double-click for 100 %.");
         readout.setColour (juce::Label::textColourId, theme::dimText); readout.setMinimumHorizontalScale (0.75f);
         addAndMakeVisible (readout);
+        fit::markMayShrink (readout);                    // (3.71.0: a hint - see FitLayout.h)
         view.onHarmonics = [this] { refresh(); };
         refresh();
     }
@@ -2246,7 +2248,7 @@ public:
     static constexpr int kTabRows = (kTabCount + 1) / 2;                          // the tabs stand in two columns
     static constexpr int kRowH = 24, kRowGap = 4, kPanelPad = 6, kTabW = 104, kTabGap = 12, kCapGap = 12, kTransportH = 26, kActionW = 116;      // (kActionW: the button that does the work, the same size and in the same place on every tab)
     static constexpr int sliderW = 140;                                           // a slider with its number: short on purpose
-    static constexpr int kChoicesW = 184 + 8 + 180 + 8 + 96 + 8 + 132 + 8 + 112;                       // the five choices of ReTouch in a row
+    static constexpr int kChoicesW = 184 + 8 + 180 + 8 + 108 + 8 + 142 + 8 + 112;                       // the five choices of ReTouch in a row
     static constexpr int kAmountsW = (58 + sliderW) + kCapGap + (116 + sliderW) + kCapGap + (100 + sliderW) + 3 * 26 + kCapGap + 16 + kActionW;   // its three sliders (L C R after the last) and the button in a row
     static constexpr int kListenW = 70 + 6 + 60 + 6 + 64 + 12 + 62 + 170, kBarMinW = 90, kFixesW = 120 + 8 + 70 + 8 + 176 + 8 + 96;
     int tab = kTabTouch;
@@ -2322,9 +2324,9 @@ public:
             {   // first row what to do and how, then how much, and the button that does it
                 int row = 0;
                 auto r = rowOf (in, row++);
-                putLeft (r, methodBox, 184); putLeft (r, dirBox, 180); putLeft (r, bandsBox, 96);
+                putLeft (r, methodBox, 184); putLeft (r, dirBox, 180); putLeft (r, bandsBox, 108);     // (3.71.0: 108 and 142 - "Bands: 1024" and "Multi-resolution" were squeezed)
                 if (in.getWidth() < kChoicesW) r = rowOf (in, row++);                                        // narrow: the two ticks on a row of their own
-                putLeft (r, multiBtn, 132); putLeft (r, linkBtn, 112);
+                putLeft (r, multiBtn, 142); putLeft (r, linkBtn, 112);
                 r = rowOf (in, row++);
                 if (in.getWidth() >= kAmountsW)
                 {
@@ -2446,7 +2448,7 @@ public:
         layoutBottom (bottom, true);
         r.removeFromBottom (4);
         { auto sr = r.removeFromBottom (22); toolsBar.setBounds (sr.removeFromRight (juce::jmin (SelectToolsBar::kWidth, sr.getWidth() / 2))); status.setBounds (sr.reduced (2, 0)); }     // (3.33.0: the tools under Spectrogram settings)
-        { auto ir = r.removeFromBottom (22); specBtn.setBounds (ir.removeFromRight (150)); ir.removeFromRight (6); scaleBox.setBounds (ir.removeFromRight (300)); ir.removeFromRight (6); detailBox.setBounds (ir.removeFromRight (210)); info.setBounds (ir.reduced (2, 0)); }
+        { auto ir = r.removeFromBottom (22); specBtn.setBounds (ir.removeFromRight (150)); ir.removeFromRight (6); scaleBox.setBounds (ir.removeFromRight (300)); ir.removeFromRight (6); detailBox.setBounds (ir.removeFromRight (280)); info.setBounds (ir.reduced (2, 0)); }     // (3.71.0: 280 - its longest choice was squeezed at 210)
         view.setBounds (r);
         repaint (bottom.expanded (2));
     }

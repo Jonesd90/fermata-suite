@@ -192,7 +192,7 @@ inline void showVolumeChange (AppContext& app, const juce::Uuid& editId, const j
     o.componentToCentreAround = place::anchor ();
     o.dialogBackgroundColour = theme::panel;
     o.escapeKeyTriggersCloseButton = true; o.useNativeTitleBar = true; o.resizable = false; o.useBottomRightCornerResizer = false;
-    holder->w = o.launchAsync();
+    holder->w = td::fit::launchAsync (o);
 }
 
 /** 3.50.0 (asked for on 10 November 2026): the one box for a volume change - a volume AREA of the edit (VolumeArea, Edit.h): so many dB for each
@@ -495,7 +495,7 @@ inline void launchVolumeArea (AppContext& app, const juce::Uuid& editId, const V
     o.componentToCentreAround = place::anchor ();
     o.dialogBackgroundColour = theme::panel;
     o.escapeKeyTriggersCloseButton = true; o.useNativeTitleBar = true; o.resizable = false; o.useBottomRightCornerResizer = false;
-    o.launchAsync();
+    td::fit::launchAsync (o);
 }
 
 /** A new volume area over [from, to) of the edit's timeline ("from here to next edit"; markedOnly: "between the 1/2 marks", the marked tracks). */

@@ -173,15 +173,21 @@ public:
         for (int y : rules) g.fillRect (16, y, getWidth() - 32, 1);
     }
 
+    int introW = -1, introH = 0; juce::String introText;
     void resized() override
     {
         rules.clear();
         auto r = getLocalBounds().reduced (16, 10);
         r.removeFromTop (28);
         {   // (3.31.0: as tall as its writing needs at this width - it had a fixed 96, which left no room for the MIDI monitor on a 1080-line screen)
-            juce::AttributedString as; as.append (intro.getText(), juce::FontOptions (12.0f)); as.setJustification (juce::Justification::topLeft);
-            juce::TextLayout tl; tl.createLayout (as, (float) juce::jmax (100, r.getWidth() - 10));     // (the label's own border)
-            intro.setBounds (r.removeFromTop (juce::jlimit (32, 140, (int) std::ceil (tl.getHeight()) + 6)));
+            const int w = juce::jmax (100, r.getWidth() - 10);                          // (the label's own border)
+            if (w != introW || intro.getText() != introText)                            // (3.71.0: measured again only when it changes - it is slow)
+            {
+                juce::AttributedString as; as.append (intro.getText(), juce::FontOptions (12.0f)); as.setJustification (juce::Justification::topLeft);
+                juce::TextLayout tl; tl.createLayout (as, (float) w);
+                introW = w; introText = intro.getText(); introH = (int) std::ceil (tl.getHeight());
+            }
+            intro.setBounds (r.removeFromTop (juce::jlimit (32, 140, introH + 6)));
         }
         r.removeFromTop (6);
         {

@@ -310,7 +310,7 @@ public:
     explicit CurveDialog (CurveContext c) : ctx (std::move (c))
     {
         keymap::KeyMap::setSection (*this, "Pitch");      // 3.69.0: its keys are the "Pitch" list's (HotKeysLines.h, KeyMap.h)
-        setSize (1000, 560);
+        setSize (1130, 560);                              // (3.71.0: wide enough for its row of buttons - at 1000 "Process extra" and its box were squeezed out)
         if (ctx.hold) ctx.hold (true);
         intro.setText (ctx.what, juce::dontSendNotification); intro.setColour (juce::Label::textColourId, theme::text); intro.setJustificationType (juce::Justification::topLeft);
         addAndMakeVisible (intro); addAndMakeVisible (view); addAndMakeVisible (info);
@@ -400,7 +400,7 @@ public:
         auditionBtn.setBounds (rowC.removeFromRight (100)); rowC.removeFromRight (14);
         hearToggle.setBounds (rowC.removeFromRight (150));
         resetBtn.setBounds (rowC.removeFromLeft (100)); rowC.removeFromLeft (14);
-        if (ctx.allowPad) { padCap.setBounds (rowC.removeFromLeft (150)); pad.setBounds (rowC.removeFromLeft (80)); }
+        if (ctx.allowPad) { padCap.setBounds (rowC.removeFromLeft (96)); pad.setBounds (rowC.removeFromLeft (76)); }      // (3.71.0: the caption on two lines)
         view.setBounds (r);
     }
 private:

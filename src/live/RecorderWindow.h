@@ -3,6 +3,7 @@
     builds) that drives the recorder process end to end on real hardware: the project, the audio device, the drives, the session, Record and
     Stop, the meters, each drive's state, the merge, and the take going into the project for fermata to open. */
 #include "RecorderLink.h"
+#include "../ui/FitLayout.h"
 #include "SessionIndex.h"
 #include "../core/Project.h"
 #include <juce_gui_extra/juce_gui_extra.h>
@@ -68,6 +69,11 @@ class RecorderWindow final : public juce::DocumentWindow
 public:
     RecorderWindow (const juce::String& version, int port);
     void closeButtonPressed() override;
+    // 0.10.18: fitted to the screen and its contents (FitLayout.h)
+    fit::WindowFit fitter { *this };
+    void resized() override { juce::DocumentWindow::resized(); fitter.windowResized(); }
+    void childBoundsChanged (juce::Component* c) override { if (! fitter.adjusting()) juce::DocumentWindow::childBoundsChanged (c); }
+    void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override { if (! fitter.wheel (w)) juce::DocumentWindow::mouseWheelMove (e, w); }
 private:
     RecorderPanel* panel = nullptr;
 };

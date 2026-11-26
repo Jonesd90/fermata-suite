@@ -221,8 +221,9 @@ public:
         r.removeFromBottom (8);
         {
             auto x = r.removeFromBottom (28);
-            lName.setBounds (x.removeFromLeft (44)); name.setBounds (x.removeFromLeft (150).reduced (0, 2)); x.removeFromLeft (8);
-            lHost.setBounds (x.removeFromLeft (84)); host.setBounds (x.removeFromLeft (130).reduced (0, 2)); x.removeFromLeft (8);
+            // (0.10.18: the boxes 20 and 10 narrower, so "Remove selected" has room for its words in the window's own width)
+            lName.setBounds (x.removeFromLeft (44)); name.setBounds (x.removeFromLeft (130).reduced (0, 2)); x.removeFromLeft (8);
+            lHost.setBounds (x.removeFromLeft (84)); host.setBounds (x.removeFromLeft (120).reduced (0, 2)); x.removeFromLeft (8);
             lFirst.setBounds (x.removeFromLeft (70)); first.setBounds (x.removeFromLeft (50).reduced (0, 2)); x.removeFromLeft (8);
             addBtn.setBounds (x.removeFromLeft (70)); x.removeFromLeft (6); removeBtn.setBounds (x.removeFromLeft (juce::jmax (130, x.getWidth())));
         }

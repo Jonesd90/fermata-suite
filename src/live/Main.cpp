@@ -17,6 +17,9 @@
 #include "../ui/ClosingLog.h"
 #include "../ui/KeyMap.h"
 #include "../core/CrashReport.h"
+#if FERMATA_FIT_CHECK
+ #include "../../tools/fit-check/LiveFitCheck.h"                         // (FIT_PROGRAM=live tools/fit-check.sh only: never in the program)
+#endif
 #include <csignal>
 
 #ifndef FERMATA_LIVE_VERSION_STRING
@@ -119,6 +122,10 @@ public:
                 primary->onRecorderClosed = [this] { finishClosing(); };
                 mainWindow = std::make_unique<LiveMainWindow> (*primary);
                 mainWindow->onClose = [this] { quitPrimary(); };
+               #if FERMATA_FIT_CHECK
+                fitCheck = std::make_unique<fitcheck::LiveDriver> (*mainWindow, juce::File (juce::SystemStats::getEnvironmentVariable ("FIT_CHECK_OUT", "/tmp/fit-check-live")));
+                fitCheck->start();                                               // (FIT_PROGRAM=live tools/fit-check.sh only: the small-screen check)
+               #endif
             }
         }
     }
@@ -268,6 +275,9 @@ private:
     std::unique_ptr<FermataLookAndFeel> look;
     std::unique_ptr<juce::TooltipWindow> tooltips;
     std::unique_ptr<ToolWindow::FocusKeeper> focusKeeper;
+   #if FERMATA_FIT_CHECK
+    std::unique_ptr<fitcheck::LiveDriver> fitCheck;
+   #endif
     std::unique_ptr<juce::InterProcessLock> stationLock;
     std::unique_ptr<RecorderWindow> window;
     std::unique_ptr<PrimaryApp> primary;

@@ -8,6 +8,20 @@ fermata:Live is the live-concert recorder that goes with fermata (see `docs/LIVE
 
 A line that starts with **Shared:** is a change to the code fermata shares (see `COMPATIBILITY.md`), so fermata's next build mentions it too.
 
+## 0.10.18
+Built 26 November 2026 (the conversation for both programs), with fermata 3.71.0: the same fitting in fermata:Live (a laptop at a concert is a
+small screen too).
+- **Every window and dialog fits its screen**: contents that would be squashed get a scroll bar (down, across or both), no window is bigger than
+  its screen. The Primary's main window, its take window and mixer, and the Fixer's window look after a small size themselves and are left as
+  they are; Audio settings, Preamps, the Project Designer, Bounce out, the log, HotKeys, the recorder test bench and the ReTouch window fit.
+- The Preamps window's "Remove selected" has room for its words (the two boxes beside it a little narrower).
+- **Shared:** `src/ui/FitLayout.h` (new: the fitting, both programs - listed in COMPATIBILITY.md); `src/ui/Uikit.h` (ToolWindow fits its contents;
+  a picture button's name is not measured as text); `src/ui/SpectralWindow.h` (the ReTouch window: wider Bands, Multi-resolution and Bass detail
+  boxes, its hint and status lines may be cut on a narrow window); `src/ui/HotKeysWindow.h` (quicker to resize).
+- Checked here: builds and links on Linux with no warnings; fermata:Live's own small-screen check (`tools/fit-check/LiveFitCheck.h`: the main
+  window and each window its menu opens) on the same four screens: nothing squashed, nothing scrolls. Not checked: the Fixer's windows on a small
+  screen, the Windows build (GitHub).
+
 ## 0.10.17
 Built 26 November 2026 (the conversation for both programs), with fermata 3.70.0: the same on fermata:Live's input strips (the rehearsal before
 a concert is where the gains are set).

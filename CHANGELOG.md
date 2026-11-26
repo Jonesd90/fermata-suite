@@ -6,6 +6,38 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.71.0
+Built 26 November 2026 (the conversation for both programs), with Claude Opus. Asked for that evening, with a picture of the Mastering window's
+Listening copy page on a smaller screen, its "Your name" box a sliver at the bottom: "fermata should be able to detect the size of the screen,
+realize that that box won't be properly visible and either change the relative sizes to make it fit OR make a scroll bar. That should be program
+wide". (Why it was a sliver: the page took its rows one by one from the top, and the last one got what was left.)
+- **Every window and dialog now fits the screen it is on** (`src/ui/FitLayout.h`). After a window lays itself out, fermata looks for controls
+  that came out squashed - shorter or narrower than they need to be to read or use, or cut off by the panel they are in. If there are any, the
+  window's contents are laid out as big as they need to be, with a **scroll bar** (down, across, or both - across only when more than a
+  couple of dozen pixels are missing). The mouse wheel scrolls it, and Tab brings the box with the keyboard into view. A window that is big
+  enough never changes, and the scroll bar goes away as soon as the window is made big enough again. Changing tab (Mastering) or a row that
+  appears is noticed too (a check three times a second).
+- **The rows close up before anything scrolls**: on the Listening copy and Atmos pages the gaps between the rows shrink first (6 pixels down to
+  2), so on a screen a little too small the page still fits; only when that is not enough does it scroll.
+- **No window opens bigger than its screen**, a remembered size from a bigger screen included, and a window or dialog that is partly off the
+  screen is brought back onto it. Dialogs that were a fixed size (bigger than a small screen) now fit it and scroll.
+- Windows that already look after a small size themselves are left as they are: the main window (its strips squeeze), a take or edit window
+  (the timeline), a mixer (its strips), the meter bridge, the video picture and the score (they get smaller).
+- Text that did not fit its box, found while checking: the Render from box (Mastering), the DDP builder's "Also make a .zip" and "Also make a
+  WAV + CUE sheet", the ReTouch window's Bands, Multi-resolution and Bass detail boxes (and the same in Noise mode), the Pitch window's row of
+  buttons (the window is now wide enough for it: "Process extra, each end" and its box were squeezed out), and the Audio settings' note (now
+  beside the pre-take length, where it has room). The HotKeys window is quicker to resize (its list is not laid out again when only its height
+  changes).
+- A new check for developers, `tools/fit-check.sh`: it builds fermata for Linux with a test driver in it (never in the program you run), opens
+  every window and dialog it can (and every Mastering tab) on screens of 1536 x 816 (1920 x 1080 at 125 %, less the taskbar), 1366 x 728, 1280 x
+  680 and 1920 x 1040, and writes what does not fit in each, with a picture of it.
+- Checked here (Linux): both programs build with no warnings; the compatibility check and the Windows-code check passed. The small-screen check
+  on the trial project, in the Fermata style and the Manuscript UI, on all four screens: 64 windows and tabs each time; nothing squashed is left;
+  nothing scrolls on the big screen. At your size (1536 x 816) the Listening copy page fits, "Your name" whole, and only the ReHarmoniSer scrolls
+  (its last 45 pixels); at 1366 x 728 the Listening copy page scrolls too, and at 1280 x 680 also the Mixer controller and Bounce Out. The
+  slowest fitting: 79 ms on the unoptimised Linux build. Not checked here: the Windows build (GitHub), Windows' own scaling (125 %) - the check
+  uses the same sizes in its pixels.
+
 ## 3.70.0
 Built 26 November 2026 (the conversation for both programs), with Claude Opus. Asked for that evening, with a picture of the MT48's strips:
 "you can see the input meters are not full height like channel 5-8 ... Can you please fix this so that any channel there shows a full height

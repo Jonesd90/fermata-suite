@@ -72,7 +72,15 @@ public:
     std::function<void (int binding)> onPick;
     void setFilter (const juce::String& f) { filter = f.trim(); relayout(); }
     void setSelected (int b) { selected = b; repaint(); }
-    void layoutFor (int width, int height) { if (width > 0) { listW = width; minH = height; relayout(); } }      // (at least the viewport's height: the list's background fills it)
+    void layoutFor (int width, int height)      // (at least the viewport's height: the list's background fills it)
+    {
+        if (width <= 0) return;
+        if (width == listW && ! rows.empty())   // 3.71.0: only taller or shorter - the rows stay as they are (laying them out again takes a third of a second)
+        {
+            minH = height; setSize (listW, juce::jmax (minH, 80, rows.back().y + rows.back().h + 12)); return;
+        }
+        listW = width; minH = height; relayout();
+    }
     void relayout()
     {
         rows.clear();
@@ -333,6 +341,7 @@ public:
     /** live: fermata:Live's list (with the ReTouch window's); else fermata's. */
     explicit HotKeysComponent (bool forLive = false) : live (forLive), list (hotkeys::linesFor (forLive))
     {
+        fit::markSelfFitting (*this);           // (3.71.0: its list scrolls by itself; laying the list out at trial widths is slow - FitLayout.h)
         find.setTextToShowWhenEmpty ("Find a key or a word: zoom, mark, Enter, F2 ...", theme::dimText.withAlpha (0.7f));
         find.onTextChange = [this] { list.setFilter (find.getText()); viewport.setViewPosition (0, 0); showCount(); };
         find.onEscapeKey = [this] { find.clear(); list.setFilter ({}); showCount(); list.grabKeyboardFocus(); };

@@ -294,6 +294,11 @@ public:
     ~ReTouchWindow() override { if (settings != nullptr) settings->setValue ("retouchWindow", getBounds().toString()); }
     void closeButtonPressed() override { if (dlg == nullptr || dlg->mayClose()) setVisible (false); }   // (not visible = out of its modal state, and deleted)
     bool escapeKeyPressed() override { closeButtonPressed(); return true; }
+    // 0.10.18: fitted to the screen and its contents (FitLayout.h)
+    fit::WindowFit fitter { *this };
+    void resized() override { juce::DialogWindow::resized(); fitter.windowResized(); }
+    void childBoundsChanged (juce::Component* c) override { if (! fitter.adjusting()) juce::DialogWindow::childBoundsChanged (c); }
+    void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override { if (! fitter.wheel (w)) juce::DialogWindow::mouseWheelMove (e, w); }
 private:
     juce::Component::SafePointer<fixtools::RepairDialog> dlg;
     juce::PropertiesFile* settings = nullptr;
@@ -1398,6 +1403,7 @@ FixerWindow::FixerWindow (FixerApp& app) : juce::DocumentWindow ("fermata:Live "
     setUsingNativeTitleBar (true);
     setResizable (true, true);
     content = new FixerComponent (app);
+    fit::markSelfFitting (*content);                 // (0.10.18: its timeline and lists take what room there is, as fermata's take window does)
     setContentOwned (content, true);
     setResizeLimits (900, 560, 6000, 4000);
     const auto area = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea;

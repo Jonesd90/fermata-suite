@@ -596,6 +596,7 @@ MasteringComponent::MasteringComponent (AppContext& a)
 
     // the renders: one line under the tabs, always visible
     renderStatus.setFont (juce::FontOptions (13.0f)); addAndMakeVisible (renderStatus);
+    fit::markMayShrink (renderStatus);                                          // (3.71.0: a status line, as wide as the row leaves it: FitLayout.h)
     addAndMakeVisible (renderProgress);
     prevRenderBtn.setTooltip ("Every piece keeps its two latest renders. This switches the selected piece to the one before the newest (Play and Export then use it), and back again. "
                               "Use it when a change to the edit or its mixer turned out worse.");
@@ -1561,7 +1562,7 @@ void MasteringComponent::showReport()
     o.content.setOwned (ed);
     o.dialogBackgroundColour = theme::window;
     o.escapeKeyTriggersCloseButton = true; o.useNativeTitleBar = true; o.resizable = true;
-    o.launchAsync();
+    td::fit::launchAsync (o);
 }
 
 void MasteringComponent::jobFinished (const MasterExportResult& r, int kind)
@@ -1829,7 +1830,7 @@ void MasteringComponent::resized()
     {
         auto strip = all.removeFromTop (34).reduced (8, 3);                        // the row below: what is rendered (from / source / tail), then the renders
         renderCaption.setBounds (strip.removeFromLeft (86));
-        mixerBox.setBounds (strip.removeFromLeft (200).withSizeKeepingCentre (200, grid::btnH)); strip.removeFromLeft (6);
+        mixerBox.setBounds (strip.removeFromLeft (230).withSizeKeepingCentre (230, grid::btnH)); strip.removeFromLeft (6);     // (3.71.0: 230 - "Each piece through its own mixer" was squeezed)
         sourceBox.setBounds (strip.removeFromLeft (210).withSizeKeepingCentre (210, grid::btnH)); strip.removeFromLeft (8);
         tailCaption.setBounds (strip.removeFromLeft (42));
         tailBox.setBounds (strip.removeFromLeft (70).withSizeKeepingCentre (70, grid::btnH)); strip.removeFromLeft (14);
@@ -2022,16 +2023,19 @@ void MasteringComponent::layoutAtmos (juce::Rectangle<int> area)
         buttons.removeFromRight (8);
         atmosProgress.setBounds (buttons.withSizeKeepingCentre (buttons.getWidth(), 18));
     }
-    auto r = area.reduced (6, 4);
-    auto row = [&] (int h) { auto x = r.removeFromTop (h); r.removeFromTop (6); return x; };
-    atmosCaption.setBounds (row (20));
-    const int lines = 1 + juce::roundToInt ((float) juce::GlyphArrangement::getStringWidthInt (atmosIntro.getFont(), atmosIntro.getText()) / (float) juce::jmax (100, r.getWidth() - 10));
-    atmosIntro.setBounds (row (juce::jmax (64, juce::roundToInt (atmosIntro.getFont().getHeight() * 1.25f) * lines)));
-    { auto x = row (grid::btnH + 2); atmosBusesCaption.setBounds (x.removeFromLeft (110)); atmosBusesButton.setBounds (x); }
-    { auto x = row (grid::btnH + 2); atmosLfeToggle.setBounds (x.removeFromLeft (170)); atmosLfeUnit.setBounds (x.removeFromRight (30)); atmosLfeSlider.setBounds (x.removeFromLeft (juce::jmin (x.getWidth(), 260))); }
-    atmosDitherToggle.setBounds (row (grid::btnH + 2));
-    { auto x = row (grid::btnH + 2); atmosFolderCaption.setBounds (x.removeFromLeft (60)); atmosChoose.setBounds (x.removeFromRight (136)); x.removeFromRight (4); atmosFolderEditor.setBounds (x); }
-    atmosNotes.setBounds (r.removeFromTop (juce::jmin (r.getHeight(), 70)));
+    // 3.71.0: a stack whose gaps close up on a short screen (FitLayout.h), as the Listening copy page
+    const auto page = area.reduced (6, 4);
+    const int lines = juce::jmax (1, (int) std::ceil (fit::textWidth (atmosIntro.getFont(), atmosIntro.getText()) / ((float) juce::jmax (100, page.getWidth() - 10) * 0.9f)));
+    fit::stack (page, 6, 2, [&] (fit::Rows& row)
+    {
+        atmosCaption.setBounds (row (20));
+        atmosIntro.setBounds (row (juce::jmax (48, juce::roundToInt (atmosIntro.getFont().getHeight() * 1.2f) * lines + 4)));
+        { auto x = row (grid::btnH + 2); atmosBusesCaption.setBounds (x.removeFromLeft (110)); atmosBusesButton.setBounds (x); }
+        { auto x = row (grid::btnH + 2); atmosLfeToggle.setBounds (x.removeFromLeft (170)); atmosLfeUnit.setBounds (x.removeFromRight (30)); atmosLfeSlider.setBounds (x.removeFromLeft (juce::jmin (x.getWidth(), 260))); }
+        atmosDitherToggle.setBounds (row (grid::btnH + 2));
+        { auto x = row (grid::btnH + 2); atmosFolderCaption.setBounds (x.removeFromLeft (60)); atmosChoose.setBounds (x.removeFromRight (136)); x.removeFromRight (4); atmosFolderEditor.setBounds (x); }
+        atmosNotes.setBounds (row (70));
+    });
 }
 
 void MasteringComponent::layoutForms (juce::Rectangle<int> area)
@@ -2056,26 +2060,34 @@ void MasteringComponent::layoutForms (juce::Rectangle<int> area)
         buttons.removeFromRight (8);
         formProgress.setBounds (buttons.withSizeKeepingCentre (buttons.getWidth(), 18));
     }
-    auto r = area.reduced (6, 4);
-    auto row = [&] (int h) { auto x = r.removeFromTop (h); r.removeFromTop (6); return x; };
-    formCaption.setBounds (row (20));
-    formIntro.setBounds (row (juce::jmax (64, juce::roundToInt (formIntro.getFont().getHeight() * 1.25f) * (1 + juce::roundToInt ((float) juce::GlyphArrangement::getStringWidthInt (formIntro.getFont(), formIntro.getText()) / (float) juce::jmax (100, r.getWidth() - 10))))));
-    auto labelled = [&] (juce::Label& l, juce::ComboBox& c) { auto x = row (grid::btnH + 2); l.setBounds (x.removeFromLeft (110)); c.setBounds (x.removeFromLeft (juce::jmin (x.getWidth(), 340))); };
-    labelled (formSingleCaption, formSingleBox);
-    labelled (formAudioCaption, formAudioBox);
-    labelled (formRateCaption, formRateBox);
-    labelled (formBitsCaption, formBitsBox);
-    {   // (3.51.0: as many lines as its text needs - it now begins with the versions the copies will be of)
-        const int lineH = juce::roundToInt (formInfo.getFont().getHeight() * 1.25f);
-        int lines = 0;
-        for (auto& ln : juce::StringArray::fromLines (formInfo.getText()))
-            lines += 1 + juce::roundToInt ((float) juce::GlyphArrangement::getStringWidthInt (formInfo.getFont(), ln) / (float) juce::jmax (100, r.getWidth() - 10));
-        formInfo.setBounds (row (juce::jmax (34, lineH * juce::jmax (1, lines))));
-    }
-    formLevelNote.setBounds (row (20));
-    formLevelBox.setBounds (row (LevelBox::kHeight));
-    { auto x = row (grid::btnH + 2); formFolderCaption.setBounds (x.removeFromLeft (60)); formChoose.setBounds (x.removeFromRight (136)); x.removeFromRight (4); formFolderEditor.setBounds (x); }
-    { auto x = row (grid::btnH + 2); formEditorCaption.setBounds (x.removeFromLeft (110)); formEditorName.setBounds (x.removeFromLeft (juce::jmin (x.getWidth(), 340))); }   // (3.61.0)
+    // 3.71.0: the rows as a stack whose gaps close up on a short screen (FitLayout.h); if that is still not enough, the window scrolls. (They were
+    // taken one by one from the top, and on a smaller screen the last row - "Your name" - got what was left: a sliver.)
+    const auto page = area.reduced (6, 4);
+    const int textW = juce::jmax (100, page.getWidth() - 10);
+    auto linesFor = [textW] (const juce::Label& l, const juce::String& text)        // (rounded up, with a tenth for the ends of lines that wrap early)
+    {
+        return juce::jmax (1, (int) std::ceil (fit::textWidth (l.getFont(), text) / ((float) textW * 0.9f)));
+    };
+    fit::stack (page, 6, 2, [&] (fit::Rows& row)
+    {
+        formCaption.setBounds (row (20));
+        formIntro.setBounds (row (juce::jmax (48, juce::roundToInt (formIntro.getFont().getHeight() * 1.2f) * linesFor (formIntro, formIntro.getText()) + 4)));
+        auto labelled = [&] (juce::Label& l, juce::ComboBox& c) { auto x = row (grid::btnH + 2); l.setBounds (x.removeFromLeft (110)); c.setBounds (x.removeFromLeft (juce::jmin (x.getWidth(), 340))); };
+        labelled (formSingleCaption, formSingleBox);
+        labelled (formAudioCaption, formAudioBox);
+        labelled (formRateCaption, formRateBox);
+        labelled (formBitsCaption, formBitsBox);
+        {   // (3.51.0: as many lines as its text needs - it now begins with the versions the copies will be of)
+            const int lineH = juce::roundToInt (formInfo.getFont().getHeight() * 1.2f);
+            int lines = 0;
+            for (auto& ln : juce::StringArray::fromLines (formInfo.getText())) lines += linesFor (formInfo, ln);
+            formInfo.setBounds (row (juce::jmax (34, lineH * juce::jmax (1, lines) + 4)));
+        }
+        formLevelNote.setBounds (row (20));
+        formLevelBox.setBounds (row (LevelBox::kHeight));
+        { auto x = row (grid::btnH + 2); formFolderCaption.setBounds (x.removeFromLeft (60)); formChoose.setBounds (x.removeFromRight (136)); x.removeFromRight (4); formFolderEditor.setBounds (x); }
+        { auto x = row (grid::btnH + 2); formEditorCaption.setBounds (x.removeFromLeft (110)); formEditorName.setBounds (x.removeFromLeft (juce::jmin (x.getWidth(), 340))); }   // (3.61.0)
+    });
 }
 
 static void layoutFieldGrid (juce::OwnedArray<MasterField>& fields, juce::Rectangle<int> area, int cols, int captionW, int& usedHeight)
@@ -2202,7 +2214,7 @@ void MasteringComponent::layoutDdp (juce::Rectangle<int> area)
         auto r1 = bottom.removeFromTop (grid::btnH + 6);
         ddpNorm.setBounds (r1.removeFromLeft (170)); ddpPeakEditor.setBounds (r1.removeFromLeft (64)); ddpPeakUnit.setBounds (r1.removeFromLeft (54).withTrimmedLeft (6));
         r1.removeFromLeft (10); ddpTogether.setBounds (r1.removeFromLeft (210));
-        zipToggle.setBounds (r1.removeFromLeft (130)); cueToggle.setBounds (r1.removeFromLeft (150));
+        zipToggle.setBounds (r1.removeFromLeft (146)); cueToggle.setBounds (r1.removeFromLeft (240));         // (3.71.0: wide enough for their words)
         r1.removeFromLeft (10);
         ddpFolderCaption.setBounds (r1.removeFromLeft (60)); ddpChoose.setBounds (r1.removeFromRight (136)); r1.removeFromRight (4); ddpFolderEditor.setBounds (r1.reduced (0, 1));
         bottom.removeFromTop (4);

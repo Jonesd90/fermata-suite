@@ -2620,6 +2620,57 @@ fermata's `shutdown()` and its static destructors. Our unhandled-exception filte
   right after closing the log, so the PDF reader's unload code never runs. Everything is saved and closed by then.
 (The symbols of Windows' own libraries were not available here: the reading rests on the single thread and the order of the modules.)
 
+## 3.71.0: windows that fit the screen (26 November 2026, Claude Opus; fermata:Live 0.10.18)
+
+**Asked** (with a picture of the Listening copy page on a smaller screen, "Your name" a sliver): detect that a box will not be properly visible,
+and either change the relative sizes or make a scroll bar - program wide. The cause there: `layoutForms` took its rows with
+`r.removeFromTop (h)` one after another; when the page ran out JUCE gave the last row what was left.
+
+**`src/ui/FitLayout.h` (shared, JUCE only):**
+- **Squashed** (`fit::squashed`, with a `Roomy` snapshot): the contents are laid out once on a roomy page (as wide, much taller - or much wider,
+  as tall), each component's bounds noted, then at the real size. A piece (a control, a list, a self-fitting component, or a component with no
+  children) is squashed when it is shorter (narrower) than on the roomy page AND shorter than it needs (`leastHeight`: a label's font, a text
+  box's font, 14 for a button or list box ...; `leastWidth`: a label's or button's text squeezed as far as JUCE squeezes it - at most 100 / 120
+  pixels, so a long hint line is cut on purpose - 48 for a list box ...). Also squashed: a component that was all inside its parent on the roomy
+  page and now shows less than it needs. Comparing with the roomy page is what keeps rows that are 0 high on purpose, or always narrow, from
+  counting. `kMayShrink` (hint and status lines) never counts across; `kNoText` (IconButton) has no text to measure.
+- **`WindowFit`** (a member of each window: `ToolWindow`, `FittedDialog`, `GuardedDialogWindow`, `StreamWindow`, fermata:Live's LiveMainWindow,
+  RecorderWindow, FixerWindow, ReTouchWindow): after the window's `resized()`, `refit()` lays the contents out on the two roomy pages and at the
+  window's size - three layouts when it fits - and only when something is squashed searches (in steps down to 8 pixels) for the width they need,
+  then the height at that width; a scroll bar each way that does not fit (across, up to `kSlackW` = 24 pixels short is let go: a text squeezed a
+  little more, rather than a bar). The contents stay the window's content component - only taller / wider and moved up / left by the scroll - so
+  every `getContentComponent()` cast still works. Covers (drawn as the window draws itself there) hide the contents where they reach under the
+  window's own edges (the wooden bottom and sides). `childBoundsChanged` is ignored while it lays out at trial sizes (a window that follows its
+  contents' size - `setContentOwned (c, true)` - would otherwise grow with each trial). A timer (3 Hz): when WHICH components are visible changed
+  (a tab, a row that appears) it fits again; when only WHERE they are changed (something moved or grew - a playhead), it checks the layout as it is
+  against the last roomy pages, without laying anything out, and fits again only if that squashed something. Contents marked `kSelfFitting` are
+  left alone (Main.cpp: take, edit, mixer, video, score, meter bridge; HotKeysComponent itself - its list scrolls; fermata:Live: its main window,
+  the Fixer, take window, mixer).
+- **Speed** (every trial size is a whole layout of the contents): text widths are remembered (`fit::textWidth`; the Listening copy page counts its
+  paragraphs' lines with it; the Mixer controller measures its intro only when it or the width changes). On the Linux -O0 build: the Listening
+  copy page 1.7 s -> 55 ms to fit when it scrolls, the ReTouch window 390 -> 25 ms; the HotKeys list (it lays out hundreds of lines at each width,
+  0.3 s) is self-fitting, and it no longer lays its lines out again when only its height changes.
+- **`fit::stack` / `Rows`**: a page of rows laid out twice - once to measure, then with the gaps cut (down to the least gap) when they do not fit.
+  Used by the Listening copy and Atmos pages.
+- **`keepOnScreen`**: no bigger than the screen's usable area less the window frame, and on it. Called by showWindow (Main.cpp), launchDialog
+  (FixTools.cpp) and `FittedDialog`; a window whose contents grow it past the screen is shrunk back (WindowFit, async).
+- **`launchAsync`** (`FittedDialog`): JUCE's DefaultDialogWindow, with the fitting. Every `o.launchAsync()` in the code now goes through it.
+- **`audit`**: for the check - squashed leftovers, text wider than its control, controls over one another (a label by where its text is), controls
+  off the window where nothing scrolls.
+
+**The small-screen check** (`tools/fit-check.sh`; `tools/fit-check/Checker.h` does the looking, `FitCheckDriver.h` has fermata's scenes,
+`LiveFitCheck.h` fermata:Live's; hooked into `src/Main.cpp` and `src/live/Main.cpp` under `FERMATA_FIT_CHECK`, which only the check defines):
+each window as it opens, its tabs, then filling the screen and its tabs again; report.txt and a picture each. The Manuscript UI (wider serif
+type: the user's) is the harder case - run it too (`FIT_STYLE=1`; `FIT_PROGRAM=live` for fermata:Live, which opens the project it had last - the
+script sets that). The script was run end to end here (fermata: 1536 x 816, Manuscript UI, the same 2 windows scrolling as below; fermata:Live:
+1366 x 728, nothing scrolling); it builds JUCE once (-O1, shared by both programs) and each program's own files when they change. On the rig
+this session used, `$S/fitrig/run.sh` / `run-live.sh` did the same faster with the rig's objects (STYLE=1 for the Manuscript UI).
+
+**What scrolls now on the small screens** (both UI styles; the last round of the check, 64 windows and tabs a screen): 1536 x 816 - only the
+ReHarmoniSer (its last rows, about 45 pixels); 1366 x 728 - the Listening copy page and the ReHarmoniSer; 1280 x 680 - those, the Mixer
+controller and the Bounce window (about 20 pixels). Nothing at 1920 x 1040. Nothing squashed anywhere. fermata:Live: nothing scrolls on any of
+the four. The slowest fitting there: 79 ms on the Linux -O0 build (the Mixer controller).
+
 ## 3.70.0: a full-length meter and HEADROOM on every input strip (26 November 2026, Claude Opus; fermata:Live 0.10.17)
 
 **Asked** (with a screenshot of the MT48's four preamp strips beside four plain inputs): every input strip's meter the full height, as the

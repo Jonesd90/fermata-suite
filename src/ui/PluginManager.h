@@ -192,6 +192,6 @@ inline void showPluginManager (AppContext& app)
     o.content.setOwned (new PluginManagerPanel (app));
     o.dialogBackgroundColour = theme::window;
     o.escapeKeyTriggersCloseButton = true; o.useNativeTitleBar = true; o.resizable = true;
-    o.launchAsync();
+    td::fit::launchAsync (o);
 }
 } // namespace td

@@ -176,6 +176,6 @@ inline void showMixChangesPanel (AppContext& app, const juce::Uuid& mixerId)
     o.content.setOwned (new MixChangesPanel (app, mixerId));
     o.dialogBackgroundColour = theme::window;
     o.escapeKeyTriggersCloseButton = true; o.useNativeTitleBar = true; o.resizable = true;
-    o.launchAsync();
+    td::fit::launchAsync (o);
 }
 } // namespace td

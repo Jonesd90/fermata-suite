@@ -45,7 +45,7 @@ void launchDialog (std::unique_ptr<juce::Component> content, const juce::String&
         o.useNativeTitleBar = true;
         o.resizable = resizable;
         o.componentToCentreAround = around;
-        dw = o.launchAsync();
+        dw = td::fit::launchAsync (o);
     }
     if (dw != nullptr && resizable)
     {
@@ -69,6 +69,7 @@ void launchDialog (std::unique_ptr<juce::Component> content, const juce::String&
         }
         auto* k = new BoundsKeeper(); k->key = key; k->last = dw->getBounds(); dw->addComponentListener (k);
     }
+    if (dw != nullptr) fit::keepOnScreen (*dw, around);                    // 3.71.0: never bigger than the screen (its contents scroll instead)
 }
 
 bool isAudioFile (const juce::File& f) { return f.hasFileExtension ("wav;wave;bwf;w64;aif;aiff;aifc;flac"); }

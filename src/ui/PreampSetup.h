@@ -214,6 +214,6 @@ inline void showPreampSetup (AppContext& app)
     o.content.setOwned (new PreampSetupPanel (app));
     o.dialogBackgroundColour = theme::window;
     o.escapeKeyTriggersCloseButton = true; o.useNativeTitleBar = true; o.resizable = false;
-    o.launchAsync();
+    td::fit::launchAsync (o);
 }
 } // namespace td

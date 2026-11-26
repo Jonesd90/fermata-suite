@@ -40,6 +40,9 @@
 #include <csignal>
 #include "core/CrashReport.h"
 #include "ui/KeyMap.h"
+#if FERMATA_FIT_CHECK
+ #include "../tools/fit-check/FitCheckDriver.h"                              // (tools/fit-check.sh only: never in the program)
+#endif
 
 #ifndef FERMATA_VERSION_STRING
  #define FERMATA_VERSION_STRING "0.0.0"      // only when built without CMake
@@ -562,6 +565,10 @@ public:
         announceCrashReports();
         rxWatcher = rxlink::makeWatcher (*ctx);                                  // 3.22.0 / 3.24.0: what is saved in a linked program (RX, Melodyne ...) comes back into the edits
         rxlink::askAtFirstStart (*ctx);                                          // (once: link the editing programs found on this computer?)
+       #if FERMATA_FIT_CHECK
+        fitCheck = std::make_unique<fitcheck::Driver> (*ctx, *mainWindow, juce::File (juce::SystemStats::getEnvironmentVariable ("FIT_CHECK_OUT", "/tmp/fit-check")));
+        fitCheck->start();                                                       // (tools/fit-check.sh only: the small-screen check)
+       #endif
     }
 
     /** 3.14.0: crash or freeze reports written since the last start are mentioned once (in the log, and in a message after the splash). */
@@ -818,6 +825,10 @@ private:
         if (stayInFront != nullptr) return;                                          // not open, and the user is working elsewhere: do not open it (the work is already in the project)
         juce::Component* content = make();
         if (key == "organiser" || key == "takedisplay" || key == "bridge" || key == "pitchpipe" || key == "click" || key == "align") content = new CornerStripHost (content);     // (their pin and sun / moon buttons get a strip of their own)
+        // 3.71.0: every window's contents scroll when the window is too small for them (FitLayout.h) - except those that look after a small window
+        // themselves: a take or edit window (its timeline), a mixer (its strips), the video picture and the score (they just get smaller)
+        if (key.startsWith ("take:") || key.startsWith ("edit:") || key.startsWith ("mixer:") || key.startsWith ("video:") || key.startsWith ("score:") || key == "bridge")
+            fit::markSelfFitting (*content);
         auto w = std::make_unique<ToolWindow> (title, [this, key] (ToolWindow*)
         {
             if (! transportWindowMayClose (key)) return;
@@ -865,6 +876,7 @@ private:
                 if (isMixer) w->setTopLeftPosition (w->getX(), juce::jmax (w->getY(), area.getY() + 44));
             }
         }
+        if (! key.startsWith ("video:")) fit::keepOnScreen (*w, place::anchor());      // 3.71.0: never bigger than the screen, all of it on it (a remembered size from a bigger screen too)
         const bool owned = mainWindow != nullptr && makeOwnedBy (*w, *mainWindow);
         w->setVisible (true);
         if (auto* mc = dynamic_cast<MixerComponent*> (content)) mc->fitWindowToStrips (mixerRemembered);    // (the size it was left at, within the screen)
@@ -1263,7 +1275,11 @@ private:
         {
             auto r = getLocalBounds().reduced (8);
             auto bottom = r.removeFromBottom (40);
-            preLength.setBounds (r.removeFromBottom (34).removeFromLeft (PreLengthControl::kWidth).reduced (3, 2));
+            {   // (3.71.0: the note beside the pre-take length, where it has room for its words - beside the buttons it had a third of them)
+                auto pre = r.removeFromBottom (34);
+                preLength.setBounds (pre.removeFromLeft (PreLengthControl::kWidth).reduced (3, 2));
+                note.setBounds (pre.withTrimmedLeft (10));
+            }
             if (rateNote.isVisible()) rateNote.setBounds (r.removeFromBottom (44));
             selector.setBounds (r);
             close.setBounds (bottom.removeFromRight (110).reduced (3));
@@ -1271,7 +1287,6 @@ private:
             scan.setBounds (bottom.removeFromLeft (118).reduced (3));
             pluginList.setBounds (bottom.removeFromLeft (92).reduced (3));
             cpuCores.setBounds (bottom.removeFromLeft (104).reduced (3));
-            note.setBounds (bottom);
         }
         AppContext& app;
         juce::AudioDeviceSelectorComponent selector;
@@ -1352,6 +1367,9 @@ private:
     std::unique_ptr<RemoteControlServer> remoteServer;       // the control port for a Stream Deck (127.0.0.1 only)
     std::unique_ptr<SurfaceController> surface;              // the Avid S1 / Mackie Control surface (MIDI)
     std::unique_ptr<ToolWindowMain> mainWindow;
+   #if FERMATA_FIT_CHECK
+    std::unique_ptr<fitcheck::Driver> fitCheck;
+   #endif
     std::unique_ptr<ToolWindow::FocusKeeper> focusKeeper;
     std::map<juce::String, std::unique_ptr<ToolWindow>> windows;
     std::unique_ptr<StayOnTop> bridgeTop;                    // keeps the meter bridge in front of everything (see StayOnTop)

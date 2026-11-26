@@ -718,7 +718,7 @@ public:
     enum { kTabTouch, kTabGain, kTabClick, kTabDenoise, kTabConsonant, kTabHum, kTabCount };       // (3.36.0: Consonants, 3.44.0: De-hum, as in the ReTouch window)
     static constexpr int kRowH = 24, kRowGap = 4, kPanelPad = 6, kTabW = 104, kTabGap = 12, kCapGap = 12, kTransportH = 26, kActionW = 116;      // (kActionW: the button that does the work, the same size and in the same place on every tab)
     static constexpr int sliderW = 140;                                           // a slider with its number: short on purpose
-    static constexpr int kChoicesW = 184 + 8 + 180 + 8 + 96 + 8 + 132 + 8 + 112;                       // the five choices of ReTouch in a row
+    static constexpr int kChoicesW = 184 + 8 + 180 + 8 + 108 + 8 + 142 + 8 + 112;                       // the five choices of ReTouch in a row
     static constexpr int kAmountsW = (58 + sliderW) + kCapGap + (116 + sliderW) + kCapGap + (100 + sliderW) + 3 * 26 + kCapGap + 16 + kActionW;   // its three sliders (L C R after the last) and the button in a row
     static constexpr int kBarMinW = 90, kFixesW = 90 + 8 + 150 + 8 + 150;
     int tab = kTabTouch;
@@ -793,9 +793,9 @@ public:
             {   // first row what to do and how, then how much, and the button that does it
                 int row = 0;
                 auto r = rowOf (in, row++);
-                putLeft (r, methodBox, 184); putLeft (r, dirBox, 180); putLeft (r, bandsBox, 96);
+                putLeft (r, methodBox, 184); putLeft (r, dirBox, 180); putLeft (r, bandsBox, 108);     // (3.71.0: 108 and 142, as in SpectralWindow.h)
                 if (in.getWidth() < kChoicesW) r = rowOf (in, row++);                                        // narrow: the two ticks on a row of their own
-                putLeft (r, multiBtn, 132); putLeft (r, linkBtn, 112);
+                putLeft (r, multiBtn, 142); putLeft (r, linkBtn, 112);
                 r = rowOf (in, row++);
                 if (in.getWidth() >= kAmountsW)
                 {

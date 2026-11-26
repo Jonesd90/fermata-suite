@@ -124,6 +124,11 @@ public:
     std::function<bool()> mayClose;
     void closeButtonPressed() override { if (mayClose == nullptr || mayClose()) setVisible (false); }
     bool escapeKeyPressed() override { closeButtonPressed(); return true; }
+    // 3.71.0: fitted to the screen and its contents (FitLayout.h)
+    fit::WindowFit fitter { *this };
+    void resized() override { juce::DialogWindow::resized(); fitter.windowResized(); }
+    void childBoundsChanged (juce::Component* c) override { if (! fitter.adjusting()) juce::DialogWindow::childBoundsChanged (c); }
+    void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override { if (! fitter.wheel (w)) juce::DialogWindow::mouseWheelMove (e, w); }
 };
 
 /** Opens a tool's window (modal, deleted when closed). 'mayClose' (optional): see GuardedDialogWindow. */
@@ -301,6 +306,11 @@ public:
     };
     RaiseAfterClick raiser { *this };
     std::weak_ptr<StreamPair> pair;
+    // 3.71.0: fitted to its contents (FitLayout.h)
+    fit::WindowFit fitter { *this };
+    void resized() override { juce::DialogWindow::resized(); fitter.windowResized(); }
+    void childBoundsChanged (juce::Component* c) override { if (! fitter.adjusting()) juce::DialogWindow::childBoundsChanged (c); }
+    void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override { if (! fitter.wheel (w)) juce::DialogWindow::mouseWheelMove (e, w); }
 };
 
 /** The two windows side by side, each tinted (orange = the out stream, as in the trim window; blue = the in stream); closing either one closes both. */

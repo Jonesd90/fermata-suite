@@ -115,7 +115,7 @@ inline void chooseProjectRate (AppContext& app, const juce::String& heading, con
     o.useNativeTitleBar = true;
     o.resizable = false;
     o.componentToCentreAround = place::anchor (around);
-    if (auto* dw = o.launchAsync())
+    if (auto* dw = td::fit::launchAsync (o))
     {
         dw->setAlwaysOnTop (true);
         if (auto* content = dw->getContentComponent()) content->grabKeyboardFocus();

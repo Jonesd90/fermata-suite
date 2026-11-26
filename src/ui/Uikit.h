@@ -4,6 +4,7 @@
 #include "../core/AudioEngine.h"
 #include "WaveColor.h"
 #include "WinOwner.h"
+#include "FitLayout.h"
 #include <map>
 #include <array>
 #include <algorithm>
@@ -921,8 +922,13 @@ public:
     {
         setUsingNativeTitleBar (true);
         setResizable (true, true);
+        fitter.onChange = [this] { placeCorner(); };
     }
     ~ToolWindow() override { DockHub::get().remove (this); Pins::get().forget (*this); }
+    /** 3.71.0: the contents fit the window - a scroll bar when they would be squashed (FitLayout.h). */
+    fit::WindowFit fitter { *this };
+    void childBoundsChanged (juce::Component* c) override { if (! fitter.adjusting()) juce::DocumentWindow::childBoundsChanged (c); }
+    void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override { if (! fitter.wheel (w)) juce::DocumentWindow::mouseWheelMove (e, w); }
     /** Pins this window, or unpins it (see Pins: it stays in front of the program's other windows; any number of windows can be pinned). */
     void setPinned (bool on)
     {
@@ -931,11 +937,19 @@ public:
     }
     void resized() override
     {
-        juce::DocumentWindow::resized(); placeThemeToggle (*this, themeToggle);
-        if (pinButton.getParentComponent() != this) { addAndMakeVisible (pinButton); pinButton.onClick = [this] { setPinned (! pinButton.getToggleState()); }; }
-        pinButton.setTopLeftPosition (themeToggle.getX() - pinButton.getWidth() - 4, themeToggle.getY()); pinButton.toFront (false);
+        juce::DocumentWindow::resized();
+        fitter.windowResized();
+        placeCorner();
         themeToggle.setVisible (! isKiosk()); pinButton.setVisible (! isKiosk());       // (3.68.0: full screen is the contents and nothing else)
         keepTitleBarClear(); reportBounds();
+    }
+    /** The pin and sun / moon buttons in the contents' top-right corner (left of the scroll bar when the contents scroll). */
+    void placeCorner()
+    {
+        placeThemeToggle (*this, themeToggle);
+        if (fitter.scrollsDown()) themeToggle.setTopLeftPosition (themeToggle.getX() - fit::WindowFit::kBarW, themeToggle.getY());
+        if (pinButton.getParentComponent() != this) { addAndMakeVisible (pinButton); pinButton.onClick = [this] { setPinned (! pinButton.getToggleState()); }; }
+        pinButton.setTopLeftPosition (themeToggle.getX() - pinButton.getWidth() - 4, themeToggle.getY()); pinButton.toFront (false);
     }
     /** 3.68.0: this window fills a screen by itself (the video picture's full screen: juce::Desktop's kiosk mode). Then it has no wooden sides,
         no pin or sun / moon button, its place is not remembered as the window's, and it is not moved clear of the menu bar. */
@@ -1843,6 +1857,7 @@ public:
     }
 private:
     Icon icon = Icon::Play; juce::String label; bool boxLook = false;
+    struct NoText { explicit NoText (juce::Component& c) { c.getProperties().set (fit::kNoText, true); } } noText { *this };   // (its text is its name: a picture shows - FitLayout.h)
 };
 
 /** The scroll bars (and the viewport) must never take the keyboard: after using one, the arrow keys still control the zoom / track heights of the window,

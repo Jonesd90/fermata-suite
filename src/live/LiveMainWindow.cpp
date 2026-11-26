@@ -516,6 +516,7 @@ void LiveMainComponent::openWindow (const juce::String& key)
     else if (key == "log")      { content = makeLogPanel (app); title = "fermata:Live log"; size = { 900, 520 }; }
     else if (key == "hotkeys")  { content = std::make_unique<HotKeysComponent> (true); title = "HotKeys - fermata:Live"; size = { 900, 780 }; }     // (0.10.16)
     if (content == nullptr) return;
+    if (key == "take" || key == "mixer") fit::markSelfFitting (*content);    // (0.10.18: these look after a small window themselves; the others scroll - FitLayout.h)
     juce::Component::SafePointer<LiveMainComponent> safe (this);
     auto w = std::make_unique<ToolWindow> (title, [safe, key] (ToolWindow*)
     {
@@ -847,6 +848,7 @@ LiveMainWindow::LiveMainWindow (PrimaryApp& app)
     setUsingNativeTitleBar (true);
     setResizable (true, true);
     content = new LiveMainComponent (app);
+    fit::markSelfFitting (*content);                 // (0.10.18: its strips look after a short window themselves, as fermata's main window's do)
     setContentOwned (content, true);
     setResizeLimits (900, 560, 6000, 4000);
     centreWithSize (juce::jmin (1500, juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea.getWidth() - 40),

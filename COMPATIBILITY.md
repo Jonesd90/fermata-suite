@@ -61,6 +61,11 @@ Everything listed here is built into BOTH programs, so a change to any of it cha
   each program showing its own list). They stay in fermata's folder under the same rules as the look files above (they include only them and
   `src/core`). Each program knows both lists, so each keeps the other's keys when it saves the file. A change to a window's keys in either
   program is a change to its line in HotKeysLines.h.
+- **Windows that fit the screen** (fermata 3.71.0, fermata:Live 0.10.18): `src/ui/FitLayout.h`. A window's contents that would be squashed get a
+  scroll bar instead (`WindowFit`, in `ToolWindow` - `src/ui/Uikit.h` - and in every dialog and window of both programs), a page's rows close up
+  their gaps first (`fit::stack`), and no window is bigger than its screen (`fit::keepOnScreen`). It stays in fermata's folder under the same rules
+  as the look files above (it includes only JUCE). A change to it changes how every window of both programs fits: build and look at both
+  (`tools/fit-check.sh` looks at fermata's windows on small screens).
 A file from one program's own folder joins this list as soon as the other program uses it (as fermata's look did in contract 3). From then on it is
 shared, and the rules below apply to it.
 
@@ -308,3 +313,6 @@ copies it like everything else, which is fine.
   - Still contract 3 (fermata 3.70.0, fermata:Live 0.10.17): `desk::PeakHold` in `src/ui/DeskLook.h` - the HEADROOM display of both programs'
     input strips (the peak held since a reset; each program keeps its own peaks: fermata's AppContext, fermata:Live's StationModel). Nothing in
     a project file changed.
+  - Still contract 3 (fermata 3.71.0, fermata:Live 0.10.18): `src/ui/FitLayout.h` joins the shared files (windows that fit the screen: a scroll
+    bar instead of squashed controls, no window bigger than its screen); `ToolWindow` (`src/ui/Uikit.h`) and the ReTouch window's own window in
+    each program fit their contents. Nothing in a project file changed.

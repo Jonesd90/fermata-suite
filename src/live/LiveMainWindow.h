@@ -75,6 +75,11 @@ public:
     void closeButtonPressed() override;
     LiveMainComponent* main() const { return content; }
     std::function<void()> onClose;
+    // 0.10.18: fitted to the screen and its contents (FitLayout.h)
+    fit::WindowFit fitter { *this };
+    void resized() override { juce::DocumentWindow::resized(); fitter.windowResized(); }
+    void childBoundsChanged (juce::Component* c) override { if (! fitter.adjusting()) juce::DocumentWindow::childBoundsChanged (c); }
+    void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override { if (! fitter.wheel (w)) juce::DocumentWindow::mouseWheelMove (e, w); }
 private:
     LiveMainComponent* content = nullptr;
 };
