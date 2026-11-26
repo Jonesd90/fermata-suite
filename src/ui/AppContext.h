@@ -16,6 +16,8 @@
 #include "DeviceGuard.h"
 #include "OnceSavedBin.h"
 
+namespace td::keymap { struct Key; }          // (3.69.0: KeyMap.h)
+
 namespace td
 {
 class TakeDisplayHub;
@@ -201,7 +203,7 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     bool spaceWasDown = false, rWasDown = false;
     bool spaceHeldAfterStop = false;                     // the Space that stopped a recording is still held: no window acts on it
     static bool typingInTextBox();
-    static bool rKeyHasOwnJobHere();
+    static bool rKeyHasOwnJobHere (const keymap::Key& key);     // (3.69.0: the key that does R's job now)
     void remotePlayPause();                              // plays in the window you used last (take or edit), or stops
     void remoteMixer (int index) { if (toggleMixerAt) toggleMixerAt (index); }
     std::function<void (int)> toggleMixerAt;             // set by the application: opens / closes the mixer with this index (0 = the processing mixer)

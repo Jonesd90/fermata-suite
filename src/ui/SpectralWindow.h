@@ -24,6 +24,7 @@
 #include <set>
 #include <limits>
 #include <functional>
+#include "KeyMap.h"
 
 namespace td { namespace fixtools
 {
@@ -2015,6 +2016,7 @@ class RepairDialog : public JobDialogBase
 public:
     explicit RepairDialog (RepairContext c) : ctx (std::move (c))
     {
+        keymap::KeyMap::setSection (*this, "ReTouch, DeClick & Denoise (Spectral Repair)");      // 3.69.0: its keys are the "ReTouch, DeClick & Denoise (Spectral Repair)" list's (HotKeysLines.h, KeyMap.h)
         setSize (1100, 760);
         intro.setText (ctx.what, juce::dontSendNotification); intro.setColour (juce::Label::textColourId, theme::text); intro.setJustificationType (juce::Justification::topLeft);
         addAndMakeVisible (intro); addAndMakeVisible (view); addAndMakeVisible (info);

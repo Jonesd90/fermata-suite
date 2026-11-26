@@ -2,6 +2,7 @@
 // The pitch, pitch-curve and repair windows of the fix tools (3.18.6: from FixTools.cpp). Only FixToolsEdits.cpp includes this.
 #include "FixToolsCommon.h"
 #include "../core/Tuning.h"
+#include "KeyMap.h"
 
 namespace td { namespace fixtools
 {
@@ -308,6 +309,7 @@ class CurveDialog : public JobDialogBase
 public:
     explicit CurveDialog (CurveContext c) : ctx (std::move (c))
     {
+        keymap::KeyMap::setSection (*this, "Pitch");      // 3.69.0: its keys are the "Pitch" list's (HotKeysLines.h, KeyMap.h)
         setSize (1000, 560);
         if (ctx.hold) ctx.hold (true);
         intro.setText (ctx.what, juce::dontSendNotification); intro.setColour (juce::Label::textColourId, theme::text); intro.setJustificationType (juce::Justification::topLeft);

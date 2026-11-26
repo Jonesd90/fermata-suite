@@ -2,6 +2,7 @@
 #include "ExportDone.h"
 #include "../core/AudioFormats.h"
 #include "../core/EditVersions.h"
+#include "KeyMap.h"
 
 namespace td
 {
@@ -569,6 +570,7 @@ MasteringComponent::MasteringComponent (AppContext& a)
     : app (a), levelBox ([this]() -> MasterExportSettings& { return def().vm; }, false, [this] { touched(); refreshFormatControls(); }),
       formLevelBox ([this]() -> MasterExportSettings& { return def().vm; }, true, [this] { touched(); refreshFormatControls(); }), vmProgress (progressValue), formProgress (progressValue), ddpProgress (progressValue), renderProgress (renderProgressValue)
 {
+    keymap::KeyMap::setSection (*this, "Mastering");      // 3.69.0: its keys are the "Mastering" list's (HotKeysLines.h, KeyMap.h)
     auto cap = [this] (juce::Label& l, const juce::String& t, bool bold = false) { styleCaption (l, t, bold); addChildComponent (l); };
     for (auto* b : { &vmTab, &ddpTab, &formTab, &atmosTab }) { b->setClickingTogglesState (false); b->setColour (juce::TextButton::buttonOnColourId, theme::accent); addAndMakeVisible (b); }
     vmTab.onClick = [this] { setView (0); };

@@ -1,5 +1,6 @@
 #include "TakeDisplay.h"
 #include "TalkbackGlow.h"
+#include "KeyMap.h"
 
 namespace td
 {
@@ -159,6 +160,7 @@ void TakeDisplayView::paint (juce::Graphics& g)
 TakeDisplayWindow::TakeDisplayWindow (AppContext& a, TakeDisplayHub& h, int displayIndex, juce::Rectangle<int> area)
     : hub (h), index (displayIndex), view (a)
 {
+    keymap::KeyMap::setSection (*this, "Take Display");      // 3.69.0: its keys are the "Take Display" list's (HotKeysLines.h, KeyMap.h)
     setOpaque (true);
     setWantsKeyboardFocus (true);
     setMouseCursor (juce::MouseCursor::NoCursor);

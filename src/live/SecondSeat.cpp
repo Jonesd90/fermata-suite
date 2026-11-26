@@ -1,5 +1,6 @@
 // fermata:Live 0.6.0: the second seat (see SecondSeat.h and docs/LIVE-SECOND-SEAT.md).
 #include "SecondSeat.h"
+#include "../ui/KeyMap.h"
 
 // The Windows part (the driver's library, the keys' names, the pointer that clicks go through) is compiled on Windows only;
 // FERMATA_SEAT_WINDOWS_STUBS lets tools/check-windows-code.sh compile it on Linux against stand-in headers.
@@ -967,11 +968,14 @@ void SecondSeat::deliverKey (const juce::KeyPress& k)
     if (target == nullptr) return;
     if (target->isCurrentlyBlockedByAnotherModalComponent())
         if (auto* modal = juce::Component::getCurrentlyModalComponent()) target = modal;
+    // 0.10.16: the keys in use (HotKeys): a changed key is handed on as the standard one, a standard key whose job moved does nothing
+    juce::KeyPress key;
+    if (! keymap::Translator::get().translateFor (target, k, key)) return;
     const juce::ScopedValueSetter<bool> d (inDispatch, true);
     for (juce::Component* c = target; c != nullptr; c = c->getParentComponent())
     {
         juce::Component::SafePointer<juce::Component> alive (c);
-        if (c->keyPressed (k)) break;
+        if (c->keyPressed (key)) break;
         if (alive == nullptr) break;
     }
 }

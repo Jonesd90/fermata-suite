@@ -8,6 +8,19 @@ fermata:Live is the live-concert recorder that goes with fermata (see `docs/LIVE
 
 A line that starts with **Shared:** is a change to the code fermata shares (see `COMPATIBILITY.md`), so fermata's next build mentions it too.
 
+## 0.10.16
+Built 26 November 2026 (the conversation for both programs), with fermata 3.69.0: the keys can be changed.
+- **HotKeys** (Help menu; in the Fixer, the Look... menu): every key of fermata:Live, and changing them - the Primary's take window (and its
+  main window and mixer, whose keys go on to it), the Fixer (and its mixer and second-seat windows) and the ReTouch window. As in fermata: click
+  a key, press the new one, Use this key; Save keys as... / Load keys... / Back to the standard keys. The Fixer's second seat's keyboard
+  follows the keys in use too.
+- **The same file as fermata** (asked for: "look for the same file that fermata uses and just work it in the same way"): Documents > Fermata >
+  Hot keys in use.fermatakeys. A file saved in either program loads in the other; each keeps the other's keys when it saves.
+- **Shared:** `src/ui/KeyMap.h`, `src/ui/HotKeysLines.h` (new) and `src/ui/HotKeysWindow.h` are shared files now; `src/ui/SpectralWindow.h`
+  marks the ReTouch window's keys as its list's.
+- Checked here: fermata:Live builds and links on Linux with no warnings; its HotKeys window opened with its own list; the key map's test and
+  the compatibility check passed. Not checked: the Windows build (GitHub), the Fixer's window on screen.
+
 ## 0.10.15
 Built 25 and 26 November 2026 (the conversation for both programs), beside fermata 3.68.0 (video in the edit window). Nothing of
 fermata:Live's own changed.

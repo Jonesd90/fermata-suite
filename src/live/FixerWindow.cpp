@@ -6,6 +6,7 @@
 #include "LiveDesk.h"
 #include "LiveLook.h"
 #include "../core/AudioOps.h"
+#include "../ui/HotKeysWindow.h"                 // 0.10.16: HotKeys (shared: COMPATIBILITY.md)
 #include "../ui/SpectralWindow.h"                 // fermata's ReTouch window (shared: COMPATIBILITY.md)
 #include <mutex>
 #include <set>
@@ -524,6 +525,7 @@ class KeysToFixer final : public juce::Component
 public:
     KeysToFixer (juce::Component* inner, std::function<bool (const juce::KeyPress&)> to) : content (inner), onward (std::move (to))
     {
+        keymap::KeyMap::setSection (*this, "fermata:Live: the Fixer");      // 0.10.16: the keys go on to the Fixer, as the Fixer's (HotKeys)
         addAndMakeVisible (*content);
         setSize (content->getWidth(), content->getHeight());
     }
@@ -541,6 +543,7 @@ class FixerComponent final : public juce::Component, private juce::Timer, privat
 public:
     explicit FixerComponent (FixerApp& a) : app (a), flags (a)
     {
+        keymap::KeyMap::setSection (*this, "fermata:Live: the Fixer");      // 0.10.16: its keys can be changed (HotKeys)
         setWantsKeyboardFocus (true);
         for (auto* c : std::initializer_list<juce::Component*> { &badge, &pieceLabel, &followBtn, &delayLabel, &delayBox, &backBtn, &playBtn, &fwdBtn, &playhead, &behind, &mixerBtn,
                                                                  &status, &flags, &view, &fixTitle, &selLabel, &fixKind, &amount, &amountLabel, &tryBtn, &abBtn, &saveBtn, &fixNote, &tellPrimary, &retouchBtn,
@@ -842,13 +845,33 @@ private:
         juce::PopupMenu m;
         const auto picked = std::make_shared<int> (-1);
         look::addToMenu (m, picked);
+        m.addSeparator();
+        m.addItem (kHotKeysItem, "HotKeys: every key, and changing them...");          // (0.10.16)
         juce::Component::SafePointer<FixerComponent> safe (this);
         m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&lookBtn), [safe, picked] (int r)
         {
+            if (safe != nullptr && r == kHotKeysItem) { safe->showHotKeys(); return; }
             if (safe == nullptr || ! look::chosen (r, picked, *safe->app.settings)) return;
             safe->refreshSeatButton();                                          // (its colour is the look's key colour unless the seat is on)
             safe->resized(); safe->repaint();
         });
+    }
+    static constexpr int kHotKeysItem = 917301;
+    /** 0.10.16: HotKeys - every key of fermata:Live, and changing them (the same window as the Primary's, src/ui/HotKeysWindow.h). */
+    void showHotKeys()
+    {
+        if (hotKeysWindow != nullptr) { hotKeysWindow->setVisible (true); hotKeysWindow->toFront (true); return; }
+        juce::Component::SafePointer<FixerComponent> safe (this);
+        hotKeysWindow = std::make_unique<ToolWindow> ("HotKeys - fermata:Live", [safe] (ToolWindow*)
+        {
+            if (safe != nullptr) juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->hotKeysWindow.reset(); });
+        });
+        hotKeysWindow->setContentOwned (new HotKeysComponent (true), true);
+        hotKeysWindow->setResizeLimits (520, 360, 4000, 3000);
+        hotKeysWindow->centreWithSize (hotKeysWindow->getWidth(), hotKeysWindow->getHeight());
+        hotKeysWindow->setVisible (true);
+        if (auto* top = getTopLevelComponent()) makeOwnedBy (*hotKeysWindow, *top);
+        hotKeysWindow->toFront (true);
     }
     void refreshSeatButton()
     {
@@ -1365,6 +1388,7 @@ private:
     std::shared_ptr<FixTry> lastFix;
     std::unique_ptr<FixerMixModel> mixModel;
     std::unique_ptr<ToolWindow> mixerWindow;
+    std::unique_ptr<ToolWindow> hotKeysWindow;                         // 0.10.16: HotKeys
     juce::uint32 flashUntil = 0;
     std::set<juce::String> seenFlags;
 };

@@ -6,6 +6,31 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.69.0
+Built 26 November 2026 (the conversation for both programs), with Claude Opus. Asked for that day: the HotKeys list made editable, with a
+save / export, "so multiple users can set and save their preferences"; fermata to use the key file loaded last (a copy kept in the Fermata
+documents folder), the standard keys when there is none; fermata:Live to read the same file in the same way; combinations allowed.
+- **The keys can be changed.** Help > HotKeys (also Project > HotKeys...): click a key in the list, press the new one (with Ctrl, Alt or Shift
+  if you like) and press **Use this key**. **No key** leaves a job without one; **Its standard key** puts one back. A key that is not the
+  standard one has an orange edge. Every window's own jobs can be changed - the take, edit, Trim, ReTouch, Noise mode, Pitch, ReHarmoniSer,
+  ReTimEr, Mastering, Display Organiser and Take Display windows, and the keys that work from every window (Space, R, M, U, I, Ctrl+B, undo,
+  redo). Not changed: Esc and Tab, the keys of a box being typed in, the questions' keys, and the mouse.
+  - A key that already does something in that window: it asks whether to swap the two or leave the other with no key.
+  - The same key in other windows: it lists them, each with what the key does there, ticked where it is the same job (Loop is L in the
+    take, edit and ReHarmoniSer windows, but L in ReTouch is the room tone) - change the ticked ones too, or only this window.
+  - A key moved to another does nothing where its job was (L does nothing in the edit window once Loop is F5 there).
+- **Save keys as... / Load keys...**: the keys in use as a file of their own ("Dave's keys.fermatakeys", in Documents > Fermata > Hot Keys to
+  begin with), to load again later, on another computer, or in fermata:Live. **Back to the standard keys** puts every key back (a saved file
+  is left as it is). The keys in use are kept in Documents > Fermata > Hot keys in use.fermatakeys and used from then on; fermata and
+  fermata:Live both read it, and a change in one is picked up by the other within a few seconds.
+- The take window's REC and STOP keys show the keys in use. Other buttons' tooltips and the manual still name the standard keys.
+- Checked here (Linux): the key map has a test of its own (`tools/keymap-check.sh`): every standard key of both lists read back; what a key
+  becomes in each window, from a window that hands its keys on (the mixer), and in a box; the file saved, loaded, kept for the other
+  program, read again when it changes. On the Linux build's screen: Loop moved from L to F5 (the take, edit and ReHarmoniSer windows ticked,
+  ReTouch and Noise mode not) - F5 switched Loop in the edit window, L did nothing, F5 from the edit's mixer did it too; the mixer moved from M
+  to Ctrl+M - Ctrl+M opened and closed it, M did nothing; back to the standard keys - L worked again. fermata:Live's HotKeys window opened from
+  its Help menu with its own list. Not checked here: Windows (the build on GitHub); R and Space with a recording (no audio device here).
+
 ## 3.68.0
 Built 25 and 26 November 2026 (the conversation for both programs): the lane, the picture window and lining up with Claude Opus; the decoding,
 keeping the picture in step and the camera's sound with Claude Fable. Asked for on 24 and 25 November: a video clip in the edit window, from

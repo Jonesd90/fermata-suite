@@ -12,6 +12,7 @@
 #include "ClipName.h"
 #include "TuningLine.h"
 #include "../core/StereoJoin.h"
+#include "KeyMap.h"
 
 namespace td
 {
@@ -2276,6 +2277,7 @@ struct ScrollRepaintViewport : public juce::Viewport
 
 TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) : app (a), windowId (wid), recordLamps (a), matchLamp (a, wid), barMap (a)
 {
+    keymap::KeyMap::setSection (*this, "Take window");      // 3.69.0: its keys are the "Take window" list's (HotKeysLines.h, KeyMap.h)
     addAndMakeVisible (recordLamps);
     addAndMakeVisible (matchLamp);
     addAndMakeVisible (barMap); barMap.windowId = wid; barMap.onBarClicked = [this] (int bar) { goToBar (bar); };
@@ -2884,7 +2886,12 @@ void TakeWindowComponent::timerCallback()
     if (auto* tw = dynamic_cast<juce::TopLevelWindow*> (getTopLevelComponent())) if (tw->isActiveWindow() && ! app.engine.isRecording()) app.recordTarget = windowId;
     { int n = 1; const bool r = app.takeBoxInfo (n); if (auto* d = def(); d != nullptr && ! r) n = d->nextNumber; takeBox.set (r, n); }
     const bool hereRec = rec && def() != nullptr && def()->findGroup (app.engine.currentTakeId()) != nullptr;
-    recordButton.setButtonText (rec ? "STOP [Space]" : "REC [R]");
+    {   // (3.69.0: the keys in use - HotKeys)
+        auto& km = keymap::KeyMap::get();
+        const auto stopKey = km.current ("Everywhere", keymap::parse ("Space")), recKey = km.current ("Take window", keymap::parse ("R"));
+        recordButton.setButtonText (rec ? (stopKey.valid() ? "STOP [" + keymap::describe (stopKey) + "]" : juce::String ("STOP"))
+                                        : (recKey.valid() ? "REC [" + keymap::describe (recKey) + "]" : juce::String ("REC")));
+    }
     if (playheadMode.getToggleState() != app.playheadFollows) playheadMode.setToggleState (app.playheadFollows, juce::dontSendNotification);
     if (waveColourBtn.getToggleState() != app.waveColour) { waveColourBtn.setToggleState (app.waveColour, juce::dontSendNotification); repaint(); }
     if (tuningBtn.getToggleState() != app.tuningShow) tuningBtn.setToggleState (app.tuningShow, juce::dontSendNotification);      // (3.63.0)

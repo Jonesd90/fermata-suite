@@ -2620,6 +2620,56 @@ fermata's `shutdown()` and its static destructors. Our unhandled-exception filte
   right after closing the log, so the PDF reader's unload code never runs. Everything is saved and closed by then.
 (The symbols of Windows' own libraries were not available here: the reading rests on the single thread and the order of the modules.)
 
+## 3.69.0: the keys can be changed (26 November 2026, Claude Opus; fermata:Live 0.10.16)
+
+**What was asked.** "There is a hot keys option in the menu that lists the hot keys. Can we make that editable? And then have a save/export
+hotkeys option? So multiple users can set and save their preferences?" On the questions: "fermata will default use the last loaded [hotkey]
+file. It will store a copy in the fermata documents folder (near where the crash logs go). If there is no saved [hotkey] file then it reverts
+to what is in there now (the default). Yes combinations are OK. It should also look for the same file that fermata uses and just work it in
+the same way, importing the same file etc..." (the last about fermata:Live).
+
+**The design: translate at the door, touch no window's key code.** About 150 keys are checked in some 30 `keyPressed` handlers, by key code,
+by typed character, with their modifiers, and passed between windows. Rewriting each to ask a key map was the alternative; instead
+(`src/ui/KeyMap.h`):
+- The standard keys come from the HotKeys list itself (`src/ui/HotKeysLines.h`, moved out of HotKeysWindow.h, fermata's lines unchanged, plus
+  fermata:Live's): each key of a line of a window's own jobs is a `Binding` (section, standard key); two lines of one section with the same key
+  are one binding (Everywhere's Space plays and stops a recording). `editableLine` / `editableKey` say which: not Esc, Tab, the mouse, a box's
+  keys ("In ..." lines), the questions' or the mixer's.
+- `Translator` listens (a JUCE KeyListener, asked before the component's own keyPressed) on whatever has the keyboard - moved there by a
+  FocusChangeListener - and on every top-level window (for when nothing in it has the keyboard). A key press is looked up in the lists that
+  count where the keyboard is (`contextOf`: the nearest component marked with `KeyMap::setSection`, else one marked within two levels of a
+  window; a window that forwards its keys - `ToolWindow::forwardKeys` - counts as `ToolWindow::lastTransportWindow()`'s contents; then
+  `fallbackSection`, "Everywhere" in fermata). Found as another job's key now: the STANDARD key is made (`pressOf`: Windows' key code, the
+  modifiers, the character it types - a British keyboard's for Shift) and handed to the window's peer again from the top, while the listener
+  stands aside. Found as a standard key whose job moved: dropped. Not found: as it is. A text box being typed in (TextInputTarget active),
+  anything modal (a message, a menu) and a component marked `setRaw` (the key catcher, a plug-in's window) are never touched. So every
+  handler still sees only standard keys, and keys the program makes itself - the Stream Deck's, the control surface's (`keyToWorkWindow`),
+  one window handing a key to another - never pass through it.
+- **Keys watched on the keyboard itself** (not events): `AppContext::pollTransportKeys` (Space stops a recording from any window; R starts one)
+  and the plug-in window's Space now watch `KeyMap::current ("Everywhere", ...)` with `KeyMap::isDown` (exact modifiers). R is `setPolled`:
+  a key that does R's every-window job is not handed on as R (the edit window's R butts) - the watcher does the job. `rKeyHasOwnJobHere` now
+  asks the window's list whether the key pressed is one of its own jobs (the take window's own R records, so it does not count).
+- **Marked windows:** TakeWindowComponent, EditWindowComponent, TrimComponent, RepairDialog (shared), NoiseModeDialog, CurveDialog (Pitch),
+  ReHarmoniserEditor, RetimerPanel, MasteringComponent, OrganiserComponent, TakeDisplayWindow; fermata:Live's LiveMainComponent and
+  PrimaryTakeComponent ("the Primary's take window"), FixerComponent and KeysToFixer ("the Fixer"). A window not marked has only the
+  Everywhere list. **Adding a key to a window:** add its line to HotKeysLines.h - that is the standard key and the binding. A new window
+  with keys of its own: a section in HotKeysLines.h, `editableSection`, and `setSection` in its constructor.
+- **The file:** `Documents\Fermata\Hot keys in use.fermatakeys` (both programs; written through a temporary file), only the keys that are not
+  the standard ones, by name (`describe` / `parse`: JUCE's key codes differ between systems). Entries of sections a program does not know
+  are kept (`foreign`). Both programs register BOTH lists, so either keeps the other's keys. `reloadIfChanged` every 2 s (the other program).
+  Load keys... copies a file in; Save keys as... writes one and names the set after it; Back to the standard keys deletes the copy.
+- **The window** (`src/ui/HotKeysWindow.h`, shared, `HotKeysComponent (bool live)`): the list draws each changeable key as it is now
+  (orange edge: not the standard one), a click opens the bar (KeyCatcher takes any key; Esc gives up; Tab and Esc refused). Same window:
+  swap or leave the other with none. Other windows with the same standard key and the same key now (same program): a list with tick boxes,
+  ticked where the first three words of what it does match - `firstWords` - so Loop's L is offered in the take window and ReHarmoniSer but
+  not ReTouch's L (room tone).
+- **Tests:** `tests/keymap_test.cpp` + `tools/keymap-check.sh <JUCE>` (no screen; not one of the six checks - run it when KeyMap.h or
+  HotKeysLines.h changes: it reads back every standard key of both lists). On the rig: see the history entry.
+- **Not done / to know:** tooltips and labels that name keys ("Mixer [M]", "Note [N]" in fermata:Live, tooltips everywhere) still name the
+  standard keys - only the take window's REC / STOP follow (each is a line of code when wanted). A Mac: "Ctrl" in the file is the command key.
+  The race: a focus change is reported to the Translator a moment later (JUCE calls focus listeners asynchronously); a key pressed in that
+  moment reaches the window untranslated unless nothing inside handles it first (the window's own listener then catches it).
+
 ## 3.68.0: video in the edit window (25 November 2026: part 1 with Claude Opus; part 2 - the decoder - with Claude Fable)
 
 **What was asked.** 24 November: "Is it possible to be able to add video to a project? ... having the video in the project playing alongside,

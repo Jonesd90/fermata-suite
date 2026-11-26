@@ -8,6 +8,7 @@
 #include "NotePanel.h"
 #include "StationNotes.h"
 #include "../ui/TimeReadout.h"
+#include "../ui/KeyMap.h"
 #include <set>
 
 namespace td::live
@@ -127,6 +128,7 @@ class PrimaryTakeComponent final : public juce::Component, private juce::Timer, 
 public:
     PrimaryTakeComponent (PrimaryApp& a, std::function<void (const juce::String&)> open) : app (a), openWindow (std::move (open)), flags (a)
     {
+        keymap::KeyMap::setSection (*this, "fermata:Live: the Primary's take window");      // 0.10.16: its keys can be changed (HotKeys)
         setWantsKeyboardFocus (true);
         auto caption = [this] (juce::Label& l, const juce::String& t)
         {

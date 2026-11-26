@@ -20,6 +20,7 @@
 #include "ClipName.h"
 #include "TuningLine.h"
 #include "Video.h"
+#include "KeyMap.h"
 
 namespace td
 {
@@ -4457,6 +4458,7 @@ private:
 
 EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) : app (a), editId (id)
 {
+    keymap::KeyMap::setSection (*this, "Edit window");      // 3.69.0: its keys are the "Edit window" list's (HotKeysLines.h, KeyMap.h)
     getProperties().set (ownsRKeyProperty(), true);         // R here butts the selected pieces together: it does not start a recording
     auto* vp = new EditViewport();
     timeline.reset (new EditTimeline (app, editId, *vp));

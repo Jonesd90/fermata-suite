@@ -39,6 +39,7 @@
 #endif
 #include <csignal>
 #include "core/CrashReport.h"
+#include "ui/KeyMap.h"
 
 #ifndef FERMATA_VERSION_STRING
  #define FERMATA_VERSION_STRING "0.0.0"      // only when built without CMake
@@ -241,6 +242,21 @@ public:
         };
         ctx->windowIsOpen = [this] (const juce::String& key) { return windows.find (key) != windows.end(); };
         focusKeeper = std::make_unique<ToolWindow::FocusKeeper>();              // the keys never go dead after a text box lets go of the keyboard
+        {   // 3.69.0: the keys can be changed (HotKeys, Help menu): the key file in use is read, and a changed key is swapped for the standard one on
+            // its way into the windows (src/ui/KeyMap.h). The mixer and the other windows that hand their keys on count as the take or edit window
+            // they go to; R's job from every window is watched on the keyboard (AppContext::pollTransportKeys), so a key that does it is not handed on.
+            auto& km = keymap::KeyMap::get();
+            km.fallbackSection = "Everywhere";
+            km.forwardTarget = [] (juce::Component* top) -> juce::Component*
+            {
+                if (auto* tw = dynamic_cast<ToolWindow*> (top); tw != nullptr && tw->forwardKeys)
+                    if (auto* t = ToolWindow::lastTransportWindow(); t != nullptr && t != tw) return t->getContentComponent();
+                return nullptr;
+            };
+            km.setPolled ("Everywhere", keymap::parse ("R"));
+            km.setup();
+            keymap::Translator::get().install();
+        }
         globalKeyHook() = [this] (const juce::KeyPress& k)
         {
             if (! ctx->hasProject()) return false;                                   // (the program's keys do nothing until a project exists)
@@ -597,6 +613,7 @@ public:
                                 logFolder().getChildFile ("fermata-log.txt"));                                     // hangs is ended (see ClosingWatchdog)
         CoreReservation::get().shutdown();                                       // other programs are given all the cores back
         closing::step ("CPU cores handed back");
+        keymap::Translator::get().uninstall();                                    // (3.69.0)
         windows.clear();
         audioSettings.reset();                                                    // (3.27.1: before the AppContext - its device chooser lets go of the device manager in its destructor)
         closing::step ("windows closed");

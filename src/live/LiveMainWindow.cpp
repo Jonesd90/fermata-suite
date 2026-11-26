@@ -1,4 +1,5 @@
 #include "LiveMainWindow.h"
+#include "../ui/HotKeysWindow.h"
 #include "../ui/ValueEntry.h"
 #include "LiveLook.h"
 
@@ -386,6 +387,7 @@ private:
 //==============================================================================================================================================
 LiveMainComponent::LiveMainComponent (PrimaryApp& a) : app (a)
 {
+    keymap::KeyMap::setSection (*this, "fermata:Live: the Primary's take window");      // 0.10.16: its keys go on to the take window (HotKeys)
     setOpaque (true);
     for (auto* b : menuItems()) { addAndMakeVisible (b); b->setWantsKeyboardFocus (false); }
     projectButton.onClick = [this] { showProjectMenu(); };
@@ -461,7 +463,7 @@ void LiveMainComponent::openWindow (const juce::String& key)
         it->second->setVisible (true); it->second->toFront (true);
         return;
     }
-    if (! app.hasProject() && key != "audio" && key != "log") { app.addLog ("Make or open a project first (Project menu)"); showStartPanel (true); return; }
+    if (! app.hasProject() && key != "audio" && key != "log" && key != "hotkeys") { app.addLog ("Make or open a project first (Project menu)"); showStartPanel (true); return; }
     std::unique_ptr<juce::Component> content;
     juce::String title;
     juce::Rectangle<int> size (700, 520);
@@ -472,6 +474,7 @@ void LiveMainComponent::openWindow (const juce::String& key)
     else if (key == "mixer")    { content = makePrimaryMixer (app); title = "Mixer - processing mixer (the Primary's monitoring)"; size = { 1100, 640 }; }
     else if (key == "bounce")   { content = makeBouncePanel (app); title = "Bounce out"; size = { 620, 430 }; }
     else if (key == "log")      { content = makeLogPanel (app); title = "fermata:Live log"; size = { 900, 520 }; }
+    else if (key == "hotkeys")  { content = std::make_unique<HotKeysComponent> (true); title = "HotKeys - fermata:Live"; size = { 900, 780 }; }     // (0.10.16)
     if (content == nullptr) return;
     juce::Component::SafePointer<LiveMainComponent> safe (this);
     auto w = std::make_unique<ToolWindow> (title, [safe, key] (ToolWindow*)
@@ -612,6 +615,8 @@ void LiveMainComponent::showHelpMenu()
     m.addItem (1, "About fermata:Live");
     m.addItem (2, "The log...");
     m.addItem (3, "Show the log files");
+    m.addSeparator();
+    m.addItem (4, "HotKeys: every key, and changing them...");
     juce::Component::SafePointer<LiveMainComponent> safe (this);
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&helpButton), [safe] (int r)
     {
@@ -623,6 +628,7 @@ void LiveMainComponent::showHelpMenu()
                 "Recorder " + safe->app.model.recorderVersion + (safe->app.model.connected ? ", connected." : ", not connected."));
         else if (r == 2) safe->openWindow ("log");
         else if (r == 3) juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("Fermata").getChildFile ("fermata-live-log.txt").revealToUser();
+        else if (r == 4) safe->openWindow ("hotkeys");
     });
 }
 

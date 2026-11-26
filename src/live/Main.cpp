@@ -15,6 +15,7 @@
 #include "FixerApp.h"
 #include "../ui/FermataLookAndFeel.h"
 #include "../ui/ClosingLog.h"
+#include "../ui/KeyMap.h"
 #include "../core/CrashReport.h"
 #include <csignal>
 
@@ -93,6 +94,18 @@ public:
                     juce::String (fixerMode ? "The Fixer" : "fermata:Live") + " is already open on this PC (look for its window, or in the taskbar).", "OK", nullptr,
                     juce::ModalCallbackFunction::create ([this] (int) { quit(); }));
                 return;
+            }
+            {   // 0.10.16: the keys can be changed (HotKeys, Help menu - fermata's file, the same keys: src/ui/KeyMap.h). A window that hands its keys
+                // on (the mixer) counts as the window they go to.
+                auto& km = keymap::KeyMap::get();
+                km.forwardTarget = [] (juce::Component* top) -> juce::Component*
+                {
+                    if (auto* tw = dynamic_cast<ToolWindow*> (top); tw != nullptr && tw->forwardKeys)
+                        if (auto* t = ToolWindow::lastTransportWindow(); t != nullptr && t != tw) return t->getContentComponent();
+                    return nullptr;
+                };
+                km.setup();
+                keymap::Translator::get().install();
             }
             if (fixerMode)
             {
@@ -213,6 +226,7 @@ public:
         // running 20 s after it finished, where every part of it is goes into its log and it ends itself. A closed fermata:Live can then never stay
         // behind holding the audio device, the drives or memory.
         ClosingWatchdog::start ((unsigned long) (juce::pointer_sized_int) juce::Thread::getCurrentThreadId(), crashLogFile);
+        keymap::Translator::get().uninstall();                                  // (0.10.16)
         if (mainWindow != nullptr) { if (auto* m = mainWindow->main()) m->closeAllWindows(); closing::step ("the windows closed"); }
         if (mainWindow != nullptr) { mainWindow.reset(); closing::step ("the main window closed"); }
         if (primary != nullptr)    { primary.reset(); closing::step ("the project and the Primary's connections let go"); }

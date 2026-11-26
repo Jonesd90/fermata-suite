@@ -69,7 +69,7 @@ inline void showHelpMenu (AppContext& app, juce::Component& target)
     const auto reports = crashreport::allReports();
     juce::PopupMenu m;
     m.addItem (1, "Fermata manual (PDF)");
-    m.addItem (2, "HotKeys: every key and what it does");
+    m.addItem (2, "HotKeys: every key, and changing them");
     m.addSeparator();
     m.addItem (3, "Show the log file (fermata-log.txt)");
     m.addItem (4, reports.isEmpty() ? juce::String ("Crash reports (none)") : "Show the crash reports (" + juce::String (reports.size()) + ")", ! reports.isEmpty());

@@ -5,6 +5,7 @@
 #include "WinOwner.h"
 #include "../core/HostTransport.h"
 #include "WindowPlace.h"
+#include "KeyMap.h"
 
 namespace td
 {
@@ -343,6 +344,7 @@ public:
         : juce::DocumentWindow (i->getName(), juce::Colours::darkgrey, juce::DocumentWindow::closeButton | juce::DocumentWindow::minimiseButton),
           host (h), insert (i)
     {
+        keymap::KeyMap::setRaw (*this);                          // 3.69.0: a plug-in gets the keys as they are pressed (Space is watched on the keyboard below)
         setUsingNativeTitleBar (true);
         getProperties().set (ownsRKeyProperty(), true);       // R typed into a plug-in (a preset name ...) is the plug-in's: it does not start a recording (Space still stops one)
         const bool resizable = editor->isResizable();
@@ -413,7 +415,7 @@ private:
     void timerCallback() override
     {
         if (++barTick >= 8) { barTick = 0; syncBar(); }                                     // (five times a second)
-        const bool down = juce::KeyPress::isKeyCurrentlyDown (juce::KeyPress::spaceKey) && ! juce::ModifierKeys::getCurrentModifiersRealtime().isAnyModifierKeyDown();
+        const bool down = keymap::KeyMap::isDown (keymap::KeyMap::get().current ("Everywhere", keymap::parse ("Space")));     // (3.69.0: the key that is Space's now)
         if (down && ! spaceWasDown && isVisible() && isForegroundWindow (*this))           // pressed (not held) while this window is the one in front
             if (auto* t = ToolWindow::lastTransportWindow())                                // (one down in the bar too, as from any other window)
                 if (auto* c = t->getContentComponent()) c->keyPressed (juce::KeyPress (juce::KeyPress::spaceKey));

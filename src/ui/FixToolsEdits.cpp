@@ -1,5 +1,6 @@
 // The fix tools opened from the take and edit windows: pitch, repair, Noise mode and the pitch curve (3.18.6: from FixTools.cpp, unchanged).
 #include "FixToolsDialogs.h"
+#include "KeyMap.h"
 
 namespace td { namespace fixtools
 {
@@ -573,6 +574,7 @@ public:
     NoiseModeDialog (AppContext& a, const juce::Uuid& editId, double sampleRate, juce::int64 editLength, std::vector<juce::Uuid> onlyTracks, const juce::String& what)
         : app (a), eid (editId), rate (sampleRate), length (editLength), only (std::move (onlyTracks))
     {
+        keymap::KeyMap::setSection (*this, "Noise mode");      // 3.69.0: its keys are the "Noise mode" list's (HotKeysLines.h, KeyMap.h)
         setSize (1100, 800);
         fixFolder = app.project.audioFolder().getChildFile ("Fixes");
         if (auto* e = app.project.findEdit (eid)) { base = e->regions; cur = std::make_shared<TrackParts> (buildTrackParts (*e, 0, length, only)); }

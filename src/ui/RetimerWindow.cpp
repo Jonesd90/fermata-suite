@@ -8,6 +8,7 @@
 #include <set>
 #include <thread>
 #include "../core/AudioFormats.h"
+#include "KeyMap.h"
 
 namespace td
 {
@@ -101,6 +102,7 @@ public:
     RetimerPanel (AppContext& a, const juce::Uuid& eid, const retime::Request& q, juce::int64 from, juce::int64 to, const juce::String& what, const juce::String& note)
         : app (a), editId (eid), req (q), t0 (from), t1 (to), baseNote (note), hold (a), bar (progressValue)
     {
+        keymap::KeyMap::setSection (*this, "ReTimEr");      // 3.69.0: its keys are the "ReTimEr" list's (HotKeysLines.h, KeyMap.h)
         auto* e = edit();
         sr = e != nullptr && e->sampleRate > 0 ? e->sampleRate : 48000.0;
         if (e != nullptr) { base.regions = e->regions; base.overdubs = e->overdubs; base.lanes = e->lanes; base.fixIn = e->fixIn; base.fixOut = e->fixOut; base.insertIndex = e->insertIndex; }

@@ -1278,7 +1278,7 @@ void MainComponent::showProjectMenu()
     m.addItem (14, "Mixer controller (Avid S1 / Mackie Control)...");
     m.addItem (23, "Programs for Export for Processing (" + juce::String ((int) rxlink::programs (app).size()) + " linked)...");     // 3.24.0: RX, Melodyne ...
     m.addSeparator();
-    m.addItem (16, "HotKeys...");                                         // every key and what it does
+    m.addItem (16, "HotKeys...");                                         // every key and what it does (3.69.0: and changing them)
     m.addSeparator();
     auto picked = std::make_shared<int> (-1);
     {

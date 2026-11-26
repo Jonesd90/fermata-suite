@@ -9,6 +9,7 @@
 #include "TimeReadout.h"
 #include "ProjectRateDialog.h"
 #include "FixTools.h"
+#include "KeyMap.h"
 
 namespace td
 {
@@ -1970,8 +1971,17 @@ bool AppContext::typingInTextBox()
     return false;
 }
 
-bool AppContext::rKeyHasOwnJobHere()
+bool AppContext::rKeyHasOwnJobHere (const keymap::Key& key)
 {
+    // 3.69.0: the window the keyboard is in has a job of its own for this key in its HotKeys list (the edit window's R butts, ReTouch's R fixes):
+    // then it is that job, not a recording. Its R moved to another key: R is free there and records. (The take window's own R records too.)
+    {
+        auto* at = juce::Component::getCurrentlyFocusedComponent();
+        if (at == nullptr) at = juce::TopLevelWindow::getActiveTopLevelWindow();
+        const auto res = keymap::KeyMap::get().resolveFor (at, key);
+        if (res.kind != 0 && res.section != "Everywhere") return res.kind == 1 && ! (res.section == "Take window" && res.def == keymap::parse ("R"));
+    }
+    if (key != keymap::parse ("R")) return false;           // (a key the window has no list for: never its own job)
     for (auto* c = juce::Component::getCurrentlyFocusedComponent(); c != nullptr; c = c->getParentComponent())
         if (c->getProperties().contains (ownsRKeyProperty())) return true;
     if (auto* w = juce::TopLevelWindow::getActiveTopLevelWindow())          // nothing has the keyboard: the window in front decides
@@ -1990,14 +2000,17 @@ bool AppContext::rKeyHasOwnJobHere()
 
 void AppContext::pollTransportKeys()
 {
+    // 3.69.0: the keys that do Space's and R's jobs from every window now (the "Everywhere" list: HotKeys) - Space and R unless they were changed -
+    // down with exactly their modifiers (so a key without modifiers is still not seen with Ctrl or Shift held, as before)
+    const auto spaceKey = keymap::KeyMap::get().current ("Everywhere", keymap::parse ("Space"));
+    const auto rKey = keymap::KeyMap::get().current ("Everywhere", keymap::parse ("R"));
     const bool fg = juce::Process::isForegroundProcess();
-    const bool mods = juce::ModifierKeys::getCurrentModifiersRealtime().isAnyModifierKeyDown();
-    const bool space = fg && juce::KeyPress::isKeyCurrentlyDown (juce::KeyPress::spaceKey);
-    const bool r = fg && juce::KeyPress::isKeyCurrentlyDown ('R');
+    const bool space = fg && keymap::KeyMap::isDown (spaceKey);
+    const bool r = fg && keymap::KeyMap::isDown (rKey);
     if (! space) spaceHeldAfterStop = false;
     const bool spacePressed = space && ! spaceWasDown, rPressed = r && ! rWasDown;
     spaceWasDown = space; rWasDown = r;
-    if ((! spacePressed && ! rPressed) || mods || typingInTextBox()) return;
+    if ((! spacePressed && ! rPressed) || typingInTextBox()) return;
     if (juce::TopLevelWindow::getActiveTopLevelWindow() == nullptr) return;     // a Windows dialog of its own (a file chooser ...) is in front: typing there is typing
     if (spacePressed && engine.isRecording())
     {
@@ -2005,7 +2018,7 @@ void AppContext::pollTransportKeys()
         toggleRecord (juce::Uuid::null());
         return;
     }
-    if (rPressed && ! engine.isRecording() && ! rKeyHasOwnJobHere())
+    if (rPressed && ! engine.isRecording() && ! rKeyHasOwnJobHere (rKey))
     {
         const auto id = counterTakeWindow();          // the take window in front, or the one in front last - if it is open (3.0.2: with none open, R does nothing)
         if (id.isNull()) { setNotice (noTakeWindowNotice ("R")); return; }

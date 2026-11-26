@@ -91,7 +91,7 @@ Fermata keeps a log in `Documents\Fermata\fermata-log.txt`. Send that file with 
 
 **Missing audio files.** When a project opens and some of its audio files cannot be found, Fermata lists them and offers to look for them in a folder (also later: Takes or Edits menu > Find missing audio files...). For files you deleted on purpose, **Ignore missing files permanently** (then Confirm) stops it asking; **Project > Look for the ignored missing files again** undoes that. A part exported for processing and never brought back is still waiting for its files: right-click its "Waiting for corrected audio" block in the take window (and in the edit window) and choose *Stop waiting: keep the original audio*.
 
-**Help menu.** The Fermata manual (the PDF: put it next to Fermata.exe with "manual" in its name, or show Fermata where it is the first time), HotKeys, the log file, the crash reports and About Fermata.
+**Help menu.** The Fermata manual (the PDF: put it next to Fermata.exe with "manual" in its name, or show Fermata where it is the first time), HotKeys (every key, and changing them: click a key, press the new one; Save keys as... / Load keys... for your own set, used by fermata:Live too), the log file, the crash reports and About Fermata.
 
 **Display Organiser:** a picture of your screen: pick a shape, click each part to choose its window (any take window, edit or mixer of the project: a closed one is opened), drag the lines to change the split, press Arrange. Layouts can be saved with the project; the program's own (Recording, Editing ...) take the windows you used last.
 **Fades:** the start and end of an edit (and of each take) fade for 25 ms by default; drag the top corners to change it.

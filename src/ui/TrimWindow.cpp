@@ -2,6 +2,7 @@
 #include "../core/AudioFormats.h"
 #include "../core/EditVersions.h"
 #include <limits>
+#include "KeyMap.h"
 
 namespace td
 {
@@ -453,6 +454,7 @@ private:
 // ============================================================================
 TrimComponent::TrimComponent (AppContext& a, const juce::Uuid& eid, const juce::Uuid& rid, bool atEnd) : app (a), editId (eid), regionBId (rid), endEdge (atEnd)
 {
+    keymap::KeyMap::setSection (*this, "Trim window");      // 3.69.0: its keys are the "Trim window" list's (HotKeysLines.h, KeyMap.h)
     td::registerAudioFormats (formats);
     waves.reset (new TrimWaves (*this));
     waves->extraZoom = app.trimWaveZoom;

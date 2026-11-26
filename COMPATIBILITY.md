@@ -55,6 +55,12 @@ Everything listed here is built into BOTH programs, so a change to any of it cha
   It knows neither program: each hands it a `RepairContext` - how to read the audio, make the fixes, play them and keep them (fermata: new files
   in the take or edit; the Fixer: a fix version). A change to it changes both programs' ReTouch: build and try both.
 
+- **The keys** (fermata 3.69.0, fermata:Live 0.10.16): `src/ui/KeyMap.h` (the keys that can be changed: what a key press becomes where the
+  keyboard is, and the key file both programs read - `Documents\Fermata\Hot keys in use.fermatakeys`), `src/ui/HotKeysLines.h` (every key of
+  both programs - fermata's list and fermata:Live's - with what it does: the standard keys) and `src/ui/HotKeysWindow.h` (the HotKeys window,
+  each program showing its own list). They stay in fermata's folder under the same rules as the look files above (they include only them and
+  `src/core`). Each program knows both lists, so each keeps the other's keys when it saves the file. A change to a window's keys in either
+  program is a change to its line in HotKeysLines.h.
 A file from one program's own folder joins this list as soon as the other program uses it (as fermata's look did in contract 3). From then on it is
 shared, and the rules below apply to it.
 
@@ -293,3 +299,9 @@ copies it like everything else, which is fine.
     `cameraSoundSegments`, and in the engine `playMixerLatency`, `heardDelaySeconds`, `setPlaybackMonitorGain`): only a play that asks for
     it has one, so every other play - and all of fermata:Live - is as before; it reaches no mixer and so no bounce or export.
     `ToolWindow` (`src/ui/Uikit.h`) knows when it is JUCE's kiosk window (`isKiosk`): no window of fermata:Live is.
+  - Still contract 3 (fermata 3.69.0, fermata:Live 0.10.16): the keys can be changed. Nothing in the project file changed: the keys are the
+    computer's, in a file of their own both programs read and write (`Documents\Fermata\Hot keys in use.fermatakeys`, JSON: `"fermataHotKeys": 1`,
+    `"name"`, and `"keys"` - one entry for each key that is not the standard one: `"section"` (a list of HotKeysLines.h), `"default"` (its standard
+    key, as the list writes it), `"key"` (the key that does it now, "" for none)). An entry a program does not know (a later program's window) is
+    kept when it saves. New shared files: `src/ui/KeyMap.h`, `src/ui/HotKeysLines.h`; `src/ui/HotKeysWindow.h` joined them (fermata:Live shows it).
+    `src/ui/SpectralWindow.h` marks the ReTouch window's keys as its list's (`KeyMap::setSection`).

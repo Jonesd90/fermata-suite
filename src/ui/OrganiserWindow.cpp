@@ -1,4 +1,5 @@
 #include "OrganiserWindow.h"
+#include "KeyMap.h"
 
 namespace td
 {
@@ -217,6 +218,7 @@ void ScreenPicture::mouseUp (const juce::MouseEvent& e)
 // ======================================================================================================================== OrganiserComponent
 OrganiserComponent::OrganiserComponent (AppContext& a) : app (a)
 {
+    keymap::KeyMap::setSection (*this, "Display Organiser");      // 3.69.0: its keys are the "Display Organiser" list's (HotKeysLines.h, KeyMap.h)
     for (int s = 0; s < ScreenDivision::NumShapes; ++s)
     {
         auto* b = shapes.add (new ShapeButton (s));

@@ -1,5 +1,6 @@
 #include "ReHarmoniserEditor.h"
 #include "../core/SpectralPicture.h"        // 3.37.0: fermata's sharp (ReTouch) picture, and the count of the cores it may use
+#include "../ui/KeyMap.h"                 // 3.69.0: the ReHarmoniSer's keys can be changed (HotKeys)
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -965,6 +966,7 @@ struct ReHarmoniserEditor::Section
 // ================================================================================================== the editor
 ReHarmoniserEditor::ReHarmoniserEditor() : bar (progressValue)
 {
+    td::keymap::KeyMap::setSection (*this, "ReHarmoniSer");      // 3.69.0: its keys are the "ReHarmoniSer" list's (HotKeysLines.h, KeyMap.h)
     look = std::make_unique<SageLook>(); setLookAndFeel (look.get());
     setWantsKeyboardFocus (true);
     view = std::make_unique<View> (*this); addAndMakeVisible (*view);
