@@ -44,6 +44,10 @@ public:
     juce::StringArray inputNames, outputNames;
     bool talkOpen = false;
     std::vector<float> inPeaks, outPeaks;                    // the last meters event (linear)
+    /** 0.10.17: the highest peak of each input since it was last reset (the headroom on the input strips, for setting the gains in the rehearsal). */
+    std::vector<float> inHeld;
+    void resetHeld (int input = -1) { for (size_t i = 0; i < inHeld.size(); ++i) if (input < 0 || (int) i == input) inHeld[i] = 0.0f; }
+    float held (int input) const { return input >= 0 && input < (int) inHeld.size() ? inHeld[(size_t) input] : 0.0f; }
     // ---- the session
     bool sessionOn = false;
     juce::String sessionFolder, projectName, windowName;

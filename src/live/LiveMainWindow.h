@@ -53,6 +53,7 @@ private:
     InfoDisplay projectBox, rateBox { "RATE" }, diskBox { "DISK FREE" }, recorderBox { "RECORDER" };
     juce::Label statusLine;
     DeskCaption inputsCaption { "DRIVER INPUTS" }, outputsCaption { "DRIVER OUTPUTS" };
+    desk::DeskKey resetPeaksKey { "RESET PEAKS", desk::Ic::None, 3.0f };    // 0.10.17: the headroom held on every input strip, reset
     juce::Viewport inputsView, outputsView;
     juce::Component inputsHolder, outputsHolder;
     juce::OwnedArray<InputStrip> inputStrips;

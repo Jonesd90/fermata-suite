@@ -6,6 +6,26 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.70.0
+Built 26 November 2026 (the conversation for both programs), with Claude Opus. Asked for that evening, with a picture of the MT48's strips:
+"you can see the input meters are not full height like channel 5-8 ... Can you please fix this so that any channel there shows a full height
+meter. I'm also interested in having a 'headroom' reading in there ... which will hold the value until the user hits a reset button (there
+should be one on each channel and a global button for all). So that I can run the preamps in a rehearsal and see how much headroom there is.
+Then I can adjust the gains, hit the global reset, and see how the difference is."
+- **A full-length meter on every input strip** of the main window - with preamp controls (MT48, Anubis, Hapi) as well as without: from under
+  the strip's display down to the TALK key, its scale beside it with the finer marks (0, -3, -6, -9, -12, -20 ...). The strips are wider for
+  it (84 -> 112 pixels); the gain knob and the preamp keys keep their size beside the meter, and the monitor keys sit two by two (E S / S-L T).
+- **HEADROOM on every input strip**, above the monitor keys: the highest peak of that input since it was last reset, as the headroom left
+  below 0 dBFS ("16.9 dB") - blue, orange within 9 dB of full scale, red within 2 dB ("AT 0 dBFS" when a sample reached full scale). It holds
+  until it is reset: click it to reset that input; **RESET PEAKS** in the top row (beside the CONTROLLER box) resets every input. Right-click
+  it: reset this input or every input, or show the peak itself ("-16.9 dBFS") on every strip instead of the headroom (remembered). The peaks
+  are the true sample peaks the meters are made from, whatever window is open, recording or not.
+- Checked here (Linux): both programs build with no warnings; the compatibility check passed. On the Linux build's screen, with a trial-only
+  copy of the main window that gives inputs 1-4 preamp controls (there is no preamp here): the meters the strips' whole length on all eight,
+  the preamp keys and knob beside them, HEADROOM and the monitor keys; the right-click menu (one menu, not the strip's too) switching every
+  strip to PEAK dBFS, the choice saved. The readings drawn for a range of peaks (none, -26.8, -16.9, -7.3, -1.2, 0, -100 dBFS) in both forms.
+  Not checked here: real audio (no device here) - the reading on a real input, and the reset with signal; the Windows build (GitHub).
+
 ## 3.69.0
 Built 26 November 2026 (the conversation for both programs), with Claude Opus. Asked for that day: the HotKeys list made editable, with a
 save / export, "so multiple users can set and save their preferences"; fermata to use the key file loaded last (a copy kept in the Fermata

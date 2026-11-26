@@ -305,3 +305,6 @@ copies it like everything else, which is fine.
     key, as the list writes it), `"key"` (the key that does it now, "" for none)). An entry a program does not know (a later program's window) is
     kept when it saves. New shared files: `src/ui/KeyMap.h`, `src/ui/HotKeysLines.h`; `src/ui/HotKeysWindow.h` joined them (fermata:Live shows it).
     `src/ui/SpectralWindow.h` marks the ReTouch window's keys as its list's (`KeyMap::setSection`).
+  - Still contract 3 (fermata 3.70.0, fermata:Live 0.10.17): `desk::PeakHold` in `src/ui/DeskLook.h` - the HEADROOM display of both programs'
+    input strips (the peak held since a reset; each program keeps its own peaks: fermata's AppContext, fermata:Live's StationModel). Nothing in
+    a project file changed.

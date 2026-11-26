@@ -19,6 +19,29 @@ namespace td
 /** One driver input, drawn as a strip of the desk: a coloured bar, a black display with your own second name and the driver's name, the gain knob with its value,
     the preamp keys (MIC / 48V / phase / low cut / PAD / Z HI / BOOST, with little pictures), a live meter, the monitor keys E / S / S-L / T and CR.
     The preamp controls belong to the physical input, so there is exactly one set no matter how many mixers or tracks use it. */
+/** 3.70.0: the right-click menu of an input strip's headroom: reset it or every input's, and show the headroom or the peak (every strip; kept in
+    the settings). */
+inline void showPeakMenu (juce::Component* over, AppContext& app, int idx)
+{
+    juce::PopupMenu m;
+    m.addItem (1, "Reset this input's peak");
+    m.addItem (2, "Reset every input's peak  (RESET PEAKS)");
+    m.addSeparator();
+    m.addItem (3, "Show the headroom  (16.9 dB below 0 dBFS)", true, ! desk::PeakHold::showPeak());
+    m.addItem (4, "Show the peak  (-16.9 dBFS)", true, desk::PeakHold::showPeak());
+    auto* a = &app;
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (over).withMousePosition(), [a, idx] (int r)
+    {
+        if (r == 1) a->resetHeldPeaks (idx);
+        else if (r == 2) a->resetHeldPeaks();
+        else if (r == 3 || r == 4)
+        {
+            desk::PeakHold::showPeak() = r == 4;
+            if (auto* st = a->props.getUserSettings()) { st->setValue ("inputPeakShown", r == 4 ? "peak" : "headroom"); a->props.saveIfNeeded(); }
+        }
+    });
+}
+
 class InputRow : public juce::Component
 {
 public:
@@ -53,8 +76,10 @@ public:
         };
         alias.onFocusLost = commit;
         alias.setPopupMenuEnabled (false);                       // (3.60.0: a right-click on the strip - its name too - opens the strip's menu)
-        for (auto* c : std::initializer_list<juce::Component*> { &driver, &alias, &meter, &scale, &readout }) addAndMakeVisible (c);
-        scale.fine = true;                                       // (3.60.0: more marks when the meter runs the strip's length)
+        for (auto* c : std::initializer_list<juce::Component*> { &driver, &alias, &meter, &scale, &readout, &peakHold }) addAndMakeVisible (c);
+        scale.fine = true;                                       // (3.60.0: more marks when the meter runs the strip's length - 3.70.0: on every strip)
+        peakHold.onReset = [this] { app.resetHeldPeaks (idx); };
+        peakHold.onMenu = [this] { showPeakMenu (this, app, idx); };
         linkTag.setFont (juce::FontOptions (9.0f, juce::Font::bold));
         linkTag.setJustificationType (juce::Justification::centred);
         linkTag.setColour (juce::Label::textColourId, juce::Colours::black);
@@ -187,7 +212,7 @@ public:
     {
         if (! e.mods.isPopupMenu() || e.eventTime == lastMenuClick) return;      // (the strip listens to its own clicks too: once each)
         lastMenuClick = e.eventTime;
-        if (dynamic_cast<juce::Button*> (e.eventComponent) != nullptr || e.eventComponent == &gain || e.eventComponent == &readout) return;   // (keys and the knob: theirs)
+        if (dynamic_cast<juce::Button*> (e.eventComponent) != nullptr || e.eventComponent == &gain || e.eventComponent == &readout || e.eventComponent == &peakHold) return;   // (keys, the knob, the headroom: theirs)
         if (e.eventComponent == &alias) alias.giveAwayKeyboardFocus();
         showStripMenu();
     }
@@ -224,6 +249,7 @@ public:
     {
         checkPreampShown();
         meter.setLevel (juce::isPositiveAndBelow (idx, (int) inPk.size()) ? inPk[(size_t) idx] : 0.0f);
+        peakHold.setPeak (app.heldPeak (idx));
         const auto fed = tracksOnInput();
         const bool any = ! fed.empty();
         updating = true;
@@ -254,7 +280,11 @@ public:
 
     void resized() override
     {
-        constexpr int padX = 6;
+        // 3.70.0 (asked for on 26 November 2026): the meter runs the length of EVERY strip - from under the display down to the TALK key, its scale
+        // beside it, on the left - with or without preamp controls (it was a short meter at the bottom of a preamp's strip). The strip is wider
+        // for it (84 -> 112): the preamp controls keep their width in the column to the right. At the bottom of that column: the headroom held
+        // since the last reset (PeakHold), then the four monitor keys two by two.
+        constexpr int padX = 6, meterW = 10, scaleW = 19;
         const auto z = sizesFor (squeeze);
         auto r = getLocalBounds().reduced (padX, 0);
         r.removeFromTop (z.top);
@@ -268,31 +298,33 @@ public:
             const int h = juce::jlimit (9, 12, driverTop - nameBottom);
             linkTag.setBounds (juce::Rectangle<int> (30, h).withCentre ({ dispArea.getCentreX(), (nameBottom + driverTop + 1) / 2 }));
         }
-        if (! preampShown)
-        {
-            // 3.60.0 (asked for on 23 November 2026): no preamp controls on this input - the meter runs the length of the strip, from under the
-            // display down to the TALK key (it was a short meter under a gap), its scale with more marks; the monitor keys where they always are
-            gainCapArea = {};                                                          // (no GAIN over nothing)
-            const int keysH = 4 * z.key + 3 * z.keyGap;
-            auto mid = r.removeFromTop (z.gainCap + z.knob + z.afterKnob + z.readout + z.gap1 + keysH + z.gap2 + z.lower);
-            mid.removeFromTop (z.gap1);
-            meter.setBounds (mid.removeFromLeft (12));
-            scale.setBounds (mid.removeFromLeft (21).withTrimmedLeft (1));
-            mid.removeFromLeft (2);
-            auto keysArea = mid.removeFromBottom (z.lower);
-            const int mh = (z.lower - 3 * z.monGap) / 4;
-            for (auto* b : monButtons) { b->setBounds (keysArea.removeFromTop (mh)); keysArea.removeFromTop (z.monGap); }
-            r.removeFromTop (z.gap3);
-            crButton.setBounds (r.removeFromTop (z.talk));
-            return;
+        const int keysH = 4 * z.key + 3 * z.keyGap;
+        auto body = r.removeFromTop (z.gainCap + z.knob + z.afterKnob + z.readout + z.gap1 + keysH + z.gap2 + z.lower);
+        {   // the meter and its scale, the strip's whole length
+            auto col = body.removeFromLeft (meterW + scaleW).withTrimmedTop (z.gap1);
+            meter.setBounds (col.removeFromLeft (meterW));
+            scale.setBounds (col.withTrimmedLeft (1));
+            body.removeFromLeft (3);
         }
-        gainCapArea = r.removeFromTop (z.gainCap);                                     // "GAIN" is drawn here
-        gain.setBounds (r.removeFromTop (z.knob).withSizeKeepingCentre (z.knob, z.knob));
-        r.removeFromTop (z.afterKnob);
-        readout.setBounds (r.removeFromTop (z.readout));
-        r.removeFromTop (z.gap1);
-        {   // the preamp keys: two columns, BOOST across both
-            auto keys = r.removeFromTop (4 * z.key + 3 * z.keyGap);
+        {   // the bottom of the column: the headroom, then the monitor keys (E S / S-L T)
+            auto lower = body.removeFromBottom (z.lower);
+            const int hh = juce::roundToInt ((float) z.lower * 0.28f);
+            peakHold.setBounds (lower.removeFromTop (hh));
+            lower.removeFromTop (z.monGap + 1);
+            const int mh = (lower.getHeight() - z.monGap) / 2, mw = (lower.getWidth() - 3) / 2;
+            for (int i = 0; i < monButtons.size(); ++i)
+                monButtons[i]->setBounds (lower.getX() + (i % 2) * (mw + 3), lower.getY() + (i / 2) * (mh + z.monGap), i % 2 == 0 ? mw : lower.getWidth() - mw - 3, mh);
+        }
+        if (! preampShown) gainCapArea = {};                                           // (no GAIN over nothing)
+        else
+        {
+            gainCapArea = body.removeFromTop (z.gainCap);                              // "GAIN" is drawn here
+            gain.setBounds (body.removeFromTop (z.knob).withSizeKeepingCentre (juce::jmin (z.knob, body.getWidth()), juce::jmin (z.knob, body.getWidth())));
+            body.removeFromTop (z.afterKnob);
+            readout.setBounds (body.removeFromTop (z.readout));
+            body.removeFromTop (z.gap1);
+            // the preamp keys: two columns, BOOST across both
+            auto keys = body.removeFromTop (keysH);
             const int w = (keys.getWidth() - 3) / 2;
             auto row = [&] (desk::DeskKey* a, desk::DeskKey* b)
             {
@@ -301,15 +333,6 @@ public:
             };
             row (mic, v48); row (pol, lc); row (pad, zhi);
             boost->setBounds (keys.removeFromTop (z.key));
-        }
-        r.removeFromTop (z.gap2);
-        {   // the meter with its scale, and the four monitor keys
-            auto lower = r.removeFromTop (z.lower);
-            meter.setBounds (lower.removeFromLeft (12));
-            scale.setBounds (lower.removeFromLeft (21).withTrimmedLeft (1));
-            lower.removeFromLeft (2);
-            const int mh = (z.lower - 3 * z.monGap) / 4;
-            for (auto* b : monButtons) { b->setBounds (lower.removeFromTop (mh)); lower.removeFromTop (z.monGap); }
         }
         r.removeFromTop (z.gap3);
         crButton.setBounds (r.removeFromTop (z.talk));
@@ -327,11 +350,11 @@ public:
         if (! gainCapArea.isEmpty())
         {
             g.setColour (p.cream); g.setFont (juce::FontOptions (juce::jmin (10.5f, (float) gainCapArea.getHeight() * 0.75f), juce::Font::bold));
-            g.drawText ("GAIN", 0, gainCapArea.getY() + 1, b.getWidth(), gainCapArea.getHeight() - 2, juce::Justification::centred, false);
+            g.drawText ("GAIN", gainCapArea.getX(), gainCapArea.getY() + 1, gainCapArea.getWidth(), gainCapArea.getHeight() - 2, juce::Justification::centred, false);
         }
     }
 
-    static constexpr int kStripW = 84;
+    static constexpr int kStripW = 112;                     // (3.70.0: 84 -> 112, for the meter the strip's whole length beside the controls)
     bool hasPreamp() const { return app.project.preampDriver != nullptr && app.project.preampDriver->controls (idx); }
 private:
     /** The tracks that record from this input (any channel of the track). */
@@ -393,6 +416,7 @@ private:
     juce::Rectangle<int> dispArea, gainCapArea;
     juce::Colour colour;
     juce::Label driver; juce::TextEditor alias; LevelMeter meter { true }; desk::DeskScale scale; desk::DeskEncoder gain; desk::DeskReadout readout;
+    desk::PeakHold peakHold;                                 // 3.70.0: the headroom since the last reset
     juce::Label linkTag;                                     // 3.60.0: ST L / ST R on a stereo-linked preamp
     juce::Time lastMenuClick;
     juce::OwnedArray<desk::DeskKey> buttons, monButtons;
@@ -688,6 +712,13 @@ MainComponent::MainComponent (AppContext& a) : app (a), controllerBox (a)
                          "Click to see how far it has got, pause it, and switch it on or off for each take window.");
     addAndMakeVisible (controllerCaption); addAndMakeVisible (controllerBox); addAndMakeVisible (controllerLamp);     // the control surface (S1)
     controllerLamp.onClick = [this] { if (app.showSurfacePanel) app.showSurfacePanel(); };
+    {   // 3.70.0: the headroom on the input strips - reset every input's, and how it is shown (the strips' right-click menu sets it)
+        resetPeaksKey.setClickingTogglesState (false);
+        resetPeaksKey.setTooltip ("Resets the headroom held on every input strip (each strip shows the highest peak since its last reset; click a strip's own headroom to reset just that one)");
+        resetPeaksKey.onClick = [this] { app.resetHeldPeaks(); };
+        addAndMakeVisible (resetPeaksKey);
+        if (auto* st = app.props.getUserSettings()) desk::PeakHold::showPeak() = st->getValue ("inputPeakShown") == "peak";
+    }
     if (auto* st = app.props.getUserSettings())                     // the second recording drive (Project menu)
     {
         const auto path = st->getValue ("backupFolder");
@@ -910,6 +941,8 @@ void MainComponent::resized()
             controllerBox.setBounds (row2.removeFromLeft (juce::jlimit (0, 190, row2.getWidth() - 6 - controllerLamp.wantedWidth())));
             row2.removeFromLeft (6);
             controllerLamp.setBounds (row2.removeFromLeft (juce::jmin (row2.getWidth(), controllerLamp.wantedWidth())));
+            row2.removeFromLeft (12);
+            resetPeaksKey.setBounds (row2.removeFromLeft (juce::jmin (row2.getWidth(), kResetPeaksW)));          // (3.70.0)
         }
         line.removeFromLeft (8); headerSeps.push_back (line.getX()); line.removeFromLeft (9);      // (and between the displays and the driver lines)
         const int minStage = juce::jmin (StageSpeakerPanel::reservedWidth(), line.getWidth() / 3);          // the boxes always have at least this much

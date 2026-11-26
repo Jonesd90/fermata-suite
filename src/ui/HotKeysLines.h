@@ -47,6 +47,7 @@ inline const std::vector<Line>& fermataLines()
         { "Main window", "Tab", "In a name box: on to the next one, to name the inputs one after another." },
         { "Main window", "double-click or Alt+click", "An input's gain knob: back to 20 dB (as the readout shows it)." },
         { "Main window", "double-click", "An input's gain readout: type a gain." },
+        { "Main window", "click / right-click", "An input's HEADROOM (above its E S / S-L T keys): reset that input's peak / a menu - reset every input's, or show it as the peak in dBFS instead of the headroom. RESET PEAKS (top row) resets every input." },
         { "Main window", "double-click / Ctrl+click", "A level knob of the stage speaker boxes (top right): type a level / back to 0 dB." },
         { "Main window", "double-click / Ctrl+click", "A pan knob of the stage speaker boxes: type a position / back to the centre." },
 
@@ -382,6 +383,7 @@ inline const std::vector<Line>& liveLines()
         { "fermata:Live: the Primary's take window", "Up / Down", "All tracks smaller / bigger." },
         { "fermata:Live: the Primary's take window", ". or = / , or -", "Bigger / smaller waveforms." },
         { "fermata:Live: the Primary's take window", "Num +", "Talkback on / off (also from the Primary's main window)." },
+        { "fermata:Live: the Primary's take window", "", "In the Primary's main window: click an input's HEADROOM (at the bottom of its strip) to reset that input's peak, right-click it to reset every input's or show the peak in dBFS instead; RESET PEAKS (beside DRIVER INPUTS) resets every input." },
 
         // ---------------------------------------------------------------------------------------------------- the Fixer
         { "fermata:Live: the Fixer", "", "In the Fixer's window, and in its mixer and second-seat windows (their keys go on to the Fixer). Not while you are typing in a box." },

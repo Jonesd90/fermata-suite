@@ -8,6 +8,18 @@ fermata:Live is the live-concert recorder that goes with fermata (see `docs/LIVE
 
 A line that starts with **Shared:** is a change to the code fermata shares (see `COMPATIBILITY.md`), so fermata's next build mentions it too.
 
+## 0.10.17
+Built 26 November 2026 (the conversation for both programs), with fermata 3.70.0: the same on fermata:Live's input strips (the rehearsal before
+a concert is where the gains are set).
+- **A full-length meter on every input strip** of the Primary's main window, its scale beside it; the strips 84 -> 112 pixels wide, the
+  preamp controls beside the meter; the REC / PRE lamp at the bottom of the column.
+- **HEADROOM** under it: the highest peak since the last reset (the recorder's meter peaks), as headroom below 0 dBFS or as the peak in dBFS
+  (right-click; remembered in fermata:Live's settings). Click it: reset that input; **RESET PEAKS** beside DRIVER INPUTS: every input.
+- **Shared:** `src/ui/DeskLook.h` gained `desk::PeakHold` (the headroom display, both programs); `src/ui/HotKeysLines.h` - a line for it in each
+  program's list.
+- Checked here: builds and links on Linux with no warnings; on the Linux build's screen (a trial-only copy giving inputs 1-4 preamps) the
+  strips with their meters, lamps, HEADROOM and RESET PEAKS. Not checked: real audio; the Windows build (GitHub).
+
 ## 0.10.16
 Built 26 November 2026 (the conversation for both programs), with fermata 3.69.0: the keys can be changed.
 - **HotKeys** (Help menu; in the Fixer, the Look... menu): every key of fermata:Live, and changing them - the Primary's take window (and its

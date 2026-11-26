@@ -45,6 +45,14 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     /** Peak of every driver input (before any fader) and driver output (after the faders) since the previous update. Read once, then shared by every meter. */
     std::vector<float> inPeaks, outPeaks;
     juce::ListenerList<PeakListener> peakListeners;
+    /** 3.70.0: the highest peak of each driver input since it was last reset (the headroom shown on the main window's input strips, for setting
+        the preamps' gain in a rehearsal). Kept here, not by the strips, so it holds whatever window is open; reset only by the user. */
+    std::vector<float> inHeld;
+    void resetHeldPeaks (int input = -1)                    // (-1: every input)
+    {
+        for (size_t i = 0; i < inHeld.size(); ++i) if (input < 0 || (int) i == input) inHeld[i] = 0.0f;
+    }
+    float heldPeak (int input) const { return juce::isPositiveAndBelow (input, (int) inHeld.size()) ? inHeld[(size_t) input] : 0.0f; }
 
     /** How much the drawn waveforms are enlarged (the . and , keys in the take, edit and trim windows). Display only: the audio is never touched. */
     float waveZoom = 1.0f;

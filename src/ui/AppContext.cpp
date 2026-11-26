@@ -116,6 +116,8 @@ AppContext::AppContext()
     {
         inPeaks.resize (project.inputs.size());   outPeaks.resize (project.outputs.size());
         for (size_t i = 0; i < inPeaks.size(); ++i)  inPeaks[i]  = engine.takeInputPeak ((int) i);     // reading resets, so it is done once, here
+        inHeld.resize (inPeaks.size(), 0.0f);
+        for (size_t i = 0; i < inPeaks.size(); ++i)  inHeld[i]  = juce::jmax (inHeld[i], inPeaks[i]);  // (3.70.0: the peak held until reset - the headroom)
         for (size_t i = 0; i < outPeaks.size(); ++i) outPeaks[i] = engine.takeOutputPeak ((int) i);
         peakListeners.call ([] (PeakListener& l) { l.peaksUpdated(); });
     };

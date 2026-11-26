@@ -420,7 +420,10 @@ private:
     } controllerCaption { "CONTROLLER" };
     SurfaceTargetBox controllerBox;
     LtcLamp controllerLamp { "S1", "The control surface (Avid S1 / Mackie Control): green = connected on its MIDI ports. Click to set it up: the ports, which mixer it controls, what its keys do, and a MIDI monitor." };
-    int controllerRowWidth() const { return diskBox.wantedWidth() + 12 + controllerCaption.wantedWidth() + 190 + 6 + controllerLamp.wantedWidth(); }
+    /** 3.70.0: resets the headroom held on every input strip (each strip's own display resets that input). */
+    desk::DeskKey resetPeaksKey { "RESET PEAKS", desk::Ic::None, 3.0f };
+    static constexpr int kResetPeaksW = 92;
+    int controllerRowWidth() const { return diskBox.wantedWidth() + 12 + controllerCaption.wantedWidth() + 190 + 6 + controllerLamp.wantedWidth() + 12 + kResetPeaksW; }
     int headerLineY = -1;                              // the line under the top row
     juce::uint32 lastDiskCheck = 0;
     int lastDiskW = 0;

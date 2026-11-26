@@ -2620,6 +2620,30 @@ fermata's `shutdown()` and its static destructors. Our unhandled-exception filte
   right after closing the log, so the PDF reader's unload code never runs. Everything is saved and closed by then.
 (The symbols of Windows' own libraries were not available here: the reading rests on the single thread and the order of the modules.)
 
+## 3.70.0: a full-length meter and HEADROOM on every input strip (26 November 2026, Claude Opus; fermata:Live 0.10.17)
+
+**Asked** (with a screenshot of the MT48's four preamp strips beside four plain inputs): every input strip's meter the full height, as the
+plain inputs' already were (3.60.0), and a "headroom" reading on each that holds until reset - one reset per channel and one for all - to set
+the preamps' gains in a rehearsal.
+- **Layout** (`InputRow::resized` in MainWindow.cpp, `InputStrip::resized` in LiveMainWindow.cpp): the meter (10 px) and its scale (19 px,
+  `fine`) are a column on the left from the top of the GAIN caption to the bottom of the lower area, on every strip; everything else is a
+  column beside it (68 px - the controls were 72), so the strips went from 84 to 112 px (`kStripW`; nothing else measures a strip). The heights
+  (`sizesFor`, `heightFor`) are unchanged, so the squeezing for short screens is as before. fermata: the lower area is HEADROOM (28 % of it)
+  then the monitor keys two by two; GAIN is centred over the column (`gainCapArea`). fermata:Live: the lower area is the REC / PRE lamp, then
+  HEADROOM; "no preamp control" above the lamp.
+- **The peaks:** fermata - `AppContext::inHeld`, the max of `inPeaks` (the engine's sample peak per input since the previous read,
+  `takeInputPeak`, 30 times a second) kept in the peak poller, so it holds whatever window is open; `resetHeldPeaks (input | -1)`.
+  fermata:Live - `StationModel::inHeld`, the max of each "meters" event's peaks (the recorder's sample peak since its previous event, every
+  50 ms while a window is connected); `resetHeld`.
+- **The display:** `desk::PeakHold` (DeskLook.h, shared): `setPeak` every meter tick, `onReset` (a click), `onMenu` (a right-click; the strip's
+  own right-click menu is told to leave it alone). `PeakHold::showPeak()` - headroom ("16.9 dB") or peak ("-16.9") - is one static for the
+  program, kept as the user setting "inputPeakShown" ("peak" / "headroom") in each program's settings. Colours follow the meter's: red above
+  `LevelMeter::kRedDb` (-2 dBFS), orange above `kOrangeDb` (-9); "AT 0 dBFS" from 0.99999.
+- **RESET PEAKS:** fermata - on the controller row of the top row (`resetPeaksKey`, counted in `controllerRowWidth`); fermata:Live - beside
+  the DRIVER INPUTS caption.
+- **Tried on the rig** with trial-only copies of MainWindow.cpp / LiveMainWindow.cpp whose `hasPreamp()` is `idx < 4` (in the session's scratch
+  folder, never in the repository). No audio device there: the readings were drawn offscreen for a range of peaks instead.
+
 ## 3.69.0: the keys can be changed (26 November 2026, Claude Opus; fermata:Live 0.10.16)
 
 **What was asked.** "There is a hot keys option in the menu that lists the hot keys. Can we make that editable? And then have a save/export

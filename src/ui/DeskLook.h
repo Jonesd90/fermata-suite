@@ -400,6 +400,81 @@ public:
     }
 };
 
+/** 3.70.0 / 0.10.17 (asked for on 26 November 2026: "a 'headroom' reading ... which will hold the value until the user hits a reset button
+    (there should be one on each channel and a global button for all). So that I can run the preamps in a rehearsal and see how much headroom
+    there is"): the highest sample peak an input has reached since it was last reset, as the headroom left below 0 dBFS ("16.9 dB") or as the
+    peak itself ("-16.9 dBFS") - the program's choice (showPeak), the same for every strip. A click resets it (onReset); a right-click opens the
+    strip's peak menu (onMenu). The program keeps the peaks: this only shows one (setPeak, every meter tick). */
+class PeakHold : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    PeakHold()
+    {
+        setMouseCursor (juce::MouseCursor::PointingHandCursor);
+        setTooltip ("The highest peak on this input since it was last reset: how much headroom is left below 0 dBFS (digital full scale). "
+                    "Click to reset it (RESET PEAKS at the top resets every input). Right-click: reset, or show it as the peak in dBFS.");
+    }
+    std::function<void()> onReset, onMenu;
+    /** Every strip of the program shows the peak (true: "-16.9 dBFS") or the headroom (false: "16.9 dB"). */
+    static bool& showPeak() { static bool b = false; return b; }
+    void setPeak (float linear)
+    {
+        if (linear == peak && showPeak() == shownAsPeak) return;
+        peak = linear; shownAsPeak = showPeak();
+        repaint();
+    }
+    /** The words for a peak, as the strips show them (and for the log / a tooltip). */
+    static juce::String textFor (float linear, bool asPeak)
+    {
+        if (! (linear > 1.0e-6f)) return "--";
+        const float db = juce::Decibels::gainToDecibels (linear, -120.0f);
+        if (asPeak) return juce::String (db, 1);
+        return juce::String (juce::jmax (0.0f, -db), 1) + " dB";
+    }
+    void paint (juce::Graphics& g) override
+    {
+        const auto& p = pal();
+        auto b = getLocalBounds();
+        g.setColour (isMouseOver() ? p.disp.brighter (0.15f) : p.disp); g.fillRect (b);
+        g.setColour (p.dispEdge); g.drawRect (b, 1);
+        const bool none = ! (peak > 1.0e-6f);
+        const float db = juce::Decibels::gainToDecibels (peak, -120.0f);
+        const bool full = peak >= 0.99999f;                                       // (a sample at full scale: clipped, most likely)
+        const auto col = none ? p.cream.withAlpha (0.4f) : db > LevelMeter::kRedDb ? LevelMeter::overRed() : db > LevelMeter::kOrangeDb ? juce::Colour (0xffffa23a) : p.cyan;
+        // the reset mark at the right: a little circular arrow
+        auto mark = b.removeFromRight (juce::jmin (14, b.getHeight() - 4)).reduced (1, 0).withSizeKeepingCentre (11, 11).toFloat().translated (-2.0f, 0.0f);
+        {
+            juce::Path arc; arc.addCentredArc (mark.getCentreX(), mark.getCentreY(), 4.2f, 4.2f, 0.0f, 0.6f, 5.6f, true);
+            g.setColour (p.cream.withAlpha (isMouseOver() ? 0.95f : 0.5f));
+            g.strokePath (arc, juce::PathStrokeType (1.3f));
+            const float ax = mark.getCentreX() + 4.2f * std::sin (0.6f), ay = mark.getCentreY() - 4.2f * std::cos (0.6f);
+            juce::Path head; head.addTriangle (ax - 0.5f, ay - 2.6f, ax + 2.6f, ay + 0.2f, ax - 1.6f, ay + 1.8f);
+            g.fillPath (head);
+        }
+        b.removeFromLeft (3);
+        const bool tall = b.getHeight() >= 26;
+        if (tall)
+        {
+            auto cap = b.removeFromTop (b.getHeight() * 2 / 5).withTrimmedTop (2);
+            g.setColour (p.cream.withAlpha (0.7f)); g.setFont (juce::FontOptions (7.5f, juce::Font::bold));
+            g.drawText (full ? "AT 0 dBFS" : shownAsPeak ? "PEAK dBFS" : "HEADROOM", cap, juce::Justification::centred, false);
+        }
+        g.setColour (col);
+        g.setFont (theme::figureFont (tall ? 13.0f : 12.0f));
+        g.drawFittedText (textFor (peak, shownAsPeak), b.withTrimmedBottom (tall ? 1 : 0), juce::Justification::centred, 1, 0.8f);
+    }
+    void mouseEnter (const juce::MouseEvent&) override { repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { repaint(); }
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        if (e.mods.isPopupMenu()) { if (onMenu) onMenu(); return; }
+        if (e.mouseWasClicked() && onReset) onReset();
+    }
+private:
+    float peak = 0.0f;
+    bool shownAsPeak = false;
+};
+
 /** The row of colour dots in the Project menu. Clicking one picks that colour. */
 class SwatchRow : public juce::PopupMenu::CustomComponent
 {

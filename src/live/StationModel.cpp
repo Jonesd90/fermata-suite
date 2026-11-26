@@ -30,6 +30,8 @@ void StationModel::handle (const juce::var& e)
             if (auto* a = v.getArray()) for (auto& x : *a) out.push_back ((float) (double) x);
         };
         read (e["peak"], inPeaks); read (e["out"], outPeaks);
+        if (inHeld.size() < inPeaks.size()) inHeld.resize (inPeaks.size(), 0.0f);                         // (0.10.17: each peak is the highest since the last event)
+        for (size_t i = 0; i < inPeaks.size(); ++i) inHeld[i] = std::max (inHeld[i], inPeaks[i]);
     }
     else if (ev == "peaks") { changed = false; readPeaks (e, false); }
     else if (ev == "peaks-data")

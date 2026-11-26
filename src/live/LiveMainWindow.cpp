@@ -5,6 +5,24 @@
 
 namespace td::live
 {
+/** 0.10.17: the right-click menu of an input strip's headroom (as fermata's): reset it or every input's, and show the headroom or the peak. */
+static void showPeakMenu (juce::Component* over, PrimaryApp& app, int idx)
+{
+    juce::PopupMenu m;
+    m.addItem (1, "Reset this input's peak");
+    m.addItem (2, "Reset every input's peak  (RESET PEAKS)");
+    m.addSeparator();
+    m.addItem (3, "Show the headroom  (16.9 dB below 0 dBFS)", true, ! desk::PeakHold::showPeak());
+    m.addItem (4, "Show the peak  (-16.9 dBFS)", true, desk::PeakHold::showPeak());
+    auto* a = &app;
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (over).withMousePosition(), [a, idx] (int r)
+    {
+        if (r == 1) a->model.resetHeld (idx);
+        else if (r == 2) a->model.resetHeld();
+        else if (r == 3 || r == 4) { desk::PeakHold::showPeak() = r == 4; a->settings->setValue ("inputPeakShown", r == 4 ? "peak" : "headroom"); a->settings->saveIfNeeded(); }
+    });
+}
+
 //==============================================================================================================================================
 /** One input of the driver as a strip of the desk (fermata's input strip without the monitor keys: fermata:Live always hears the inputs live). */
 class InputStrip final : public juce::Component
@@ -29,7 +47,10 @@ public:
         alias.onReturnKey = [this, commit] { commit(); alias.giveAwayKeyboardFocus(); };
         alias.onEscapeKey = [this] { if (idx < (int) app.project.inputs.size()) alias.setText (app.project.inputs[(size_t) idx].name, juce::dontSendNotification); alias.giveAwayKeyboardFocus(); };
         alias.onFocusLost = commit;
-        for (auto* c : std::initializer_list<juce::Component*> { &driver, &alias, &meter, &scale, &readout }) addAndMakeVisible (c);
+        for (auto* c : std::initializer_list<juce::Component*> { &driver, &alias, &meter, &scale, &readout, &peakHold }) addAndMakeVisible (c);
+        scale.fine = true;                                       // (0.10.17: the meter runs the strip's length: more marks)
+        peakHold.onReset = [this] { app.model.resetHeld (idx); };
+        peakHold.onMenu = [this] { showPeakMenu (this, app, idx); };
         gain.setRange (0.0, 66.0, 0.5);
         gain.setDoubleClickReturnValue (true, 20.0);
         gain.setRing (colour);
@@ -113,6 +134,7 @@ public:
     void tick()
     {
         meter.setLevel (juce::isPositiveAndBelow (idx, (int) app.model.inPeaks.size()) ? app.model.inPeaks[(size_t) idx] : 0.0f);
+        peakHold.setPeak (app.model.held (idx));
         checkPreampShown();
     }
 
@@ -131,19 +153,36 @@ public:
 
     void resized() override
     {
+        // 0.10.17 (fermata 3.70.0, asked for on 26 November 2026): the meter runs the strip's whole length on the left, its scale beside it (it was
+        // a short meter at the bottom); the strip is wider for it (84 -> 112), the preamp controls keep their width to the right. At the bottom of
+        // that column: the REC / PRE lamp, then the headroom held since the last reset.
+        constexpr int meterW = 10, scaleW = 19;
         const auto z = sizesFor (squeeze);
         auto r = getLocalBounds().reduced (6, 0);
         r.removeFromTop (z.top);
         dispArea = r.removeFromTop (z.disp);
         alias.setBounds (dispArea.reduced (6, 0).removeFromTop (juce::roundToInt (z.disp * 0.6f)).withTrimmedTop (z.disp >= 46 ? 5 : 3));
         driver.setBounds (dispArea.reduced (3, 0).removeFromBottom (juce::jmin (18, z.disp / 3)));
-        gainCapArea = r.removeFromTop (z.gainCap);
-        gain.setBounds (r.removeFromTop (z.knob).withSizeKeepingCentre (z.knob, z.knob));
-        r.removeFromTop (z.afterKnob);
-        readout.setBounds (r.removeFromTop (z.readout));
-        r.removeFromTop (z.gap1);
+        const int keysH = 4 * z.key + 3 * z.keyGap;
+        auto body = r.removeFromTop (z.gainCap + z.knob + z.afterKnob + z.readout + z.gap1 + keysH + z.gap2 + z.lower);
         {
-            auto keys = r.removeFromTop (4 * z.key + 3 * z.keyGap);
+            auto col = body.removeFromLeft (meterW + scaleW).withTrimmedTop (z.gap1);
+            meter.setBounds (col.removeFromLeft (meterW));
+            scale.setBounds (col.withTrimmedLeft (1));
+            body.removeFromLeft (3);
+        }
+        {
+            auto lower = body.removeFromBottom (z.lower);
+            lowerArea = lower;                                                 // (the REC / PRE lamp is drawn at its top, "no preamp control" above it)
+            peakHold.setBounds (lower.removeFromBottom (juce::roundToInt ((float) z.lower * 0.27f)));
+        }
+        gainCapArea = body.removeFromTop (z.gainCap);
+        gain.setBounds (body.removeFromTop (z.knob).withSizeKeepingCentre (juce::jmin (z.knob, body.getWidth()), juce::jmin (z.knob, body.getWidth())));
+        body.removeFromTop (z.afterKnob);
+        readout.setBounds (body.removeFromTop (z.readout));
+        body.removeFromTop (z.gap1);
+        {
+            auto keys = body.removeFromTop (keysH);
             const int w = (keys.getWidth() - 3) / 2;
             auto row = [&] (desk::DeskKey* a, desk::DeskKey* b)
             {
@@ -152,13 +191,6 @@ public:
             };
             row (mic, v48); row (pol, lc); row (pad, zhi);
             boost->setBounds (keys.removeFromTop (z.key));
-        }
-        r.removeFromTop (z.gap2);
-        {
-            auto lower = r.removeFromTop (z.lower);
-            lowerArea = lower;
-            meter.setBounds (lower.removeFromLeft (12));
-            scale.setBounds (lower.removeFromLeft (21).withTrimmedLeft (1));
         }
         r.removeFromTop (z.gap3);
         talk.setBounds (r.removeFromTop (z.talk));
@@ -174,13 +206,13 @@ public:
         g.setColour (p.disp); g.fillRect (dispArea);
         g.setColour (p.dispEdge); g.drawRect (dispArea, 1);
         g.setColour (p.cream); g.setFont (juce::FontOptions (juce::jmin (10.5f, (float) gainCapArea.getHeight() * 0.75f), juce::Font::bold));
-        g.drawText (preampShown ? "GAIN" : "", 0, gainCapArea.getY() + 1, b.getWidth(), gainCapArea.getHeight() - 2, juce::Justification::centred, false);
-        // beside the meter: REC while a take records this input, else "in the session" / "not recorded"
-        auto side = lowerArea.withTrimmedLeft (36);
+        g.drawText (preampShown ? "GAIN" : "", gainCapArea.getX(), gainCapArea.getY() + 1, gainCapArea.getWidth(), gainCapArea.getHeight() - 2, juce::Justification::centred, false);
+        // at the bottom of the column, over the headroom: REC while a take records this input, else "in the session" / "not recorded"
+        auto side = lowerArea.withTrimmedBottom (peakHold.getHeight() + 3);
         if (! side.isEmpty())
         {
             const bool takeOn = app.model.recordingTake != 0 && recording;
-            auto lamp = side.removeFromTop (22).reduced (2, 2);
+            auto lamp = side.removeFromBottom (22).reduced (0, 2);
             g.setColour (takeOn ? juce::Colour (0xffe53935) : recording ? juce::Colour (0xff2e9e4f).withAlpha (0.85f) : p.disp);
             g.fillRoundedRectangle (lamp.toFloat(), 4.0f);
             g.setColour (takeOn || recording ? juce::Colours::white : p.cream.withAlpha (0.35f));
@@ -189,11 +221,11 @@ public:
             if (! preampShown)
             {
                 g.setColour (p.cream.withAlpha (0.45f)); g.setFont (juce::FontOptions (9.5f));
-                g.drawFittedText ("no preamp\ncontrol", side.withTrimmedTop (6), juce::Justification::centredTop, 3);
+                g.drawFittedText ("no preamp\ncontrol", side.withTrimmedTop (2), juce::Justification::centredTop, 3);
             }
         }
     }
-    static constexpr int kStripW = 84;
+    static constexpr int kStripW = 112;                     // (0.10.17: 84 -> 112, for the meter the strip's whole length)
 
 private:
     desk::DeskKey* make (const juce::String& text, desk::Ic ic, const juce::String& tip, juce::Colour led)
@@ -245,6 +277,7 @@ private:
     juce::Rectangle<int> dispArea, gainCapArea, lowerArea;
     juce::Colour colour;
     juce::Label driver; juce::TextEditor alias; LevelMeter meter { true }; desk::DeskScale scale; desk::DeskEncoder gain; desk::DeskReadout readout;
+    desk::PeakHold peakHold;                                 // 0.10.17: the headroom since the last reset
     juce::OwnedArray<desk::DeskKey> buttons;
     desk::TalkKey talk;
     desk::DeskKey *mic = nullptr, *v48 = nullptr, *pol = nullptr, *lc = nullptr, *boost = nullptr, *pad = nullptr, *zhi = nullptr;
@@ -389,6 +422,13 @@ LiveMainComponent::LiveMainComponent (PrimaryApp& a) : app (a)
 {
     keymap::KeyMap::setSection (*this, "fermata:Live: the Primary's take window");      // 0.10.16: its keys go on to the take window (HotKeys)
     setOpaque (true);
+    {   // 0.10.17: RESET PEAKS - the headroom held on every input strip (each strip's own display resets that input); how it is shown, kept in the settings
+        resetPeaksKey.setClickingTogglesState (false);
+        resetPeaksKey.setTooltip ("Resets the headroom held on every input strip (each strip shows the highest peak since its last reset; click a strip's own headroom to reset just that one)");
+        resetPeaksKey.onClick = [this] { app.model.resetHeld(); };
+        addAndMakeVisible (resetPeaksKey);
+        desk::PeakHold::showPeak() = app.settings->getValue ("inputPeakShown") == "peak";
+    }
     for (auto* b : menuItems()) { addAndMakeVisible (b); b->setWantsKeyboardFocus (false); }
     projectButton.onClick = [this] { showProjectMenu(); };
     audioButton.onClick = [this] { openWindow ("audio"); };
@@ -755,7 +795,11 @@ void LiveMainComponent::resized()
     auto outArea = r.removeFromBottom (outputsH);
     outputsCaption.setBounds (outArea.removeFromTop (20).withTrimmedLeft (16));
     outputsView.setBounds (outArea.reduced (10, 0));
-    inputsCaption.setBounds (r.removeFromTop (20).withTrimmedLeft (16));
+    {
+        auto cap = r.removeFromTop (20).withTrimmedLeft (16);
+        inputsCaption.setBounds (cap.removeFromLeft (110));
+        resetPeaksKey.setBounds (cap.removeFromLeft (92).reduced (0, 1));                                   // (0.10.17: beside the caption)
+    }
     inputsView.setBounds (r.reduced (10, 2));
     // the input strips: full height when there is room, squeezed when the screen is short
     const int avail = inputsView.getHeight() - 10;
