@@ -6,6 +6,59 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.68.0
+Built 25 and 26 November 2026 (the conversation for both programs): the lane, the picture window and lining up with Claude Opus; the decoding,
+keeping the picture in step and the camera's sound with Claude Fable. Asked for on 24 and 25 November: a video clip in the edit window, from
+the .mp4 H.264 files the videographer sends, "as light weight as possible ... not having to install extra codecs but just rely on what a PC
+may already have installed as default", and so that a Mac version can do the same later.
+- **Video in the edit window.** A video lane under the tuning line: small pictures of the clip along it, the camera's sound drawn faintly
+  under them, the clip's name, and a padlock. The edit window's new **Video** key adds a video the first time; after that it opens and
+  closes the picture (right-click: the lane's menu).
+  - **No codecs of fermata's own.** The video is decoded by Windows itself (Media Foundation, part of Windows 10 and 11): MP4 and MOV with
+    H.264 everywhere; H.265 when Microsoft's "HEVC Video Extensions" are installed; WMV, AVI, MPEG-4, MPEG-2. Nothing is added to fermata
+    and nothing needs installing. On the graphics card when the computer has one that can (far lighter on the processor - which is the
+    audio's), else by the processor. A Mac version would use the Mac's own in the same way: one small file of fermata changes.
+  - **Lining up, by itself, when a clip is added.** First the timecode: the timecode track in the file (most cameras that record timecode
+    write one), a Sony camera's XML file beside the clip, or LTC on one of the camera's sound channels - matched against the timecode of the
+    takes the edit is cut from (their LTC track). If there is no timecode that matches, by sound: the camera's sound is matched against the
+    edit's (the tracks marked Main for Time alignment, else the first six), to the millisecond. If neither can be used (no sound, or no match
+    sure enough), it is put at 0:00 - or, when several files are added together, straight after the one before (a camera's split files).
+    The box at the end says how each clip was placed. A clip lined up by sound has the hall's delay of where the camera stood (about 3 ms a
+    metre further from the stage than the mics): the box says so.
+  - **Locked; unlock it to move it.** A clip is locked when it is placed. Click the padlock to unlock it; then drag it along the lane - the
+    picture follows as you drag, so it can be set by eye (Ctrl + Z puts it back). Right-click a clip: lock / unlock, line it up again, a
+    frame earlier / later, start it at the playhead, type where it starts, show the file, find it again when it has moved, take it out.
+  - **The picture.** A window of its own showing the frame at the edit's playhead: while playing, and at once when the playhead is moved or
+    stepped. It opens over the edit the first time and then goes back where it was left - on any screen, so it can live on a television or
+    projector. Double-click it for full screen on that screen (Esc to leave). "Bring the picture here" in the lane's menu fetches it.
+  - **In step with what you hear.** While playing, the picture is drawn for the sound that is reaching the speakers at that moment, not the
+    sound fermata is working on: the delay of the edit's mixer (its plug-ins), the driver and the live rate converter are allowed for, and
+    so is a computer screen's own delay. A television or projector shows the picture later still: right-click the picture, **Picture
+    earlier or later**, and type how many milliseconds earlier it should be drawn (a setting of this computer).
+  - **The camera's sound** can be switched on (the lane's Sound key, or its menu) to hear it with the edit - for checking the sync by ear;
+    it can be switched on and off while playing. It comes out of the outputs the edit is heard on, beside the mix and as late as the mix
+    is; it is in no mixer, so it is never in a bounce, an export or a mix. Any sample rate (it is converted as it plays); a channel that
+    carries timecode is left out. It is kept as a WAV in the project's "Video Sound" folder (about 1 GB an hour for stereo).
+  - **If the picture looks wrong** (a graphics card's driver can do that): right-click it and untick "Decode on the graphics card". The
+    same menu says how the clip is being decoded. If the card's decoder stops in the middle, fermata carries on without it by itself.
+  - Saved in the edit; the small pictures are kept in the project's Analysis folder, so a clip is read once. A clip whose file has gone is
+    drawn red, with "Find the file..." in its menu. A file Windows cannot decode says why (which decoder is missing) in the box and in
+    the picture.
+- **Known, and not done.** A phone's upright clip may be shown on its side (the log says when a file is marked as turned). A clip moved
+  while the edit is playing: its picture follows at once, its sound from the next Play. On a computer too slow for a file the picture
+  falls behind by up to a second and jumps on (it never holds up the sound).
+- Checked here (Linux): the part of the video that is fermata's own on every system - the decoder's thread, the frames kept ready, the
+  picture never waiting, the small pictures, the sound written out - has a test of its own over a made-up decoder (`tools/video-check.sh`),
+  also under the thread and address checkers: no faults. The camera's sound through the audio engine, its rate converter, the timecode
+  readers and the matching by sound are in the core's tests. On the Linux build's screen, with a stand-in decoder that exists only in this
+  session: a 25-second H.264 MOV added to its edit (lined up by sound at 2.9998 s; it is 3.0), to another edit (no match: put at 0:00, as it
+  should be), the picture at the playhead and after a click elsewhere (the frame's own number against the time shown), full screen and back.
+- **Not checked here, and it matters:** the file that talks to Windows' decoder (`src/ui/VideoReaderWin.cpp`) could not be compiled where it
+  was written - there are no Windows headers there. The build tries it first and leaves it out if it does not compile (fermata is still
+  built, and the picture says "this build of fermata cannot read video"): then **video-reader-did-not-build.txt** lies beside Fermata.exe in
+  the build - please send it. If it compiles, what is still untried is everything that needs a real file on real Windows: that the picture
+  appears, the right way up, in step; the camera's sound read out of the file; full screen on Windows.
+
 ## 3.67.0
 Built 25 November 2026 (the conversation for both programs), with Claude Fable. Asked for on 25 November: "we have fable usage. Can you please
 check and build everything/finish anything off that needed Fable to look at that we have left." This is that pass: the parts built on Opus

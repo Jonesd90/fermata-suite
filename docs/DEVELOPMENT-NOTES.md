@@ -2620,6 +2620,139 @@ fermata's `shutdown()` and its static destructors. Our unhandled-exception filte
   right after closing the log, so the PDF reader's unload code never runs. Everything is saved and closed by then.
 (The symbols of Windows' own libraries were not available here: the reading rests on the single thread and the order of the modules.)
 
+## 3.68.0: video in the edit window (25 November 2026: part 1 with Claude Opus; part 2 - the decoder - with Claude Fable)
+
+**What was asked.** 24 November: "Is it possible to be able to add video to a project? ... having the video in the project playing alongside,
+synced up with the audio may help steer the mix ... I'd just need one video playing at a time (so 1 video track)"; parked while the user
+looked into codecs. 25 November: "the next thing to add will be a video clip into the edit window ... .mp4 h264 video files ... the video
+engine ... as light weight as possible, to cover that .mp4 h264 files and as many other formats as possible with not having to install
+extra codecs but just rely on what a PC may already have installed as default ... I'd like to make a Mac version of this at a later date ...
+so it can easily be done on a mac too, without the need to include extra codecs". On the plan: lining up - "First, the program should see if
+there is a timecode sync available and if so, use it. If not, it will do it by sound. If it has no sound then just place it at 00:00:00.
+The user should be able to move it by 'Unlocking' the sync and clicking and dragging it around"; the camera's sound "Can be switched on";
+small pictures along the lane. Model choice (the user's): the lane, the window and the rest on Opus 5.5; the decoding and keeping the
+picture in step on Fable High.
+
+**The shape.** Nothing of the video is decoded by fermata's own code: `src/ui/VideoSource.h` is the one door to the computer's video
+system for everything else of fermata. (As part 1 left it there was to be one file per system behind it; part 2 made that two layers -
+see below.) Its comment is the contract.
+
+**Part 1 (built, Opus):**
+- Model (shared): `EditVideo` (`src/core/Edit.h`): file, start (seconds on the edit's timeline of the first frame), length, fps, size,
+  `locked`, `synced` (how it was placed), the camera's sound (`sound`, a WAV in the project's "Video Sound" folder, its channels and rate),
+  `soundOn` / `soundDb`. `EditDef::videos`, `showVideo`, `videoAt (t)` (the latest-starting clip covering t), `findVideo`. Saved in the edit's
+  file as `"video"` (only when there are clips) and `"videoSound"` (on / level: a view key, never undone); `showVideo` a view key.
+  Undo: the clips are part of it (the hash, and a missing file / sound kept from the live edit, as for pieces).
+- Lining up (`src/core/VideoSync.h`, header only, core-tested): the timecode track of an MP4 / MOV (`tmcd`: read from the file's boxes -
+  moov / trak / mdia / hdlr "tmcd" / minf / stbl / stsd + stco|co64 - nothing decoded; checked against ffmpeg's own files, 25 fps and 29.97
+  DF); a Sony XML file beside the clip (`LtcChangeTable`, BCD "ffssmmhh" - from the known layout, not tried on a real Sony file); LTC on a
+  channel of the camera's sound (`scanFileForLtc`). Placed against the edit's pieces' own timecode (each piece's take file on the LTC track,
+  `videoexport::timecodeAt`): the piece whose timecode overlaps the clip's most decides. By sound: the camera's energy (high-passed at 200
+  Hz) a thousand times a second, its onsets (log-energy rises) correlated with the edit's - the tracks marked Main for Time alignment, else
+  up to six tracks - first at 100 Hz over every placement (FFT), then to the millisecond within 15 ms. Accepted when the best match is 8
+  standard deviations above the rest and 1.25 x the next best more than 0.5 s away. On a made-up dull, echoing, noisy camera 40 s into
+  an edit cut from two takes: 0.4 ms out; an unrelated sound: rejected (7.6 sd, 1.03 x). The camera hears the hall from where it stands:
+  lined up by sound, its PICTURE is late by about 3 ms a metre the camera is further from the stage than the mics (the box says so).
+  Else 0:00 - or, for a file added with others, straight after the one before it (a camera's split files run on).
+- The lane (`EditTimeline` in `EditWindow.cpp`): under the tuning line, `video::kLaneH` (72 px). Small pictures (`video::Stills`: a thread,
+  one picture every max(2 s, length / 1200), kept in Analysis/Video Pictures/*.fvpics as JPEGs, never made while a take records or is being
+  finished); the camera's sound faint under them (the edit's own waveform drawing); a padlock - locked, a drag only says it is locked;
+  unlocked, a drag moves it (one undo step; then "placed by hand"). A click: the playhead there. Right-click on a clip: lock / unlock, line
+  it up again, a frame earlier / later, its start at the playhead, type its start, show / find the file, take it out. The name box:
+  Picture, Sound, the menu (add, the picture, bring the picture here, the sound, hide the lane). The edit window's **Video** key: adds a
+  video the first time, then opens / closes the picture; right-click: the lane's menu.
+- Adding (`video::addVideos` / `AddDialog` in `Video.cpp`): any number of files (sorted by name); for each, on the job's thread: open, read
+  its sound into the project (`Source::readSound`), timecode, sound, 0:00; then one undo step. Needs a saved project (the sound's folder).
+- The picture (`Picture` in `Video.cpp`, window key "video:<edit id>", made by Main.cpp's `showWindow`): the frame at the edit's playhead
+  (`playheadSecondsSmooth()` while this edit plays, else `EditDef::playheadSeconds` - part 2 made that the sound being heard: below),
+  60 times a second, never waiting (`Source::frameAt`). Double-click: full screen on the screen it is on (`Desktop::setKioskModeComponent`), Esc leaves it. It goes back to
+  where it was left on ANY screen (`place::ownPlace` - meant for a television or projector, as the Take Display's screens); the first time
+  over the window clicked in; "Bring the picture here" fetches it (`AppContext::bringWindowOver`). Keys it does not use go on to the edit.
+- Tried on the Linux build's screen with a trial-only stand-in decoder (ffmpeg, in the session's scratch folder, never in fermata): a 25 s
+  H.264 MOV with timecode 10:00:00:00 and the trial edit's sound from 3 s on - its timecode could not be used (the trial project has no LTC
+  track), lined up by sound at 2.9998 s, locked; the pictures along the lane; the picture following the playhead (frame 21 at 0.833 s in);
+  a locked drag refused, unlocked and dragged 5 s, Ctrl + Z back; the clip menu; full screen and back; saved and opened again (the lane and
+  its pictures came back from the Analysis folder).
+
+**Part 2 (built, Fable, 26 November): the decoder, the picture in step, the camera's sound, a review of part 1.**
+
+*The shape changed from the handover:* not one `VideoSourceWin.cpp` holding everything, but two layers, so that the part with the threads
+is the same on every system and could be tested where it was written.
+- `src/ui/VideoReader.h` (plain C++, no JUCE): what a system's own decoder must do, and nothing more - `PictureReader` (the next frame; copy
+  it out as BGRA rows; seek to the key frame at or before a time) and `SoundReader` (the next block of interleaved floats, with its time),
+  both blocking, without threads, used by one thread at a time; `ThreadUse` (COM on Windows) held by each thread that touches one.
+  `VideoReaderWin.cpp` (Media Foundation), `VideoReaderNone.cpp`; a Mac needs only a `VideoReaderMac.mm` (AVAssetReader).
+- `src/ui/VideoSource.cpp` (every system): `video::Source` over a reader. Its top comment is the design - read it first. In short: one
+  decoder thread per Source and the message thread share, under a lock held only for moments, what is wanted (time, playing, size) and
+  `shots` - the decoded frames ready, by time, ending where the decoder stands. The thread rests, steps or seeks; a frame on the way to the
+  one wanted is not even copied out of the decoder (on a graphics card that is the costly part). `frameAt` only looks in `shots`.
+  - Sizes: `wantSize` (the picture's pixels) picks a step of 180 / 270 / 360 / 540 / 720 / 1080 lines; the reader is opened again when the
+    step changes and has stayed changed for 0.3 s. Never above 1080 lines (a 4K frame is 33 MB: nothing in a window for checking a mix
+    is worth that; say so if the user wants more).
+  - Kept: at most 96 MB of frames (6 to 40); standing, the 10 before the playhead and 2 after; playing, 0.35 s ahead.
+  - Let go: after 10 s without `frameAt` the reader and the frames are freed (a camera's other files do not each hold a decoder); a Source
+    that goes hands its thread to `retire` (it ends by itself when its last decode returns; `finishDecoders` joins them as fermata closes -
+    `video::shutdown`). So neither `frameAt` nor closing the picture ever waits for a decoder: measured, 0.14 ms at most.
+  - The first frame's time on the file's clock is taken as 0 (`t0`): frames and sound are both counted from it, so a file whose first
+    frame is not at 0 (B-frames without an edit list) still lines its sound up with its picture. The stand-in and the test use 0.08 s.
+  - Slow computer: while playing, frames behind the playhead are still shown if they come more than 60 ms apart; a second behind, it
+    seeks to the key frame before the playhead. (Not done: seeking AHEAD to the next key frame, which would keep a slow machine nearer.)
+  - A graphics card's decoder that fails in the middle: the reader is opened again without it, for that Source (`hardwareFailed`).
+- `tests/video_source_test.cpp` + `tools/video-check.sh <JUCE> [plain|tsan|asan]`: the Source over a made-up decoder whose frames say which
+  they are (a key frame every 12; decode time and failures can be set). Standing, stepping, playing in real time, a jump, a decoder too
+  slow, sizes, the card switched off and failing, the small pictures, the sound's start / hole / early start, 180 Sources made and thrown
+  away mid-decode. Passes plain, under ThreadSanitizer and under AddressSanitizer with no reports. NOT one of the six checks (nothing else
+  touches these files): run it when VideoSource.cpp or VideoReader.h changes.
+
+*The Windows reader (`src/ui/VideoReaderWin.cpp`) - NOT COMPILED ANYWHERE YET.* There are no Windows headers on the machine it was written
+on. What stands in for a compiler: `tools/win-stubs/mf/` (stand-ins for the few declarations it uses, written from memory of the SDK - they
+prove the file's grammar and that it uses each call the same way throughout, not that the SDK agrees), in `tools/check-windows-code.sh`,
+with and without `FERMATA_VIDEO_D3D`; the signatures of `MFCreateDXGIDeviceManager`, `MFGetStrideForBitmapInfoHeader`, what
+`MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING` does with an output type's frame size, and the top-row rule for `Lock` / `Lock2D` were
+read again on learn.microsoft.com. And CMakeLists.txt tries the file before using it (`try_compile`, as for the PDF reader): with the
+graphics card's decoder, then with `FERMATA_VIDEO_D3D=0`, then `VideoReaderNone.cpp` - writing the compiler's output to
+`video-reader-did-not-build.txt`, which the workflow copies beside Fermata.exe. **If the user sends that file: fix exactly what it says.**
+- IMFSourceReader, synchronous. Output RGB32 at the size asked (so Windows resizes, on the card when it decodes there). Three ways, tried
+  in order when a file is opened, each proved by decoding the first frame: 0 = D3D11 device manager + hardware transforms + advanced video
+  processing; 1 = advanced video processing only; 2 = the old `ENABLE_VIDEO_PROCESSING` (no resizing: frames at the file's size).
+- Nothing of Media Foundation is imported by name: `mfplat.dll`, `mfreadwrite.dll` and `d3d11.dll` are loaded when the first video is
+  opened and the five or seven functions found with GetProcAddress (their pointer types are `decltype (&::MFStartup)` ..., so the real
+  headers still check the calls). Reason: an "N" edition of Windows has no mfplat.dll, and a program that imports it does not start at
+  all. check-windows-code.sh fails if the file ever calls one by name. Media Foundation is started once and never shut down.
+- One D3D11 device for all readers (video support, multithread protected), never freed.
+- Rows are read through `IMF2DBuffer::Lock2D` (top row and pitch, whichever way up; a frame on the card comes into memory there), else
+  `Lock` with the format's default stride (below 0: bottom row first). The display aperture is honoured (1080 of 1088 lines).
+- Sound: a second Source Reader, the first sound stream as float (else PCM of 8 / 16 / 24 / 32 bits, converted). Its first block is read
+  as it opens, because some sound (HE-AAC) only shows its true rate once decoding has begun.
+- Unknowns for the first real try, in the order I would look: (1) does it compile (the txt file); (2) is the picture the right way up
+  and the right colours on way 0 (untick "Decode on the graphics card" to compare with way 1); (3) the sound of the videographer's files -
+  AAC should be fine; PCM in MOV / XAVC S ("twos", "in24") is whatever Media Foundation's MP4 reader makes of it; (4) a file whose first
+  frame is not at 0; (5) `MF_MT_VIDEO_ROTATION`: a phone's upright clip is shown as stored (the log line of the open says "turned by 90");
+  (6) kiosk full screen: JUCE gives the window a JUCE title bar for the duration on Windows - `ToolWindow::isKiosk` hides the wooden
+  sides and the corner buttons and stops `keepTitleBarClear` / `reportBounds`; tried only on Linux.
+
+*The picture in step (`Picture::timerCallback` in `Video.cpp`).* Standing: the frame at `EditDef::playheadSeconds`. Playing:
+`playheadSecondsSmooth() - AudioEngine::heardDelaySeconds (edit) + 25 ms + the user's "videoPictureMs"`. heardDelaySeconds = the edit's
+mixer's latency (`MixerPlan::latency`) + the driver's output latency + the live converter's delay: the session's position is the sound
+being MADE; the picture is for the sound being HEARD. 25 ms is a guess at a computer screen (paint, the next refresh, the panel); a
+television is the user's figure. Nothing measures either: if the user reports the picture early or late by a steady amount, that constant
+is where to look. The clip that comes next within 2 s is opened and its first frames decoded while the one before still plays.
+
+*The camera's sound (shared core).* Not a new player: one more track in the edit's own `PlaybackSession`, beyond the project's tracks
+(`monitorTrack`), so it loops, jumps and starts exactly as the edit does. `cameraSoundSegments` places each clip's WAV where its picture
+shows (`videoAt`), `late` by the edit's mixer's latency; `CameraSoundReader` (Playback.cpp) gives two channels at the session's rate from
+any file - a four-point curve, stateless, on the disk thread; the engine adds the track to the first Ext Bus outputs of the mixer the edit
+plays through, after the mixers, at `monitorGain` (0 / 1: the Sound key; it glides over a block). It is in every play of an edit with video
+(silent until switched on), so the key works while playing. Never in `segmentsForEdit`, so never in a bounce. `EditVideo::soundLtc`: a
+channel of it that is timecode - found when the clip is added, whichever way it was lined up - is neither compared nor heard.
+
+*Review of part 1.* Changed: `video::open` no longer runs on the message thread (the picture uses `openForPicture`); LTC on a channel of the
+camera's sound is now looked for even when the file has a timecode track of its own (it was then compared as if it were music); the small
+pictures' thread is stopped with `stopThreadOrLog (30 s)` (was 6 s, then killed - inside a decoder); no black flash between two clips
+(the last frame stays 150 ms; "Reading the video..." only after 0.6 s); a frame's own shape is drawn (non-square pixels). Looked at and
+left: `EditTimeline` asks each clip's file `existsAsFile()` every 2 s on the message thread (a sleeping drive would be felt; the same is
+true of missing audio); a clip moved while playing keeps its old sound until the next Play.
+
 ## 3.67.0: the pass with Fable over what was built on Opus since 3.55.0 (25 November 2026, with Claude Fable)
 
 **What was asked** (25 November 2026): "we have fable usage. Can you please check and build everything/finish anything off that needed

@@ -273,6 +273,8 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     std::function<void (const juce::Uuid& editId, juce::Component* parent)> showVideoExport;     // Export for video edit (3.2.0): the dialog, from the edit window's button
     std::function<void (const juce::Uuid& editId, juce::Component* parent)> showAafExport;       // Export AAF (3.3.0): the same, for the AAF
     std::function<void (const juce::Uuid& editId)> showScore;                                    // 3.51.0: the edit's score (its PDF) in a window of its own (ScoreWindow.h; key "score:<edit id>")
+    std::function<void (const juce::Uuid& editId)> showVideo;                                    // 3.68.0: the edit's video picture in a window of its own (Video.h; key "video:<edit id>")
+    std::function<void (const juce::String& key, juce::Component* over)> bringWindowOver;        // 3.68.0: an open window of this key moved over the window 'over' is in (and to the front)
     std::function<void (const juce::Uuid& editId, juce::Component* parent)> showVersions;        // Find other versions (3.5.0): the window, from the edit window's right-click menu
     std::function<bool (const juce::String& key)> windowIsOpen;       // is the program window with this key open ("trim:<edit id>", "bounce:<edit id>")? The edit window lights its Trim and Bounce Out buttons from it
     /** "Find missing audio files": the folder chooser and the search (the main window). Set by the main window. */

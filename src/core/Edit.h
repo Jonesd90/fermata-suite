@@ -262,6 +262,40 @@ struct EditGuide
     juce::int64 end() const noexcept       { return start + length(); }
 };
 
+/** 3.68.0 (asked for on 24 and 25 November 2026: "having the video in the project playing alongside, synced up with the audio may help steer
+    the mix ... I'd just need one video playing at a time (so 1 video track, as it were)"; the videographer sends .mp4 H.264 files): a video
+    clip in the edit's video lane. The lane holds any number of clips along the edit's timeline (a camera splits a long concert into several
+    files), one picture at a time - where clips overlap, the one that starts later is shown. The picture is decoded by the computer's own
+    video system (fermata ships no codecs: src/ui/VideoSource.h). fermata only shows it; fermata:Live reads and writes it with the edit.
+
+    When a clip is added it is lined up by itself (src/core/VideoSync.h): by the timecode in the video file or on the camera's sound, compared
+    with the timecode recorded with the takes the edit's pieces came from; else by the camera's sound, compared with the edit's own sound; else
+    it goes at 0:00:00. It is then LOCKED: it cannot be dragged until it is unlocked ("Unlock the sync"). Part of undo, except whether the
+    camera's sound is heard and its level (a listening choice, like a mixer's solo: kept in "videoSound", a view key). */
+struct EditVideo
+{
+    juce::Uuid   id;                                    // (a new random id for each clip)
+    juce::File   file;                                  // the video file, where it is (never copied into the project)
+    double       start = 0.0;                           // seconds on the edit's timeline where its first frame is shown (may be below 0)
+    double       length = 0.0;                          // seconds, as the file said when it was added
+    double       fps = 0.0;                             // frames a second (0: not known)
+    int          width = 0, height = 0;                 // pixels (0: not known)
+    bool         locked = true;                         // the sync: locked, the clip cannot be dragged or nudged
+    enum Synced : int { byHand = 0, byFileTimecode = 1, bySoundTimecode = 2, bySound = 3, atZero = 4, afterPrevious = 5 };
+    int          synced = atZero;                       // how it was placed (said in its menu); byHand once it has been moved by hand
+    juce::File   sound;                                 // the camera's own sound, read out of the video file into the project (none: it has none)
+    int          soundChannels = 0;
+    double       soundRate = 0.0;
+    int          soundLtc = -1;                         // the channel (0-based) of that sound that carries timecode (LTC), -1: none. It is never heard and never compared
+    bool         soundOn = false;                       // heard while the edit plays (a listening choice: not undone)
+    float        soundDb = 0.0f;                        // its level when heard
+    double end() const noexcept    { return start + length; }
+    bool active() const noexcept   { return file != juce::File() && length > 0.0 && std::isfinite (start); }
+    bool hasSound() const noexcept { return sound != juce::File() && soundChannels > 0 && soundRate > 0.0; }
+    /** One frame's length in seconds (1/25 when the rate is not known). */
+    double frameSeconds() const noexcept { return fps > 1.0 ? 1.0 / fps : 0.04; }
+};
+
 /** The edit: regions placed on a timeline. Normally butted end to end; slipping can open gaps / overlaps. */
 struct EditDef;
 
@@ -436,6 +470,16 @@ struct EditDef
     bool                 showMarkers = true;          // the Markers tick box in the edit window
     EditGuide            guide;                       // the visual guide above the tracks (see EditGuide); part of undo
     bool                 showGuide = true;            // the Guide button at the top of the edit window: the guide's lane is shown (a view: not part of undo)
+    std::vector<EditVideo> videos;                    // 3.68.0: the clips of the video lane (see EditVideo), in the order they were added; part of undo
+    bool                 showVideo = true;            // 3.68.0: the video lane is shown (a view: not part of undo)
+    /** 3.68.0: the video clip whose picture is shown at 't' seconds on the timeline (of the clips there, the one that starts latest), or nullptr. */
+    const EditVideo* videoAt (double t) const noexcept
+    {
+        const EditVideo* best = nullptr;
+        for (auto& v : videos) if (v.active() && t >= v.start && t < v.end() && (best == nullptr || v.start >= best->start)) best = &v;
+        return best;
+    }
+    EditVideo* findVideo (const juce::Uuid& id) noexcept { for (auto& v : videos) if (v.id == id) return &v; return nullptr; }
     bool                 automationOn = false;       // the lane view: the automation rows are shown (the buses and VCAs are listed under the tracks). The automation itself plays whether they are shown or not.
     std::vector<AutoLane> lanes;
 

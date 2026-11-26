@@ -34,7 +34,7 @@ GUI_MODS="juce_core juce_events juce_graphics juce_data_structures juce_gui_basi
 GUI_DEFS="-DJUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1 -DJUCE_STANDALONE_APPLICATION=1 -DJUCE_PLUGINHOST_VST3=1 -DJUCE_USE_CURL=0 -DJUCE_WEB_BROWSER=0 -DJUCE_ALSA=0 -DJUCE_JACK=0 -DNDEBUG=1 -DJUCE_DISPLAY_SPLASH_SCREEN=0 -DFERMATA_VERSION_STRING=\"tool-checks\""
 for m in $GUI_MODS; do GUI_DEFS="$GUI_DEFS -DJUCE_MODULE_AVAILABLE_$m=1"; done
 GUI_ARGS="-std=c++17 -isystem $JUCE/modules -I/usr/include/freetype2 -I$HERE/tools/win-stubs $GUI_DEFS"
-ALL_SOURCES=$(ls "$HERE"/src/core/*.cpp "$HERE"/src/ui/*.cpp "$HERE"/src/reharmoniser/*.cpp "$HERE"/src/Main.cpp "$HERE"/src/live/*.cpp)   # (3.30.2: fermata:Live's too)
+ALL_SOURCES=$(ls "$HERE"/src/core/*.cpp "$HERE"/src/ui/*.cpp "$HERE"/src/reharmoniser/*.cpp "$HERE"/src/Main.cpp "$HERE"/src/live/*.cpp | grep -v '/VideoReaderWin\.cpp$')   # (3.30.2: fermata:Live's too)
 export UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=0:suppressions=$HERE/tools/ubsan-suppressions.txt"
 # the only leak the tests make on purpose: the plan an audio thread that did not come round may still be using is left in memory (see
 # AudioEngine::rebuildPlan); the tests pretend such a stall

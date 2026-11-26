@@ -62,6 +62,11 @@ struct PlaySegment
     std::vector<GainStep> gainSteps;                  // the piece's own volume changes, sorted by 'at' (none = unity)
     std::vector<AreaGain> areaGains;                  // 3.50.0: the edit's volume areas over this stretch of this track (VolumeArea): each multiplies what the steps give
     bool hasGain() const noexcept { return ! gainSteps.empty() || ! areaGains.empty(); }
+    /** 3.68.0: > 0 - the camera's sound of a video clip (cameraSoundSegments makes these, nothing else): a file at ITS OWN sample rate (this),
+        read through a rate converter as two channels at the session's rate - mono on both sides; cameraSkip, a channel that carries timecode,
+        left out. srcOffset then counts the SESSION's samples and 'rate' stays 0. A file that is not there is silence, never a reason not to play. */
+    double       cameraRate = 0.0;
+    int          cameraSkip = -1;
 
     /** The gain the piece's steps and the edit's areas give at timeline sample t. */
     float gainAt (juce::int64 t) const noexcept
@@ -110,6 +115,12 @@ public:
     /** >= 0: this session is a finished stereo mix (track 0, two channels). It goes straight to the driver outputs directOut and directOut + 1, at unity,
         without passing any mixer (the Mastering window's play of the renders). */
     int directOut = -1;
+    /** 3.68.0: >= 0: this track - one beyond the project's own, two channels - is the camera's sound of the edit's video (cameraSoundSegments). No
+        mixer gets it: the engine adds it to the outputs the edit is heard on, after the mixers, at monitorGain - heard for checking the picture's
+        sync by ear, never recorded, and never in a bounce or an export (their segments have none). Set before the session is started. */
+    int monitorTrack = -1;
+    std::atomic<float> monitorGain { 0.0f };          // any thread: 0 = not heard (the Sound key of the video lane); a change glides over a block
+    float monitorGainNow = 0.0f;                      // audio thread: the gain the last block ended on
 
     // ---- audio thread ----
     /** Moves the next n samples into the track buffers. */
@@ -245,6 +256,11 @@ juce::int64 ltcEndOf (const EditRegion&, const EditRegion* next) noexcept;
 std::vector<PlaySegment> segmentsForGuide (const Project&, const EditDef&);
 /** The track the guide plays on (its own; if that has gone, one with the same name and channels, else the first with as many channels); -1 = none. */
 int guideTrackIndex (const Project&, const EditGuide&);
+/** 3.68.0: the camera's sound of the edit's video clips, for a session's extra track 'trackIndex' (PlaybackSession::monitorTrack): at each moment
+    the sound of the clip whose picture shows there (EditDef::videoAt - the clip that starts last), 5 ms faded where one takes over from another,
+    each at its own level (EditVideo::soundDb). 'rate': the session's. 'late' (samples): everything is placed this much later - the delay of the
+    mixer the edit plays through, so the camera's sound and the mix reach the outputs together. Empty when no clip has sound. */
+std::vector<PlaySegment> cameraSoundSegments (const EditDef&, double rate, int trackIndex, juce::int64 late = 0);
 /** Plays one region's raw files on the timeline of the file's own samples (the trim window's 'play original'). */
 std::vector<PlaySegment> segmentsForRegionOriginal (const Project&, const EditRegion&);
 } // namespace td

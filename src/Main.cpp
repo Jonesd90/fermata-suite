@@ -16,6 +16,7 @@
 #include "ui/MasteringWindow.h"
 #include "ui/Splash.h"
 #include "ui/BusyWindow.h"
+#include "ui/Video.h"
 #include "ui/RemoteControl.h"
 #include "ui/RecordMonitor.h"
 #include "ui/VideoExportWindow.h"
@@ -190,6 +191,7 @@ public:
             cr.configure (saved);                                                // the CPU cores kept for the audio (off unless switched on)
         }
         juce::Logger::writeToLog ("CPU cores: " + CoreReservation::get().statusText().replace ("\n", " "));
+        juce::Logger::writeToLog ("Video: read by " + video::systemName());                 // (3.68.0: "Windows Media Foundation", or "none in this build" when its file did not compile)
         ctx->showTakeWindow = [this] (const juce::Uuid& id) { openTakeWindow (id); };
         ctx->showMixer = [this] (const juce::Uuid& id) { openMixer (id); };
         ctx->showEdit = [this] (const juce::Uuid& id) { openEdit (id); };
@@ -220,6 +222,22 @@ public:
             auto* e = ctx->project.findEdit (editId);
             if (e == nullptr) return;
             showWindow (score::windowKey (editId), "Score - " + e->name, [this, editId] { return new ScoreComponent (*ctx, editId); });
+        };
+        ctx->showVideo = [this] (const juce::Uuid& editId)                 // 3.68.0: the edit's video picture
+        {
+            auto* e = ctx->project.findEdit (editId);
+            if (e == nullptr) return;
+            showWindow (video::windowKey (editId), "Picture - " + e->name, [this, editId] { return video::makePicture (*ctx, editId); });
+        };
+        ctx->bringWindowOver = [this] (const juce::String& key, juce::Component* over)      // 3.68.0: "Bring the picture here" (a window left on another screen)
+        {
+            auto it = windows.find (key);
+            if (it == windows.end()) return;
+            auto* w = it->second.get();
+            if (juce::Desktop::getInstance().getKioskModeComponent() == w) juce::Desktop::getInstance().setKioskModeComponent (nullptr);
+            if (w->isMinimised()) w->setMinimised (false);
+            if (auto* a = place::anchor (over)) place::over (*w, a);
+            DockHub::get().show (w);
         };
         ctx->windowIsOpen = [this] (const juce::String& key) { return windows.find (key) != windows.end(); };
         focusKeeper = std::make_unique<ToolWindow::FocusKeeper>();              // the keys never go dead after a text box lets go of the keyboard
@@ -796,7 +814,7 @@ private:
         if (auto* host = dynamic_cast<CornerStripHost*> (content)) host->content->setWantsKeyboardFocus (true);
         w->setIcon (makeFermataIcon (256));
         w->isTransportWindow = key.startsWith ("take:") || key.startsWith ("edit:");
-        w->forwardKeys = key.startsWith ("mixer:") || key.startsWith ("scope:") || key == "bridge" || key == "media" || key == "takedisplay" || key == "organiser" || key == "pitchpipe" || key == "click" || key == "align" || key == "hotkeys" || key.startsWith ("score:");
+        w->forwardKeys = key.startsWith ("video:") || key.startsWith ("mixer:") || key.startsWith ("scope:") || key == "bridge" || key == "media" || key == "takedisplay" || key == "organiser" || key == "pitchpipe" || key == "click" || key == "align" || key == "hotkeys" || key.startsWith ("score:");
         juce::Rectangle<int> mixerRemembered;                                         // a mixer's size when it was last closed (put back by fitWindowToStrips)
         {   // where it was left last time (kept in the project), or else over the window you clicked in; never wider than the screen, nor taller.
             // 3.64.0: the remembered place only when it is on the same screen as the window you clicked in (a place on the other screen - which may be
@@ -809,7 +827,12 @@ private:
             bool onScreen = false;                                                   // a remembered place counts only if its title bar can still be reached
             for (auto& d : displays.displays) if (d.userArea.intersects (juce::Rectangle<int> (saved.getX() + 20, saved.getY() - 10, 120, 30))) onScreen = true;
             const bool isMixer = key.startsWith ("mixer:");
-            if (saved.getWidth() >= 120 && saved.getHeight() >= 80 && onScreen && place::sameScreen (saved, anchor))
+            // 3.68.0: the video picture goes back where it was left on ANY screen - it is often meant for the other one (a television, a projector),
+            // as the Take Display's screens are. The first time, it opens over the window you clicked in; "Bring the picture here" (the Video key's
+            // menu) fetches it from a screen that shows nothing.
+            const bool ownScreen = key.startsWith ("video:");
+            if (ownScreen) place::ownPlace (*w);
+            if (saved.getWidth() >= 120 && saved.getHeight() >= 80 && onScreen && (ownScreen || place::sameScreen (saved, anchor)))
             {
                 if (isMixer) { w->setTopLeftPosition (saved.getPosition()); mixerRemembered = saved; }     // a mixer: its size is put back once it knows its strips (below)
                 else w->setBounds (saved);
@@ -1277,6 +1300,11 @@ private:
             else if (key.startsWith ("score:"))                                   // 3.51.0: an edit's score goes when the edit goes
             {
                 if (auto* e = ctx->project.findEdit (juce::Uuid (key.fromFirstOccurrenceOf (":", false, false)))) w->setName ("Score - " + e->name);
+                else dead.push_back (key);
+            }
+            else if (key.startsWith ("video:"))                                   // 3.68.0: and its video picture
+            {
+                if (auto* e = ctx->project.findEdit (juce::Uuid (key.fromFirstOccurrenceOf (":", false, false)))) w->setName ("Picture - " + e->name);
                 else dead.push_back (key);
             }
             else if (key.startsWith ("scope:"))

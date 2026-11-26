@@ -35,6 +35,85 @@ PlaybackSession::~PlaybackSession()
     stopThreadOrLog (*this, 30000);
 }
 
+namespace
+{
+/** 3.68.0: the camera's sound of a video clip (PlaySegment::cameraRate), as the session reads it: two channels at the session's rate, whatever
+    the file is. Mono goes to both sides; of more channels the first two are taken, a channel that carries timecode left out. The rate is
+    converted here, on the disk thread, with a four-point curve through the file's samples: no state, so any place can be read at any time (a
+    loop, a jump). That is not the mastering converter (Resampler.h) and does not need to be: this sound is only ever heard beside the edit, to
+    check the picture's sync by ear. */
+class CameraSoundReader : public juce::AudioFormatReader
+{
+public:
+    CameraSoundReader (std::unique_ptr<juce::AudioFormatReader> source, double toRate, int skipChannel)
+        : juce::AudioFormatReader (nullptr, "camera sound"), src (std::move (source))
+    {
+        ratio = src->sampleRate > 0.0 && toRate > 0.0 ? src->sampleRate / toRate : 1.0;
+        same = std::abs (ratio - 1.0) < 1.0e-9;
+        sampleRate = toRate > 0.0 ? toRate : src->sampleRate;
+        bitsPerSample = 32; usesFloatingPointData = true; numChannels = 2;
+        lengthInSamples = same ? src->lengthInSamples : (juce::int64) std::floor ((double) src->lengthInSamples / ratio);
+        const int n = juce::jmin ((int) src->numChannels, 64);
+        for (int c = 0; c < n && right < 0; ++c)
+        {
+            if (c == skipChannel) continue;
+            if (left < 0) left = c; else right = c;
+        }
+        if (right < 0) right = left;                                       // (mono, or one channel beside the timecode: both sides)
+        work.setSize (juce::jmax (1, juce::jmax (left, right) + 1), 4096);
+    }
+    bool readSamples (int* const* dest, int numDest, int startOffsetInDestBuffer, juce::int64 start, int num) override
+    {
+        if (num <= 0) return true;
+        float* out[2] = { numDest > 0 && dest[0] != nullptr ? reinterpret_cast<float*> (dest[0]) + startOffsetInDestBuffer : nullptr,
+                          numDest > 1 && dest[1] != nullptr ? reinterpret_cast<float*> (dest[1]) + startOffsetInDestBuffer : nullptr };
+        for (int c = 2; c < numDest; ++c) if (dest[c] != nullptr) juce::FloatVectorOperations::clear (reinterpret_cast<float*> (dest[c]) + startOffsetInDestBuffer, num);
+        for (auto* o : out) if (o != nullptr) juce::FloatVectorOperations::clear (o, num);
+        if (left < 0) return true;                                         // (nothing but timecode in the file)
+        const juce::int64 srcLen = src->lengthInSamples;
+        // the file's samples needed: for each of ours at x = (start + i) * ratio, the two before and the two after it
+        const double x0 = (double) start * ratio, x1 = (double) (start + num - 1) * ratio;
+        const juce::int64 first = same ? start : (juce::int64) std::floor (x0) - 1;
+        const juce::int64 last  = same ? start + num - 1 : (juce::int64) std::floor (x1) + 2;
+        const int need = (int) (last - first + 1);
+        if (need <= 0 || need > (1 << 24)) return true;
+        if (work.getNumSamples() < need) work.setSize (work.getNumChannels(), need + 1024, false, false, true);
+        work.clear (0, need);
+        const juce::int64 rs = juce::jmax ((juce::int64) 0, first), re = juce::jmin (srcLen, last + 1);
+        if (re > rs)
+        {
+            float* ptrs[64];
+            const int nch = work.getNumChannels();
+            for (int c = 0; c < nch; ++c) ptrs[c] = work.getWritePointer (c) + (int) (rs - first);
+            if (! src->read (ptrs, nch, rs, (int) (re - rs))) return false;
+        }
+        const float* in[2] = { work.getReadPointer (left), work.getReadPointer (right) };
+        for (int side = 0; side < 2; ++side)
+        {
+            float* o = out[side];
+            if (o == nullptr) continue;
+            const float* s = in[side];
+            if (same) { juce::FloatVectorOperations::copy (o, s, num); continue; }
+            for (int i = 0; i < num; ++i)
+            {
+                const double x = (double) (start + i) * ratio;
+                const double fl = std::floor (x);
+                const float t = (float) (x - fl);
+                const float* p = s + ((juce::int64) fl - first);              // p[-1] p[0] | p[1] p[2]
+                const float a = p[-1], b = p[0], c = p[1], d = p[2];
+                o[i] = b + 0.5f * t * (c - a + t * (2.0f * a - 5.0f * b + 4.0f * c - d + t * (3.0f * (b - c) + d - a)));
+            }
+        }
+        return true;
+    }
+private:
+    std::unique_ptr<juce::AudioFormatReader> src;
+    juce::AudioBuffer<float> work;
+    double ratio = 1.0; bool same = true;
+    int left = -1, right = -1;
+};
+} // namespace
+
 PlaybackSession::Opener PlaybackSession::makeOpener (juce::AudioFormatManager& fm, int bufBytes, double rate, juce::String* problem)
 {
     // Each file is read through a buffer, so the disk is asked for big pieces instead of a small read for every few thousand samples (kinder to a
@@ -44,7 +123,9 @@ PlaybackSession::Opener PlaybackSession::makeOpener (juce::AudioFormatManager& f
         std::unique_ptr<juce::AudioFormatReader> r;
         if (auto fis = std::make_unique<juce::FileInputStream> (s.file); fis->openedOk())
             r.reset (fm.createReaderFor (std::make_unique<juce::BufferedInputStream> (fis.release(), bufBytes, true)));
-        if (r == nullptr) { if (problem != nullptr && problem->isEmpty()) *problem = "Cannot read " + s.file.getFullPathName(); return nullptr; }
+        if (r == nullptr) { if (problem != nullptr && problem->isEmpty() && ! (s.cameraRate > 0.0)) *problem = "Cannot read " + s.file.getFullPathName(); return nullptr; }
+        if (s.cameraRate > 0.0)                                              // (3.68.0: the camera's sound of a video clip - any rate, any channels)
+            return r->sampleRate > 0.0 && r->numChannels > 0 ? std::make_unique<CameraSoundReader> (std::move (r), rate, s.cameraSkip) : nullptr;
         if (rate > 0.0 && std::abs (r->sampleRate - rate) > 0.5)
         {
             if (problem != nullptr && problem->isEmpty()) *problem = s.file.getFileName() + " is " + juce::String (r->sampleRate, 0) + " Hz, not " + juce::String (rate, 0) + " Hz";
@@ -67,6 +148,7 @@ juce::String PlaybackSession::open()
     std::set<juce::String> seen;
     for (auto& s : segments)
     {
+        if (s.cameraRate > 0.0) continue;                                    // (3.68.0: the camera's sound: any rate, and silence when it has gone)
         if (s.rate > 0.0 && std::abs (s.rate - sampleRate) > 0.5)
             return s.file.getFileName() + " is " + juce::String (s.rate, 0) + " Hz but the audio device is running at " + juce::String (sampleRate, 0) + " Hz";
         if (s.begin < checkTo && s.end > startPos && seen.insert (s.file.getFullPathName()).second && ! s.file.existsAsFile())
@@ -400,6 +482,44 @@ std::vector<PlaySegment> segmentsForGuide (const Project& p, const EditDef& e)
     const auto fade = juce::jmin ((s.end - s.begin) / 2, (juce::int64) std::llround (0.005 * gd.sampleRate));     // (5 ms in and out: the guide's ends never click)
     if (fade > 0) { s.fadeInStart = s.begin; s.fadeInLen = fade; s.fadeOutStart = s.end - fade; s.fadeOutLen = fade; }
     v.push_back (s);
+    return v;
+}
+
+std::vector<PlaySegment> cameraSoundSegments (const EditDef& e, double rate, int trackIndex, juce::int64 late)
+{
+    std::vector<PlaySegment> v;
+    if (! (rate > 0.0) || trackIndex < 0) return v;
+    // the moments where the picture changes from one clip to another (or to none): every clip's start and end
+    std::vector<double> cuts;
+    bool anySound = false;
+    for (auto& c : e.videos) if (c.active()) { cuts.push_back (c.start); cuts.push_back (c.end()); anySound = anySound || c.hasSound(); }
+    if (! anySound) return v;
+    std::sort (cuts.begin(), cuts.end());
+    cuts.erase (std::unique (cuts.begin(), cuts.end()), cuts.end());
+    const EditVideo* cur = nullptr; double from = 0.0;
+    auto close = [&] (double to)
+    {
+        if (cur == nullptr || ! cur->hasSound() || to <= 0.0) return;
+        PlaySegment s;
+        s.trackIndex = trackIndex; s.file = cur->sound; s.cameraRate = cur->soundRate; s.cameraSkip = cur->soundLtc;
+        s.begin = late + juce::jmax ((juce::int64) 0, (juce::int64) std::llround (from * rate));
+        s.end   = late + (juce::int64) std::llround (to * rate);
+        s.srcOffset = -late - (juce::int64) std::llround (cur->start * rate);      // (the sound's sample 0 is the clip's first frame)
+        if (s.end <= s.begin) return;
+        const auto fade = juce::jmin ((s.end - s.begin) / 2, (juce::int64) std::llround (0.005 * rate));
+        if (fade > 0) { s.fadeInStart = s.begin; s.fadeInLen = fade; s.fadeOutStart = s.end - fade; s.fadeOutLen = fade; }
+        const float g = juce::Decibels::decibelsToGain (juce::jlimit (-60.0f, 12.0f, cur->soundDb));
+        if (std::abs (g - 1.0f) > 1.0e-4f) s.gainSteps.push_back ({ s.begin, 0, g, g });
+        v.push_back (std::move (s));
+    };
+    for (size_t i = 0; i + 1 < cuts.size(); ++i)
+    {
+        const auto* at = e.videoAt (0.5 * (cuts[i] + cuts[i + 1]));
+        if (at == cur) continue;
+        close (cuts[i]);
+        cur = at; from = cuts[i];
+    }
+    if (! cuts.empty()) close (cuts.back());
     return v;
 }
 

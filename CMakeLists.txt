@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-set(FERMATA_VERSION 3.67.0)        # fermata's version: the ONE place it is changed (see CHANGELOG.md). fermata:Live's is in src/live/Live.cmake.
+set(FERMATA_VERSION 3.68.0)        # fermata's version: the ONE place it is changed (see CHANGELOG.md). fermata:Live's is in src/live/Live.cmake.
 project(Fermata VERSION ${FERMATA_VERSION} LANGUAGES C CXX)
 
 # This repository builds TWO programs from one shared core (read COMPATIBILITY.md before changing anything shared):
@@ -67,7 +67,9 @@ target_sources(Fermata PRIVATE
     src/ui/RemoteControl.cpp
     src/ui/Surface.cpp
     src/ui/TakeWindow.cpp
-    src/ui/TrimWindow.cpp)
+    src/ui/TrimWindow.cpp
+    src/ui/Video.cpp                   # 3.68.0: the edit's video: the lane's and the picture window's side of it,
+    src/ui/VideoSource.cpp)            #         and the decoder's thread (every system). The decoder itself: FermataVideoReader, below
 
 target_compile_definitions(Fermata PRIVATE
     ${FERMATA_SHARED_DEFINITIONS}
@@ -91,6 +93,45 @@ if(MSVC)
         message(WARNING "PDF pages: the reader did NOT build, so fermata is built without it (the score window will say so). The trial's output:\n${FERMATA_PDF_READER_LOG}")
     endif()
 endif()
+# 3.68.0: the video reader (src/ui/VideoReader.h): this computer's own decoder behind fermata's video. On Windows that is Media Foundation,
+# src/ui/VideoReaderWin.cpp - which, like the PDF reader above, could not be compiled where it was written. So it is tried on its own first
+# (compiled and linked into a small program): as it is, with the graphics card's decoder; if that does not build, without it
+# (FERMATA_VIDEO_D3D=0); and if that does not build either, fermata is built with VideoReaderNone.cpp (the picture window then says this
+# build cannot read video) and the reasons are printed below as a warning and written to video-reader-did-not-build.txt in the build
+# folder, which the GitHub build puts beside Fermata.exe. The video reader can never stop fermata from building.
+set(FERMATA_VIDEO_SOURCE src/ui/VideoReaderNone.cpp)
+set(FERMATA_VIDEO_D3D 1)
+file(REMOVE "${CMAKE_BINARY_DIR}/video-reader-did-not-build.txt")
+if(MSVC)
+    try_compile(FERMATA_VIDEO_READER_BUILDS "${CMAKE_BINARY_DIR}/video-reader-trial"
+        SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/ui/VideoReaderWin.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/VideoCheckMain.cpp"
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON
+        OUTPUT_VARIABLE FERMATA_VIDEO_READER_LOG)
+    if(FERMATA_VIDEO_READER_BUILDS)
+        set(FERMATA_VIDEO_SOURCE src/ui/VideoReaderWin.cpp)
+        message(STATUS "Video: the reader is in (Media Foundation, with the graphics card's decoder)")
+    else()
+        try_compile(FERMATA_VIDEO_READER_BUILDS_PLAIN "${CMAKE_BINARY_DIR}/video-reader-trial-plain"
+            SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/ui/VideoReaderWin.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/VideoCheckMain.cpp"
+            COMPILE_DEFINITIONS -DFERMATA_VIDEO_D3D=0
+            CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON
+            OUTPUT_VARIABLE FERMATA_VIDEO_READER_LOG_PLAIN)
+        if(FERMATA_VIDEO_READER_BUILDS_PLAIN)
+            set(FERMATA_VIDEO_SOURCE src/ui/VideoReaderWin.cpp)
+            set(FERMATA_VIDEO_D3D 0)
+            message(WARNING "Video: the reader is in WITHOUT the graphics card's decoder (that part did not build: the processor decodes). The first trial's output:\n${FERMATA_VIDEO_READER_LOG}")
+            file(WRITE "${CMAKE_BINARY_DIR}/video-reader-did-not-build.txt" "fermata's video reader was built WITHOUT the graphics card's decoder: that part did not compile. Video still works (the processor decodes). Please send this file with your next message.\n\n${FERMATA_VIDEO_READER_LOG}")
+        else()
+            message(WARNING "Video: the reader did NOT build, so fermata is built without it (the picture window will say so). The trials' output:\n${FERMATA_VIDEO_READER_LOG}\n---- without the graphics card's decoder:\n${FERMATA_VIDEO_READER_LOG_PLAIN}")
+            file(WRITE "${CMAKE_BINARY_DIR}/video-reader-did-not-build.txt" "fermata's video reader did NOT compile, so this build cannot show video. Please send this file with your next message.\n\n${FERMATA_VIDEO_READER_LOG}\n\n---- without the graphics card's decoder:\n${FERMATA_VIDEO_READER_LOG_PLAIN}")
+        endif()
+    endif()
+endif()
+add_library(FermataVideoReader STATIC ${FERMATA_VIDEO_SOURCE})
+set_target_properties(FermataVideoReader PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+target_compile_definitions(FermataVideoReader PRIVATE FERMATA_VIDEO_D3D=${FERMATA_VIDEO_D3D})
+target_link_libraries(Fermata PRIVATE FermataVideoReader)
+
 add_library(FermataPdfPages STATIC ${FERMATA_PDF_SOURCE})
 set_target_properties(FermataPdfPages PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
 target_link_libraries(Fermata PRIVATE FermataPdfPages)

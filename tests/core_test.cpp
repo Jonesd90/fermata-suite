@@ -59,6 +59,7 @@
 #include "../src/core/AudioFormats.h"
 #include "../src/core/TextBytes.h"
 #include "../src/core/RxWatch.h"
+#include "../src/core/VideoSync.h"
 #include "../src/core/StereoJoin.h"
 #include "../src/core/TrackLayout.h"
 #include "../src/core/StripOrder.h"
@@ -16793,6 +16794,348 @@ int main()
         // a plan for another project is not applied
         Project other; other.projectFile = dir.getChildFile ("H").getChildFile ("H.fermata");
         CHECK (gather::apply (other, pl) == 0);
+        dir.deleteRecursively();
+    }
+
+    SECTION ("3.68.0 video: the file's timecode track, a Sony XML file, LTC on the camera's sound, placing by timecode, lining up by sound, saved with the edit");
+    {
+        using namespace videosync;
+        auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("fermata_test_video");
+        dir.deleteRecursively(); dir.createDirectory();
+        // ---- a QuickTime / MP4 file with a timecode track, made byte by byte (as cameras and ffmpeg write it): 10:00:00:12 at 25 fps
+        {
+            auto be = [] (juce::MemoryOutputStream& o, juce::uint32 v) { o.writeByte ((char) (v >> 24)); o.writeByte ((char) (v >> 16)); o.writeByte ((char) (v >> 8)); o.writeByte ((char) v); };
+            auto box = [&] (const char* type, const juce::MemoryBlock& body) { juce::MemoryOutputStream o; be (o, (juce::uint32) (8 + body.getSize())); o.write (type, 4); o.write (body.getData(), body.getSize()); return o.getMemoryBlock(); };
+            auto cat = [] (std::initializer_list<juce::MemoryBlock> parts) { juce::MemoryBlock m; for (auto& p : parts) m.append (p.getData(), p.getSize()); return m; };
+            auto file = [&] (juce::uint32 frame, juce::uint32 flags, juce::uint32 scale, juce::uint32 dur, int nominal)
+            {
+                juce::MemoryOutputStream ft; ft.write ("qt  ", 4); be (ft, 0); ft.write ("qt  ", 4);
+                const auto ftyp = box ("ftyp", ft.getMemoryBlock());
+                juce::MemoryOutputStream md; be (md, frame);
+                const auto mdat = box ("mdat", md.getMemoryBlock());
+                const juce::uint32 sampleAt = (juce::uint32) ftyp.getSize() + 8;            // (the frame number: the first bytes of mdat's body)
+                juce::MemoryOutputStream hd; be (hd, 0); be (hd, 0); hd.write ("tmcd", 4); for (int i = 0; i < 12; ++i) hd.writeByte (0); hd.writeByte (0);
+                juce::MemoryOutputStream sd; be (sd, 0); be (sd, 1); be (sd, 34); sd.write ("tmcd", 4); for (int i = 0; i < 6; ++i) sd.writeByte (0); sd.writeByte (0); sd.writeByte (1);
+                be (sd, 0); be (sd, flags); be (sd, scale); be (sd, dur); sd.writeByte ((char) nominal); sd.writeByte (0);
+                juce::MemoryOutputStream co; be (co, 0); be (co, 1); be (co, sampleAt);
+                const auto stbl = box ("stbl", cat ({ box ("stsd", sd.getMemoryBlock()), box ("stco", co.getMemoryBlock()) }));
+                const auto mdia = box ("mdia", cat ({ box ("hdlr", hd.getMemoryBlock()), box ("minf", stbl) }));
+                // a video track first (its handler 'vide'): only the timecode track is read
+                juce::MemoryOutputStream hv; be (hv, 0); be (hv, 0); hv.write ("vide", 4); for (int i = 0; i < 13; ++i) hv.writeByte (0);
+                const auto vtrak = box ("trak", box ("mdia", box ("hdlr", hv.getMemoryBlock())));
+                const auto moov = box ("moov", cat ({ vtrak, box ("trak", mdia) }));
+                return cat ({ ftyp, mdat, moov });
+            };
+            const auto f = dir.getChildFile ("C0001.MOV");
+            const auto b25 = file (36000u * 25u + 12u, 0u, 25u, 1u, 25);
+            f.replaceWithData (b25.getData(), b25.getSize());
+            const auto tc = containerTimecode (f);
+            CHECK (tc.found && std::abs (tc.fps - 25.0) < 1.0e-9 && ! tc.drop && std::abs (tc.seconds - (36000.0 + 12.0 / 25.0)) < 1.0e-9);
+            // 29.97 drop-frame: 01:02:03;04 is frame 111582 (as ffmpeg writes it)
+            const auto g = dir.getChildFile ("df.mp4");
+            const auto bytes = file (111582u, 1u, 30000u, 1001u, 30);
+            g.replaceWithData (bytes.getData(), bytes.getSize());
+            const auto t2 = containerTimecode (g);
+            CHECK (t2.found && t2.drop && timecodeText (t2.seconds, t2.fps, t2.drop) == "01:02:03;04");
+            // damaged / no timecode: nothing, and no crash
+            auto cut = bytes; cut.setSize (bytes.getSize() - 20); const auto h = dir.getChildFile ("cut.mp4"); h.replaceWithData (cut.getData(), cut.getSize());
+            CHECK (! containerTimecode (h).found && ! containerTimecode (dir.getChildFile ("none.mp4")).found);
+            juce::MemoryBlock junk; for (int i = 0; i < 5000; ++i) junk.append ("\xff\x00\x00\x01moov", 8);
+            dir.getChildFile ("junk.mp4").replaceWithData (junk.getData(), junk.getSize());
+            CHECK (! containerTimecode (dir.getChildFile ("junk.mp4")).found);
+        }
+        // ---- a Sony XML file beside the clip: frames first, BCD
+        {
+            dir.getChildFile ("C0002.MP4").replaceWithText ("not a video");
+            dir.getChildFile ("C0002M01.XML").replaceWithText ("<?xml version=\"1.0\"?><NonRealTimeMeta><LtcChangeTable tcFps=\"25\" halfStep=\"false\">"
+                                                                "<LtcChange frameCount=\"0\" value=\"23380910\" status=\"increment\"/><LtcChange frameCount=\"4500\" value=\"23380913\" status=\"end\"/>"
+                                                                "</LtcChangeTable><VideoFormat><VideoFrame videoCodec=\"AVC\" captureFps=\"25p\" formatFps=\"25p\"/></VideoFormat></NonRealTimeMeta>");
+            const auto tc = sidecarTimecode (dir.getChildFile ("C0002.MP4"));
+            CHECK (tc.found && timecodeText (tc.seconds, tc.fps, tc.drop) == "10:09:38:23");
+            CHECK (! sidecarTimecode (dir.getChildFile ("C0003.MP4")).found);
+        }
+        // ---- LTC on the camera's second channel; music on the first
+        juce::AudioFormatManager fm; registerAudioFormats (fm);
+        {
+            const double sr = 48000.0; const int n = (int) (6.0 * sr);
+            std::vector<std::vector<float>> ch (2, std::vector<float> ((size_t) n));
+            for (int i = 0; i < n; ++i) ch[0][(size_t) i] = 0.2f * (float) std::sin (2.0 * dsp::kPi * 330.0 * i / sr);
+            LtcGenerator gen; gen.prepare (sr); gen.startExact (1, 3612.5); gen.fill (ch[1].data(), n);
+            const auto wav = dir.getChildFile ("cam ltc.wav");
+            CHECK (audioops::writeWav (wav, ch, sr));
+            int lc = -1;
+            const auto tc = soundTimecode (fm, wav, lc);
+            CHECK (tc.found && lc == 1 && std::abs (tc.seconds - 3612.5) < 0.002 && std::abs (tc.fps - 25.0) < 0.01);
+        }
+        // ---- placing by timecode: two pieces; the clip overlaps the second most
+        {
+            std::vector<PieceCode> pcs (2);
+            pcs[0].start = 0.0;  pcs[0].length = 60.0; pcs[0].found = true; pcs[0].tc = 36000.0;          // 10:00:00 - 10:01:00 at 0:00
+            pcs[1].start = 60.0; pcs[1].length = 90.0; pcs[1].found = true; pcs[1].tc = 37000.0;          // 10:16:40 - 10:18:10 at 1:00
+            Timecode tc; tc.found = true; tc.fps = 25.0; tc.seconds = 36990.0;                             // the camera from 10:16:30, 100 s long
+            const auto pl = placeByTimecode (tc, 100.0, pcs);
+            CHECK (pl.ok && std::abs (pl.start - 50.0) < 1.0e-9 && std::abs (pl.overlap - 90.0) < 1.0e-9);
+            tc.seconds = 23.0 * 3600.0 + 59.0 * 60.0 + 50.0;                                               // across midnight: 23:59:50, 30 s long
+            pcs[0].tc = 5.0;                                                                                // 00:00:05
+            const auto mid = placeByTimecode (tc, 30.0, pcs);
+            CHECK (mid.ok && std::abs (mid.start - (-15.0)) < 1.0e-6);
+            tc.seconds = 50000.0;                                                                           // nowhere near
+            CHECK (! placeByTimecode (tc, 30.0, pcs).ok);
+        }
+        // ---- by sound: an edit cut from two takes, and a camera far down the hall (dull, echoing, noisy, quieter) that saw 50 s of it
+        {
+            const double sr = 48000.0;
+            auto music = [sr] (int seed, double seconds)
+            {
+                juce::Random rnd (seed);
+                const int n = (int) (seconds * sr);
+                std::vector<float> x ((size_t) n, 0.0f);
+                for (double t = 0.2; t < seconds; t += 0.12 + 0.5 * rnd.nextDouble())
+                {
+                    const double f0 = 110.0 * std::pow (2.0, rnd.nextInt (36) / 12.0), dur = 0.3 + 1.2 * rnd.nextDouble(), amp = 0.05 + 0.15 * rnd.nextDouble();
+                    const int a = (int) (t * sr), b = juce::jmin (n, a + (int) (dur * sr));
+                    for (int i = a; i < b; ++i)
+                    {
+                        const double tt = (i - a) / sr, env = amp * juce::jmin (1.0, tt * 200.0) * std::exp (-3.0 * tt);
+                        x[(size_t) i] += (float) (env * (std::sin (2.0 * dsp::kPi * f0 * tt) + 0.5 * std::sin (4.0 * dsp::kPi * f0 * tt) + 0.3 * std::sin (6.0 * dsp::kPi * f0 * tt)));
+                    }
+                }
+                return x;
+            };
+            const auto takeA = music (1, 70.0), takeB = music (2, 80.0);
+            CHECK (audioops::writeWav (dir.getChildFile ("A.wav"), { takeA }, sr) && audioops::writeWav (dir.getChildFile ("B.wav"), { takeB }, sr));
+            // the edit: take A 0 - 60 s, then take B from 10 s, at 1:00
+            EditSound es;
+            es.parts.push_back ({ dir.getChildFile ("A.wav"), 0, (juce::int64) (60.0 * sr), 0.0 });
+            es.parts.push_back ({ dir.getChildFile ("B.wav"), (juce::int64) (10.0 * sr), (juce::int64) (70.0 * sr), 60.0 });
+            auto editAt = [&] (double t) -> float
+            {
+                if (t < 0.0) return 0.0f;
+                if (t < 60.0) { const auto i = (size_t) (t * sr); return i < takeA.size() ? takeA[i] : 0.0f; }
+                const auto i = (size_t) ((t - 60.0 + 10.0) * sr); return i < takeB.size() ? takeB[i] : 0.0f;
+            };
+            const double T = 40.1234;                                                 // the camera's first sample is the edit's 0:40.1234
+            const int nc = (int) (50.0 * sr);
+            std::vector<float> cam ((size_t) nc);
+            {
+                juce::Random rnd (7); double lp = 0.0;
+                const double a = std::exp (-2.0 * dsp::kPi * 3000.0 / sr);
+                std::vector<double> dry ((size_t) nc);
+                for (int i = 0; i < nc; ++i) { lp = (1.0 - a) * editAt (T + i / sr) + a * lp; dry[(size_t) i] = lp; }
+                const int d1 = (int) (0.031 * sr), d2 = (int) (0.067 * sr), d3 = (int) (0.113 * sr);
+                for (int i = 0; i < nc; ++i)
+                {
+                    double v = dry[(size_t) i];
+                    if (i >= d1) v += 0.6 * dry[(size_t) (i - d1)];
+                    if (i >= d2) v += 0.45 * dry[(size_t) (i - d2)];
+                    if (i >= d3) v += 0.3 * dry[(size_t) (i - d3)];
+                    cam[(size_t) i] = (float) (0.3 * v + 0.004 * (rnd.nextDouble() * 2.0 - 1.0));
+                }
+            }
+            CHECK (audioops::writeWav (dir.getChildFile ("cam.wav"), { cam, cam }, sr));
+            Energy ec, ee;
+            CHECK (energyOfFile (fm, dir.getChildFile ("cam.wav"), -1, ec) && energyOfEdit (fm, es, ee));
+            CHECK (ee.ms.size() >= 129000 && ee.ms.size() <= 131000);                 // (the edit's 130 s, a thousand to the second)
+            const auto m = matchBySound (ec, ee);
+            std::printf ("   by sound: found %.4f s (it is %.4f s), %.1f sd above the rest, %.2f x the next best, over %.0f s\n", m.start, T, m.strength, m.margin, m.overlap);
+            CHECK (m.ok && std::abs (m.start - T) < 0.002);
+            // a camera that saw something else: not matched
+            const auto other = music (99, 50.0);
+            CHECK (audioops::writeWav (dir.getChildFile ("other.wav"), { other }, sr));
+            Energy eo; CHECK (energyOfFile (fm, dir.getChildFile ("other.wav"), -1, eo));
+            const auto no = matchBySound (eo, ee);
+            std::printf ("   unrelated sound: %.1f sd, %.2f x the next best -> %s\n", no.strength, no.margin, no.ok ? "MATCHED (wrong)" : "not matched");
+            CHECK (! no.ok && no.why.isNotEmpty());
+            // the camera started before the edit (its first 10 s are before 0:00)
+            std::vector<float> early ((size_t) nc, 0.0f);
+            for (int i = 0; i < nc; ++i) early[(size_t) i] = 0.3f * editAt (-10.0 + i / sr) + 0.003f * (float) std::sin (i * 0.37);
+            CHECK (audioops::writeWav (dir.getChildFile ("early.wav"), { early }, sr));
+            Energy e2; CHECK (energyOfFile (fm, dir.getChildFile ("early.wav"), -1, e2));
+            const auto m2 = matchBySound (e2, ee);
+            CHECK (m2.ok && std::abs (m2.start - (-10.0)) < 0.002);
+        }
+        // ---- saved with the edit, read back; the camera sound's on / off is not an undo step
+        {
+            Project q;
+            q.projectFile = dir.getChildFile ("V").getChildFile ("V.fermata");
+            q.projectFile.getParentDirectory().createDirectory();
+            q.createDefaultDesign();
+            auto& tw = q.addTakeWindow ("Concert");
+            auto& e = q.addEdit ("Concert edit", tw.id);
+            EditVideo v; v.file = dir.getChildFile ("C0001.MOV"); v.start = -12.345; v.length = 3612.5; v.fps = 25.0; v.width = 1920; v.height = 1080;
+            v.synced = EditVideo::bySound; v.sound = q.projectFolder().getChildFile ("Video Sound").getChildFile ("C0001 - camera sound.wav"); v.soundChannels = 2; v.soundRate = 48000.0; v.soundLtc = 1;
+            v.soundOn = true; v.soundDb = -6.0f;
+            e.videos.push_back (v);
+            EditVideo w2 = v; w2.id = juce::Uuid(); w2.start = 3600.0; w2.locked = false; w2.sound = juce::File(); w2.soundChannels = 0; w2.soundRate = 0.0; w2.soundOn = false; w2.soundDb = 0.0f;
+            e.videos.push_back (w2);
+            e.showVideo = false;
+            const auto eid = e.id;
+            juce::String err;
+            CHECK (q.save (err));
+            Project r; CHECK (r.load (q.projectFile, err));
+            const EditDef* re = r.findEdit (eid);
+            CHECK (re != nullptr && re->videos.size() == 2 && ! re->showVideo);
+            if (re != nullptr && re->videos.size() == 2)
+            {
+                const auto& a = re->videos[0]; const auto& b = re->videos[1];
+                CHECK (a.id == v.id && a.file == v.file && std::abs (a.start - v.start) < 1.0e-9 && std::abs (a.length - v.length) < 1.0e-9 && a.fps == 25.0 && a.width == 1920 && a.height == 1080);
+                CHECK (a.locked && a.synced == EditVideo::bySound && a.sound == v.sound && a.soundChannels == 2 && a.soundRate == 48000.0 && a.soundLtc == 1 && b.soundLtc == -1 && a.soundOn && std::abs (a.soundDb + 6.0f) < 1.0e-6f);
+                CHECK (b.id == w2.id && ! b.locked && ! b.hasSound() && ! b.soundOn);
+                CHECK (re->videoAt (10.0) == &a && re->videoAt (3605.0) == &b && re->videoAt (-20.0) == nullptr && re->videoAt (3600.0 + 3612.5) == nullptr);
+            }
+            // undo: moving a clip is a step; switching its sound on is not
+            auto* le = q.findEdit (eid);
+            q.undoReset();
+            const auto before = q.undoText (*le);
+            le->videos[0].soundOn = false; le->videos[0].soundDb = 3.0f;
+            CHECK (q.undoText (*le) == before);
+            le->videos[0].start += 0.04;
+            CHECK (q.undoText (*le) != before);
+            // an edit with no video writes no video keys (an older fermata reads it as before)
+            auto& e2 = q.addEdit ("Plain", tw.id);
+            CHECK (! q.undoText (e2).contains ("\"video") && ! q.undoText (e2).contains ("showVideo"));
+        }
+        dir.deleteRecursively();
+    }
+
+    SECTION ("3.68.0 video: the camera's sound heard with the edit - a track of its own in the play, any rate, onto the outputs after the mixers");
+    {
+        const auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("fermata_camsound_test");
+        dir.deleteRecursively(); dir.createDirectory();
+        const double pi2 = juce::MathConstants<double>::twoPi;
+        const double cr = 48000.0; const int cn = (int) (3.0 * cr);                 // a camera's sound: 3 s at 48 kHz, 440 Hz left, 1 kHz right
+        std::vector<float> L ((size_t) cn), R ((size_t) cn), code ((size_t) cn);
+        for (int i = 0; i < cn; ++i)
+        {
+            L[(size_t) i] = 0.5f * (float) std::sin (pi2 * 440.0 * i / cr); R[(size_t) i] = 0.5f * (float) std::sin (pi2 * 1000.0 * i / cr);
+            code[(size_t) i] = (i % 40) < 20 ? 0.9f : -0.9f;                          // (stands for timecode on a channel: never to be heard)
+        }
+        const auto camF = dir.getChildFile ("cam.wav"), monoF = dir.getChildFile ("mono.wav"), codeF = dir.getChildFile ("code.wav");
+        CHECK (audioops::writeWav (camF, { L, R }, cr) && audioops::writeWav (monoF, { L }, cr) && audioops::writeWav (codeF, { code, L }, cr));
+        juce::AudioFormatManager fm; td::registerAudioFormats (fm);
+        auto sine = [&] (double hz, double seconds) { return 0.5 * std::sin (pi2 * hz * seconds); };
+        std::unique_ptr<juce::AudioFormatReader> keep;
+        auto readOf = [&] (const juce::File& f, double sessionRate, int skip, juce::int64 start, int n, std::vector<float>& l, std::vector<float>& r) -> juce::AudioFormatReader*
+        {
+            PlaySegment sg; sg.file = f; sg.cameraRate = cr; sg.cameraSkip = skip;
+            keep = PlaybackSession::makeOpener (fm, 65536, sessionRate, nullptr) (sg);
+            l.assign ((size_t) n, 9.0f); r.assign ((size_t) n, 9.0f);
+            if (keep != nullptr) { float* pp[2] = { l.data(), r.data() }; keep->read (pp, 2, start, n); }
+            return keep.get();
+        };
+        std::vector<float> l, r;
+        for (double sr : { 96000.0, 44100.0, 48000.0, 88200.0 })
+        {
+            auto* rd = readOf (camF, sr, -1, 1000, 4096, l, r);
+            CHECK (rd != nullptr && rd->numChannels == 2 && std::abs (rd->sampleRate - sr) < 1.0e-9 && std::abs ((double) rd->lengthInSamples - 3.0 * sr) <= 1.0);
+            double worstL = 0.0, worstR = 0.0;
+            for (int i = 0; i < 4096; ++i)
+            {
+                worstL = juce::jmax (worstL, std::abs ((double) l[(size_t) i] - sine (440.0, (1000 + i) / sr)));
+                worstR = juce::jmax (worstR, std::abs ((double) r[(size_t) i] - sine (1000.0, (1000 + i) / sr)));
+            }
+            CHECK (worstL < 2.0e-4 && worstR < 1.0e-3);                                // (in time to the sample at every rate: a late or early converter would be far out)
+            if (worstL >= 2.0e-4 || worstR >= 1.0e-3) std::printf ("   camera sound at %.0f: worst %.6f / %.6f\n", sr, worstL, worstR);
+            // any place at any time: a short read from the middle is the same as that part of the long one
+            std::vector<float> l2, r2;
+            readOf (camF, sr, -1, 3000, 64, l2, r2);
+            bool same = true; for (int i = 0; i < 64; ++i) same = same && l2[(size_t) i] == l[(size_t) (2000 + i)] && r2[(size_t) i] == r[(size_t) (2000 + i)];
+            CHECK (same);
+        }
+        readOf (monoF, 96000.0, -1, 500, 256, l, r);                                   // mono: on both sides
+        { bool both = true; double worst = 0.0; for (int i = 0; i < 256; ++i) { both = both && l[(size_t) i] == r[(size_t) i]; worst = juce::jmax (worst, std::abs ((double) l[(size_t) i] - sine (440.0, (500 + i) / 96000.0))); } CHECK (both && worst < 2.0e-4); }
+        readOf (codeF, 48000.0, 0, 500, 256, l, r);                                    // timecode on channel 1: left out, the other channel on both sides
+        { bool both = true; double worst = 0.0; for (int i = 0; i < 256; ++i) { both = both && l[(size_t) i] == r[(size_t) i]; worst = juce::jmax (worst, std::abs ((double) l[(size_t) i] - sine (440.0, (500 + i) / 48000.0))); } CHECK (both && worst < 1.0e-5); }
+        readOf (camF, 48000.0, 0, 500, 256, l, r);                                     // (skipping the left of two: the right on both sides)
+        CHECK (l[10] == r[10] && std::abs ((double) l[10] - sine (1000.0, 510.0 / 48000.0)) < 1.0e-5);
+        keep.reset();
+        { PlaySegment sg; sg.file = dir.getChildFile ("gone.wav"); sg.cameraRate = cr; juce::String problem;
+          CHECK (PlaybackSession::makeOpener (fm, 65536, 96000.0, &problem) (sg) == nullptr && problem.isEmpty()); }     // (gone: silence, and no complaint)
+
+        // which clip's sound where: the clip whose picture shows (the one that starts last), each at its level, all of it 'late' samples later
+        EditDef ed; ed.sampleRate = 96000.0;
+        EditVideo a; a.file = dir.getChildFile ("A.mp4"); a.start = -1.0; a.length = 3.0; a.sound = camF; a.soundChannels = 2; a.soundRate = cr;
+        EditVideo b; b.file = dir.getChildFile ("B.mp4"); b.start = 1.5; b.length = 3.0; b.sound = monoF; b.soundChannels = 1; b.soundRate = cr; b.soundDb = -6.0f;
+        EditVideo c; c.file = dir.getChildFile ("C.mp4"); c.start = 10.0; c.length = 2.0;                                  // (no sound)
+        EditVideo d; d.file = dir.getChildFile ("D.mp4"); d.start = 20.0; d.length = 2.0; d.sound = codeF; d.soundChannels = 2; d.soundRate = cr; d.soundLtc = 0;
+        ed.videos = { a, b, c, d };
+        const juce::int64 late = 96;
+        auto segs = cameraSoundSegments (ed, 96000.0, 5, late);
+        CHECK (segs.size() == 3);
+        if (segs.size() == 3)
+        {
+            CHECK (segs[0].file == camF && segs[0].trackIndex == 5 && segs[0].begin == late && segs[0].end == late + 144000 && segs[0].srcOffset == 96000 - late
+                   && segs[0].cameraRate == cr && segs[0].rate == 0.0 && segs[0].gainSteps.empty() && segs[0].fadeInLen == 480 && segs[0].fadeOutStart == segs[0].end - 480);
+            CHECK (segs[1].file == monoF && segs[1].begin == late + 144000 && segs[1].end == late + 432000 && segs[1].srcOffset == -144000 - late
+                   && segs[1].gainSteps.size() == 1 && std::abs (segs[1].gainSteps[0].to - 0.5012f) < 1.0e-3f);
+            CHECK (segs[2].file == codeF && segs[2].cameraSkip == 0 && segs[2].begin == late + 1920000);
+        }
+        CHECK (cameraSoundSegments (EditDef(), 96000.0, 5, 0).empty());
+        { EditDef none; none.videos = { c }; CHECK (cameraSoundSegments (none, 96000.0, 5, 0).empty()); }
+
+        // in a play: the camera's track carries it at the right moment; the project's own track has nothing of it; a clip whose sound has gone does not stop the play
+        {
+            auto withGone = segs;
+            { PlaySegment g; g.trackIndex = 1; g.file = dir.getChildFile ("gone.wav"); g.cameraRate = cr; g.begin = 0; g.end = 96000; withGone.push_back (g); }
+            for (auto& sg : withGone) sg.trackIndex = 1;
+            PlaybackSession ps ({ 1, 2 }, withGone, 0, 96000 * 5, 96000.0, 512);
+            CHECK (ps.open().isEmpty());
+            std::vector<juce::AudioBuffer<float>> out; out.emplace_back (1, 4096); out.emplace_back (2, 4096);
+            juce::AudioBuffer<float> work (kMaxTrackChannels, 16384);
+            const juce::int64 from = late + 48000;                                       // 0.5 s on the timeline: 1.5 s into clip A's sound
+            ps.renderNow (from, 4096, out, work);
+            double worst = 0.0;
+            for (int i = 0; i < 4096; ++i)
+            {
+                worst = juce::jmax (worst, std::abs ((double) out[1].getSample (0, i) - sine (440.0, 1.5 + i / 96000.0)));
+                worst = juce::jmax (worst, std::abs ((double) out[1].getSample (1, i) - sine (1000.0, 1.5 + i / 96000.0)));
+            }
+            CHECK (worst < 1.0e-3);
+            CHECK (out[0].getMagnitude (0, 4096) == 0.0f);
+            ps.renderNow (late + 144000 + 4800, 4096, out, work);                        // clip B has taken over: mono on both sides, 6 dB down
+            worst = 0.0;
+            for (int i = 0; i < 4096; ++i)
+                for (int ch = 0; ch < 2; ++ch) worst = juce::jmax (worst, std::abs ((double) out[1].getSample (ch, i) - 0.5012 * sine (440.0, 0.05 + i / 96000.0)));
+            CHECK (worst < 1.0e-3);
+        }
+
+        // through the engine: onto the outputs the play is heard on, at the gain of the lane's Sound key; nothing while it is off
+        {
+            Project q; q.createDefaultDesign(); q.addDefaultMainBus(); q.addTrack ("A", TrackFormat::Mono, 0);      // (the Main bus: outputs 1-2)
+            AudioEngine e (q);
+            e.prepare (48000.0, 256);
+            std::vector<float> i0 (256, 0.0f), o0 (256), o1 (256);
+            const float* in[1] = { i0.data() }; float* outs[2] = { o0.data(), o1.data() };
+            juce::AudioIODeviceCallbackContext ctx;
+            const int camTrack = (int) q.tracks.size();
+            std::vector<int> counts; for (auto& t : q.tracks) counts.push_back (t.channelCount());
+            counts.push_back (2);
+            PlaySegment sg; sg.trackIndex = camTrack; sg.file = camF; sg.cameraRate = cr; sg.begin = 0; sg.end = (juce::int64) cn;
+            auto sess = std::make_unique<PlaybackSession> (counts, std::vector<PlaySegment> { sg }, 0, (juce::int64) cn, 48000.0, e.getMaxBlock());
+            sess->monitorTrack = camTrack; sess->monitorGain.store (0.0f);
+            CHECK (e.startPlayback (std::move (sess)).isEmpty());
+            auto block = [&] { juce::FloatVectorOperations::clear (o0.data(), 256); juce::FloatVectorOperations::clear (o1.data(), 256); e.audioDeviceIOCallbackWithContext (in, 1, outs, 2, 256, ctx); };
+            auto peak = [&] (const std::vector<float>& v) { float m = 0.0f; for (float x : v) m = juce::jmax (m, std::abs (x)); return m; };
+            for (int k = 0; k < 4; ++k) block();
+            CHECK (peak (o0) == 0.0f && peak (o1) == 0.0f);                              // off: silence (and none of it reached a mixer)
+            e.setPlaybackMonitorGain (1.0f);
+            block();                                                                     // (glides up over this block)
+            CHECK (peak (o0) > 0.0f && peak (o0) <= 0.5001f);
+            block();
+            double worst = 0.0;                                                          // 6 blocks in: samples 1280 ... 1535 of the camera's sound
+            for (int i = 0; i < 256; ++i)
+            {
+                worst = juce::jmax (worst, std::abs ((double) o0[(size_t) i] - sine (440.0, (1280 + i) / 48000.0)));
+                worst = juce::jmax (worst, std::abs ((double) o1[(size_t) i] - sine (1000.0, (1280 + i) / 48000.0)));
+            }
+            CHECK (worst < 1.0e-4);
+            if (worst >= 1.0e-4) std::printf ("   camera sound through the engine: worst %.6f (peaks %.4f %.4f)\n", worst, peak (o0), peak (o1));
+            e.setPlaybackMonitorGain (0.0f);
+            block(); block();
+            CHECK (peak (o0) == 0.0f && peak (o1) == 0.0f);
+            CHECK (e.playMixerLatency (juce::Uuid::null()) == 0 && e.heardDelaySeconds (juce::Uuid::null()) >= 0.0 && e.heardDelaySeconds (juce::Uuid::null()) < 0.6);
+            e.stopPlayback();
+        }
         dir.deleteRecursively();
     }
 

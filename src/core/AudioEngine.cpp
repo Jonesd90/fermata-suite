@@ -686,6 +686,27 @@ int AudioEngine::mixerLatency (const MixerState* m) const
     return 0;
 }
 
+void AudioEngine::setPlaybackMonitorGain (float gain) noexcept
+{
+    if (playSession != nullptr) playSession->monitorGain.store (juce::jlimit (0.0f, 4.0f, gain), std::memory_order_relaxed);
+}
+
+int AudioEngine::playMixerLatency (const juce::Uuid& editId) const
+{
+    if (auto* pl = plan.load (std::memory_order_acquire))
+    {
+        if (! editId.isNull()) for (auto& mp : pl->mixers) if (mp->mixer->editId == editId) return mp->latency;
+        if (! pl->mixers.empty()) return pl->mixers.front()->latency;
+    }
+    return 0;
+}
+
+double AudioEngine::heardDelaySeconds (const juce::Uuid& editId) const
+{
+    const double sr = sampleRate > 0.0 ? sampleRate : 48000.0;
+    return (double) playMixerLatency (editId) / sr + devOutLatency.load (std::memory_order_relaxed) + 0.001 * converterMs.load (std::memory_order_relaxed);
+}
+
 int AudioEngine::offlineLatency() const
 {
     if (auto* pl = plan.load (std::memory_order_acquire))
@@ -1227,6 +1248,34 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
                 {
                     const int ch = ps->directOut + c;
                     if (ch < numOut && out[ch] != nullptr) juce::FloatVectorOperations::add (out[ch] + offset, mix.getReadPointer (c), n);
+                }
+            }
+            // 3.68.0: the camera's sound of the edit's video (the session's monitor track): onto the first two outputs the edit is heard on - the
+            // first Ext Bus of the mixer it plays through - after the mixers, so nothing of it is in any mix. A change of its gain (the video
+            // lane's Sound key) glides over this stretch.
+            if (ps != nullptr && ! direct && ps->monitorTrack >= 0 && ps->monitorTrack < ps->numTracks())
+            {
+                const float g0 = ps->monitorGainNow, g1 = ps->monitorGain.load (std::memory_order_relaxed);
+                ps->monitorGainNow = g1;
+                const MixerPlan* heard = editMixerPlays ? editPlan : (pl->mixers.empty() ? nullptr : pl->mixers.front().get());
+                int first = -1;
+                if (heard != nullptr && (g0 > 0.0f || g1 > 0.0f))
+                    for (auto& nd : heard->order)
+                        if (nd->kind == NodeKind::ExtBus && nd->bus->outFirst.load (std::memory_order_relaxed) >= 0)
+                        { first = nd->bus->outFirst.load (std::memory_order_relaxed); break; }
+                if (first >= 0)
+                {
+                    const auto& cam = ps->trackBuffer (ps->monitorTrack);
+                    const float st = (g1 - g0) / (float) n;
+                    for (int c = 0; c < 2 && c < cam.getNumChannels(); ++c)
+                    {
+                        const int ch = first + c;
+                        if (ch >= numOut || out[ch] == nullptr) continue;
+                        const float* src = cam.getReadPointer (c);
+                        float* dst = out[ch] + offset;
+                        if (g0 == g1) juce::FloatVectorOperations::addWithMultiply (dst, src, g1, n);
+                        else for (int i = 0; i < n; ++i) dst[i] += src[i] * (g0 + st * (float) (i + 1));
+                    }
                 }
             }
         }

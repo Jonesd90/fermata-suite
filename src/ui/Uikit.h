@@ -934,20 +934,24 @@ public:
         juce::DocumentWindow::resized(); placeThemeToggle (*this, themeToggle);
         if (pinButton.getParentComponent() != this) { addAndMakeVisible (pinButton); pinButton.onClick = [this] { setPinned (! pinButton.getToggleState()); }; }
         pinButton.setTopLeftPosition (themeToggle.getX() - pinButton.getWidth() - 4, themeToggle.getY()); pinButton.toFront (false);
+        themeToggle.setVisible (! isKiosk()); pinButton.setVisible (! isKiosk());       // (3.68.0: full screen is the contents and nothing else)
         keepTitleBarClear(); reportBounds();
     }
+    /** 3.68.0: this window fills a screen by itself (the video picture's full screen: juce::Desktop's kiosk mode). Then it has no wooden sides,
+        no pin or sun / moon button, its place is not remembered as the window's, and it is not moved clear of the menu bar. */
+    bool isKiosk() const { return juce::Desktop::getInstance().getKioskModeComponent() == this; }
     void moved() override { juce::DocumentWindow::moved(); keepTitleBarClear(); reportBounds(); }
     /** Set by the application once the window is in place: told the window's position and size whenever the user changes them (kept in the project). */
     std::function<void (const juce::String&)> onBoundsChanged;
     void reportBounds()
     {
-        if (onBoundsChanged && ! adjusting && isShowing() && getPeer() != nullptr && ! isMinimised() && ! isFullScreen()) onBoundsChanged (getBounds().toString());
+        if (onBoundsChanged && ! adjusting && isShowing() && getPeer() != nullptr && ! isMinimised() && ! isFullScreen() && ! isKiosk()) onBoundsChanged (getBounds().toString());
     }
     /** The menu bar floats above every window: if this window's title bar (close / minimise buttons) would end up under it, the window is moved down below the bar.
         A maximised window is un-maximised and fitted to the screen below the bar instead. */
     void keepTitleBarClear()
     {
-        if (adjusting || ! isShowing() || getPeer() == nullptr || ! menuBarAvoidArea()) return;
+        if (adjusting || ! isShowing() || getPeer() == nullptr || ! menuBarAvoidArea() || isKiosk()) return;
         const auto avoid = menuBarAvoidArea()();
         if (avoid.isEmpty()) return;
         const auto frame = getPeer()->getFrameSizeIfPresent();
@@ -990,7 +994,7 @@ public:
     juce::BorderSize<int> getContentComponentBorder() const override
     {
         auto b = juce::DocumentWindow::getContentComponentBorder();
-        if (woodSides) { b.setLeft (b.getLeft() + wood::kCheekW); b.setRight (b.getRight() + wood::kCheekW); b.setBottom (b.getBottom() + wood::kBottomH); }
+        if (woodSides && ! isKiosk()) { b.setLeft (b.getLeft() + wood::kCheekW); b.setRight (b.getRight() + wood::kCheekW); b.setBottom (b.getBottom() + wood::kBottomH); }
         return b;
     }
     void paint (juce::Graphics& g) override
@@ -998,7 +1002,7 @@ public:
         g.saveState();
         juce::DocumentWindow::paint (g);                  // (it narrows the drawing to the title bar and does not put that back)
         g.restoreState();
-        if (! woodSides) return;
+        if (! woodSides || isKiosk()) return;
         const auto inner = getContentComponentBorder().subtractedFrom (getLocalBounds());
         wood::paintCheek (g, { inner.getX() - wood::kCheekW, inner.getY(), wood::kCheekW, inner.getHeight() }, true);
         wood::paintCheek (g, { inner.getRight(), inner.getY(), wood::kCheekW, inner.getHeight() }, false);

@@ -8,6 +8,22 @@ fermata:Live is the live-concert recorder that goes with fermata (see `docs/LIVE
 
 A line that starts with **Shared:** is a change to the code fermata shares (see `COMPATIBILITY.md`), so fermata's next build mentions it too.
 
+## 0.10.15
+Built 25 and 26 November 2026 (the conversation for both programs), beside fermata 3.68.0 (video in the edit window). Nothing of
+fermata:Live's own changed.
+- **Shared:** an edit can hold video clips (`src/core/Edit.h`: `EditVideo`, `EditDef::videos`, `showVideo`; `src/core/Project.cpp`: the
+  edit's `"video"`, `"videoSound"` and `"showVideo"` keys, and undo). fermata:Live makes no edits with video and shows none; it reads and
+  writes the keys like the others, so a project it opens keeps fermata's video. `src/core/VideoSync.h` is new (lining a clip up; fermata
+  and the tests only).
+- **Shared:** playback can carry one more track than the project has - the camera's sound of an edit's video (`src/core/Playback.h` /
+  `Playback.cpp`: `PlaySegment::cameraRate`, `PlaybackSession::monitorTrack`, `cameraSoundSegments`) - which the audio engine adds to the
+  outputs after the mixers (`src/core/AudioEngine.cpp`). Only fermata's play of an edit with video makes such a track; a play without one
+  is as it was. fermata:Live's recorder is its own code and is untouched.
+- **Shared:** a tool window that fills a screen by itself (`ToolWindow::isKiosk` in `src/ui/Uikit.h`, for fermata's video picture) has no
+  wooden sides or corner buttons meanwhile. No window of fermata:Live does that.
+- Checked here: fermata:Live builds and links on Linux with no warnings; the compatibility check passed. Not checked: the Windows build
+  (GitHub).
+
 ## 0.10.14
 Built 25 November 2026 (the conversation for both programs), with Claude Fable, beside fermata 3.67.0 (the pass with Fable over what was built
 on Opus since 3.55.0). Nothing of fermata:Live's own changed.

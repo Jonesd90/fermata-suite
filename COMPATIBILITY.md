@@ -281,3 +281,15 @@ copies it like everything else, which is fine.
     `AudioEngine`: `setDeviceLatencies` (called by `audioDeviceAboutToStart`; 0 without a device), `setLtcMidiInOffset`,
     `setLtcCompareInput` / `ltcCompareResult`, `closeLtcMidiPortsThatAreGone`. fermata:Live calls none of them. `Project.cpp`
     (`relinkAudio`): a take file counts as recorded here only when it has neither of its two original names.
+  - Still contract 3 (fermata 3.68.0, fermata:Live 0.10.15): video in the edit. `EditVideo` (`src/core/Edit.h`) and `EditDef::videos`,
+    `showVideo`. An edit in the project file gains `"video"` (its clips: id, file / rel, start, length, fps, width, height, locked only when
+    false, synced, and "sound" - the camera's sound, a WAV in the project's "Video Sound" folder, with "channels" so a project copy takes it)
+    only when it has clips, `"videoSound"` (each clip's sound on / level: a view key, never undone) only when one is set, and `"showVideo":
+    false` only when the lane is hidden. An edit without them reads as before, and an older program ignores them (and drops them when it
+    saves). Part of undo: the clips. `src/core/VideoSync.h` is new (lining a clip up: header only, included by fermata and the tests, so
+    fermata:Live's build is unchanged). fermata:Live shows no video; it reads and writes the keys like the others.
+    The clip's "sound" may also hold "ltc" (the channel of the camera's sound that carries timecode; absent: none). Playback gained a track
+    beyond the project's own for that sound (`PlaySegment::cameraRate` / `cameraSkip`, `PlaybackSession::monitorTrack` / `monitorGain`,
+    `cameraSoundSegments`, and in the engine `playMixerLatency`, `heardDelaySeconds`, `setPlaybackMonitorGain`): only a play that asks for
+    it has one, so every other play - and all of fermata:Live - is as before; it reaches no mixer and so no bounce or export.
+    `ToolWindow` (`src/ui/Uikit.h`) knows when it is JUCE's kiosk window (`isKiosk`): no window of fermata:Live is.

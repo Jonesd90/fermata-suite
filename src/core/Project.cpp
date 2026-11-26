@@ -1980,6 +1980,32 @@ var Project::editToVarIn (const EditDef& eref, const juce::File& base, bool with
         put (o, "guide", go);
     }
     if (! e->showGuide) put (o, "showGuide", false);
+    if (! e->videos.empty())                                                           // 3.68.0: the video lane's clips (written only when there are any)
+    {
+        juce::Array<var> vs, snd;
+        for (auto& v : e->videos)
+        {
+            if (! v.active()) continue;
+            var vo = obj();
+            put (vo, "id", v.id.toString()); putFilePath (vo, v.file, base);             // (no "channels": the project copy leaves video files where they are)
+            put (vo, "start", v.start); put (vo, "length", v.length);
+            if (v.fps > 0.0) put (vo, "fps", v.fps);
+            if (v.width > 0 && v.height > 0) { put (vo, "width", v.width); put (vo, "height", v.height); }
+            if (! v.locked) put (vo, "locked", false);
+            put (vo, "synced", v.synced);
+            if (v.hasSound())
+            {
+                var so = obj(); putFilePath (so, v.sound, base); put (so, key::k_channels, v.soundChannels); put (so, "rate", v.soundRate);    // ("channels": an audio file, copied with the project)
+                if (v.soundLtc >= 0) put (so, "ltc", v.soundLtc);
+                put (vo, "sound", so);
+            }
+            vs.add (vo);
+            if (v.soundOn || v.soundDb != 0.0f) { var lo = obj(); put (lo, "id", v.id.toString()); put (lo, "on", v.soundOn); put (lo, "db", (double) v.soundDb); snd.add (lo); }
+        }
+        if (! vs.isEmpty()) put (o, "video", vs);
+        if (! snd.isEmpty()) put (o, "videoSound", snd);                                // (whether the camera's sound is heard: a view key, never undone)
+    }
+    if (! e->showVideo) put (o, "showVideo", false);
     if (e->leadIn) put (o, "leadIn", true);                                            // 3.16.0: "Leave space before the first edit"
     if (e->leadInSeconds > 0.0) put (o, "leadInSeconds", e->leadInSeconds);
     {
@@ -2405,6 +2431,36 @@ static std::unique_ptr<EditDef> editFromVarIn (const var& v, const juce::File& b
         if (! gd.active()) gd = EditGuide();
     }
     e->showGuide = v["showGuide"].isVoid() ? true : (bool) v["showGuide"];
+    if (auto* vs = v["video"].getArray())                                              // 3.68.0: the video lane's clips
+        for (auto& vv : *vs)
+        {
+            if (! vv.isObject()) continue;
+            EditVideo c;
+            const juce::Uuid id (vv["id"].toString()); if (! id.isNull()) c.id = id;
+            c.file = getFilePath (vv, base);
+            const double st = (double) vv["start"], len = (double) vv["length"], fps = (double) vv["fps"];
+            c.start = std::isfinite (st) ? juce::jlimit (-86400.0, 86400.0 * 7.0, st) : 0.0;
+            c.length = std::isfinite (len) ? juce::jlimit (0.0, 86400.0, len) : 0.0;
+            c.fps = std::isfinite (fps) ? juce::jlimit (0.0, 1000.0, fps) : 0.0;
+            c.width = juce::jlimit (0, 100000, (int) vv["width"]); c.height = juce::jlimit (0, 100000, (int) vv["height"]);
+            c.locked = vv["locked"].isVoid() ? true : (bool) vv["locked"];
+            c.synced = juce::jlimit (0, 5, (int) vv["synced"]);
+            if (const var so = vv["sound"]; so.isObject())
+            {
+                c.sound = getFilePath (so, base); c.soundChannels = juce::jlimit (0, 64, (int) so[key::k_channels]); c.soundRate = rateFromVar (so["rate"]);
+                c.soundLtc = so["ltc"].isVoid() ? -1 : juce::jlimit (-1, 63, (int) so["ltc"]);
+                if (! c.hasSound()) { c.sound = juce::File(); c.soundChannels = 0; c.soundRate = 0.0; c.soundLtc = -1; }
+            }
+            if (c.active() && e->findVideo (c.id) == nullptr) e->videos.push_back (c);
+        }
+    if (auto* ls = v["videoSound"].getArray())
+        for (auto& lv : *ls)
+            if (auto* c = e->findVideo (juce::Uuid (lv["id"].toString())))
+            {
+                c->soundOn = (bool) lv["on"];
+                const double db = (double) lv["db"]; c->soundDb = std::isfinite (db) ? (float) juce::jlimit (-60.0, 12.0, db) : 0.0f;
+            }
+    e->showVideo = v["showVideo"].isVoid() ? true : (bool) v["showVideo"];
     e->leadIn = (bool) v["leadIn"]; e->leadInSeconds = juce::jlimit (0.0, 3600.0, (double) v["leadInSeconds"]);
     e->score = juce::File::createLegalFileName (v["score"].toString());               // (a name only: never a path out of the PDFs folder)
     e->scoreTop = juce::jlimit (0.0, 100000.0, (double) v["scoreTop"]); e->scoreZoom = juce::jlimit (0.0, 40.0, (double) v["scoreZoom"]);
@@ -2875,6 +2931,16 @@ juce::uint64 Project::undoHash (const EditDef& e)
         h.add (gd.windowId); h.add (gd.takeId); h.add (gd.trackId); h.add (gd.takeName); h.add (gd.trackName); h.add (gd.file); h.add (gd.numChannels);
         h.add (gd.sampleRate); h.add (gd.srcIn); h.add (gd.srcOut); h.add (gd.start);
     }
+    if (! e.videos.empty())                                                            // 3.68.0: the video lane (not whether its sound is heard: a view)
+    {
+        h.add (0x71de0);
+        h.count (e.videos.size());
+        for (auto& v : e.videos)
+        {
+            h.add (v.id); h.add (v.file); h.add (v.start); h.add (v.length); h.add (v.fps); h.add (v.width); h.add (v.height); h.add (v.locked); h.add (v.synced);
+            h.add (v.sound); h.add (v.soundChannels); h.add (v.soundRate); h.add (v.soundLtc);
+        }
+    }
     h.count (e.lanes.size());
     for (auto& l : e.lanes)
     {
@@ -2948,7 +3014,8 @@ const std::initializer_list<const char*> kTakeViewKeys = { "editTake", "editIn",
 const std::initializer_list<const char*> kTakeMachineKeys = { "length", "overruns", "lost", "writeFailed", "verified" };     // per take: the recorder's, not the person's (3.1.4)
 const std::initializer_list<const char*> kEditViewKeys = { "markIn", "markOut", "fixIn", "fixOut", "fixTracks", "playhead", "insertIndex", "markers", "feedback", "showFeedback", "showMarkers", "laneRows", "showGuide", "autoBefore",
                                                            "versions", "subheading", "compareWith",
-                                                           "score", "scoreTop", "scoreZoom", "scoreFirstPage", "scoreLastPage" };       // (3.42.0: the frozen versions are saved, never undone)
+                                                           "score", "scoreTop", "scoreZoom", "scoreFirstPage", "scoreLastPage",          // (3.42.0: the frozen versions are saved, never undone)
+                                                           "videoSound", "showVideo" };                                                 // (3.68.0)
 }
 
 juce::String Project::undoText (const TakeWindowDef& w) const
@@ -3128,6 +3195,15 @@ bool restorePiece (Project& p, const Project::UndoPiece& piece, const juce::Uuid
             te->laneRows = live->laneRows;                                // (the automation rows shown: a view setting, like the ones above)
             te->autoBefore = live->autoBefore;                            // (3.27.0: where the automated controls were: an undo that takes a lane's points away puts the control back from here)
             te->showGuide = live->showGuide;                              // (the Guide button: a view; the guide itself is part of undo)
+            te->showVideo = live->showVideo;                              // 3.68.0: the video lane shown (a view) and, for each clip still there, whether its sound is heard
+            for (auto& tv : te->videos)
+                if (auto* lv = live->findVideo (tv.id))
+                {
+                    tv.soundOn = lv->soundOn; tv.soundDb = lv->soundDb;
+                    if (! tv.file.existsAsFile() && lv->file.existsAsFile()) tv.file = lv->file;          // (found again since: an undo never puts back a path that is gone)
+                    if (tv.sound != juce::File() && ! tv.sound.existsAsFile() && lv->sound.existsAsFile()) tv.sound = lv->sound;
+                }
+                else tv.soundOn = false;
             te->versions = live->versions; te->subheading = live->subheading; te->compareWith = live->compareWith;     // (3.42.0: the frozen versions: saved, never undone)
             te->score = live->score; te->scoreTop = live->scoreTop; te->scoreZoom = live->scoreZoom;                    // (3.51.0: the edit's score: a view)
             te->scoreFirstPage = live->scoreFirstPage; te->scoreLastPage = live->scoreLastPage;                       // (3.66.0: and its pages)

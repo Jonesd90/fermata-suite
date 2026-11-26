@@ -19,6 +19,7 @@
 #include "../core/TextBytes.h"
 #include "ClipName.h"
 #include "TuningLine.h"
+#include "Video.h"
 
 namespace td
 {
@@ -240,7 +241,7 @@ public:
         }
     } guideDeselect { this };
     /** The top band's height: markers, comments, insert flag, ruler and the pieces' banners, then the guide's lane when there is one. The tracks start under it. */
-    int bandH() const { return kRulerH + kLaneH + guideH() + tuneH(); }
+    int bandH() const { return kRulerH + kLaneH + guideH() + tuneH() + videoH(); }
     // ---- 3.63.0: the tuning line, in a lane of its own under the guide (TuningLine.h): each piece shows its take's line over the part it plays
     int tuneH() const { return app.tuningShow ? tuning::kLaneH : 0; }
     int tuneTop() const { return kGuideTop + guideH(); }
@@ -355,6 +356,7 @@ public:
     }
     juce::String getTooltip() override
     {
+        if (const auto vt = videoTip(); vt.isNotEmpty()) return vt;           // 3.68.0
         if (tuneH() <= 0) return {};
         auto p = getMouseXYRelative();
         const int sy = viewport.getViewPositionY();
@@ -383,6 +385,329 @@ public:
         }
         return {};
     }
+    // ---- 3.68.0: the video lane, under the tuning line (Video.h): the edit's video clips with small pictures along them and the camera's sound
+    //      under the pictures. A clip is locked to where it was lined up; unlocked, it is dragged sideways. A click puts the playhead there.
+    int videoH() const { auto* e = edit(); return e != nullptr && e->showVideo && ! e->videos.empty() ? video::kLaneH : 0; }
+    int videoTop() const { return tuneTop() + tuneH(); }
+    int shownVideoH = -1, shownStillsGen = -1, missingTicks = 0;
+    std::map<juce::Uuid, bool> videoMissing;                   // (each clip's file there or not: looked at every 2 s, not at every repaint)
+    juce::Uuid videoDragId = juce::Uuid::null();
+    double videoDragBase = 0.0, videoDownT = 0.0;
+    bool videoMoved = false, videoLockSaid = false;
+    juce::Rectangle<int> videoPictureRect (int sx) const { return { sx + 10, videoTop() + 23, 66, 18 }; }
+    juce::Rectangle<int> videoSoundRect (int sx) const   { return { sx + 82, videoTop() + 23, 58, 18 }; }
+    /** The part of a clip on screen (it is not drawn before 0:00). */
+    juce::Rectangle<int> videoClipRect (const EditVideo& v) const
+    {
+        const int xs = xOf (juce::jmax (0.0, v.start)), xe = juce::jmax (xs + 2, xOf (v.end()));
+        return { xs, videoTop() + 2, xe - xs, video::kLaneH - 6 };
+    }
+    juce::Rectangle<int> videoLockRect (const EditVideo& v) const
+    {
+        const auto r = videoClipRect (v);
+        return { juce::jmax (r.getX(), viewport.getViewPositionX() + kNameW) + 4, r.getY() + 3, 14, 16 };
+    }
+    /** The clip under x (the one drawn on top: the later in the list), or nullptr. */
+    EditVideo* videoClipAt (EditDef& e, int x)
+    {
+        for (auto it = e.videos.rbegin(); it != e.videos.rend(); ++it)
+            if (const auto r = videoClipRect (*it); x >= r.getX() && x < r.getRight()) return &*it;
+        return nullptr;
+    }
+    static void drawPadlock (juce::Graphics& g, juce::Rectangle<int> r, bool locked)
+    {
+        const auto b = r.toFloat();
+        const auto c = locked ? juce::Colour (0xff9fc4ff) : juce::Colour (0xffffc83d);
+        const auto body = juce::Rectangle<float> (b.getX() + 1.0f, b.getCentreY() - 1.0f, b.getWidth() - 2.0f, b.getHeight() * 0.5f + 1.0f);
+        juce::Path shackle;
+        const float sw = body.getWidth() * 0.62f, cx = locked ? body.getCentreX() : body.getCentreX() + sw * 0.45f;
+        shackle.addCentredArc (cx, body.getY(), sw * 0.5f, b.getHeight() * 0.32f, 0.0f, -juce::MathConstants<float>::halfPi, juce::MathConstants<float>::halfPi, true);
+        g.setColour (c); g.strokePath (shackle, juce::PathStrokeType (1.8f));
+        g.fillRoundedRectangle (body, 2.0f);
+        g.setColour (juce::Colours::black.withAlpha (0.6f)); g.fillRect (body.getCentreX() - 0.8f, body.getCentreY() - 1.5f, 1.6f, 3.5f);
+    }
+    void paintVideoLane (juce::Graphics& g, const EditDef& e)
+    {
+        const int h = videoH();
+        if (h <= 0) return;
+        const auto clip = g.getClipBounds();
+        const int y0 = videoTop();
+        if (clip.getBottom() < y0 || clip.getY() >= y0 + h) return;
+        g.setColour (juce::Colours::black.withAlpha (0.22f)); g.fillRect (0, y0, getWidth(), h);
+        g.setColour (juce::Colours::black.withAlpha (0.45f)); g.fillRect (0, y0 + h - 2, getWidth(), 2);
+        auto& st = video::stills (app);
+        const int visibleLeft = viewport.getViewPositionX() + kNameW;
+        for (auto& v : e.videos)
+        {
+            if (! v.active()) continue;
+            const auto rr = videoClipRect (v);
+            if (rr.getRight() < clip.getX() || rr.getX() > clip.getRight()) continue;
+            const bool missing = videoMissing.count (v.id) != 0 && videoMissing.at (v.id);
+            const bool dragging = videoDragId == v.id && videoMoved;
+            g.setColour (missing ? juce::Colour (0xff3a2224) : juce::Colour (0xff1b2027)); g.fillRect (rr);
+            // the small pictures, side by side from the clip's own start (a picture covers its slot's middle moment)
+            const auto strip = missing ? nullptr : st.get (v.file, v.length);
+            const double aspect = strip != nullptr ? strip->aspect : (v.width > 0 && v.height > 0 ? (double) v.width / v.height : 16.0 / 9.0);
+            const int pw = juce::jmax (12, (int) std::lround (video::kPicH * aspect));
+            const int xc0 = xOf (v.start), picY = rr.getY() + 1;
+            if (strip != nullptr && ! strip->pics.empty())
+            {
+                juce::Graphics::ScopedSaveState ss (g);
+                g.reduceClipRegion (rr.withHeight (video::kPicH + 2));
+                const int iFrom = juce::jmax (0, (juce::jmax (clip.getX(), rr.getX()) - xc0) / pw), iTo = (juce::jmin (clip.getRight(), rr.getRight()) - xc0) / pw;
+                for (int i = iFrom; i <= iTo; ++i)
+                {
+                    const double t = ((double) i + 0.5) * pw / pixelsPerSecond;
+                    if (t >= v.length) break;
+                    const int k = juce::jlimit (0, (int) strip->pics.size() - 1, (int) std::lround (t / strip->step));
+                    if (t > (double) strip->pics.size() * strip->step + strip->step) break;      // (not read that far yet)
+                    const auto& pic = strip->pics[(size_t) k];
+                    const auto slot = juce::Rectangle<int> (xc0 + i * pw, picY, pw - 1, video::kPicH);
+                    if (pic.isValid()) g.drawImage (pic, slot.toFloat(), juce::RectanglePlacement::centred | juce::RectanglePlacement::fillDestination);
+                    else { g.setColour (juce::Colour (0xff2a3038)); g.fillRect (slot); }
+                }
+            }
+            else
+            {
+                g.setColour (theme::dimText.withAlpha (0.8f)); g.setFont (juce::FontOptions (11.0f));
+                const auto why = strip != nullptr && strip->done ? "no pictures: " + strip->why : juce::String (missing ? "" : "making the small pictures...");
+                g.drawText (why, juce::jmax (rr.getX(), visibleLeft) + 22, picY + 20, juce::jmax (0, rr.getRight() - juce::jmax (rr.getX(), visibleLeft) - 26), 14, juce::Justification::centredLeft, true);
+            }
+            // the camera's sound, faint, under the pictures
+            const auto wr = juce::Rectangle<int> (rr.getX(), rr.getBottom() - video::kWaveH - 1, rr.getWidth(), video::kWaveH);
+            if (v.hasSound() && ! missing)
+            {
+                juce::Graphics::ScopedSaveState ss (g); g.reduceClipRegion (wr);
+                setWaveColour (g, juce::Colour (v.soundOn ? 0xffcfe0ff : 0xff7f8a99));
+                const double f0 = juce::jmax (0.0, -v.start), f1 = v.length;     // (seconds in the sound file, from the part on screen)
+                if (! directWave.draw (g, wr, v.sound, f0, f1, 1.0f, nullptr, v.soundRate, app.waveShape()))
+                    if (auto* th = thumbnailFor (v.sound)) drawThumbnailEnvelope (g, wr, *th, f0, f1, 1.0f, nullptr, app.waveShape());
+            }
+            // its edge, the padlock and its name
+            const auto edge = missing ? juce::Colour (0xffe0605a) : v.locked ? juce::Colour (0xff6d8fc2) : juce::Colour (0xffffc83d);
+            g.setColour (edge); g.drawRect (rr, dragging || ! v.locked ? 2 : 1);
+            if (v.start < 0.0) for (int y = rr.getY(); y < rr.getBottom(); y += 6) g.fillRect (rr.getX(), y, 2, 3);       // (it began before 0:00)
+            const auto lk = videoLockRect (v);
+            g.setColour (juce::Colour (0xd0101418)); g.fillRoundedRectangle (lk.expanded (3, 2).toFloat(), 3.0f);
+            drawPadlock (g, lk, v.locked);
+            const juce::String name = missing ? "MISSING: " + v.file.getFileName() + "  (right-click: Find the video file)" : v.file.getFileName();
+            const juce::Font nf (juce::FontOptions (10.5f, juce::Font::bold));
+            const int nw = juce::jmin (juce::GlyphArrangement::getStringWidthInt (nf, name) + 10, juce::jmax (0, rr.getRight() - lk.getRight() - 8));
+            if (nw > 20)
+            {
+                g.setColour (juce::Colour (0xc0000000)); g.fillRoundedRectangle ((float) lk.getRight() + 5.0f, (float) lk.getY() + 1.0f, (float) nw, 14.0f, 3.0f);
+                g.setColour (missing ? juce::Colour (0xffffb0a8) : juce::Colours::white); g.setFont (nf);
+                g.drawText (name, lk.getRight() + 9, lk.getY() + 1, nw - 6, 14, juce::Justification::centredLeft, true);
+            }
+            if (dragging)                                                        // while it is dragged: where it starts now
+            {
+                const juce::String txt = "starts at " + (v.start < 0.0 ? "-" + formatTimeShort (-v.start, 3) + "  (before 0:00)" : formatTimeShort (v.start, 3));
+                const auto box = juce::Rectangle<int> (juce::jmax (rr.getX(), visibleLeft) + 6, rr.getY() + 24, 200, 18);
+                g.setColour (juce::Colour (0xf0101418)); g.fillRoundedRectangle (box.toFloat(), 4.0f);
+                g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
+                g.drawText (txt, box.reduced (6, 0), juce::Justification::centredLeft, false);
+            }
+        }
+    }
+    void paintVideoName (juce::Graphics& g, const EditDef& e, int sx)
+    {
+        const int h = videoH();
+        if (h <= 0) return;
+        const int y0 = videoTop();
+        const auto r = juce::Rectangle<int> (sx, y0, kNameW, h);
+        const auto tint = juce::Colour (0xff8f7ad6);
+        g.setColour (theme::panel); g.fillRect (r);
+        g.setColour (tint.withAlpha (0.14f)); g.fillRect (r);
+        g.setColour (tint); g.fillRect (r.withWidth (6));
+        g.setColour (juce::Colours::black.withAlpha (0.45f)); g.fillRect (sx, y0 + h - 2, kNameW, 2);
+        g.setColour (theme::text); g.setFont (juce::FontOptions (12.5f, juce::Font::bold));
+        g.drawText ("VIDEO", sx + 12, y0 + 3, kNameW - 18, 16, juce::Justification::centredLeft, true);
+        auto key = [&] (juce::Rectangle<int> b, const juce::String& t, bool on, bool enabled)
+        {
+            const auto c = juce::Colour (0xffb9a8ff);
+            g.setColour (on ? c : juce::Colour (0xff2a2f36)); g.fillRoundedRectangle (b.toFloat(), 3.0f);
+            g.setColour (on ? c.brighter (0.3f) : theme::border); g.drawRoundedRectangle (b.toFloat(), 3.0f, 1.0f);
+            g.setColour (on ? juce::Colours::black : theme::text.withAlpha (enabled ? 1.0f : 0.35f)); g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+            g.drawText (t, b, juce::Justification::centred, false);
+        };
+        bool anySound = false; for (auto& v : e.videos) anySound = anySound || v.hasSound();
+        key (videoPictureRect (sx), "Picture", video::pictureOpen (app, editId), true);
+        key (videoSoundRect (sx), "Sound", video::soundOn (e), anySound);
+        g.setColour (theme::dimText); g.setFont (juce::FontOptions (11.0f));
+        const int n = (int) e.videos.size();
+        g.drawText (juce::String (n) + (n == 1 ? " clip" : " clips") + "   (right-click: menu)", sx + 12, y0 + 46, kNameW - 18, 14, juce::Justification::centredLeft, true);
+    }
+    juce::String videoTip()
+    {
+        if (videoH() <= 0) return {};
+        auto p = getMouseXYRelative();
+        const int sy = viewport.getViewPositionY();
+        const int y = (sy > 0 && p.y >= sy && p.y < sy + bandH()) ? p.y - sy : p.y;
+        if (y < videoTop() || y >= videoTop() + videoH()) return {};
+        auto* e = edit();
+        if (e == nullptr) return {};
+        const int sx = viewport.getViewPositionX();
+        if (p.x < sx + kNameW)
+        {
+            const juce::Point<int> q (p.x, y);
+            if (videoPictureRect (sx).contains (q)) return "The video's picture in a window of its own (click: open / close). It follows the edit's playhead. "
+                                                           "Double-click the picture for full screen; it remembers which screen you put it on.";
+            if (videoSoundRect (sx).contains (q)) return "The camera's own sound, heard with the edit while it plays (click: on / off). It is never in a bounce or an export.";
+            return "The edit's video: its clips, lined up with the music. Right-click for the menu: add a video file, the picture, the camera's sound, hide the lane.";
+        }
+        auto* c = videoClipAt (*e, p.x);
+        if (c == nullptr) return "Right-click: add a video file.";
+        if (videoLockRect (*c).expanded (3).contains (juce::Point<int> (p.x, y)))
+            return c->locked ? "Locked to where it was lined up. Click to unlock it, then drag it sideways." : "Unlocked: drag it sideways to move it. Click to lock it again.";
+        return c->file.getFileName() + "  -  " + video::syncedText (*c) + (c->locked ? ", locked" : ", unlocked")
+               + ".  Starts at " + (c->start < 0.0 ? "-" + formatTimeShort (-c->start, 3) : formatTimeShort (c->start, 3)) + ", " + formatTimeShort (c->length, 0) + " long."
+               + "  Click: the playhead here. Right-click: its menu.";
+    }
+    void videoMouseDown (const juce::MouseEvent& e, EditDef& ed)
+    {
+        const int sx = viewport.getViewPositionX();
+        videoDragId = juce::Uuid::null(); videoMoved = false; videoLockSaid = false;
+        if (e.x >= sx && e.x < sx + kNameW)                                  // the name column: Picture, Sound, and the menu
+        {
+            if (e.mods.isPopupMenu()) { showVideoLaneMenu (nullptr); return; }
+            if (videoPictureRect (sx).contains (e.getPosition())) { video::togglePicture (app, editId); repaint (sx, videoTop(), kNameW, videoH()); return; }
+            if (videoSoundRect (sx).contains (e.getPosition()))
+            {
+                bool anySound = false; for (auto& v : ed.videos) anySound = anySound || v.hasSound();
+                if (! anySound) { app.setNotice ("These video clips have no sound of their own."); return; }
+                video::setSound (app, ed, ! video::soundOn (ed));
+                repaint();
+            }
+            return;
+        }
+        auto* c = videoClipAt (ed, e.x);
+        if (e.mods.isPopupMenu()) { if (c != nullptr) showVideoClipMenu (c->id); else showVideoLaneMenu (nullptr); return; }
+        videoDownT = juce::jmax (0.0, (double) (e.x - kNameW) / pixelsPerSecond);
+        if (c == nullptr) { if (auto* w = findParentComponentOfClass<EditWindowComponent>()) w->goToSeconds (videoDownT); return; }
+        if (videoLockRect (*c).expanded (3).contains (e.getPosition()))
+        {
+            c->locked = ! c->locked;
+            app.project.changed();
+            app.setNotice (c->locked ? "The video is locked where it is." : "The video is unlocked: drag it sideways to move it (the padlock locks it again).");
+            repaint (); return;
+        }
+        videoDragId = c->id; videoDragBase = c->start;
+    }
+    void videoMouseDrag (const juce::MouseEvent& e, EditDef& ed)
+    {
+        if (! videoMoved && std::abs (e.getDistanceFromDragStartX()) < 3) return;
+        auto* c = ed.findVideo (videoDragId);
+        if (c == nullptr) return;
+        if (c->locked)
+        {
+            if (! videoLockSaid) { videoLockSaid = true; app.setNotice ("The video's sync is locked. Click its padlock (or right-click it: Unlock the sync) to move it."); }
+            return;
+        }
+        if (! videoMoved) setMouseCursor (juce::MouseCursor::DraggingHandCursor);
+        videoMoved = true;
+        c->start = juce::jmax (-c->length + 0.5, videoDragBase + (double) e.getDistanceFromDragStartX() / pixelsPerSecond);
+        app.project.markDirty();
+        repaint (viewport.getViewArea().withHeight (bandH()));
+    }
+    void videoMouseUp()
+    {
+        auto* ed = edit();
+        if (ed != nullptr && videoMoved)
+        {
+            if (auto* c = ed->findVideo (videoDragId)) c->synced = EditVideo::byHand;
+            app.project.changed();                                            // (one undo step for the whole drag)
+            setMouseCursor (juce::MouseCursor::NormalCursor);
+        }
+        else if (! videoDragId.isNull()) { if (auto* w = findParentComponentOfClass<EditWindowComponent>()) w->goToSeconds (videoDownT); }      // (a click on a clip: the playhead there)
+        videoDragId = juce::Uuid::null(); videoMoved = false;
+        repaint();
+    }
+    /** The video lane's menu (also the edit window's Video key's right-click: 'target' is the key). */
+    void showVideoLaneMenu (juce::Component* target)
+    {
+        auto* e = edit();
+        if (e == nullptr) return;
+        bool anySound = false; for (auto& v : e->videos) anySound = anySound || v.hasSound();
+        const bool open = video::pictureOpen (app, editId);
+        juce::PopupMenu m;
+        m.addSectionHeader ("Video");
+        m.addItem (1, "Add video file(s)...  (each is lined up by itself: timecode, then sound)");
+        m.addSeparator();
+        m.addItem (2, open ? "Close the picture" : "Open the picture", ! e->videos.empty());
+        m.addItem (3, "Bring the picture here  (from another screen)", open);
+        m.addItem (4, "Hear the camera's sound with the edit", anySound, video::soundOn (*e));
+        m.addSeparator();
+        m.addItem (5, "Show the video lane", ! e->videos.empty(), e->showVideo);
+        juce::Component::SafePointer<EditTimeline> safe (this);
+        juce::Component::SafePointer<juce::Component> tgt (target);
+        m.showMenuAsync (target != nullptr ? juce::PopupMenu::Options().withTargetComponent (target) : juce::PopupMenu::Options(), [safe, tgt] (int r)
+        {
+            if (safe == nullptr || r == 0) return;
+            auto* ed = safe->edit(); if (ed == nullptr) return;
+            auto& a = safe->app;
+            if (r == 1) video::addVideos (a, safe->editId, safe->getTopLevelComponent());
+            else if (r == 2) video::togglePicture (a, safe->editId);
+            else if (r == 3) { if (a.bringWindowOver) a.bringWindowOver (video::windowKey (safe->editId), safe->getTopLevelComponent()); }
+            else if (r == 4) video::setSound (a, *ed, ! video::soundOn (*ed));
+            else if (r == 5) { ed->showVideo = ! ed->showVideo; a.project.markDirty(); }
+            safe->updateSize(); safe->repaint();
+        });
+    }
+    void showVideoClipMenu (const juce::Uuid& clipId)
+    {
+        auto* e = edit();
+        auto* c = e != nullptr ? e->findVideo (clipId) : nullptr;
+        if (c == nullptr) return;
+        const bool missing = ! c->file.existsAsFile();
+        const double head = juce::jmax (0.0, cursorSeconds >= 0.0 ? cursorSeconds : e->playheadSeconds);
+        const double fr = c->frameSeconds();
+        juce::PopupMenu m;
+        m.addSectionHeader (c->file.getFileName());
+        m.addItem (1, c->locked ? "Unlock the sync  (then drag it sideways)" : "Lock the sync");
+        m.addItem (2, "Line it up again  (timecode, then the camera's sound)", ! missing);
+        m.addSeparator();
+        m.addItem (3, "One frame earlier", ! c->locked);
+        m.addItem (4, "One frame later", ! c->locked);
+        m.addItem (5, "Its start at the playhead  (" + formatTimeShort (head, 2) + ")", ! c->locked);
+        m.addItem (6, "Type where it starts...", ! c->locked);
+        m.addSeparator();
+        m.addItem (90, juce::String ("It was ") + video::syncedText (*c) + ".", false);
+        m.addItem (91, "Starts at " + (c->start < 0.0 ? "-" + formatTimeShort (-c->start, 3) : formatTimeShort (c->start, 3)) + ", " + formatTimeShort (c->length, 0) + " long"
+                       + (c->fps > 0.0 ? ", " + juce::String (c->fps, 3).trimCharactersAtEnd ("0").trimCharactersAtEnd (".") + " fps" : juce::String())
+                       + (c->width > 0 ? ", " + juce::String (c->width) + " x " + juce::String (c->height) : juce::String()), false);
+        m.addItem (7, "Show the file in its folder", ! missing);
+        m.addItem (8, "Find the video file...", true);
+        m.addSeparator();
+        m.addItem (9, "Take this clip out of the edit  (Ctrl + Z puts it back)");
+        juce::Component::SafePointer<EditTimeline> safe (this);
+        m.showMenuAsync (juce::PopupMenu::Options(), [safe, clipId, head, fr] (int r)
+        {
+            if (safe == nullptr || r == 0) return;
+            auto* ed = safe->edit(); if (ed == nullptr) return;
+            auto* v = ed->findVideo (clipId); if (v == nullptr) return;
+            auto& a = safe->app;
+            auto* top = safe->getTopLevelComponent();
+            switch (r)
+            {
+                case 1: v->locked = ! v->locked; a.project.changed(); break;
+                case 2: video::lineUpAgain (a, safe->editId, clipId, top); return;
+                case 3: v->start = juce::jmax (-v->length + 0.5, v->start - fr); v->synced = EditVideo::byHand; a.project.changed(); break;
+                case 4: v->start += fr; v->synced = EditVideo::byHand; a.project.changed(); break;
+                case 5: v->start = head; v->synced = EditVideo::byHand; a.project.changed(); break;
+                case 6: video::typeStart (a, safe->editId, clipId, top); return;
+                case 7: v->file.revealToUser(); return;
+                case 8: video::findFile (a, safe->editId, clipId, top); return;
+                case 9:
+                    ed->videos.erase (std::remove_if (ed->videos.begin(), ed->videos.end(), [&clipId] (const EditVideo& x) { return x.id == clipId; }), ed->videos.end());
+                    a.project.changed(); a.project.structureChanged();
+                    a.setNotice ("The video clip was taken out of the edit. Ctrl + Z puts it back.");
+                    break;
+                default: return;
+            }
+            safe->updateSize(); safe->repaint();
+        });
+    }
+
     bool inGuideLane (int y) const { const int h = guideH(); return h > 0 && y >= kGuideTop && y < kGuideTop + h; }
     juce::Rectangle<int> guideSoloRect (int sx) const { return { sx + 30, kGuideTop + 3, 18, 16 }; }       // (where the tracks' S is)
 
@@ -855,6 +1180,7 @@ public:
 
         paintGuideLane (g, *e);
         paintTuningLane (g, *e);                                   // 3.63.0
+        paintVideoLane (g, *e);                                    // 3.68.0
         if (e->isEmpty())
         {
             g.setColour (theme::dimText); g.setFont (16.0f);
@@ -1315,6 +1641,7 @@ public:
         g.setColour (theme::panel.withAlpha (0.96f)); g.fillRect (sx, 0, kNameW, top);
         paintGuideName (g, *e, sx);
         if (tuneH() > 0) tuning::paintNameBox (g, { sx, tuneTop(), kNameW, tuneH() }, app.tuningSet, true);              // 3.63.0 (a click: its menu)
+        paintVideoName (g, *e, sx);                                                                                     // 3.68.0
         g.setFont (juce::FontOptions (10.5f, juce::Font::bold));                                                       // what each line of the band is
         g.setColour (e->showMarkers ? markerui::flagColour() : theme::dimText.withAlpha (0.6f));
         g.drawText (e->showMarkers ? "Markers" : "Markers (hidden)", sx + 6, 0, kNameW - 12, markerui::kStripH, juce::Justification::centredLeft, true);
@@ -1396,6 +1723,7 @@ public:
             if (e.x >= viewport.getViewPositionX() && e.x < viewport.getViewPositionX() + kNameW) app.showTuningMenu (nullptr, true);
             return;
         }
+        if (videoH() > 0 && e.y >= videoTop() && e.y < videoTop() + videoH()) { videoMouseDown (e, *ed); return; }     // 3.68.0: the video lane
         const double rate = juce::jmax (1.0, ed->sampleRate);
         if (glueMode && ! e.mods.isPopupMenu() && e.x >= viewport.getViewPositionX() + kNameW && e.y >= kRulerH - 16)      // 3.35.0: glue mode - a click on a snip glues it
         {
@@ -1690,6 +2018,7 @@ public:
             return;
         }
         if (guideDrag) { guideMouseDrag (e, *ed); return; }
+        if (! videoDragId.isNull()) { videoMouseDrag (e, *ed); return; }       // 3.68.0
         if (markers.mouseDrag (e)) return;
         if (insertDrag) { insertDragMove (e.x); return; }
         if (! shuffleId.isNull())
@@ -1813,6 +2142,7 @@ public:
             lassoActive = lassoMoved = false;
             repaint(); return;
         }
+        if (! videoDragId.isNull()) { videoMouseUp(); return; }                // 3.68.0
         if (guideDrag)
         {
             guideDrag = false;
@@ -3320,6 +3650,19 @@ private:
             repaint (viewport.getViewPositionX(), viewport.getViewPositionY(), kNameW, bandH());
         }
         if (tuneH() != shownTuneH) { shownTuneH = tuneH(); updateSize(); repaint(); }       // 3.63.0: the tuning lane shown or hidden
+        if (videoH() != shownVideoH) { shownVideoH = videoH(); updateSize(); repaint(); }   // 3.68.0: the video lane shown or hidden
+        if (videoH() > 0)
+        {
+            if (const int sg = video::stills (app).generation.load(); sg != shownStillsGen) { shownStillsGen = sg; repaint (viewport.getViewArea().withHeight (bandH())); }
+            if (++missingTicks >= 60)                                         // (about every 2 s: which clips' files are there)
+            {
+                missingTicks = 0;
+                bool changed = false;
+                if (auto* ve = edit())
+                    for (auto& v : ve->videos) { const bool m = ! v.file.existsAsFile(); if (videoMissing[v.id] != m) { videoMissing[v.id] = m; changed = true; } }
+                if (changed) repaint (viewport.getViewArea().withHeight (bandH()));
+            }
+        }
         if (tuneH() > 0)
         {
             const int gs = app.tuningStore.generation.load(), gl = app.liveTuning.generation.load();
@@ -4181,6 +4524,19 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     scoreButton.setTooltip ("The score of this edit (a PDF), in a window of its own that you can pin. Click: open / close it. The first time it asks for the PDF and keeps a copy of it in the project's PDFs folder. "
                             "Right-click: choose another PDF, or take the score off this edit.");
     scoreButton.onClick = [this] { scoreKey(); };
+    // 3.68.0: the edit's video (Video.h)
+    pictureButton.setTooltip ("The edit's video. Click: open / close the picture (the first time, it asks for the video file and lines it up with the music: "
+                              "by its timecode, else by the camera's sound). Right-click: add more, the camera's sound, show / hide the video lane.");
+    pictureButton.setClickingTogglesState (false);
+    pictureButton.onClick = [this]
+    {
+        auto* e = edit(); if (e == nullptr) return;
+        if (e->videos.empty()) video::addVideos (app, editId, getTopLevelComponent());
+        else video::togglePicture (app, editId);
+    };
+    pictureButton.onMenu = [this] { timeline->showVideoLaneMenu (&pictureButton); };
+    pictureButton.setWantsKeyboardFocus (false);
+    addAndMakeVisible (pictureButton);
     scoreButton.onMenu = [this] { scoreMenu(); };
     scoreButton.setWantsKeyboardFocus (false);
     addAndMakeVisible (scoreButton);
@@ -4407,7 +4763,7 @@ void EditWindowComponent::resized()
         { &bounceButton, IW, IH, 2 }, { &videoButton, IW, IH, 2 }, { &aafButton, IW, IH, 2 }, { &mixerButton, IW, IH, 6 }, { &ltcButton, 74, grid::btnH, 6 }, { &guideToggle, IW, IH, 14 },
         { &automationButton, IW, IH, 14 },
         { &pitchButton, IW, IH, 2 }, { &repairButton, IW, IH, 2 }, { &roomToneButton, IW, IH, 2 }, { &noiseModeButton, IW, IH, 2 }, { &reharmoniserButton, IW, IH, 2 }, { &retimerButton, IW, IH, 10 }, { &exportProcButton, IW + 8, IH, 2 }, { &undoFixButton, IW, IH, 14 }, { &alignButton, IW, IH, 14 },
-        { &tracksButton, IW, IH, 2 }, { &importButton, IW + 8, IH, 14 }, { &feedbackButton, IW, IH, 8 }, { &markersToggle, IW, IH, 2 }, { &feedbackToggle, IW + 8, IH, 8 }, { &scoreButton, 44, grid::btnH, 14 },
+        { &tracksButton, IW, IH, 2 }, { &importButton, IW + 8, IH, 14 }, { &feedbackButton, IW, IH, 8 }, { &markersToggle, IW, IH, 2 }, { &feedbackToggle, IW + 8, IH, 8 }, { &scoreButton, 44, grid::btnH, 2 }, { &pictureButton, 52, grid::btnH, 14 },
         { &slipLeftToggle, IW + 8, IH, 2 }, { &slipRightToggle, IW + 8, IH, 6 }, { &shuffleToggle, IW, IH, 2 }, { &insertFlagToggle, IW, IH, 14 },
         { &zoomOutButton, 34 }, { &zoomInButton, 34 }
     };
@@ -5307,7 +5663,8 @@ void EditWindowComponent::timerCallback()
     if (tuningBtn.getToggleState() != app.tuningShow) tuningBtn.setToggleState (app.tuningShow, juce::dontSendNotification);      // (3.63.0)
     if (shownKnock != knockweight::level().load()) { shownKnock = knockweight::level().load(); waveColourBtn.repaint(); }     // (3.61.0: its dots)
     if (waveCompressBtn.getToggleState() != (app.waveCompress > 0)) { waveCompressBtn.setToggleState (app.waveCompress > 0, juce::dontSendNotification); repaint(); }
-    if (app.windowIsOpen) { const bool on = app.windowIsOpen (score::windowKey (editId)); if (scoreButton.getToggleState() != on) scoreButton.setToggleState (on, juce::dontSendNotification); }     // (lit while the score is open)
+    if (app.windowIsOpen) { const bool on = app.windowIsOpen (score::windowKey (editId)); if (scoreButton.getToggleState() != on) scoreButton.setToggleState (on, juce::dontSendNotification); }
+    if (const bool on = video::pictureOpen (app, editId); pictureButton.getToggleState() != on) { pictureButton.setToggleState (on, juce::dontSendNotification); timeline->repaint(); }     // (3.68.0: lit while the picture is open)     // (lit while the score is open)
     if (app.windowIsOpen)         // Trim and Bounce Out are lit only while their window is open (closing the Bounce Out window also ends a bounce that is running)
     {
         const bool trimOpen = app.windowIsOpen ("trim:" + editId.toString()), bounceOpen = app.windowIsOpen ("bounce:" + editId.toString());

@@ -5,6 +5,7 @@
 #include "TakeDisplay.h"
 #include "TalkbackGlow.h"
 #include "BusyWindow.h"
+#include "Video.h"
 #include "TimeReadout.h"
 #include "ProjectRateDialog.h"
 #include "FixTools.h"
@@ -164,6 +165,7 @@ AppContext::~AppContext()
 {
     liveColours.stop();                              // 3.59.0: the colours of a take being recorded (its thread)
     liveTuning.stop(); tuningStore.stop();           // 3.63.0: the tuning line's threads
+    video::shutdown();                                // 3.68.0: the video lane's small pictures' thread
     waveColors.stop();                               // 3.18.2: first - a colouring job still queued would ask the project for its folder after the project has gone
     project.settleBackgroundSaves = nullptr;
     *saverAlive = false;                             // (what it finishes from here on is not taken in: the program is closing, and shutdown() saved)
@@ -2066,14 +2068,18 @@ static constexpr double kOpenEndSeconds = 6.0 * 3600.0;
 
 static juce::String beginSession (AppContext& app, std::vector<PlaySegment> segs, juce::int64 start, juce::int64 end, double rate,
                                   std::shared_ptr<AutomationPlan> automation = nullptr, bool loop = false, bool allowEmpty = false,
-                                  const juce::Uuid& editId = juce::Uuid::null(), juce::int64 continueTo = -1, bool followAutomation = false)
+                                  const juce::Uuid& editId = juce::Uuid::null(), juce::int64 continueTo = -1, bool followAutomation = false,
+                                  int cameraTrack = -1, float cameraGain = 0.0f)
 {
     if (segs.empty() && ! allowEmpty) return "There is nothing to play here";
     if (end <= start) return "Nothing to play (empty range)";
     app.noteTransport();
     std::vector<int> counts;
     for (auto& t : app.project.tracks) counts.push_back (t.channelCount());
+    if (cameraTrack == (int) counts.size()) counts.push_back (2);           // (3.68.0: the camera's sound of the edit's video, a track beyond the project's: see playEdit)
+    else cameraTrack = -1;
     auto session = std::make_unique<PlaybackSession> (counts, std::move (segs), start, end, rate, app.engine.getMaxBlock());
+    session->monitorTrack = cameraTrack; session->monitorGain.store (cameraGain);
     session->automation = std::move (automation);
     session->editId = editId;                                  // an Edit plays through its own mixer
     session->followsAutomation = followAutomation;             // (3.26.0: the edit itself, not its guide: a change to its automation is heard at once)
@@ -2162,6 +2168,14 @@ juce::String AppContext::playEdit (const juce::Uuid& editId, double fromSec, dou
     const juce::int64 a = juce::jmax ((juce::int64) 0, (juce::int64) std::llround (fromSec * rate));
     const juce::int64 b = toSec < 0 ? a + (juce::int64) std::llround (kOpenEndSeconds * rate) : juce::jmax (a, (juce::int64) std::llround (toSec * rate));
     auto segs = segmentsForEdit (project, *e);
+    // 3.68.0: the camera's sound of the edit's video rides along on a track of its own, beyond the project's (always, so the lane's Sound key
+    // is heard the moment it is pressed; silent until then). It is placed as late as the edit's mixer makes the mix, so the two arrive together.
+    int cameraTrack = -1;
+    if (! e->videos.empty())
+    {
+        auto cam = cameraSoundSegments (*e, rate, (int) project.tracks.size(), engine.playMixerLatency (editId));
+        if (! cam.empty()) { cameraTrack = (int) project.tracks.size(); segs.insert (segs.end(), std::make_move_iterator (cam.begin()), std::make_move_iterator (cam.end())); }
+    }
     loop = loop && toSec >= 0 && b > a;
     const bool goOn = loop && goOnAfterLoop;
     setAlignOwner (project.alignOwnerFor (true, editId));
@@ -2169,7 +2183,7 @@ juce::String AppContext::playEdit (const juce::Uuid& editId, double fromSec, dou
     project.resolveAllAutomation();
     const auto sig = lanesSignature (e->lanes);                           // (what the plan is made from: a later change is heard at once, see followAutomation)
     auto err = beginSession (*this, std::move (segs), a, b, rate, automationPlanFor (project, *e), loop, true, editId,
-                             goOn ? a + (juce::int64) std::llround (kOpenEndSeconds * rate) : -1, true);
+                             goOn ? a + (juce::int64) std::llround (kOpenEndSeconds * rate) : -1, true, cameraTrack, video::soundOn (*e) ? 1.0f : 0.0f);
     if (err.isEmpty())
     {
         playInfo = { PlayInfo::Kind::Edit, e->windowId, editId, (double) a / rate }; playInfo.loopLen = loop ? (double) (b - a) / rate : 0.0;

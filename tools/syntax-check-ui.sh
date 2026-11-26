@@ -5,7 +5,7 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 MODS="juce_core juce_events juce_graphics juce_data_structures juce_gui_basics juce_gui_extra juce_audio_basics juce_audio_formats juce_audio_devices juce_audio_processors juce_audio_utils"
 DEFS="-DJUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1 -DJUCE_STANDALONE_APPLICATION=1 -DJUCE_PLUGINHOST_VST3=1 -DJUCE_USE_CURL=0 -DJUCE_WEB_BROWSER=0"
 for m in $MODS; do DEFS="$DEFS -DJUCE_MODULE_AVAILABLE_$m=1"; done
-FILES=${@:-$(ls "$HERE"/src/ui/*.cpp "$HERE"/src/Main.cpp "$HERE"/src/live/*.cpp 2>/dev/null | grep -v '/PdfPagesWin\.cpp$')}      # fermata's windows and fermata:Live's (not PdfPagesWin.cpp: Windows' own headers, which are not here)
+FILES=${@:-$(ls "$HERE"/src/ui/*.cpp "$HERE"/src/Main.cpp "$HERE"/src/live/*.cpp 2>/dev/null | grep -v '/PdfPagesWin\.cpp$\|/VideoReaderWin\.cpp$')}      # fermata's windows and fermata:Live's (not PdfPagesWin.cpp or VideoReaderWin.cpp: Windows' own headers, which are not here; check-windows-code.sh looks at the video reader)
 rc=0
 # (fermata 3.37.0: -Wno-missing-field-initializers - a brace list that leaves its last members to start empty, as C++ means it to, is not reported;
 #  Microsoft's compiler, which makes the programs, has no such warning. Asked for on 5 November 2026.)

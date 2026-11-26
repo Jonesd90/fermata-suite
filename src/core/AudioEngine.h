@@ -66,6 +66,13 @@ public:
     int mixerLatency (const MixerState*) const;
     /** Offline render: how many samples the captured signals are late by (the first that many samples of every capture are to be thrown away; render that many extra at the end). */
     int offlineLatency() const;
+    /** 3.68.0 (video). Message thread. playMixerLatency: how late (samples) the mixer an edit plays through - its own, else the first - puts its
+        sound on the outputs (its plug-ins' delay, lined up). heardDelaySeconds: how long after the playing session hands a sample over it is
+        HEARD: that mixer's delay, the driver's output latency and the live rate converter's - the picture is drawn for the sound being heard,
+        not the sound being made. setPlaybackMonitorGain: the level of the playing session's monitor track (the camera's sound; 0 = not heard). */
+    int playMixerLatency (const juce::Uuid& editId) const;
+    double heardDelaySeconds (const juce::Uuid& editId) const;
+    void setPlaybackMonitorGain (float gain) noexcept;
 
     // --- offline rendering (bounce out). Use on a private engine that belongs to a private copy of the project; no audio device needed. ---
     /** Choose the mixer to render and what to capture from it: the post-fader signal of any audio tracks / Int Buses / Ext Buses

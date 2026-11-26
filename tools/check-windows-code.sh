@@ -12,6 +12,15 @@ g++ $FLAGS -DFERMATA_CPU_WINDOWS_STUBS=1 "$HERE/src/core/CrashReport.cpp" || exi
 # fermata:Live 0.6.0: the second seat's Windows part (the Interception library loaded at run time, the keys' names, the click-through pointer)
 g++ $FLAGS -DFERMATA_SEAT_WINDOWS_STUBS=1 -DJUCE_MODULE_AVAILABLE_juce_gui_basics=1 -DJUCE_MODULE_AVAILABLE_juce_graphics=1 -DJUCE_MODULE_AVAILABLE_juce_events=1 \
     -DJUCE_MODULE_AVAILABLE_juce_data_structures=1 -Wno-unused-parameter "$HERE/src/live/SecondSeat.cpp" || exit 1
+# fermata 3.68.0: the video reader's Windows file (Media Foundation), against stand-ins for the Windows headers it uses (tools/win-stubs/mf): its own
+# grammar, with and without the graphics card's decoder. And that it never calls a Media Foundation function by name - those are found in
+# Windows' DLLs when the first video is opened, so that fermata still starts on a Windows without them (see the top of that file).
+for d in 1 0; do
+    g++ -std=c++17 -fsyntax-only -Wall -Wextra -Wno-unknown-pragmas -Wno-cast-function-type -DFERMATA_VIDEO_D3D=$d -I"$HERE/tools/win-stubs/mf" "$HERE/src/ui/VideoReaderWin.cpp" || exit 1
+done
+if grep -nE '(^|[^A-Za-z0-9_:&])(MF(Startup|Shutdown|Create[A-Za-z0-9]+|GetStrideForBitmapInfoHeader)|D3D11CreateDevice) *\(' "$HERE/src/ui/VideoReaderWin.cpp"; then
+    echo "src/ui/VideoReaderWin.cpp calls a Media Foundation function by name (use the pointers in Mf: fermata must start without mfplat.dll)"; exit 1
+fi
 echo '#include "src/core/FileSync.h"
 int main() { return td::filesync::syncToDisk (juce::File()) ? 0 : 1; }' | g++ $FLAGS -I"$HERE" -x c++ - || exit 1
 python3 - "$HERE" <<'PY' || exit 1
