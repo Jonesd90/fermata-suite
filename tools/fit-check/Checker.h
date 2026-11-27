@@ -35,7 +35,13 @@ protected:
     std::set<juce::Component*> before;
     int shot = 0, totalProblems = 0;
 
-    void add (const juce::String& n, std::function<void()> f, juce::StringArray tabs = {}, bool mainOnly = false) { scenes.push_back ({ n, std::move (f), std::move (tabs), mainOnly }); }
+    /** A scene. FIT_ONLY (3.72.0; optional: names, with commas between): only those scenes - "main" is always there. */
+    void add (const juce::String& n, std::function<void()> f, juce::StringArray tabs = {}, bool mainOnly = false)
+    {
+        const auto only = juce::SystemStats::getEnvironmentVariable ("FIT_ONLY", {});
+        if (only.isNotEmpty() && ! mainOnly && ! juce::StringArray::fromTokens (only, ",", "").contains (n)) return;
+        scenes.push_back ({ n, std::move (f), std::move (tabs), mainOnly });
+    }
     void say (const juce::String& s) { report.appendText (s + "\n"); }
 
     static std::vector<juce::Component*> windowsNow()

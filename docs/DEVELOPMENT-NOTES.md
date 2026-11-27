@@ -2620,6 +2620,49 @@ fermata's `shutdown()` and its static destructors. Our unhandled-exception filte
   right after closing the log, so the PDF reader's unload code never runs. Everything is saved and closed by then.
 (The symbols of Windows' own libraries were not available here: the reading rests on the single thread and the order of the modules.)
 
+## 3.72.0: lanes that fold, the take window's PDF key, the zoom keys on line 2 (27 November 2026, Claude Opus; fermata only)
+
+**Asked** (with a picture of the edit window's lanes): the PDF key in the take window; - and + on the buttons' second line; fold and open the
+lanes above the tracks one by one or all together, to give the tracks more room.
+
+**`src/ui/LaneFold.h` (new, fermata only):**
+- `lanefold::Folds`: one window's folded lanes - a set of ids, kept in the user settings as `laneFolds_<window id>` (a comma list: the edit's id
+  for an edit window, the take window's id for a take window). `set`, `toggle`, `setAll (lanes, fold)`, `countFolded (lanes)`; `onChange` (the
+  window lays itself out again). A fold of a lane that is not there just now (no guide, the tuning line off) is kept for when it comes back.
+- Lane ids: `markers`, `feedback`, `guide`, `tuning`, `video` (the timelines' band); `comments:N`, `pieces`, `changes` (the edit window's
+  VersionStrip). The take window has `markers` and `tuning`.
+- Drawing: `triangleBox (nameX, nameW, laneTop)` (18 x 14 at the top right of the name box), `paintTriangle`, `paintFoldedBand` and
+  `paintFoldedName` (a folded lane: `kFoldedH` = 16), `keyBox` / `paintKey` / `keyTip` (the LANES key), `showMenu` (Fold all / Open all / each
+  lane, ticked when open).
+- `placeZoomKeys (r, minus, plus, iconH)`: the zoom keys in the corner reserve (`grid::cornerReserve`), centred on the flow's second line
+  (`max (rowH, iconH + 8)` below the top). The flow no longer has them (`zoomItems`), except in the narrow layout, where the buttons go under the
+  head and the zoom keys are appended to them as before.
+
+**Edit window (`EditWindow.cpp`):**
+- The band's heights were constants (`markerui::kStripH`, `kFbH`, `kInsY`, `kRulerTop`, `kRulerH`, EditTimeline's `kGuideTop`); they are EditTimeline members
+  now (`markH`, `fbH`, `insY`, `rulerTop`, `rulerH`, `guideTop`), worked out by `refreshBand()` (in the constructor, in `setViewing`, and on a
+  fold change). `markH` / `fbH` are 0 when folded - except that the feedback line stays while a frozen version is on show (its notice is
+  there). `guideH()`, `tuneH()`, `videoH()` give `kFoldedH` when folded; their paint functions draw the folded band / name and return early.
+- `foldClick (e, shift)` runs in `mouseDown` before anything else (a frozen version on show too): the LANES key (`lanesKeyBox`: in the names
+  column, 7 below the ruler's top), the triangles (a right-click: the LANES menu), and any click on a folded lane (on its name: open it; along it:
+  nothing). `foldGesture` keeps the drag and the release of that click away from the rest of the mouse code. Folded markers: no flags, no strip
+  clicks (`markers.mouseDown` only while `markH > 0`); their faint lines are drawn by the timeline itself (MarkerStrip.h is shared and
+  unchanged).
+- VersionStrip: `folds` (the window's), `foldLanes()` (for the menu), `idealHeight()` leaves folded lanes out, `paint` skips them and notes
+  where it drew each triangle (`triRects`), `mouseDown` folds on a triangle; a TooltipClient now (the triangles' tip).
+- EditWindowComponent owns `laneFolds` (declared before the timeline and the strip, so destroyed after them), gives it to both, and builds the
+  menu's list (`foldableLanes()`: the strip's lanes, then the band's, top down; only the lanes there are just now).
+- `scoreKey` / `scoreMenu` call `score::toggle` / `score::showMenu` (moved to `ScoreWindow.h`, fermata only, for the take window to share).
+
+**Take window (`TakeWindow.cpp`):** the file-level `kRulerH` (34 + the marker strip) is the TakeTimeline member `rulerH` (with `markH`); `laneH`
+comes from `wantLaneH()` (the tuning lane folded: `kFoldedH`); `refreshBand()` lays the rows out again (`applyHeightLevel`, so the rows take the
+room). The marker strip has a name now ("Markers", with its triangle), as in the edit window. `scoreEdit (make)`: the window's target edit
+(made, as `openEditWindow` makes it, when there is none and `make`); the PDF key is lit while that edit's score window is open (the timer).
+
+**The small-screen check:** `FIT_ONLY` (names, with commas) runs only those scenes. New scenes: `takewindow-folded`, `editwindow-folded` (every
+lane folded through the settings, then cleared), and last `editwindow-versions` / `editwindow-versions-folded` (the edit frozen as Edit 1 with a
+comment, compared with: the comments, pieces and changes lanes).
+
 ## 3.71.0: windows that fit the screen (26 November 2026, Claude Opus; fermata:Live 0.10.18)
 
 **Asked** (with a picture of the Listening copy page on a smaller screen, "Your name" a sliver): detect that a box will not be properly visible,

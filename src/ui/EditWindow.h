@@ -4,6 +4,7 @@
 #include "Uikit.h"
 #include "TimeReadout.h"
 #include "ScoreWindow.h"
+#include "LaneFold.h"
 #include "Video.h"
 
 namespace td
@@ -107,6 +108,8 @@ private:
     void scoreKey();                                    //   a click: the window open / closed (the first time: asks for the PDF)
     void scoreMenu();                                   //   a right-click: another PDF, the folder, take it off
     video::MenuButton pictureButton { "Video" };        // 3.68.0: the edit's video - a click opens / closes the picture (the first time: adds a video file); right-click: the lane's menu
+    lanefold::Folds laneFolds;                                // 3.72.0: which lanes above the tracks are folded (declared before the timeline and the strip: destroyed after them)
+    std::vector<lanefold::Lane> foldableLanes() const;        //   the lanes there are just now (the LANES key's menu)
     std::unique_ptr<EditTimeline> timeline;
     std::unique_ptr<juce::Viewport> viewportOwner;
     std::unique_ptr<KeepKeysOnTimeline> keysKeeper;           // declared after the viewport: destroyed first

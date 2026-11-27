@@ -12,6 +12,7 @@
 #include "../../src/ui/ProjectRateDialog.h"
 #include "../../src/ui/VolumeDialog.h"
 #include "../../src/ui/FixTools.h"
+#include "../../src/core/EditVersions.h"
 #include <set>
 
 namespace td::fitcheck
@@ -50,11 +51,13 @@ public:
         if (! take.isNull())
         {
             add ("takewindow", [this, take] { if (app.showTakeWindow) app.showTakeWindow (take); });
+            add ("takewindow-folded", [this, take] { foldAll (take); if (app.showTakeWindow) app.showTakeWindow (take); foldAll (take, false); });     // 3.72.0: its lanes folded
             add ("align-take", [this, take] { if (app.showAlign) app.showAlign (false, take); });
         }
         if (! edit.isNull())
         {
             add ("editwindow", [this, edit] { if (app.showEdit) app.showEdit (edit); });
+            add ("editwindow-folded", [this, edit] { foldAll (edit); if (app.showEdit) app.showEdit (edit); foldAll (edit, false); });              // 3.72.0: its lanes folded
             add ("versions", [this, edit, M] { mark (edit); if (app.showVersions) app.showVersions (edit, M); });
             add ("retouch", [this, edit, M] { mark (edit); fixtools::repairEdit (app, edit, M); });
             add ("noisemode", [this, edit, M] { mark (edit); fixtools::noiseModeEdit (app, edit, M); });
@@ -66,6 +69,10 @@ public:
             add ("bounce-edit", [this, edit] { if (app.showBounce) { BounceContext b; b.kind = BounceContext::Kind::Edit; b.id = edit; b.defaultName = "Fit check"; app.showBounce (b); } });
             add ("volume-area", [this, edit] { showNewVolumeArea (app, edit, 0, 48000 * 4, false); });
             if (! region.isNull()) add ("trim", [this, edit, region] { if (app.showTrim) app.showTrim (edit, region, false); });
+            // 3.72.0: with a frozen version (its comments' lane, its pieces and the changes since it, above the timeline) - open, then folded. Last:
+            // the edit is changed by it (in the project's copy)
+            add ("editwindow-versions", [this, edit] { freezeOnce (edit); if (app.showEdit) app.showEdit (edit); });
+            add ("editwindow-versions-folded", [this, edit] { freezeOnce (edit); foldAll (edit); if (app.showEdit) app.showEdit (edit); foldAll (edit, false); });
         }
         if (! mixer.isNull())
         {
@@ -77,6 +84,26 @@ public:
 
 private:
     AppContext& app;
+    /** 3.72.0: every lane above the tracks folded (LaneFold.h) in the window with this id, for when it opens next (fold false: none). */
+    void foldAll (const juce::Uuid& windowId, bool fold = true)
+    {
+        if (auto* st = app.props.getUserSettings())
+        {
+            if (fold) st->setValue ("laneFolds_" + windowId.toString(), "markers,feedback,guide,tuning,video,pieces,changes,comments:1,comments:2,comments:3");
+            else st->removeValue ("laneFolds_" + windowId.toString());
+        }
+    }
+    /** 3.72.0: the edit frozen as Edit 1, with a listener's comment on it, and compared with (once). */
+    void freezeOnce (const juce::Uuid& edit)
+    {
+        auto* e = app.project.findEdit (edit);
+        if (e == nullptr || ! e->versions.empty()) return;
+        FeedbackNote n; n.key = "fit-check-1"; n.who = "Fit check"; n.text = "A comment"; n.bar = "bar 3"; n.seconds = 4.0;
+        e->feedback.push_back (n);
+        e->showFeedback = true;
+        e->compareWith = editversions::freeze (*e, {});
+        app.project.refreshCommentsCopy (*e);
+    }
     /** Marks 1 and 2 on a part of the edit's first piece (the tools work on the marked part). */
     void mark (const juce::Uuid& edit)
     {

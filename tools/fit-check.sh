@@ -8,6 +8,7 @@
 # Usage: tools/fit-check.sh /path/to/JUCE [project.fermata] [out folder]       (default out folder: /tmp/fermata-fit-check)
 #   FIT_PROGRAM=live: fermata:Live instead (tools/fit-check/LiveFitCheck.h: its main window and each window its menu bar opens, on the project given)
 #   FIT_STYLE=1: in the Manuscript UI (its serif type is wider: the harder case) - 0, the Fermata style UI, is the default
+#   FIT_ONLY (optional, 3.72.0): only these scenes (their names, with commas between - e.g. takewindow,editwindow-folded)
 #   FIT_SIZES (optional): the screens, as the part of the screen a window may use (the taskbar left out). Default:
 #     1536x816  - 1920x1080 at 125 % (the user's smaller screen), less the taskbar
 #     1366x728  - 1366x768 at 100 %, less the taskbar

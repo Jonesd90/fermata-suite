@@ -6,6 +6,29 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.72.0
+Built 27 November 2026 (the conversation for both programs), with Claude Opus. Asked for that evening, with a picture of the edit window's lanes
+("Edit 1 comments", "Edit 2 pieces", "Changes since Edit 2", Markers, Feedback): the PDF key in the take window too; the - and + keys on the
+second line of buttons, not alone on a third; and "a way of collapsing and opening all of these lanes individually or globally please so that I
+can make the view of the tracks below larger if I need to".
+- **The lanes above the tracks fold away**, in the edit window and the take windows. Each lane has a small triangle at the top right of its name:
+  a click folds it. The guide, the tuning line and the video fold to one thin line with their name on it (a click on the name opens the lane
+  again); the thinner strips - the markers, the listeners' comments (Feedback) and the versions' lanes (Edit N comments, Edit N pieces, Changes
+  since Edit N) - fold away altogether. With the marker strip folded, the markers' faint lines still run down the tracks.
+- **The LANES key**, in the names column beside the ruler: its menu folds all the lanes, opens them all, or folds and opens each one (ticked:
+  open). It is lit, with how many, while any lane is folded. A right-click on any lane's triangle opens the same menu.
+- Folded lanes are remembered for each window (in fermata's settings, like a view - the project does not change), so a window opens as you
+  left it. In a take window, the taller room goes to the tracks straight away (the rows grow to fill it, at the height level chosen).
+- **The PDF key in the take window**: the score of the edit the window's takes go into ("To edit goes into") - the same score, window and
+  brackets as that edit window's PDF key. If the window has no edit yet, it is made first (as the Edit window key makes it). Right-click:
+  another PDF, the PDFs folder, or take the score off the edit.
+- **The - and + keys** (zoom) of the take and edit windows are now on the buttons' second line, at the right under the pin and sun / moon
+  buttons; on a narrow window, where the buttons go under the head, they stay at the end of the buttons.
+- Checked here (Linux): fermata builds with no warnings. The small-screen check's take and edit windows, open and folded (and with a frozen
+  version, its three lanes open and folded), on all four screens and in the Manuscript UI: the lanes fold, the tracks get the room, nothing new
+  is squashed. Clicks on the triangles, on a folded lane's name and on the LANES key were tried in the test build. Not checked here: the Windows
+  build (GitHub); the PDF key's file chooser.
+
 ## 3.71.0
 Built 26 November 2026 (the conversation for both programs), with Claude Opus. Asked for that evening, with a picture of the Mastering window's
 Listening copy page on a smaller screen, its "Your name" box a sliver at the bottom: "fermata should be able to detect the size of the screen,

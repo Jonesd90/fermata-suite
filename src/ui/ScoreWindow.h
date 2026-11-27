@@ -74,6 +74,44 @@ inline void choosePdf (AppContext& app, const juce::Uuid& editId, juce::Componen
         if (done) done();
     });
 }
+
+/** 3.72.0: the PDF key's click, in the edit window and in a take window (for the edit its takes go into): opens or closes the edit's score; the
+    first time (or when its file has gone from the PDFs folder) it asks for the PDF, then opens it. */
+inline void toggle (AppContext& app, const juce::Uuid& editId, juce::Component* over)
+{
+    auto* e = app.project.findEdit (editId); if (e == nullptr) return;
+    const auto key = windowKey (editId);
+    if (app.windowIsOpen && app.windowIsOpen (key)) { if (app.closeWindowByKey) app.closeWindowByKey (key); return; }
+    if (e->score.isNotEmpty() && app.project.scoreFileFor (*e).existsAsFile()) { if (app.showScore) app.showScore (editId); return; }
+    auto* a = &app; const auto id = editId;
+    choosePdf (app, editId, over, [a, id] { if (a->showScore) a->showScore (id); });
+}
+
+/** 3.72.0: the PDF key's right-click (both windows): choose another PDF, show the PDFs folder, take the score off the edit. */
+inline void showMenu (AppContext& app, const juce::Uuid& editId, juce::Component* key)
+{
+    auto* e = app.project.findEdit (editId); if (e == nullptr) return;
+    const bool has = e->score.isNotEmpty();
+    juce::PopupMenu m;
+    m.addSectionHeader (has ? e->score : "The score of \"" + e->name + "\"");
+    m.addItem (1, has ? "Choose another PDF for this edit..." : "Choose the PDF for this edit...");
+    m.addItem (2, "Show the project's PDFs folder");
+    m.addSeparator();
+    m.addItem (3, "Take the score off this edit  (the file stays in the PDFs folder)", has);
+    auto* a = &app; const auto id = editId;
+    juce::Component::SafePointer<juce::Component> safe (key);
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (key), [a, id, safe] (int r)
+    {
+        if (r == 0) return;
+        if (r == 1) choosePdf (*a, id, safe != nullptr ? safe->getTopLevelComponent() : nullptr, [a, id] { if (a->showScore) a->showScore (id); });   // (an open score window takes the new PDF by itself)
+        else if (r == 2) { auto dir = a->project.pdfsFolder(); dir.createDirectory(); dir.revealToUser(); }
+        else if (r == 3)
+        {
+            if (auto* ed = a->project.findEdit (id)) { ed->score.clear(); ed->scoreTop = 0.0; ed->scoreZoom = 0.0; ed->scoreFirstPage = ed->scoreLastPage = 0; a->project.markDirty(); }
+            if (a->closeWindowByKey) a->closeWindowByKey (windowKey (id));
+        }
+    });
+}
 } // namespace score
 
 /** A key of the score window that also has a menu on a right-click. */

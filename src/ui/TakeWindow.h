@@ -7,6 +7,8 @@
 #include "TakeMatchPanel.h"
 #include "Uikit.h"
 #include "TimeReadout.h"
+#include "ScoreWindow.h"
+#include "LaneFold.h"
 
 namespace td
 {
@@ -64,6 +66,9 @@ private:
     bool markedRange (juce::Uuid& take, double& in, double& out) const;
     juce::String playLoop (const juce::Uuid& take, double in, double out);     // goes round the marked area on the window timeline
     void openEditWindow();
+    /** 3.72.0: the edit this window's score is: the one its takes go into ("To edit goes into"). None yet: null - or, with 'make', it is made now
+        (named as the Edit window key names it). */
+    juce::Uuid scoreEdit (bool make);
     void openBounce();
     void nudgeCursor (double seconds);
     // ---- transport: Start, Back 5 s, Play / Stop, Forward 5 s, End (of the last take); they also work while playing, which then carries on from the new place
@@ -95,6 +100,7 @@ private:
     IconButton recordButton { "REC  [R]" }, playButton { "Play [Space]" }, startButton { "|<" }, backButton { "<<" }, fwdButton { ">>" }, endTransportButton { ">|" }, bounceButton { "Bounce Out..." },
                pitchButton { "Pitch..." }, repairButton { "Repair & DeClick..." }, undoFixButton { "Undo fix" };
     juce::TextButton zoomInButton { "+" }, zoomOutButton { "-" };
+    ScoreButton scoreButton;                            // 3.72.0: the score (a PDF) of the edit this window's takes go into, as the edit window's PDF key
     IconButton editInButton { "Mark 1 [1]" }, editOutButton { "Mark 2 [2]" },
                toEditButton { "To edit [3]" }, toEditAtButton { "To playhead [4]" }, editWindowButton { "Edit window" },
                importButton { "Import takes..." }, exportProcButton { "Export for Processing..." }, barSearchButton { "Search for bar" },
@@ -106,6 +112,8 @@ private:
     int shownKnock = -1;                                // (3.61.0: the knock weighting its dots show)
     tuning::Button tuningBtn;                           // 3.63.0: the tuning line (shown / hidden; right-click: its settings)
     CompressWaveButton waveCompressBtn;                 // 3.27.0: compressed waveforms (the picture only)
+    lanefold::Folds laneFolds;                                // 3.72.0: which lanes above the tracks are folded (declared before the timeline: destroyed after it)
+    std::vector<lanefold::Lane> foldableLanes() const;        //   the lanes there are just now (the LANES key's menu)
     std::unique_ptr<TakeTimeline> timeline;
     std::unique_ptr<juce::Viewport> viewportOwner;
     std::unique_ptr<KeepKeysOnTimeline> keysKeeper;           // declared after the viewport: destroyed first

@@ -37,11 +37,9 @@ static int takesInEdit (const EditDef& e)
     return (int) t.size();
 }
 static constexpr int kInsH = 14;                                           // the strip with the flag that shows where the next take goes
-static constexpr int kFbH = 14;                                            // the strip with the listeners' comment flags (its own line, under the markers)
-static constexpr int kInsY = markerui::kStripH + kFbH;                     // where the insert strip starts
-static constexpr int kRulerTop = kInsY + kInsH;                            // where the ruler's numbers start
-static constexpr int kRulerH = 32 + kRulerTop, kLaneH = 38;                // (the top band: the marker strip, then the feedback strip, then the insert flag, then the ruler -
-                                                                           //  3.35.1: its times on a line of their own, above the edit points' numbers, which hid them)
+static constexpr int kLaneH = 38;                                          // the pieces' banners (and a version's lane in the versions strip)
+// (the top band: the marker strip, then the feedback strip (14), then the insert flag, then the ruler - 3.35.1: its times on a line of their own, above
+//  the edit points' numbers, which hid them. 3.72.0: the first two can be folded away, so their heights are the timeline's own: EditTimeline::refreshBand)
 static int kNameW = 210;                        // width of the track-name column (drag its right edge to change it; shared by all edit windows)
 
 /** 3.51.0: what the editor's own notes need (FeedbackUi.h): the name they are signed with, kept in the program's settings for every project. */
@@ -71,6 +69,7 @@ public:
     EditTimeline (AppContext& a, const juce::Uuid& eid, juce::Viewport& vp)
         : app (a), editId (eid), viewport (vp)
     {
+        refreshBand();                                  // (3.72.0: nothing folded until the window gives the timeline its folds)
         td::registerAudioFormats (formatManager);
         setWantsKeyboardFocus (true);
         startTimerHz (30);
@@ -172,6 +171,7 @@ public:
         if (src == nullptr) version = 0;
         if (version == viewing && (version == 0 || viewCopy != nullptr)) return;
         viewing = version;
+        refreshBand();                                  // (3.72.0: a frozen version's notice line stays open)
         if (version > 0)
         {
             viewCopy = std::make_unique<EditDef> (*src);
@@ -197,11 +197,52 @@ public:
 
     // ---- the visual guide (2.102): a lane of its own under the top band, above the tracks. It belongs to the band, so it stays in view however
     //      far down the tracks are scrolled. Drag anywhere along it to slide it; its S plays it on its own instead of the edit.
-    static constexpr int kGuideTop = kRulerH + kLaneH;
+    // 3.72.0: the top band's heights - fixed until the markers' and the comments' strips could be folded away (LaneFold.h); refreshBand() works them out
+    int markH = markerui::kStripH, fbH = 14, insY = 0, rulerTop = 0, rulerH = 0, guideTop = 0;
+    lanefold::Folds* folds = nullptr;           // the window's folded lanes (EditWindowComponent's; set when it makes the timeline)
+    bool isFolded (const char* lane) const { return folds != nullptr && folds->isFolded (lane); }
+    std::function<int()> lanesFolded;                               // how many of the window's lanes are folded (lights the LANES key)
+    std::function<void (juce::Rectangle<int>)> onLanesKey;         // the LANES key clicked: the window shows its menu (by this area, on the screen)
+    juce::Rectangle<int> lanesKeyBox (int sx) const { return lanefold::keyBox (sx, rulerTop + 7); }      // (in the names column, beside the ruler)
+    bool foldGesture = false;                                       // the mouse went down on a triangle, a folded lane or the LANES key
+    /** 3.72.0: a click on a lane's triangle, on a folded lane or on the LANES key does that (true: it was one of them). e: in the band's own
+        coordinates (shifted down by 'shift' when the band is held at the top of a scrolled window). */
+    bool foldClick (const juce::MouseEvent& e, int shift)
+    {
+        auto* ed = edit();
+        if (folds == nullptr || ed == nullptr || e.y < 0 || e.y >= bandH()) return false;
+        const int sx = viewport.getViewPositionX();
+        const auto p = e.getPosition();
+        const bool inNames = e.x >= sx && e.x < sx + kNameW - 4;           // (the column's right edge is its width handle)
+        if (inNames && lanesKeyBox (sx).contains (p))
+        {
+            if (onLanesKey) onLanesKey (localAreaToGlobal (lanesKeyBox (sx).translated (0, shift)));
+            return true;
+        }
+        auto tri = [&] (int top, int h) { return inNames && lanefold::triangleBox (sx, kNameW, top).withHeight (juce::jmin (h, 16)).expanded (3, 0).contains (p); };
+        auto in = [&] (int top, int h) { return h > 0 && e.y >= top && e.y < top + h; };
+        auto fold = [&] (const char* lane, bool f) { if (e.mods.isPopupMenu()) { if (onLanesKey) onLanesKey (localAreaToGlobal (juce::Rectangle<int> (p.x, p.y + shift, 1, 1))); } else folds->set (lane, f); return true; };
+        if (in (0, markH) && tri (0, markH)) return fold ("markers", true);
+        if (viewing <= 0 && in (markH, fbH) && tri (markH, fbH)) return fold ("feedback", true);
+        struct L { const char* id; int top, h; };
+        for (const L l : { L { "guide", guideTop, guideH() }, L { "tuning", tuneTop(), tuneH() }, L { "video", videoTop(), videoH() } })
+        {
+            if (! in (l.top, l.h)) continue;
+            if (isFolded (l.id)) { if (inNames) fold (l.id, false); return true; }       // (folded: its name opens it; the rest of its line does nothing)
+            if (tri (l.top, l.h)) return fold (l.id, true);
+        }
+        return false;
+    }
+    void refreshBand()
+    {
+        markH = isFolded ("markers") ? 0 : markerui::kStripH;
+        fbH = isFolded ("feedback") && viewing <= 0 ? 0 : 14;      // (a frozen version's notice is on that line: it stays while one is shown)
+        insY = markH + fbH; rulerTop = insY + kInsH; rulerH = 32 + rulerTop; guideTop = rulerH + kLaneH;
+    }
     bool guideSolo = false;                     // its S (starts off in every window, so an edit never opens playing the guide)
     bool guideDrag = false, guideMoved = false;
     juce::int64 guideDragBase = 0;
-    int guideH() const { auto* e = edit(); return e != nullptr && e->guide.active() && e->showGuide ? (guideOwnH > 0 ? guideOwnH : juce::jlimit (40, 90, rowH)) : 0; }
+    int guideH() const { auto* e = edit(); return e != nullptr && e->guide.active() && e->showGuide ? (isFolded ("guide") ? lanefold::kFoldedH : guideOwnH > 0 ? guideOwnH : juce::jlimit (40, 90, rowH)) : 0; }
     // ---- 3.43.0: the guide's own height and waveform size. Click its name box (GUIDE, its S, the take's name) to select it: while it is selected the
     //      keys that size the tracks (Up / Down) and their waveforms (. / ,) size the guide alone - from then on it keeps its own (this window, as the
     //      tracks' heights). A click anywhere else ends it (any window: a global mouse listener while it is selected).
@@ -211,7 +252,7 @@ public:
     float guideZoomNow() const { return guideWaveZoom > 0.0f ? guideWaveZoom : app.waveZoom; }
     bool guideIsSelected() const { return guideSelected && guideH() > 0; }
     /** The guide's name box where it is on the timeline now (it stays at the left as the view scrolls across, and at the top as it scrolls down). */
-    juce::Rectangle<int> guideNameBox() const { return { viewport.getViewPositionX(), kGuideTop + viewport.getViewPositionY(), kNameW, guideH() }; }
+    juce::Rectangle<int> guideNameBox() const { return { viewport.getViewPositionX(), guideTop + viewport.getViewPositionY(), kNameW, guideH() }; }
     void selectGuide (bool on)
     {
         if (on && guideH() <= 0) on = false;
@@ -224,7 +265,7 @@ public:
     }
     void guideHeightBy (double f)
     {
-        const int now = guideH(); if (now <= 0) return;
+        const int now = guideH(); if (now <= 0 || isFolded ("guide")) return;
         const int maxH = juce::jmax (90, viewport.getMaximumVisibleHeight() / 2);
         guideOwnH = juce::jlimit (40, maxH, (int) std::lround ((double) now * f + (f > 1.0 ? 1.0 : -1.0)));
         updateSize(); repaint();
@@ -242,10 +283,10 @@ public:
         }
     } guideDeselect { this };
     /** The top band's height: markers, comments, insert flag, ruler and the pieces' banners, then the guide's lane when there is one. The tracks start under it. */
-    int bandH() const { return kRulerH + kLaneH + guideH() + tuneH() + videoH(); }
+    int bandH() const { return rulerH + kLaneH + guideH() + tuneH() + videoH(); }
     // ---- 3.63.0: the tuning line, in a lane of its own under the guide (TuningLine.h): each piece shows its take's line over the part it plays
-    int tuneH() const { return app.tuningShow ? tuning::kLaneH : 0; }
-    int tuneTop() const { return kGuideTop + guideH(); }
+    int tuneH() const { return app.tuningShow ? (isFolded ("tuning") ? lanefold::kFoldedH : tuning::kLaneH) : 0; }
+    int tuneTop() const { return guideTop + guideH(); }
     int shownTuneH = -1, shownTuningGen = -1, shownLiveGen = -1; tuning::Mode shownTuningMode = tuning::Mode::relative; double shownTuningA = 440.0;
     struct TuneSeg { const TakeGroup* take = nullptr; std::shared_ptr<const tuning::Line> line; double from = 0, to = 0, offset = 0; int x0 = 0, x1 = 0; const EditRegion* piece = nullptr; };
     // (3.67.0) for the pieces of an edit imported from an AAF, which name no take: the take each take file of the project belongs to, by the
@@ -334,6 +375,7 @@ public:
         const int y0 = tuneTop();
         if (clip.getBottom() < y0 || clip.getY() >= y0 + h) return;
         const auto laneR = juce::Rectangle<int> (0, y0, getWidth(), h);
+        if (isFolded ("tuning")) { lanefold::paintFoldedBand (g, laneR); return; }        // (3.72.0: folded - one thin line)
         tuning::paintLaneBack (g, laneR);
         const auto plot = laneR.reduced (0, 2);
         const auto segs = tuningSegs (e, &clip);                          // (3.67.0: only what this repaint shows)
@@ -357,6 +399,26 @@ public:
     }
     juce::String getTooltip() override
     {
+        if (folds != nullptr)                                                  // 3.72.0: the LANES key, the triangles and the folded lanes
+        {
+            auto p = getMouseXYRelative();
+            const int sy = viewport.getViewPositionY();
+            if (sy > 0 && p.y >= sy && p.y < sy + bandH()) p.y -= sy;
+            const int sx = viewport.getViewPositionX();
+            if (p.y < bandH() && p.x >= sx && p.x < sx + kNameW)
+            {
+                if (lanesKeyBox (sx).contains (p)) return lanefold::keyTip();
+                auto over = [&] (int top, int h) { return h > 0 && p.y >= top && p.y < top + h; };
+                for (auto [id, top, h] : { std::tuple<const char*, int, int> { "guide", guideTop, guideH() }, { "tuning", tuneTop(), tuneH() }, { "video", videoTop(), videoH() } })
+                    if (over (top, h) && isFolded (id)) return "Folded: click to open this lane again (the LANES key, beside the ruler, opens them all).";
+                const bool onTri = (over (0, markH) && lanefold::triangleBox (sx, kNameW, 0).expanded (3, 0).contains (p))
+                                || (over (markH, fbH) && viewing <= 0 && lanefold::triangleBox (sx, kNameW, markH).expanded (3, 0).contains (p))
+                                || (over (guideTop, guideH()) && lanefold::triangleBox (sx, kNameW, guideTop).expanded (3, 0).contains (p))
+                                || (over (tuneTop(), tuneH()) && lanefold::triangleBox (sx, kNameW, tuneTop()).expanded (3, 0).contains (p))
+                                || (over (videoTop(), videoH()) && lanefold::triangleBox (sx, kNameW, videoTop()).expanded (3, 0).contains (p));
+                if (onTri) return "Fold this lane away, to give the tracks more room (right-click: the lanes' menu - fold or open them all).";
+            }
+        }
         if (const auto vt = videoTip(); vt.isNotEmpty()) return vt;           // 3.68.0
         if (tuneH() <= 0) return {};
         auto p = getMouseXYRelative();
@@ -388,7 +450,7 @@ public:
     }
     // ---- 3.68.0: the video lane, under the tuning line (Video.h): the edit's video clips with small pictures along them and the camera's sound
     //      under the pictures. A clip is locked to where it was lined up; unlocked, it is dragged sideways. A click puts the playhead there.
-    int videoH() const { auto* e = edit(); return e != nullptr && e->showVideo && ! e->videos.empty() ? video::kLaneH : 0; }
+    int videoH() const { auto* e = edit(); return e != nullptr && e->showVideo && ! e->videos.empty() ? (isFolded ("video") ? lanefold::kFoldedH : video::kLaneH) : 0; }
     int videoTop() const { return tuneTop() + tuneH(); }
     int shownVideoH = -1, shownStillsGen = -1, missingTicks = 0;
     std::map<juce::Uuid, bool> videoMissing;                   // (each clip's file there or not: looked at every 2 s, not at every repaint)
@@ -434,6 +496,7 @@ public:
         const auto clip = g.getClipBounds();
         const int y0 = videoTop();
         if (clip.getBottom() < y0 || clip.getY() >= y0 + h) return;
+        if (isFolded ("video")) { lanefold::paintFoldedBand (g, { 0, y0, getWidth(), h }); return; }       // (3.72.0)
         g.setColour (juce::Colours::black.withAlpha (0.22f)); g.fillRect (0, y0, getWidth(), h);
         g.setColour (juce::Colours::black.withAlpha (0.45f)); g.fillRect (0, y0 + h - 2, getWidth(), 2);
         auto& st = video::stills (app);
@@ -517,6 +580,7 @@ public:
         const int y0 = videoTop();
         const auto r = juce::Rectangle<int> (sx, y0, kNameW, h);
         const auto tint = juce::Colour (0xff8f7ad6);
+        if (isFolded ("video")) { lanefold::paintFoldedName (g, r, "VIDEO  (" + juce::String ((int) e.videos.size()) + (e.videos.size() == 1 ? " clip)" : " clips)"), tint.brighter (0.4f)); return; }
         g.setColour (theme::panel); g.fillRect (r);
         g.setColour (tint.withAlpha (0.14f)); g.fillRect (r);
         g.setColour (tint); g.fillRect (r.withWidth (6));
@@ -537,6 +601,7 @@ public:
         g.setColour (theme::dimText); g.setFont (juce::FontOptions (11.0f));
         const int n = (int) e.videos.size();
         g.drawText (juce::String (n) + (n == 1 ? " clip" : " clips") + "   (right-click: menu)", sx + 12, y0 + 46, kNameW - 18, 14, juce::Justification::centredLeft, true);
+        lanefold::paintTriangle (g, lanefold::triangleBox (sx, kNameW, y0), true, tint.brighter (0.4f));          // (3.72.0: fold it)
     }
     juce::String videoTip()
     {
@@ -709,8 +774,8 @@ public:
         });
     }
 
-    bool inGuideLane (int y) const { const int h = guideH(); return h > 0 && y >= kGuideTop && y < kGuideTop + h; }
-    juce::Rectangle<int> guideSoloRect (int sx) const { return { sx + 30, kGuideTop + 3, 18, 16 }; }       // (where the tracks' S is)
+    bool inGuideLane (int y) const { const int h = guideH(); return h > 0 && y >= guideTop && y < guideTop + h; }
+    juce::Rectangle<int> guideSoloRect (int sx) const { return { sx + 30, guideTop + 3, 18, 16 }; }       // (where the tracks' S is)
 
     /** One row of the window: the track / bus / VCA it belongs to, and which of that node's rows it is (0 = its own row, 1.. = the extra lane rows under it). */
     struct RowInfo { juce::Uuid node = juce::Uuid::null(); int lane = 0; NodeKind kind = NodeKind::None; int block = 0; };
@@ -1008,16 +1073,17 @@ public:
         const int h = guideH();
         if (h <= 0) return;
         const auto clip = g.getClipBounds();
-        if (clip.getBottom() < kGuideTop || clip.getY() >= kGuideTop + h) return;
+        if (clip.getBottom() < guideTop || clip.getY() >= guideTop + h) return;
+        if (isFolded ("guide")) { lanefold::paintFoldedBand (g, { 0, guideTop, getWidth(), h }); return; }     // (3.72.0)
         const auto& gd = e.guide;
-        g.setColour (juce::Colours::black.withAlpha (0.14f)); g.fillRect (0, kGuideTop, getWidth(), h);
-        g.setColour (juce::Colours::black.withAlpha (0.45f)); g.fillRect (0, kGuideTop + h - 2, getWidth(), 2);     // (a firm line under it: the tracks begin there)
+        g.setColour (juce::Colours::black.withAlpha (0.14f)); g.fillRect (0, guideTop, getWidth(), h);
+        g.setColour (juce::Colours::black.withAlpha (0.45f)); g.fillRect (0, guideTop + h - 2, getWidth(), 2);     // (a firm line under it: the tracks begin there)
         const double gr = gd.sampleRate;
         const double startSec = (double) gd.start / gr, endSec = (double) gd.end() / gr;
         const double visStart = juce::jmax (0.0, startSec);
         if (endSec <= visStart) return;
         const int x0 = xOf (visStart), x1 = juce::jmax (x0 + 2, xOf (endSec));
-        const auto rr = juce::Rectangle<int> (x0, kGuideTop + 3, x1 - x0, h - 7);
+        const auto rr = juce::Rectangle<int> (x0, guideTop + 3, x1 - x0, h - 7);
         if (rr.getRight() < clip.getX() || rr.getX() > clip.getRight()) return;
         const auto grey = juce::Colour (0xffa9afb8);
         g.setColour (grey.withAlpha (guideDrag ? 0.32f : 0.20f)); g.fillRect (rr);
@@ -1034,7 +1100,7 @@ public:
         if (guideDrag)                                                       // while it is dragged: where it starts now
         {
             const juce::String txt = "starts at " + (startSec < 0.0 ? "-" + formatTimeShort (-startSec, 2) + "  (before 0:00)" : formatTimeShort (startSec, 2));
-            const auto box = juce::Rectangle<int> (juce::jmax (x0, viewport.getViewPositionX() + kNameW) + 6, kGuideTop + 5, 190, 18);
+            const auto box = juce::Rectangle<int> (juce::jmax (x0, viewport.getViewPositionX() + kNameW) + 6, guideTop + 5, 190, 18);
             g.setColour (juce::Colour (0xf0101418)); g.fillRoundedRectangle (box.toFloat(), 4.0f);
             g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
             g.drawText (txt, box.reduced (6, 0), juce::Justification::centredLeft, false);
@@ -1045,12 +1111,13 @@ public:
     {
         const int h = guideH();
         if (h <= 0) return;
-        const auto r = juce::Rectangle<int> (sx, kGuideTop, kNameW, h);
+        const auto r = juce::Rectangle<int> (sx, guideTop, kNameW, h);
         const auto grey = juce::Colour (0xffa9afb8);
+        if (isFolded ("guide")) { lanefold::paintFoldedName (g, r, "GUIDE  -  " + e.guide.takeName, grey); return; }      // (3.72.0)
         g.setColour (theme::panel); g.fillRect (r);
         g.setColour (grey.withAlpha (0.16f)); g.fillRect (r);
         g.setColour (grey); g.fillRect (r.withWidth (6));
-        g.setColour (juce::Colours::black.withAlpha (0.45f)); g.fillRect (sx, kGuideTop + h - 2, kNameW, 2);
+        g.setColour (juce::Colours::black.withAlpha (0.45f)); g.fillRect (sx, guideTop + h - 2, kNameW, 2);
         auto drawS = [&] (juce::Rectangle<int> b, bool on)
         {
             const auto c = juce::Colour (0xfff2c200);
@@ -1061,16 +1128,17 @@ public:
         };
         drawS (guideSoloRect (sx), guideSolo);
         g.setColour (theme::text); g.setFont (juce::FontOptions (12.5f, juce::Font::bold));
-        g.drawText ("GUIDE", sx + 54, kGuideTop + 3, kNameW - 60, 16, juce::Justification::centredLeft, true);
+        g.drawText ("GUIDE", sx + 54, guideTop + 3, kNameW - 60, 16, juce::Justification::centredLeft, true);
         g.setColour (theme::dimText); g.setFont (juce::FontOptions (11.5f));
-        g.drawText (e.guide.takeName + "  -  " + e.guide.trackName, sx + 10, kGuideTop + 21, kNameW - 16, 16, juce::Justification::centredLeft, true);
+        g.drawText (e.guide.takeName + "  -  " + e.guide.trackName, sx + 10, guideTop + 21, kNameW - 16, 16, juce::Justification::centredLeft, true);
         if (h >= 58)
-            g.drawText (guideSelected ? "Up / Down, , / . size the guide" : guideSolo ? "S on: Space plays the guide only" : "drag it sideways to line it up", sx + 10, kGuideTop + 37, kNameW - 16, 16, juce::Justification::centredLeft, true);
+            g.drawText (guideSelected ? "Up / Down, , / . size the guide" : guideSolo ? "S on: Space plays the guide only" : "drag it sideways to line it up", sx + 10, guideTop + 37, kNameW - 16, 16, juce::Justification::centredLeft, true);
         if (guideSelected)                                                     // 3.43.0: selected - the keys size the guide alone
         {
             g.setColour (theme::accent.withAlpha (0.16f)); g.fillRect (r.withTrimmedLeft (6).withTrimmedBottom (2));
             g.setColour (theme::accent); g.drawRect (r.withTrimmedBottom (2), 2);
         }
+        lanefold::paintTriangle (g, lanefold::triangleBox (sx, kNameW, guideTop), true, grey);                // (3.72.0: fold it)
     }
     /** Right-click on the guide: take it away, put its start at 0:00 or at the playhead, hide it. */
     void showGuideMenu()
@@ -1158,9 +1226,9 @@ public:
             g.setColour (((blk & 1) ? theme::waveAlt : theme::wave).withMultipliedBrightness (0.97f));
             g.fillRect (0, y, getWidth(), rowH);
         }
-        g.setColour (theme::ruler); g.fillRect (0, 0, getWidth(), kRulerH);
-        g.setColour (juce::Colours::black.withAlpha (0.22f)); g.fillRect (0, 0, getWidth(), markerui::kStripH);          // the marker strip
-        g.setColour (theme::manuscript() ? theme::accent.withAlpha (0.10f) : juce::Colour (0x2635b7c9)); g.fillRect (0, markerui::kStripH, getWidth(), kFbH);   // the feedback strip (its own line, tinted)
+        g.setColour (theme::ruler); g.fillRect (0, 0, getWidth(), rulerH);
+        g.setColour (juce::Colours::black.withAlpha (0.22f)); g.fillRect (0, 0, getWidth(), markH);          // the marker strip
+        g.setColour (theme::manuscript() ? theme::accent.withAlpha (0.10f) : juce::Colour (0x2635b7c9)); g.fillRect (0, markH, getWidth(), fbH);   // the feedback strip (its own line, tinted)
         // the labelled lines, and fainter unlabelled ones between them: 5 s -> every 1 s, 1 s -> every 0.5 s, then 0.25 s (two zoom steps), then 0.1 s however far in.
         // 3.23.0: far out the labels step on past 5 minutes (10, 15, 30 min, 1 h ...) so the times never run into each other (timefmt::rulerSteps)
         const auto ruler = timefmt::rulerSteps (pixelsPerSecond);
@@ -1169,14 +1237,14 @@ public:
         for (int n = 0; (double) n * minor * pixelsPerSecond < getWidth(); ++n)
         {
             if (n % minorPer == 0) continue;
-            g.setColour (theme::grid.withAlpha (0.45f)); g.drawVerticalLine (xOf ((double) n * minor), (float) kRulerH - 6, (float) getHeight());
+            g.setColour (theme::grid.withAlpha (0.45f)); g.drawVerticalLine (xOf ((double) n * minor), (float) rulerH - 6, (float) getHeight());
         }
         g.setFont (11.0f);
         for (double s = 0; s * pixelsPerSecond < getWidth(); s += step)
         {
             const int x = xOf (s);
-            g.setColour (theme::grid); g.drawVerticalLine (x, (float) kRulerH - 8, (float) getHeight());
-            g.setColour (theme::dimText); g.drawText (formatTimeShort (s, 0), x + 3, kRulerTop, 64, 14, juce::Justification::left);
+            g.setColour (theme::grid); g.drawVerticalLine (x, (float) rulerH - 8, (float) getHeight());
+            g.setColour (theme::dimText); g.drawText (formatTimeShort (s, 0), x + 3, rulerTop, 64, 14, juce::Justification::left);
         }
 
         paintGuideLane (g, *e);
@@ -1205,7 +1273,7 @@ public:
             if (x0 - fadeReach > clip.getRight() || x0 + wpx + fadeReach < clip.getX()) continue;
             const bool selected = isSelected (r.id);
 
-            auto lane = juce::Rectangle<int> (x0, kRulerH + 11, wpx, kLaneH - 13);   // below the flags, so the title has a line to itself
+            auto lane = juce::Rectangle<int> (x0, rulerH + 11, wpx, kLaneH - 13);   // below the flags, so the title has a line to itself
             if (lanesVisible)
             {
                 const auto plate = selected ? juce::Colour (0xffc26500) : theme::accent;
@@ -1360,11 +1428,11 @@ public:
                 const auto glue = juce::Colour (0xffe8b923);
                 const auto& a = e->regions[(size_t) k - 1]; const auto& b = e->regions[(size_t) k];
                 const int x0 = xOf ((double) juce::jmin (a.fadeOutBegin(), b.fadeInBegin()) / rate), x1 = xOf ((double) juce::jmax (a.fadeOutFinish(), b.fadeInFinish()) / rate);
-                g.setColour (glue.withAlpha (hot ? 0.30f : 0.12f)); g.fillRect (x0, kRulerH, juce::jmax (2, x1 - x0), rowsEnd - kRulerH);
-                g.setColour (glue.withAlpha (hot ? 1.0f : 0.8f)); g.fillRect (x - (hot ? 1 : 0), kRulerH, hot ? 3 : 1, rowsEnd - kRulerH);
-                juce::Path tri; tri.addTriangle ((float) x - 5, (float) kRulerH, (float) x + 5, (float) kRulerH, (float) x, (float) kRulerH + 8);
+                g.setColour (glue.withAlpha (hot ? 0.30f : 0.12f)); g.fillRect (x0, rulerH, juce::jmax (2, x1 - x0), rowsEnd - rulerH);
+                g.setColour (glue.withAlpha (hot ? 1.0f : 0.8f)); g.fillRect (x - (hot ? 1 : 0), rulerH, hot ? 3 : 1, rowsEnd - rulerH);
+                juce::Path tri; tri.addTriangle ((float) x - 5, (float) rulerH, (float) x + 5, (float) rulerH, (float) x, (float) rulerH + 8);
                 g.fillPath (tri);
-                const auto badge = juce::Rectangle<int> (x - 9, kRulerH - 14, 18, 13);
+                const auto badge = juce::Rectangle<int> (x - 9, rulerH - 14, 18, 13);
                 g.setColour (glue); g.fillRoundedRectangle (badge.toFloat(), 3.0f);
                 if (hot) { g.setColour (juce::Colours::white); g.drawRoundedRectangle (badge.toFloat().expanded (1.0f), 3.5f, 1.2f); }
                 g.setColour (juce::Colour (0xff20242c)); g.setFont (juce::FontOptions (9.0f, juce::Font::bold));
@@ -1374,10 +1442,10 @@ public:
             if (e->isUnnumberedJoin (k))                                                         // an offline fix's join ("fx") or a snip ("sn"): no number
             {
                 g.setColour (js ? juce::Colour (0xffc26500) : theme::dimText.withAlpha (0.7f));
-                g.fillRect (x, kRulerH, 1, rowsEnd - kRulerH);
-                juce::Path tri; tri.addTriangle ((float) x - 4, (float) kRulerH, (float) x + 4, (float) kRulerH, (float) x, (float) kRulerH + 6);
+                g.fillRect (x, rulerH, 1, rowsEnd - rulerH);
+                juce::Path tri; tri.addTriangle ((float) x - 4, (float) rulerH, (float) x + 4, (float) rulerH, (float) x, (float) rulerH + 6);
                 g.fillPath (tri);
-                const auto badge = juce::Rectangle<int> (x - 8, kRulerH - 13, 16, 11);          // a small grey "fx" tag instead of a number
+                const auto badge = juce::Rectangle<int> (x - 8, rulerH - 13, 16, 11);          // a small grey "fx" tag instead of a number
                 g.setColour (js ? juce::Colour (0xffc26500) : theme::dimText.withAlpha (0.55f)); g.fillRoundedRectangle (badge.toFloat(), 3.0f);
                 g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (8.5f, juce::Font::bold));
                 g.drawText (e->isSnipJoin (k) ? "sn" : "fx", badge, juce::Justification::centred);
@@ -1385,10 +1453,10 @@ public:
             }
             ++editNumber;
             g.setColour (js ? juce::Colour (0xffc26500) : theme::text);
-            g.fillRect (x - 1, kRulerH, 2, rowsEnd - kRulerH);
-            juce::Path tri; tri.addTriangle ((float) x - 6, (float) kRulerH, (float) x + 6, (float) kRulerH, (float) x, (float) kRulerH + 9);
+            g.fillRect (x - 1, rulerH, 2, rowsEnd - rulerH);
+            juce::Path tri; tri.addTriangle ((float) x - 6, (float) rulerH, (float) x + 6, (float) rulerH, (float) x, (float) rulerH + 9);
             g.fillPath (tri);
-            const auto badge = juce::Rectangle<int> (x - 11, kRulerH - 16, 22, 15);              // the number, above the flag
+            const auto badge = juce::Rectangle<int> (x - 11, rulerH - 16, 22, 15);              // the number, above the flag
             g.setColour (js ? juce::Colour (0xffc26500) : theme::accent); g.fillRoundedRectangle (badge.toFloat(), 3.0f);
             g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
             g.drawText (juce::String (editNumber), badge, juce::Justification::centred);
@@ -1400,7 +1468,7 @@ public:
             const int x0 = xOf ((double) r.startSample / rate);
             const int wpx = juce::jmax (3, (int) ((double) r.length() / rate * pixelsPerSecond));
             const bool selected = isSelected (r.id);
-            auto lane = juce::Rectangle<int> (x0, kRulerH + 14, wpx, kLaneH - 18);
+            auto lane = juce::Rectangle<int> (x0, rulerH + 14, wpx, kLaneH - 18);
             g.setColour (selected ? juce::Colour (0xffc26500) : juce::Colour (0xff6a4cc2)); g.fillRect (lane);
             g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (10.5f, juce::Font::bold));
             g.drawText ("OVERDUB  " + r.takeName, lane.reduced (4, 0), juce::Justification::centredLeft, true);
@@ -1433,7 +1501,7 @@ public:
             auto smallMarks = [&] (const EditRegion& r)
             {
                 for (auto& gc : r.gains)
-                    if (gc.group.isEmpty() && gc.at == 0 && gc.ramp == 0.0) { g.setColour (teal); g.fillRect (xOf ((double) r.startSample / rate), kRulerH + kLaneH - 4, 7, 3); }
+                    if (gc.group.isEmpty() && gc.at == 0 && gc.ramp == 0.0) { g.setColour (teal); g.fillRect (xOf ((double) r.startSample / rate), rulerH + kLaneH - 4, 7, 3); }
             };
             for (auto& r : e->regions)  smallMarks (r);
             for (auto& r : e->overdubs) smallMarks (r);
@@ -1468,7 +1536,7 @@ public:
             int x = xOf ((double) at / rate);
             bool snapped = true;
             if (insertDrag) { x = insertShownX; snapped = insertSnapped; }
-            const int sy = kInsY;
+            const int sy = insY;
             g.setColour (juce::Colours::black.withAlpha (0.12f)); g.fillRect (0, sy, getWidth(), kInsH);
             const auto orange = juce::Colour (0xffc26500);
             g.setColour (snapped ? orange : orange.withAlpha (0.55f));
@@ -1483,26 +1551,26 @@ public:
             g.drawText ("next take goes here", x + 4, rowsEnd - 16, 130, 14, juce::Justification::left);
         }
         if (shownPhX != kNoLine)                                     // the moving playhead, where movePlayhead last put it
-            theme::paintPlayhead (g, shownPhX, kRulerH, rowsEnd - kRulerH);
+            theme::paintPlayhead (g, shownPhX, rulerH, rowsEnd - rulerH);
         if (cursorSeconds >= 0)
         {
-            g.setColour (theme::text); g.fillRect (xOf (cursorSeconds), kRulerH, 1, rowsEnd - kRulerH);
+            g.setColour (theme::text); g.fillRect (xOf (cursorSeconds), rulerH, 1, rowsEnd - rulerH);
         }
         if (e->playheadSeconds > 0)                                  // where key 4 / an overdub in the take window will be placed
         {
             const int x = xOf (e->playheadSeconds);
-            g.setColour (juce::Colour (0xff6a4cc2)); g.fillRect (x, kRulerTop, 1, kRulerH - kRulerTop);
-            juce::Path tri; tri.addTriangle ((float) x - 5, (float) kRulerTop, (float) x + 6, (float) kRulerTop, (float) x, (float) kRulerTop + 9.0f); g.fillPath (tri);
+            g.setColour (juce::Colour (0xff6a4cc2)); g.fillRect (x, rulerTop, 1, rulerH - rulerTop);
+            juce::Path tri; tri.addTriangle ((float) x - 5, (float) rulerTop, (float) x + 6, (float) rulerTop, (float) x, (float) rulerTop + 9.0f); g.fillPath (tri);
         }
         if (e->fixIn >= 0 || e->fixOut >= 0)                         // keys 1 / 2: the part to correct or repair
         {
             if (e->fixIn >= 0 && e->fixOut > e->fixIn)
             {
                 g.setColour (juce::Colour (0x22ffa21f));
-                if (e->fixTracks.empty()) g.fillRect (xOf (e->fixIn), kRulerH, xOf (e->fixOut) - xOf (e->fixIn), rowsEnd - kRulerH);
+                if (e->fixTracks.empty()) g.fillRect (xOf (e->fixIn), rulerH, xOf (e->fixOut) - xOf (e->fixIn), rowsEnd - rulerH);
                 else                                                                          // Ctrl + Alt + drag: only the rows of the chosen tracks
                 {
-                    g.fillRect (xOf (e->fixIn), kRulerH, xOf (e->fixOut) - xOf (e->fixIn), kLaneH);
+                    g.fillRect (xOf (e->fixIn), rulerH, xOf (e->fixOut) - xOf (e->fixIn), kLaneH);
                     for (size_t i = 0; i < tracks.size(); ++i)
                         if (e->fixUses (tracks[i].id)) { g.setColour (juce::Colour (0x44ffa21f)); g.fillRect (xOf (e->fixIn), top + (int) i * rowH, xOf (e->fixOut) - xOf (e->fixIn), rowH); }
                 }
@@ -1626,8 +1694,11 @@ public:
             }
             if (lanesOn (*e)) paintStripBits (g, tracks[i].id, sx, rowTop, false);
         }
-        if (e->showMarkers) markerui::paintFlags (g, e->markers, [this] (double s) { return xOf (s); }, sx + kNameW, getHeight(), markers.draggedId());
-        if (e->showFeedback && ! e->feedback.empty()) feedbackui::paintFlags (g, e->feedback, [this] (double s) { return xOf (s); }, markerui::kStripH, sx + kNameW, getHeight(), selectedFeedback);
+        if (e->showMarkers && markH > 0) markerui::paintFlags (g, e->markers, [this] (double s) { return xOf (s); }, sx + kNameW, getHeight(), markers.draggedId());
+        else if (e->showMarkers)                                                       // (3.72.0: its strip folded away - the markers' faint lines stay)
+            for (auto& m : e->markers)
+                if (const int x = xOf (m.seconds); x >= sx + kNameW) { g.setColour (markerui::flagColour().withAlpha (0.4f)); g.fillRect (x, bandH(), 1, juce::jmax (0, getHeight() - bandH())); }
+        if (e->showFeedback && fbH > 0 && ! e->feedback.empty()) feedbackui::paintFlags (g, e->feedback, [this] (double s) { return xOf (s); }, markH, sx + kNameW, getHeight(), selectedFeedback);
         g.setColour (juce::Colour (0x55ffffff)); g.fillRect (sx + kNameW - 2, bandH(), 2, juce::jmax (0, getHeight() - bandH()));
         if (! clipMoveRegion.isNull() && clipMoveToRow >= 0)                           // Shift + drag: the row the clip will go to
         {
@@ -1641,29 +1712,47 @@ public:
         g.setColour (theme::panel.withAlpha (0.96f)); g.fillRect (sx, rowsEnd, kNameW, juce::jmax (0, getHeight() - rowsEnd));
         g.setColour (theme::panel.withAlpha (0.96f)); g.fillRect (sx, 0, kNameW, top);
         paintGuideName (g, *e, sx);
-        if (tuneH() > 0) tuning::paintNameBox (g, { sx, tuneTop(), kNameW, tuneH() }, app.tuningSet, true);              // 3.63.0 (a click: its menu)
+        if (tuneH() > 0)                                                                                                // 3.63.0 (a click: its menu)
+        {
+            const juce::Rectangle<int> tb (sx, tuneTop(), kNameW, tuneH());
+            if (isFolded ("tuning")) lanefold::paintFoldedName (g, tb, "TUNING", theme::text);                          // (3.72.0: folded)
+            else { tuning::paintNameBox (g, tb, app.tuningSet, true); lanefold::paintTriangle (g, lanefold::triangleBox (sx, kNameW, tb.getY()), true, theme::text); }
+        }
         paintVideoName (g, *e, sx);                                                                                     // 3.68.0
         g.setFont (juce::FontOptions (10.5f, juce::Font::bold));                                                       // what each line of the band is
-        g.setColour (e->showMarkers ? markerui::flagColour() : theme::dimText.withAlpha (0.6f));
-        g.drawText (e->showMarkers ? "Markers" : "Markers (hidden)", sx + 6, 0, kNameW - 12, markerui::kStripH, juce::Justification::centredLeft, true);
+        if (markH > 0)                                                                                                 // (3.72.0: each with its triangle - a click folds it away)
+        {
+            const auto c = e->showMarkers ? markerui::flagColour() : theme::dimText.withAlpha (0.6f);
+            g.setColour (c);
+            g.drawText (e->showMarkers ? "Markers" : "Markers (hidden)", sx + 6, 0, kNameW - 30, markH, juce::Justification::centredLeft, true);
+            lanefold::paintTriangle (g, lanefold::triangleBox (sx, kNameW, 0).withHeight (markH), true, c);
+        }
         if (viewing > 0)                                                                                               // 3.54.0: a frozen version is shown
         {
             g.setColour (theme::accent);
-            g.drawText ("Edit " + juce::String (viewing) + " (frozen): look and listen", sx + 6, markerui::kStripH, kNameW - 12, kFbH, juce::Justification::centredLeft, true);
+            g.drawText ("Edit " + juce::String (viewing) + " (frozen): look and listen", sx + 6, markH, kNameW - 12, fbH, juce::Justification::centredLeft, true);
         }
-        else
+        else if (fbH > 0)
         {
-            g.setColour (e->showFeedback ? juce::Colour (0xff35b7c9) : theme::dimText.withAlpha (0.6f));
-            g.drawText (e->showFeedback ? "Feedback" : "Feedback (hidden)", sx + 6, markerui::kStripH, kNameW - 12, kFbH, juce::Justification::centredLeft, true);
+            const auto c = e->showFeedback ? juce::Colour (0xff35b7c9) : theme::dimText.withAlpha (0.6f);
+            g.setColour (c);
+            g.drawText (e->showFeedback ? "Feedback" : "Feedback (hidden)", sx + 6, markH, kNameW - 30, fbH, juce::Justification::centredLeft, true);
+            lanefold::paintTriangle (g, lanefold::triangleBox (sx, kNameW, markH).withHeight (fbH), true, c);
         }
+        if (folds != nullptr) lanefold::paintKey (g, lanesKeyBox (sx), lanesFolded ? lanesFolded() : 0);          // 3.72.0: the LANES key
         if (shownMods != 0 && (headerPass || viewport.getViewPositionY() == 0))         // the keys being held: what they do here (under those two lines)
-            modhint::paint (g, { sx, markerui::kStripH + kFbH, kNameW, kGuideTop - markerui::kStripH - kFbH }, shownMods, modifierHints (shownMods));
+            modhint::paint (g, { sx, markH + fbH, kNameW, guideTop - markH - fbH }, shownMods, modifierHints (shownMods));
     }
 
     // (3.54.0: a frozen version is shown - the mouse moves the playhead and does nothing else)
-    void mouseDown (const juce::MouseEvent& e0) override { if (viewing > 0) { viewClick (e0); return; } noteClickedRow (e0); hdrShift = stickyShift (e0); mouseDownImpl (shifted (e0, hdrShift)); }
-    void mouseDrag (const juce::MouseEvent& e0) override { if (viewing > 0) return; mouseDragImpl (shifted (e0, hdrShift)); }
-    void mouseUp (const juce::MouseEvent& e0) override { if (viewing > 0) return; const int by = hdrShift; hdrShift = 0; mouseUpImpl (shifted (e0, by)); }
+    void mouseDown (const juce::MouseEvent& e0) override
+    {
+        if (const int sh = stickyShift (e0); foldClick (shifted (e0, sh), sh)) { foldGesture = true; grabKeyboardFocus(); return; }       // 3.72.0 (in a frozen version too)
+        foldGesture = false;
+        if (viewing > 0) { viewClick (e0); return; } noteClickedRow (e0); hdrShift = stickyShift (e0); mouseDownImpl (shifted (e0, hdrShift));
+    }
+    void mouseDrag (const juce::MouseEvent& e0) override { if (viewing > 0 || foldGesture) return; mouseDragImpl (shifted (e0, hdrShift)); }
+    void mouseUp (const juce::MouseEvent& e0) override { if (foldGesture) { foldGesture = false; return; } if (viewing > 0) return; const int by = hdrShift; hdrShift = 0; mouseUpImpl (shifted (e0, by)); }
     void mouseMove (const juce::MouseEvent& e0) override { if (viewing > 0) { setMouseCursor (juce::MouseCursor::NormalCursor); return; } const auto e = shifted (e0, stickyShift (e0)); updateHoverRow (e.y); mouseMoveImpl (e); }
     void mouseExit (const juce::MouseEvent&) override { setHoverRow (-1); }
 
@@ -1693,7 +1782,7 @@ public:
         auto* ed = this->edit();
         if (ed == nullptr) return;
         markers.setNameWidth (viewport.getViewPositionX() + kNameW);
-        if (e.y >= markerui::kStripH && e.y < markerui::kStripH + kFbH && e.x > viewport.getViewPositionX() + kNameW && ed->showFeedback && ! ed->feedback.empty())          // a comment's flag: click to read the thread
+        if (fbH > 0 && e.y >= markH && e.y < markH + fbH && e.x > viewport.getViewPositionX() + kNameW && ed->showFeedback && ! ed->feedback.empty())          // a comment's flag: click to read the thread
         {
             auto xo = [this] (double s) { return xOf (s); };
             const auto th = feedbackui::threadAt (ed->feedback, e.x, xo);
@@ -1701,7 +1790,7 @@ public:
             {
                 selectedFeedback = ed->feedback[(size_t) th.front()].key; repaint();
                 const int fx = xOf (ed->feedback[(size_t) th.front()].seconds);
-                const auto area = localAreaToGlobal (juce::Rectangle<int> (fx, markerui::kStripH + hdrShift, feedbackui::flagWidth (feedbackui::flagText (ed->feedback, th)), kFbH));
+                const auto area = localAreaToGlobal (juce::Rectangle<int> (fx, markH + hdrShift, feedbackui::flagWidth (feedbackui::flagText (ed->feedback, th)), fbH));
                 juce::Component::SafePointer<EditTimeline> safe (this);
                 feedbackui::showThread ([safe] () -> EditDef* { return safe != nullptr ? safe->edit() : nullptr; }, th, area,      // (the box can outlive the window)
                                         [this, safe] { if (safe == nullptr) return; if (auto* le = edit()) app.project.refreshCommentsCopy (*le); app.project.markDirty(); repaint(); },
@@ -1712,8 +1801,8 @@ public:
             }
         }
         markers.yOffset = hdrShift;
-        if (ed->showMarkers && markers.mouseDown (e)) return;              // the marker strip along the top: right-click for Add Marker / Clear All; drag a marker
-        if (app.showInsertFlag && ! e.mods.isPopupMenu() && e.x >= kNameW && e.y >= kInsY && e.y < kInsY + kInsH)       // the insert flag: drag it to where the next take should go
+        if (ed->showMarkers && markH > 0 && markers.mouseDown (e)) return;   // (3.72.0: not while its strip is folded away)              // the marker strip along the top: right-click for Add Marker / Clear All; drag a marker
+        if (app.showInsertFlag && ! e.mods.isPopupMenu() && e.x >= kNameW && e.y >= insY && e.y < insY + kInsH)       // the insert flag: drag it to where the next take should go
         {
             insertDrag = true; insertDragMove (e.x);
             return;
@@ -1726,7 +1815,7 @@ public:
         }
         if (videoH() > 0 && e.y >= videoTop() && e.y < videoTop() + videoH()) { videoMouseDown (e, *ed); return; }     // 3.68.0: the video lane
         const double rate = juce::jmax (1.0, ed->sampleRate);
-        if (glueMode && ! e.mods.isPopupMenu() && e.x >= viewport.getViewPositionX() + kNameW && e.y >= kRulerH - 16)      // 3.35.0: glue mode - a click on a snip glues it
+        if (glueMode && ! e.mods.isPopupMenu() && e.x >= viewport.getViewPositionX() + kNameW && e.y >= rulerH - 16)      // 3.35.0: glue mode - a click on a snip glues it
         {
             if (const int k = snipNear (*ed, e.getPosition(), rate); k > 0) { if (onGlue) onGlue (k); }
             else app.setNotice ("Glue: click on a snip - its \"sn\" flag, or its crossfade - to glue it back together. The glue button (or F3, or Esc) leaves glue mode.");
@@ -1736,7 +1825,7 @@ public:
         { selectedRegion = juce::Uuid::null(); selectedRegions.clear(); moveRegion = juce::Uuid::null(); repaint(); }
         {
             const int sxv = viewport.getViewPositionX();
-            if (std::abs (e.x - (sxv + kNameW)) <= 4 && e.y >= kRulerH && ! e.mods.isPopupMenu()) { widthDrag = true; return; }
+            if (std::abs (e.x - (sxv + kNameW)) <= 4 && e.y >= rulerH && ! e.mods.isPopupMenu()) { widthDrag = true; return; }
             if (e.y >= bandH() && ! e.mods.isPopupMenu() && e.x >= sxv && e.x < sxv + kNameW)
             {
                 const int row = (e.y - bandH()) / juce::jmax (1, rowH);
@@ -1821,8 +1910,8 @@ public:
         }
         const double t = (e.x - kNameW) / pixelsPerSecond;
         cursorSeconds = juce::jmax (0.0, t);
-        if (e.x > kNameW && e.y >= kRulerH && ! e.mods.isPopupMenu()) ed->playheadSeconds = cursorSeconds;     // the edit's own playhead: key 4 in a take window places a piece here
-        if (e.x > kNameW && e.y < kRulerH && ! e.mods.isPopupMenu() && app.isPlaying() && ! app.engine.isRecording()       // clicking the ruler while this edit plays: carry on from there
+        if (e.x > kNameW && e.y >= rulerH && ! e.mods.isPopupMenu()) ed->playheadSeconds = cursorSeconds;     // the edit's own playhead: key 4 in a take window places a piece here
+        if (e.x > kNameW && e.y < rulerH && ! e.mods.isPopupMenu() && app.isPlaying() && ! app.engine.isRecording()       // clicking the ruler while this edit plays: carry on from there
             && app.playInfo.kind == AppContext::PlayInfo::Kind::Edit && app.playInfo.id == editId)
         {
             auto* w = findParentComponentOfClass<EditWindowComponent>();
@@ -1849,13 +1938,13 @@ public:
 
         // a click on a join marker selects the join (double-click, or the T key, opens the trim window)
         int bestJoin = -1; double bestDist = 8.0;
-        if (e.y < kRulerH + 14)                                     // the flags are at the top (and their numbers just above)
+        if (e.y < rulerH + 14)                                     // the flags are at the top (and their numbers just above)
             for (int k = 0; k <= (int) ed->regions.size() && ! ed->regions.empty(); ++k)
             {
                 const double d = std::abs (xOf ((double) editPointSample (*ed, k) / rate) - e.x);
                 if (d < bestDist) { bestDist = d; bestJoin = k; }
             }
-        if (bestJoin >= 0 && e.x > kNameW && e.y >= kRulerH - 16)
+        if (bestJoin >= 0 && e.x > kNameW && e.y >= rulerH - 16)
         {
             if (e.mods.isPopupMenu() && ed->isSnipJoin (bestJoin)) { selectedJoin = bestJoin; repaint(); showSnipMenu (*ed, bestJoin); return; }     // 3.35.0
             const bool atEnd = bestJoin >= (int) ed->regions.size();
@@ -1866,7 +1955,7 @@ public:
         selectedJoin = -1;
 
         // the ruler sets where the next take goes (the nearest join)
-        if (e.y < kRulerH)
+        if (e.y < rulerH)
         {
             int bestIdx = (int) ed->regions.size(); double bd = std::abs (xOf ((double) ed->lengthSamples() / rate) - e.x);
             for (size_t k = 0; k < ed->regions.size(); ++k)
@@ -1880,7 +1969,7 @@ public:
         }
 
         // the banner at the top of a piece: drag it along to shuffle it past its neighbours, like swapping cards in a deck
-        if (! e.mods.isPopupMenu() && e.getNumberOfClicks() < 2 && e.x > kNameW && e.y >= kRulerH + 14 && e.y < kRulerH + kLaneH - 2 && ed->regions.size() > 1 && overdubAt (*ed, e.getPosition(), rate) == nullptr)
+        if (! e.mods.isPopupMenu() && e.getNumberOfClicks() < 2 && e.x > kNameW && e.y >= rulerH + 14 && e.y < rulerH + kLaneH - 2 && ed->regions.size() > 1 && overdubAt (*ed, e.getPosition(), rate) == nullptr)
         {
             const juce::int64 sm = (juce::int64) (juce::jmax (0.0, t) * rate);
             for (auto& r : ed->regions)
@@ -2123,11 +2212,11 @@ public:
         if (glueMode)                                                         // 3.35.0: the glue pot, and the snip it would glue lit
         {
             setMouseCursor (glueCursor());
-            const int k = ed != nullptr && e.x >= viewport.getViewPositionX() + kNameW && e.y >= kRulerH - 16 ? snipNear (*ed, e.getPosition(), juce::jmax (1.0, ed->sampleRate)) : -1;
+            const int k = ed != nullptr && e.x >= viewport.getViewPositionX() + kNameW && e.y >= rulerH - 16 ? snipNear (*ed, e.getPosition(), juce::jmax (1.0, ed->sampleRate)) : -1;
             if (k != glueHover) { glueHover = k; repaint(); }
             return;
         }
-        if (std::abs (e.x - (viewport.getViewPositionX() + kNameW)) <= 4 && e.y >= kRulerH) { setMouseCursor (juce::MouseCursor::LeftRightResizeCursor); return; }
+        if (std::abs (e.x - (viewport.getViewPositionX() + kNameW)) <= 4 && e.y >= rulerH) { setMouseCursor (juce::MouseCursor::LeftRightResizeCursor); return; }
         if (inGuideLane (e.y) && e.x >= viewport.getViewPositionX() + kNameW) { setMouseCursor (juce::MouseCursor::DraggingHandCursor); return; }     // the guide: drag it sideways
         const bool overMark = ed != nullptr && ! e.mods.isAnyModifierKeyDown() && markLineAt (*ed, e.getPosition()) != 0;      // 3.25.0: a mark's line can be dragged
         const bool over = overMark || (ed != nullptr && e.x > kNameW && fadeHandleAt (*ed, e.getPosition(), juce::jmax (1.0, ed->sampleRate), fr, isIn));
@@ -3120,7 +3209,7 @@ private:
     /** The fade handle under p: top lane, within 12 px of the outer ends (start of the first piece, end of the last piece, both ends of an overdub). */
     bool fadeHandleAt (EditDef& ed, juce::Point<int> p, double rate, EditRegion*& hit, bool& isIn)
     {
-        if (p.y < kRulerH || p.y >= kRulerH + kLaneH) return false;
+        if (p.y < rulerH || p.y >= rulerH + kLaneH) return false;
         auto test = [&] (EditRegion& r, bool in, bool out) -> bool
         {
             const int x0 = xOf ((double) r.startSample / rate), wpx = juce::jmax (3, (int) ((double) r.length() / rate * pixelsPerSecond));
@@ -3146,7 +3235,7 @@ private:
         for (auto it = ed.overdubs.rbegin(); it != ed.overdubs.rend(); ++it)
         {
             const int x0 = xOf ((double) it->startSample / rate), wpx = juce::jmax (3, (int) ((double) it->length() / rate * pixelsPerSecond));
-            if (p.y >= kRulerH + 14 && p.y < kRulerH + kLaneH - 4) { if (p.x >= x0 && p.x < x0 + wpx) return &*it; continue; }     // its little lane at the top
+            if (p.y >= rulerH + 14 && p.y < rulerH + kLaneH - 4) { if (p.x >= x0 && p.x < x0 + wpx) return &*it; continue; }     // its little lane at the top
             if (! juce::isPositiveAndBelow (row, (int) rowTracks().size())) continue;
             bool has = false; for (auto& f : it->files) if (f.trackId == rowTracks()[(size_t) row].id) has = true;
             if (has && overdubBand (top + row * rowH, x0, wpx).contains (p)) return &*it;
@@ -3716,9 +3805,9 @@ private:
         if (held.frozen (app.isPlaying())) { shownPhX = kNoLine; return; }      // (3.52.0: held behind a process window - no line moves here)
         const int x = ph >= 0.0 ? xOf (ph) : kNoLine;
         if (x == shownPhX) return;
-        const int h = juce::jmax (1, getHeight() - kRulerH);
-        if (shownPhX != kNoLine) repaint (theme::playheadStrip (shownPhX, kRulerH, h));      // (the whole reach of the line and its glow, or a trail of glow is left behind it)
-        if (x != kNoLine) repaint (theme::playheadStrip (x, kRulerH, h));
+        const int h = juce::jmax (1, getHeight() - rulerH);
+        if (shownPhX != kNoLine) repaint (theme::playheadStrip (shownPhX, rulerH, h));      // (the whole reach of the line and its glow, or a trail of glow is left behind it)
+        if (x != kNoLine) repaint (theme::playheadStrip (x, rulerH, h));
         shownPhX = x;
     }
     /** A very light record of how steadily the playhead moved during a play, written as ONE line to fermata-log.txt when the play ends (only the
@@ -3818,12 +3907,12 @@ private:
         is a point), and a numbered edit flag, which keeps its own click (select the join, double-click to trim) even when a mark stands on it. */
     int markLineAt (const EditDef& ed, juce::Point<int> p) const
     {
-        if (p.x <= viewport.getViewPositionX() + kNameW + 4 || p.y < kRulerH || inGuideLane (p.y)) return 0;      // (+ 4: the name column's edge is dragged to widen it)
+        if (p.x <= viewport.getViewPositionX() + kNameW + 4 || p.y < rulerH || inGuideLane (p.y)) return 0;      // (+ 4: the name column's edge is dragged to widen it)
         if (p.y >= bandH() && (lanesOn (ed) || ! isTrackRow ((p.y - bandH()) / juce::jmax (1, rowH)))) return 0;
         const double dIn = ed.fixIn >= 0.0 ? std::abs ((double) (xOf (ed.fixIn) - p.x)) : 1.0e9;
         const double dOut = ed.fixOut >= 0.0 ? std::abs ((double) (xOf (ed.fixOut) - p.x)) : 1.0e9;
         if (juce::jmin (dIn, dOut) > 5.0) return 0;
-        if (p.y < kRulerH + 14 && ! ed.regions.empty())
+        if (p.y < rulerH + 14 && ! ed.regions.empty())
         {
             const double rate = juce::jmax (1.0, ed.sampleRate);
             for (int k = 0; k <= (int) ed.regions.size(); ++k)
@@ -3908,10 +3997,34 @@ private:
     void setHover (int h) { overMixer = h == 2; if (h != hover) { hover = h; repaint(); } }
 };
 
-class VersionStrip : public juce::Component, private juce::Timer
+class VersionStrip : public juce::Component, public juce::TooltipClient, private juce::Timer
 {
 public:
     static constexpr int kTabsH = 26, kLaneH = 18, kGhostH = 20;
+    /** 3.72.0: its lanes fold away (LaneFold.h) - each one's triangle, at the right of its name; the LANES key's menu brings them back. Their ids:
+        "comments:N" (Edit N's comments), "pieces" and "changes" (the compared version's pieces and the changes since it). */
+    lanefold::Folds* folds = nullptr;                        // (the window's)
+    bool isFolded (const juce::String& id) const { return folds != nullptr && folds->isFolded (id); }
+    bool comparing() const { auto* e = edit(); return e != nullptr && timeline.viewing == 0 && e->compareWith > 0 && e->version (e->compareWith) != nullptr; }
+    /** Its lanes there are just now, folded or not (for the LANES key's menu). */
+    std::vector<lanefold::Lane> foldLanes() const
+    {
+        std::vector<lanefold::Lane> out;
+        auto* e = edit(); if (e == nullptr) return out;
+        for (auto& ln : lanes (*e)) out.push_back ({ "comments:" + juce::String (ln.number), "Edit " + juce::String (ln.number) + " comments" });
+        if (comparing())
+        {
+            out.push_back ({ "pieces", "Edit " + juce::String (e->compareWith) + " pieces" });
+            out.push_back ({ "changes", "Changes since Edit " + juce::String (e->compareWith) });
+        }
+        return out;
+    }
+    juce::String getTooltip() override
+    {
+        const auto p = getMouseXYRelative();
+        for (auto& t : triRects) if (t.rect.expanded (3, 0).contains (p)) return "Fold this lane away, to give the tracks more room (the LANES key, beside the timeline's ruler, brings it back).";
+        return {};
+    }
     std::function<void (double)> goTo;                       // the window's goTo (seconds on the live timeline)
     std::function<void()> layoutChanged;                     // the strip's height or its keys changed: the window lays out again
     std::function<void()> viewChanged;                       // 3.54.0: another version is on show (or the working edit again): the window locks / unlocks its keys
@@ -3947,8 +4060,9 @@ public:
     int idealHeight() const
     {
         auto* e = edit(); if (e == nullptr) return 0;
-        int h = kTabsH + kLaneH * (int) lanes (*e).size();
-        if (timeline.viewing == 0 && e->compareWith > 0 && e->version (e->compareWith) != nullptr) h += kGhostH + kLaneH;
+        int h = kTabsH;
+        for (auto& ln : lanes (*e)) if (! isFolded ("comments:" + juce::String (ln.number))) h += kLaneH;
+        if (comparing()) h += (isFolded ("pieces") ? 0 : kGhostH) + (isFolded ("changes") ? 0 : kLaneH);
         return h + 2;
     }
     void rebuildTabs()
@@ -4016,7 +4130,7 @@ public:
         auto xOf = [&] (double sec) { return timeline.xOf (sec) - vx; };
         int y = kTabsH;
         g.setColour (theme::grid.withAlpha (0.6f)); g.fillRect (0, y - 1, getWidth(), 1);
-        laneRects.clear();
+        laneRects.clear(); triRects.clear();
         auto* shown = timeline.edit();                              // (what the timeline shows: the working edit, or the frozen version being looked at)
         if (shown == nullptr) return;
         if (timeline.viewing > 0)                                   // 3.54.0: the line beside the keys says what is on show
@@ -4025,8 +4139,15 @@ public:
             g.drawText ("Edit " + juce::String (timeline.viewing) + " is frozen: look and listen only. Click Edit " + juce::String (e->versionNumber()) + " to carry on working.",
                         bannerLeft, 0, juce::jmax (0, bannerRight - bannerLeft), kTabsH, juce::Justification::centredLeft, true);
         }
+        auto triangle = [&] (const juce::String& id, int top, int h, juce::Colour c)          // 3.72.0: each lane's fold
+        {
+            const auto b = lanefold::triangleBox (0, kNameW, top).withHeight (juce::jmin (h - 2, 14));
+            lanefold::paintTriangle (g, b, true, c);
+            triRects.push_back ({ id, b });
+        };
         for (auto& ln : lanes (*e))
         {
+            if (isFolded ("comments:" + juce::String (ln.number))) continue;
             const auto lane = juce::Rectangle<int> (0, y, getWidth(), kLaneH);
             laneRects.push_back ({ ln.number, lane, false });
             g.setColour (theme::ruler.withAlpha (0.55f)); g.fillRect (lane);
@@ -4035,7 +4156,8 @@ public:
             int open = 0, said = 0; for (auto& n : notes) if (! n.editor) { ++said; if (! n.done) ++open; }      // (the editor's own answers are not comments to deal with)
             g.setColour (juce::Colour (0xff35b7c9));
             g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
-            g.drawText ("Edit " + juce::String (ln.number) + " comments  (" + juce::String (open) + " open of " + juce::String (said) + ")", 6, y, kNameW - 12, kLaneH, juce::Justification::centredLeft, true);
+            g.drawText ("Edit " + juce::String (ln.number) + " comments  (" + juce::String (open) + " open of " + juce::String (said) + ")", 6, y, kNameW - 30, kLaneH, juce::Justification::centredLeft, true);
+            triangle ("comments:" + juce::String (ln.number), y, kLaneH, juce::Colour (0xff35b7c9));
             g.setFont (feedbackui::flagFont());
             for (auto& th : feedback::threads (notes))
             {
@@ -4062,37 +4184,43 @@ public:
             {
                 const auto& ve = *v->edit;
                 // the version's pieces, on its own timeline
-                const auto ghost = juce::Rectangle<int> (0, y, getWidth(), kGhostH);
-                g.setColour (theme::ruler.withAlpha (0.35f)); g.fillRect (ghost);
-                g.setColour (juce::Colour (0xffc28a00)); g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
-                g.drawText ("Edit " + juce::String (v->number) + " pieces", 6, y, kNameW - 12, kGhostH, juce::Justification::centredLeft, true);
-                g.setFont (juce::FontOptions (10.5f));
-                int k = 0;
-                for (auto& r : ve.regions)
+                if (! isFolded ("pieces"))
                 {
-                    const int x0 = juce::jmax (kNameW, xOf ((double) r.startSample / rate)), x1 = xOf ((double) r.endSample() / rate);
-                    if (x1 <= kNameW) { ++k; continue; }
-                    auto block = juce::Rectangle<int> (x0, y + 2, juce::jmax (2, x1 - x0), kGhostH - 4);
-                    g.setColour ((k++ % 2 == 0 ? juce::Colour (0xff6a8db0) : juce::Colour (0xff8aa0b8)).withAlpha (0.8f)); g.fillRect (block);
-                    g.setColour (juce::Colour (0xff0b1b1e)); if (block.getWidth() > 24) g.drawText (r.takeName, block.reduced (3, 0), juce::Justification::centredLeft, true);
+                    const auto ghost = juce::Rectangle<int> (0, y, getWidth(), kGhostH);
+                    g.setColour (theme::ruler.withAlpha (0.35f)); g.fillRect (ghost);
+                    g.setColour (juce::Colour (0xffc28a00)); g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+                    g.drawText ("Edit " + juce::String (v->number) + " pieces", 6, y, kNameW - 30, kGhostH, juce::Justification::centredLeft, true);
+                    triangle ("pieces", y, kGhostH, juce::Colour (0xffc28a00));
+                    g.setFont (juce::FontOptions (10.5f));
+                    int k = 0;
+                    for (auto& r : ve.regions)
+                    {
+                        const int x0 = juce::jmax (kNameW, xOf ((double) r.startSample / rate)), x1 = xOf ((double) r.endSample() / rate);
+                        if (x1 <= kNameW) { ++k; continue; }
+                        auto block = juce::Rectangle<int> (x0, y + 2, juce::jmax (2, x1 - x0), kGhostH - 4);
+                        g.setColour ((k++ % 2 == 0 ? juce::Colour (0xff6a8db0) : juce::Colour (0xff8aa0b8)).withAlpha (0.8f)); g.fillRect (block);
+                        g.setColour (juce::Colour (0xff0b1b1e)); if (block.getWidth() > 24) g.drawText (r.takeName, block.reduced (3, 0), juce::Justification::centredLeft, true);
+                    }
+                    for (auto& o : ve.overdubs)
+                    {
+                        const int x0 = juce::jmax (kNameW, xOf ((double) o.startSample / rate)), x1 = xOf ((double) o.endSample() / rate);
+                        if (x1 <= kNameW) continue;
+                        g.setColour (juce::Colour (0xff9a6ae0).withAlpha (0.9f)); g.fillRect (x0, y + kGhostH - 5, juce::jmax (2, x1 - x0), 3);
+                    }
+                    y += kGhostH;
                 }
-                for (auto& o : ve.overdubs)
-                {
-                    const int x0 = juce::jmax (kNameW, xOf ((double) o.startSample / rate)), x1 = xOf ((double) o.endSample() / rate);
-                    if (x1 <= kNameW) continue;
-                    g.setColour (juce::Colour (0xff9a6ae0).withAlpha (0.9f)); g.fillRect (x0, y + kGhostH - 5, juce::jmax (2, x1 - x0), 3);
-                }
-                y += kGhostH;
                 // the changes
                 refreshChanges (*e, ve);
+                changeRects.clear();
+                if (isFolded ("changes")) { g.setColour (theme::grid); g.fillRect (kNameW - 1, kTabsH, 1, getHeight() - kTabsH); return; }
                 const auto lane = juce::Rectangle<int> (0, y, getWidth(), kLaneH);
                 laneRects.push_back ({ v->number, lane, true });
                 g.setColour (theme::ruler.withAlpha (0.55f)); g.fillRect (lane);
                 g.setColour (theme::grid.withAlpha (0.6f)); g.fillRect (0, y + kLaneH - 1, getWidth(), 1);
                 g.setColour (juce::Colour (0xffc28a00)); g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
-                g.drawText ("Changes since Edit " + juce::String (v->number) + "  (" + juce::String ((int) changes.size()) + ")", 6, y, kNameW - 12, kLaneH, juce::Justification::centredLeft, true);
+                g.drawText ("Changes since Edit " + juce::String (v->number) + "  (" + juce::String ((int) changes.size()) + ")", 6, y, kNameW - 30, kLaneH, juce::Justification::centredLeft, true);
+                triangle ("changes", y, kLaneH, juce::Colour (0xffc28a00));
                 g.setFont (feedbackui::flagFont());
-                changeRects.clear();
                 for (size_t i = 0; i < changes.size(); ++i)
                 {
                     const auto& c = changes[i];
@@ -4114,6 +4242,8 @@ public:
     {
         timeline.grabKeyboardFocus();                          // (3.51.0: never the subheading box - see the constructor)
         auto* e = edit(); if (e == nullptr) return;
+        if (! ev.mods.isPopupMenu() && folds != nullptr)           // 3.72.0: a lane's triangle folds it away
+            for (auto& t : triRects) if (t.rect.expanded (3, 0).contains (ev.getPosition())) { folds->set (t.id, true); return; }
         for (auto& lr : laneRects)
         {
             if (! lr.rect.contains (ev.getPosition())) continue;
@@ -4163,6 +4293,8 @@ public:
 private:
     struct LaneRect { int number; juce::Rectangle<int> rect; bool changes; };
     struct ChangeRect { int index; juce::Rectangle<int> rect; };
+    struct TriRect { juce::String id; juce::Rectangle<int> rect; };
+    std::vector<TriRect> triRects;                            // (3.72.0: where the lanes' triangles were drawn)
     EditDef* edit() const { return app.project.findEdit (editId); }
     void timerCallback() override { syncView(); refreshFromEdit(); }
     // ---- 3.54.0: the comments' lanes. Every version that has comments has its lane, whichever version is on show, for as long as the Feedback
@@ -4456,7 +4588,21 @@ private:
     int lastVersionCount = -1, lastCompare = -1;
 };
 
-EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) : app (a), editId (id)
+/** 3.72.0: the lanes above the tracks just now, from the top down (the LANES key's menu): the version strip's, then the timeline's band. */
+std::vector<lanefold::Lane> EditWindowComponent::foldableLanes() const
+{
+    std::vector<lanefold::Lane> out;
+    if (versionStrip != nullptr) out = versionStrip->foldLanes();
+    if (timeline == nullptr) return out;
+    out.push_back ({ "markers", "Markers" });
+    if (timeline->viewing <= 0) out.push_back ({ "feedback", "Feedback (the listeners' comments)" });
+    if (timeline->guideH() > 0) out.push_back ({ "guide", "Guide" });
+    if (timeline->tuneH() > 0) out.push_back ({ "tuning", "Tuning" });
+    if (timeline->videoH() > 0) out.push_back ({ "video", "Video" });
+    return out;
+}
+
+EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) : app (a), editId (id), laneFolds (a, id)
 {
     keymap::KeyMap::setSection (*this, "Edit window");      // 3.69.0: its keys are the "Edit window" list's (HotKeysLines.h, KeyMap.h)
     getProperties().set (ownsRKeyProperty(), true);         // R here butts the selected pieces together: it does not start a recording
@@ -4473,6 +4619,16 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     versionStrip->layoutChanged = [this] { resized(); };
     versionStrip->viewChanged = [this] { applyViewLock(); };                // 3.54.0: a frozen version on show - or the working edit again
     addAndMakeVisible (*versionStrip);
+    // 3.72.0: the lanes above the tracks fold away (LaneFold.h): the timeline's and the strip's, one set of folds for the window
+    timeline->folds = &laneFolds; versionStrip->folds = &laneFolds;
+    timeline->refreshBand();
+    timeline->lanesFolded = [this] { return laneFolds.countFolded (foldableLanes()); };
+    timeline->onLanesKey = [this] (juce::Rectangle<int> at) { lanefold::showMenu (*this, laneFolds, foldableLanes(), at); };
+    laneFolds.onChange = [this]
+    {
+        timeline->refreshBand(); timeline->updateSize();
+        resized(); versionStrip->repaint(); timeline->repaint();
+    };
 
     nameCaption.setText ("Piece / Edit Window Name:", juce::dontSendNotification);
     addAndMakeVisible (nameBlock); addAndMakeVisible (infoLabel);
@@ -4766,9 +4922,9 @@ void EditWindowComponent::resized()
         { &automationButton, IW, IH, 14 },
         { &pitchButton, IW, IH, 2 }, { &repairButton, IW, IH, 2 }, { &roomToneButton, IW, IH, 2 }, { &noiseModeButton, IW, IH, 2 }, { &reharmoniserButton, IW, IH, 2 }, { &retimerButton, IW, IH, 10 }, { &exportProcButton, IW + 8, IH, 2 }, { &undoFixButton, IW, IH, 14 }, { &alignButton, IW, IH, 14 },
         { &tracksButton, IW, IH, 2 }, { &importButton, IW + 8, IH, 14 }, { &feedbackButton, IW, IH, 8 }, { &markersToggle, IW, IH, 2 }, { &feedbackToggle, IW + 8, IH, 8 }, { &scoreButton, 44, grid::btnH, 2 }, { &pictureButton, 52, grid::btnH, 14 },
-        { &slipLeftToggle, IW + 8, IH, 2 }, { &slipRightToggle, IW + 8, IH, 6 }, { &shuffleToggle, IW, IH, 2 }, { &insertFlagToggle, IW, IH, 14 },
-        { &zoomOutButton, 34 }, { &zoomInButton, 34 }
+        { &slipLeftToggle, IW + 8, IH, 2 }, { &slipRightToggle, IW + 8, IH, 6 }, { &shuffleToggle, IW, IH, 2 }, { &insertFlagToggle, IW, IH, 14 }
     };
+    const std::vector<FlowItem> zoomItems { { &zoomOutButton, 34 }, { &zoomInButton, 34 } };
     // the head: the edit's name (its caption above it), then the time readout; the buttons to the right of the readout, a group never split between two lines
     const int y0 = r.getY() + 4;
     int x = r.getX();
@@ -4777,9 +4933,15 @@ void EditWindowComponent::resized()
     int headH = juce::jmax (nameBlock.getBottom(), y0 + kClockH + 4) - r.getY();
     const int btnRight = r.getRight() - grid::cornerReserve;      // (clear of the pin and sun / moon buttons in the corner)
     if (btnRight - x >= 300)
+    {
         headH = juce::jmax (headH, grid::flow (juce::Rectangle<int> (x, r.getY(), btnRight - x, headH), items, true, nullptr, true));
+        lanefold::placeZoomKeys (r, zoomOutButton, zoomInButton, IH);         // 3.72.0: - and + on the second line, under the corner's buttons
+    }
     else                                                       // a narrow window: the buttons go under the head, across the whole width
-        headH += grid::flow (juce::Rectangle<int> (r.getX(), r.getY() + headH, r.getWidth(), 0), items, true, nullptr, true);
+    {
+        auto all = items; all.insert (all.end(), zoomItems.begin(), zoomItems.end());
+        headH += grid::flow (juce::Rectangle<int> (r.getX(), r.getY() + headH, r.getWidth(), 0), all, true, nullptr, true);
+    }
     r.removeFromTop (headH + 2);
     // 3.48.0 (asked for on 10 November 2026): one line where there were two. The versions' keys (the Edit tabs, the subheading, Freeze, Changes) come
     // first - they stay where they are whatever the text says - then the line of text (how many takes, how long, the hint), then the lead-in box at
@@ -4920,41 +5082,8 @@ void EditWindowComponent::transportKey (AppContext::TransportKey k)
 }
 
 // ----------------------------------------------------------------------------- the score (3.51.0: ScoreWindow.h)
-void EditWindowComponent::scoreKey()
-{
-    auto* e = edit(); if (e == nullptr) return;
-    const auto key = score::windowKey (editId);
-    if (app.windowIsOpen && app.windowIsOpen (key)) { if (app.closeWindowByKey) app.closeWindowByKey (key); return; }
-    if (e->score.isNotEmpty() && app.project.scoreFileFor (*e).existsAsFile()) { if (app.showScore) app.showScore (editId); return; }
-    // no score yet (or its file has gone from the PDFs folder): ask for it, then open the window
-    auto* a = &app; const auto id = editId;
-    score::choosePdf (app, editId, getTopLevelComponent(), [a, id] { if (a->showScore) a->showScore (id); });
-}
-
-void EditWindowComponent::scoreMenu()
-{
-    auto* e = edit(); if (e == nullptr) return;
-    const bool has = e->score.isNotEmpty();
-    juce::PopupMenu m;
-    if (has) m.addSectionHeader (e->score);
-    m.addItem (1, has ? "Choose another PDF for this edit..." : "Choose the PDF for this edit...");
-    m.addItem (2, "Show the project's PDFs folder");
-    m.addSeparator();
-    m.addItem (3, "Take the score off this edit  (the file stays in the PDFs folder)", has);
-    juce::Component::SafePointer<EditWindowComponent> safe (this);
-    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&scoreButton), [safe] (int r)
-    {
-        if (safe == nullptr || r == 0) return;
-        auto* a = &safe->app; const auto id = safe->editId;
-        if (r == 1) score::choosePdf (*a, id, safe->getTopLevelComponent(), [a, id] { if (a->showScore) a->showScore (id); });      // (an open score window takes the new PDF by itself)
-        else if (r == 2) { auto dir = a->project.pdfsFolder(); dir.createDirectory(); dir.revealToUser(); }
-        else if (r == 3)
-        {
-            if (auto* ed = safe->edit()) { ed->score.clear(); ed->scoreTop = 0.0; ed->scoreZoom = 0.0; ed->scoreFirstPage = ed->scoreLastPage = 0; a->project.markDirty(); }
-            if (a->closeWindowByKey) a->closeWindowByKey (score::windowKey (id));
-        }
-    });
-}
+void EditWindowComponent::scoreKey() { score::toggle (app, editId, getTopLevelComponent()); }        // (3.72.0: in ScoreWindow.h, shared with the take window's PDF key)
+void EditWindowComponent::scoreMenu() { score::showMenu (app, editId, &scoreButton); }
 
 // ----------------------------------------------------------------------------- listeners' comments
 void EditWindowComponent::showFeedbackMenu()
