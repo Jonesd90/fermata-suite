@@ -1139,7 +1139,8 @@ private:
 class TickList : public juce::Component, private juce::ListBoxModel
 {
 public:
-    struct Row { juce::Uuid id; juce::String name, note, tip; bool on = false, enabled = true, hasLevel = false; double level = wavestats::kNone; };
+    /** key (3.77.0): a small key at the right of the row ("Window"), empty for none; a click on it is onOpen. keyLit: drawn as switched on. */
+    struct Row { juce::Uuid id; juce::String name, note, tip, key; bool on = false, enabled = true, hasLevel = false, keyLit = false; double level = wavestats::kNone; };
     std::vector<Row> rows;
     std::function<void (int)> onTick;                        // row: its tick was switched (the row already has its new state)
     std::function<void (int)> onOpen;                        // row: double-clicked
@@ -1152,6 +1153,7 @@ public:
         list.setWantsKeyboardFocus (false);
     }
     void refresh() { list.updateContent(); list.repaint(); }
+    void repaintRows() { list.repaint(); }
     void resized() override { list.setBounds (getLocalBounds()); }
     std::vector<juce::Uuid> ticked() const { std::vector<juce::Uuid> v; for (auto& r : rows) if (r.on) v.push_back (r.id); return v; }
     int countOn() const { int n = 0; for (auto& r : rows) if (r.on) ++n; return n; }
@@ -1178,19 +1180,34 @@ private:
             g.setColour (juce::Colours::white.withAlpha (alpha)); g.strokePath (tick, juce::PathStrokeType (1.7f));
         }
         g.setFont (juce::FontOptions (12.5f));
+        const int kw = keyWidth (r);
+        if (kw > 0)
+        {
+            const auto kr = juce::Rectangle<int> (w - kw - 3, 2, kw, h - 4);
+            g.setColour (r.keyLit ? theme::accent.withAlpha (0.85f) : theme::wellDark); g.fillRoundedRectangle (kr.toFloat(), 3.0f);
+            g.setColour (theme::dimText.withAlpha (0.8f)); g.drawRoundedRectangle (kr.toFloat().reduced (0.5f), 3.0f, 1.0f);
+            g.setFont (juce::FontOptions (11.5f));
+            g.setColour (r.keyLit ? juce::Colours::white : theme::text); g.drawText (r.key, kr, juce::Justification::centred, false);
+            g.setFont (juce::FontOptions (12.5f));
+            w -= kw + 6;
+        }
         const int noteW = r.note.isEmpty() ? 0 : juce::jmin (w / 2, juce::GlyphArrangement::getStringWidthInt (g.getCurrentFont(), r.note) + 10);
         g.setColour (theme::text.withAlpha (alpha)); g.drawText (r.name, 24, 0, w - 28 - noteW, h, juce::Justification::centredLeft, true);
         if (noteW > 0) { g.setColour ((r.hasLevel ? theme::text : theme::dimText).withAlpha (alpha)); g.drawText (r.note, w - noteW - 4, 0, noteW, h, juce::Justification::centredRight, true); }
     }
+    static int keyWidth (const Row& r) { return r.key.isEmpty() ? 0 : juce::GlyphArrangement::getStringWidthInt (juce::Font (juce::FontOptions (11.5f)), r.key) + 14; }
+    bool onKey (int row, const juce::MouseEvent& e) const { const int kw = keyWidth (rows[(size_t) row]); return kw > 0 && e.x >= list.getVisibleRowWidth() - kw - 6; }
     void listBoxItemClicked (int row, const juce::MouseEvent& e) override
     {
-        if (! juce::isPositiveAndBelow (row, (int) rows.size()) || ! rows[(size_t) row].enabled || e.getNumberOfClicks() > 1) return;
+        if (! juce::isPositiveAndBelow (row, (int) rows.size())) return;
+        if (onKey (row, e)) { if (onOpen && e.getNumberOfClicks() == 1) onOpen (row); return; }      // (3.77.0: the row's key)
+        if (! rows[(size_t) row].enabled || e.getNumberOfClicks() > 1) return;
         if (! wholeRowTicks && e.x > 24) return;
         rows[(size_t) row].on = ! rows[(size_t) row].on;
         list.repaintRow (row);
         if (onTick) onTick (row);
     }
-    void listBoxItemDoubleClicked (int row, const juce::MouseEvent&) override { if (juce::isPositiveAndBelow (row, (int) rows.size()) && onOpen) onOpen (row); }
+    void listBoxItemDoubleClicked (int row, const juce::MouseEvent& e) override { if (juce::isPositiveAndBelow (row, (int) rows.size()) && onOpen && ! onKey (row, e)) onOpen (row); }
     juce::String getTooltipForRow (int row) override { return juce::isPositiveAndBelow (row, (int) rows.size()) ? rows[(size_t) row].tip : juce::String(); }
     juce::ListBox list;
 };
@@ -1318,6 +1335,8 @@ struct SpecEditComponent::Impl
     struct Seen { juce::Uuid track; InsertProcessor* proc = nullptr; std::vector<float> vals; };
     std::vector<Seen> seen;
     InsertProcessor* linkFrom = nullptr;                     // 3.75.2: the instance being set by hand (its window is open and a control of it moved)
+    InsertProcessor* linkCopiedFrom = nullptr;               // 3.77.0: the one the last copy was made from (its own moves count at once: see linkQuietUntil)
+    juce::String openKeys;                                   // 3.77.0: which tracks' plug-in windows were open at the last look (the rows' Window keys)
     juce::uint32 linkDue = 0, linkRunStart = 0, linkQuietUntil = 0;
     int linkRuns = 0; bool linkResting = false;
     juce::uint32 lastPlugLook = 0, lastLevelsLook = 0;
@@ -2045,11 +2064,16 @@ struct SpecEditComponent::Impl
         for (auto& r : plugTracks.rows)
         {
             auto* sl = postSlot (r.id);
-            r.enabled = sl != nullptr; r.note.clear(); r.tip = "A click on the tick box puts the plug-in on this track, or takes it off. Double-click: this track's own plug-in window.";
+            r.enabled = sl != nullptr; r.note.clear(); r.key.clear(); r.keyLit = false;
+            r.tip = "A click on the tick box puts the plug-in on this track, or takes it off. Window (or a double-click) opens THIS track's own plug-in: what it is set to, and the sound of this track going through it as the piece plays.";
             if (sl == nullptr) { r.on = false; r.note = "not in this mixer"; r.tip = "This track has no strip in the piece's mixer."; continue; }
             const bool loaded = sl->isLoaded();
             const auto id = loaded ? app.plugins.identityOf (sl->getProcessorUnsafe()) : juce::String();
-            if (loaded && id == plugId && plugId.isNotEmpty()) { r.on = true; ++n; maxLat = juce::jmax (maxLat, sl->latencySamples()); anyBypass = anyBypass || sl->bypass.get(); }
+            if (loaded && id == plugId && plugId.isNotEmpty())
+            {
+                r.on = true; ++n; maxLat = juce::jmax (maxLat, sl->latencySamples()); anyBypass = anyBypass || sl->bypass.get();
+                r.key = "Window"; r.keyLit = app.plugins.editorOpen (sl->getProcessorUnsafe());      // (3.77.0: each track's own plug-in window)
+            }
             else if (slotInUse (*sl))
             {
                 r.on = false; r.enabled = false; r.note = loaded ? sl->getName() : sl->savedName + " (not loaded)";
@@ -2191,11 +2215,21 @@ struct SpecEditComponent::Impl
     {
         const auto now = juce::Time::getMillisecondCounter();
         const auto slots = plugSlots();
+        {   // 3.77.0: the rows' Window keys are lit for the tracks whose plug-in window is open
+            juce::String open;
+            for (auto& r : plugTracks.rows) { auto* sl = r.key.isNotEmpty() ? postSlot (r.id) : nullptr; open << (sl != nullptr && sl->isLoaded() && app.plugins.editorOpen (sl->getProcessorUnsafe()) ? '1' : '0'); }
+            if (open != openKeys)
+            {
+                openKeys = open;
+                for (int i = 0; i < (int) plugTracks.rows.size(); ++i) plugTracks.rows[(size_t) i].keyLit = open[i] == '1';
+                plugTracks.repaintRows();
+            }
+        }
         bool same = slots.size() == seen.size();
         for (size_t i = 0; same && i < slots.size(); ++i) same = seen[i].proc == slots[i]->getProcessorUnsafe() && (int) seen[i].vals.size() == seen[i].proc->numParams();
         if (! same)
         {
-            seen.clear(); linkFrom = nullptr; linkDue = 0; linkRuns = 0; linkResting = false;
+            seen.clear(); linkFrom = nullptr; linkCopiedFrom = nullptr; linkDue = 0; linkRuns = 0; linkResting = false;
             for (auto* sl : slots) { Seen s; s.proc = sl->getProcessorUnsafe(); const int np = s.proc->numParams(); s.vals.resize ((size_t) np); for (int k = 0; k < np; ++k) s.vals[(size_t) k] = s.proc->getParamNorm (k); seen.push_back (std::move (s)); }
             return;
         }
@@ -2211,7 +2245,11 @@ struct SpecEditComponent::Impl
                 s.vals[(size_t) k] = v;
                 moved = moved || s.proc->paramAutomatable (k);                    // (a meter the plug-in shows as a parameter is no setting)
             }
-            if (! moved || quiet || linkResting || ! app.plugins.editorOpen (s.proc)) continue;      // (only a plug-in whose window is open is being set by hand)
+            if (! moved || linkResting || ! app.plugins.editorOpen (s.proc)) continue;      // (only a plug-in whose window is open is being set by hand)
+            // 3.77.0: the quiet moment after a copy is for the OTHERS (their settings, just written, read as "moved"). 3.75.2 kept it for the one
+            // being set as well, so what was done to it in the 0.8 s after a copy was never copied: a band made, then at once switched to a
+            // high-pass, left the other tracks with the band alone; and the end of a long drag was lost in the same way.
+            if (quiet && s.proc != linkCopiedFrom) continue;
             if (linkDue == 0) linkRunStart = now;
             linkFrom = s.proc; linkDue = now + 250; if (linkDue == 0) linkDue = 1;
         }
@@ -2226,9 +2264,10 @@ struct SpecEditComponent::Impl
         if (! there) return;
         if (linkToggle.getToggleState() && ! others.empty())
         {
-            app.plugins.copyState (linkFrom, others);
-            for (auto& s : seen) for (int k = 0; k < (int) s.vals.size(); ++k) s.vals[(size_t) k] = s.proc->getParamNorm (k);
-            linkQuietUntil = now + 800;
+            const int n = app.plugins.copyState (linkFrom, others);
+            for (auto& s : seen) if (s.proc != linkFrom) for (int k = 0; k < (int) s.vals.size(); ++k) s.vals[(size_t) k] = s.proc->getParamNorm (k);
+            linkQuietUntil = now + 800; linkCopiedFrom = linkFrom;
+            if (n > 0) say ("Link: the plug-in's settings were copied to the other " + juce::String (n) + (n == 1 ? " track." : " tracks.") + " (Window, on a track's row, shows that track's own.)");
         }
         app.project.markDirty(); app.engine.checkLatency();                      // (a setting may change how late the plug-in is)
         soundChangedHere();
@@ -2567,7 +2606,7 @@ SpecEditComponent::SpecEditComponent (AppContext& a, const juce::Uuid& editId) :
     m.plugTracks.onOpen = [this] (int row) { impl->openPlug (row); };
     m.chooseBtn.setTooltip ("The plug-in for the ticked tracks: the first track gets a new one, the others copies of it. With one already there, this replaces it on every track that has it.");
     m.chooseBtn.onClick = [this] { impl->choosePlugin(); };
-    m.openBtn.setTooltip ("Opens the plug-in's window (the first ticked track's; double-click a track for its own).");
+    m.openBtn.setTooltip ("Opens the plug-in's window (the first ticked track's). Each track has its own: the Window key on its row opens it.");
     m.openBtn.onClick = [this] { impl->openPlug (-1); };
     m.removeBtn.setTooltip ("Takes the plug-in off every track (it asks first).");
     m.removeBtn.onClick = [this] { impl->removePlug(); };

@@ -58,7 +58,10 @@ public:
     bool editorOpen (InsertProcessor*) const;
     /** 3.75.2 (the Spectrogram Editing window's Link the settings): every plug-in of 'to' is given all of 'from's settings as they are now - its
         whole state, as Paste settings gives one (so it also works on a plug-in whose mixer is resting, which a parameter set from outside does not
-        reach until the mixer runs). Only instances of the same plug-in are written; how many were. Nothing copied with Copy is touched. */
+        reach until the mixer runs). Only instances of the same plug-in are written; how many were. Nothing copied with Copy is touched.
+        3.77.0: 'from' is first handed what was set in its window and it has not taken yet (PluginHost.cpp: giveWaitingEdits) - with its mixer
+        resting its state was still the OLD settings, and those were what the others got; and after the copy every setting is read back and
+        compared, and one that still differs is set by itself. */
     int copyState (InsertProcessor* from, const std::vector<InsertProcessor*>& to);
     /** 3.75.0: what tells one plug-in from another - its file and kind, as canPaste compares them ("" for none, or one that is not this host's). */
     juce::String identityOf (InsertProcessor*) const;

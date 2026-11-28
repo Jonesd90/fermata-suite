@@ -613,19 +613,7 @@ MasteringComponent::MasteringComponent (AppContext& a)
     renderAgainBtn.onClick = [this] { checkRenders (true); };
     renderNowBtn.setTooltip ("Makes the preview renders that are missing or out of date, once. Nothing is rendered unless you press this (or Export).");
     renderNowBtn.onClick = [this] { checkRenders(); };
-    // 3.74.0: the Spectrogram Editing window (SpecEditWindow.h) for the selected piece - or the first ticked one
-    specEditBtn.setTooltip ("Opens the Mastering window for the selected piece: its spectrogram with the highest true peaks marked, a gain box to bring a peak down on the tracks themselves, "
-                            "one plug-in on the tracks you choose (after their faders), the figures of a Waveform Statistics window (true peak, RMS, clipped samples, DC offset, loudness and "
-                            "loudness range) for the whole piece and for any part you select, and meters that follow the playhead.");
-    specEditBtn.onClick = [this]
-    {
-        auto id = selectedPiece();
-        if (id.isNull() || editOf (id) == nullptr || editOf (id)->isEmpty()) { id = juce::Uuid::null(); for (auto& e : includedEdits()) { id = e; break; } }
-        if (id.isNull()) for (auto& it : def().items) if (auto* e = editOf (it.editId); e != nullptr && ! e->isEmpty()) { id = it.editId; break; }
-        if (id.isNull()) { showError ("Spectrogram Editing", "There is no piece with audio to open yet."); return; }
-        if (app.showSpecEdit) app.showSpecEdit (id);
-    };
-    addAndMakeVisible (specEditBtn);
+    // (3.77.0, asked for on 28 November 2026: the key that opened the Mastering window from here is gone - that window is the top row's Mastering)
     addAndMakeVisible (prevRenderBtn); addAndMakeVisible (renderAgainBtn); addAndMakeVisible (renderNowBtn); addAndMakeVisible (renderLight);
     prevRenderBtn.setEnabled (false);
 
@@ -1528,7 +1516,7 @@ void MasteringComponent::startJob (const MasterJobSpec& spec, int kind)
     if (othersRendering())                                   // 3.74.0: the Spectrogram Editing window is rendering a piece (the export renders too: one at a time)
     {
         status.setColour (juce::Label::textColourId, theme::warn);
-        status.setText ("The Spectrogram Editing window is rendering a piece: try again when it has finished (a few moments).", juce::dontSendNotification);
+        status.setText ("The Mastering window is rendering a piece: try again when it has finished (a few moments).", juce::dontSendNotification);
         return;
     }
     lastJobKind = kind; lastWasDisc = kind == 1;
@@ -1848,9 +1836,6 @@ void MasteringComponent::resized()
         vmTab.setBounds (bar.removeFromLeft (150).withSizeKeepingCentre (146, grid::btnH + 4));
         ddpTab.setBounds (bar.removeFromLeft (110).withSizeKeepingCentre (106, grid::btnH + 4));
         atmosTab.setBounds (bar.removeFromLeft (110).withSizeKeepingCentre (106, grid::btnH + 4));
-        bar.removeFromLeft (18);
-        const int sw = juce::jmin (186, juce::jmax (0, bar.getWidth() - grid::cornerReserve));          // 3.74.0: Spectrogram Editing, clear of the corner's buttons
-        specEditBtn.setBounds (bar.removeFromLeft (sw).withSizeKeepingCentre (sw, grid::btnH + 4));
         (void) bar;                                                                // (the top bar holds only the tabs, so the pin and moon buttons have the corner to themselves)
     }
     {

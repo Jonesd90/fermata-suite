@@ -241,7 +241,6 @@ private:
     std::unique_ptr<masterbusy::Hold> busyHold;
     void syncBusy() { const bool b = job != nullptr || renderJob != nullptr || atmosJob != nullptr; if (b != (busyHold != nullptr)) { if (b) busyHold = std::make_unique<masterbusy::Hold>(); else busyHold.reset(); } }
     bool othersRendering() const { return masterbusy::holds() > (busyHold != nullptr ? 1 : 0); }
-    juce::TextButton specEditBtn { "Mastering..." };                 // 3.74.0: the selected piece in the Mastering window (SpecEditWindow.h; 3.76.0: its name)
     std::unique_ptr<juce::FileChooser> chooser;
     juce::File lastOutput;
     bool lastWasDisc = false;

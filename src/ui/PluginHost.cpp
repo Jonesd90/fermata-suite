@@ -98,6 +98,10 @@ public:
 
     void process (juce::AudioBuffer<float>& b) override
     {
+        const juce::SpinLock::ScopedTryLockType running (runLock);            // (3.77.0: giveWaitingEdits has it for a moment: this block passes the plug-in by)
+        if (! running.isLocked()) return;
+        lastRunMs.store (juce::Time::getMillisecondCounter(), std::memory_order_relaxed);
+        editsWaiting.store (false, std::memory_order_relaxed);                // (before the plug-in runs: a setting made while it does marks them again)
         const int total = b.getNumSamples(), nc = b.getNumChannels(), cap = work.getNumSamples();
         if (nc < 1 || cap < 1) return;
         // a block longer than the plug-in was prepared for goes through in pieces (it used to skip the plug-in altogether, so the sound went
@@ -138,6 +142,7 @@ public:
     juce::String getStateBase64() const override
     {
         stateChanged.store (false);                                           // (before asking: a change made while it answers marks it again)
+        const_cast<Vst3Insert*> (this)->giveWaitingEdits();                   // (3.77.0: what was set in its window while its mixer rested is in the state too)
         juce::MemoryBlock mb; plugin->getStateInformation (mb);
         cachedState = mb.toBase64Encoding(); cachedAt = juce::Time::getMillisecondCounter();
         return cachedState;
@@ -170,7 +175,7 @@ public:
     void setParamNorm (int i, float v) override
     {
         auto& ps = plugin->getParameters();
-        if (juce::isPositiveAndBelow (i, ps.size())) { ps[i]->setValue (juce::jlimit (0.0f, 1.0f, v)); stateChanged.store (true); }     // (automation: setValue tells no listener)
+        if (juce::isPositiveAndBelow (i, ps.size())) { ps[i]->setValue (juce::jlimit (0.0f, 1.0f, v)); stateChanged.store (true); editsWaiting.store (true, std::memory_order_relaxed); }     // (automation: setValue tells no listener)
     }
     int paramSteps (int i) const override
     {
@@ -202,6 +207,37 @@ public:
     juce::String trackName; juce::uint32 trackArgb = 0;
     /** The state was set from outside (a project load, a copy): what is cached is no longer it. */
     void stateWasSet() noexcept { stateChanged.store (true); }
+
+    /** 3.77.0. Message thread: hands the plug-in the settings made in its window (or set from outside) that it has not taken yet, when the
+        engine is not running it. True when it did.
+
+        A VST3 plug-in is two parts: the part with the window (the controller) and the part that makes the sound (the component). A control
+        moved in the window reaches the component only with its next block of sound - JUCE keeps the value and hands it over in processBlock -
+        and the plug-in's STATE (what is saved, what a render's copy of the project starts from, what Link copies) is the component's. A
+        plug-in the engine is not running therefore answers with its OLD settings for as long as it rests: an edit's own mixer rests unless
+        that edit plays (AudioEngine: mixerIsLive), so does a mixer with no output, and everything does with no audio device. Seen on
+        28 November 2026 in the Mastering window: a high-pass set with the piece stopped, Link copying the old state to the other tracks,
+        and - once Play ran the mixer - the first track alone taking what had been set.
+        Here the plug-in is run once over a few samples of silence, which is all "its next block" has to be. The engine cannot be in it at
+        the same moment (runLock: process() takes it too, and lets a block go by untouched in the rare case that it starts just then). */
+    bool giveWaitingEdits()
+    {
+        if (! prepared || ! editsWaiting.load (std::memory_order_relaxed)) return false;
+        const auto last = lastRunMs.load (std::memory_order_relaxed);
+        if (last != 0 && juce::Time::getMillisecondCounter() - last < 250) return false;     // (the engine is running it: its next block takes them)
+        const juce::SpinLock::ScopedTryLockType mine (runLock);
+        if (! mine.isLocked()) return false;
+        const int n = juce::jmin (64, work.getNumSamples());
+        if (n < 1 || work.getNumChannels() < chans) return false;
+        editsWaiting.store (false, std::memory_order_relaxed);
+        for (int c = 0; c < chans; ++c) work.clear (c, 0, n);
+        juce::AudioBuffer<float> view (work.getArrayOfWritePointers(), chans, n);
+        midi.clear();
+        plugin->processBlock (view, midi);
+        return true;
+    }
+    /** Message thread: marks that settings are waiting (they were set through the plug-in's parameters from outside). */
+    void editsAreWaiting() noexcept { editsWaiting.store (true, std::memory_order_relaxed); }
 
 private:
     /** Asks the plug-in for these layouts on its main input and output buses (a bus it has not got is left out). True when it took both; the
@@ -236,7 +272,7 @@ private:
     }
 
     // AudioProcessorListener (any thread, the audio thread included: only a flag is set)
-    void audioProcessorParameterChanged (juce::AudioProcessor*, int, float) override { stateChanged.store (true); }
+    void audioProcessorParameterChanged (juce::AudioProcessor*, int, float) override { stateChanged.store (true); editsWaiting.store (true, std::memory_order_relaxed); }
     void audioProcessorChanged (juce::AudioProcessor*, const ChangeDetails&) override { stateChanged.store (true); }
     std::unique_ptr<juce::AudioPluginInstance> plugin;
     juce::PluginDescription description;
@@ -245,6 +281,10 @@ private:
     mutable juce::String cachedState;                                         // message thread
     mutable juce::uint32 cachedAt = 0;
     mutable std::atomic<bool> stateChanged { true };
+    // 3.77.0 (giveWaitingEdits): a setting was made that the plug-in may not have taken yet; when the engine last ran it; one of the two at a time
+    std::atomic<bool> editsWaiting { false };
+    std::atomic<juce::uint32> lastRunMs { 0 };
+    juce::SpinLock runLock;
     int chans = 2;
     bool monoOut = false;
     bool prepared = false;
@@ -734,16 +774,33 @@ int PluginHost::copyState (InsertProcessor* from, const std::vector<InsertProces
     auto* a = dynamic_cast<Vst3Insert*> (from);
     if (a == nullptr) return 0;
     const auto id = a->desc().createIdentifierString();
+    // 3.77.0: first what was set in its window and not taken yet (Vst3Insert::giveWaitingEdits) - its state is otherwise the OLD settings
+    a->giveWaitingEdits();
     juce::MemoryBlock mb; a->getPlugin().getStateInformation (mb);
-    int n = 0;
+    auto& pa = a->getPlugin().getParameters();
+    int n = 0, oneByOne = 0;
     for (auto* t : to)
     {
         auto* b = dynamic_cast<Vst3Insert*> (t);
         if (b == nullptr || b == a || b->desc().createIdentifierString() != id) continue;
         b->getPlugin().setStateInformation (mb.getData(), (int) mb.getSize());
         b->stateWasSet();
+        // then the check: every setting must now read the same. One that does not (the plug-in keeps it out of its state, or the state could not
+        // be made fresh) is set by itself; the copy takes it with its next block, or below when its mixer rests.
+        auto& pb = b->getPlugin().getParameters();
+        if (pb.size() == pa.size())
+            for (int k = 0; k < pa.size(); ++k)
+            {
+                if (! pa[k]->isAutomatable()) continue;                           // (a meter shown as a parameter is no setting)
+                const float want = pa[k]->getValue();
+                if (std::abs (pb[k]->getValue() - want) <= 1.0e-4f) continue;
+                pb[k]->setValue (want); b->editsAreWaiting(); ++oneByOne;
+            }
+        b->giveWaitingEdits();
         ++n;
     }
+    juce::Logger::writeToLog ("Plug-in settings copied: " + a->getName() + " to " + juce::String (n) + (n == 1 ? " other" : " others")
+                              + (oneByOne > 0 ? " (" + juce::String (oneByOne) + " set one by one)" : juce::String()));
     return n;
 }
 

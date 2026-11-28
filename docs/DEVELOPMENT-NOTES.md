@@ -2620,6 +2620,47 @@ fermata's `shutdown()` and its static destructors. Our unhandled-exception filte
   right after closing the log, so the PDF reader's unload code never runs. Everything is saved and closed by then.
 (The symbols of Windows' own libraries were not available here: the reading rests on the single thread and the order of the modules.)
 
+## 3.77.0 - a plug-in at rest is handed what was set in its window; Link; each track's plug-in window (28 November 2026)
+
+Reported on 3.76.0: the Mastering window's plug-in is heard on the track whose window is open and on no other, with Link on.
+
+**The cause, in the plug-in host.** A VST3 plug-in is a controller (the window) and a component (the sound). JUCE's host keeps a value the
+window changed (`VST3HostContext::performEdit` > `VST3Parameter::setValue` > `cachedParamValues.set`) and hands it to the component in ONE
+place: `processAudio`, as the block's `inputParameterChanges`. `getStateInformation` asks the COMPONENT for its state. So a plug-in that
+is not being run answers with its old settings however long ago they were changed in its window. In fermata that is every plug-in in an
+edit's own mixer while that edit is not playing (`AudioEngine.cpp: mixerIsLive`; the 30 s tail after a stop aside), in a mixer with no
+output, and all of them with no audio device. 3.75.2's Link copied "the whole state" precisely because a state is taken with the mixer
+resting - true of the plug-ins that TAKE it, but the one GIVING it was resting too.
+
+**The fix** (`src/ui/PluginHost.cpp`, `Vst3Insert`): `giveWaitingEdits()` runs the plug-in once over 64 samples of silence on the message
+thread - which is all "its next block" needs to be - when (a) a parameter was changed since it last ran (`editsWaiting`: set by the
+listener `audioProcessorParameterChanged` and by `setParamNorm`, cleared at the top of `process()`), and (b) the engine has not run it in
+the last 250 ms (`lastRunMs`). `runLock` (a SpinLock) keeps the engine out meanwhile: `process()` try-locks it and lets that one block
+pass the plug-in by, which can only happen when a mixer wakes in the very moment of a flush. It is called from `getStateBase64()` - so
+the save, `Project::cloneForRender` (every bounce and both mastering windows' renders), Copy settings and `PluginHost::duplicate` are all
+right - and from `copyState` for the giver before its state is read and for each taker after it was written.
+`editsWaiting` is also set when the plug-in reports a value of its own (the same listener): the cost is one needless 64-sample block the
+next time a resting plug-in's state is asked for.
+`copyState` then reads every automatable parameter of each taker back against the giver's and sets by itself any that differs by more
+than 1e-4 (a plug-in that keeps a setting out of its state; a flush that could not run). It writes one line to the log each time:
+"Plug-in settings copied: <name> to N others (M set one by one)" - if Link is reported again, that line says whether it ran.
+
+**Link's quiet moment** (`SpecEditWindow.cpp: lookAtPlugParams`): after a copy the others' parameters read as "moved" for a while, so
+moves were ignored for 0.8 s - on every instance, the giver included, and the values seen in that time were stored as seen, so they were
+never noticed again. Now the instance the copy was made from (`linkCopiedFrom`) counts at once; its stored values are no longer refreshed
+after a copy either (nothing wrote to it).
+
+**Each track's window:** `TickList::Row::key` / `keyLit` - a small key drawn at the right of a row, its click is `onOpen` (as the row's
+double-click). The Plug-in page sets "Window" on the rows that hold the plug-in; `lookAtPlugParams` (five times a second) lights the keys
+of the tracks whose editor is open (`PluginHost::editorOpen`). The plug-in window's own bar already names the track (3.53.0).
+
+**Exports:** `specEditBtn` taken out (asked for). The Mastering window's `pieceBox` chooses the piece.
+
+**Not done / to know:** a change in a plug-in's window that moves no automatable parameter (a display option, something kept only in its
+state) does not start a Link copy - the next parameter move takes it along. The self-moving guard (`linkRuns`) is as it was.
+**Not run:** no plug-in loads on the Linux rig: everything about plug-ins above is from reading JUCE 8.0.9's host and is untested.
+fermata links on the rig; the fit check ran the Exports and Mastering scenes. The six checks: not run (last on 3.71.0).
+
 ## 3.76.0: every fx clip remembers its original; the list of changes; Mastering / Exports (28 November 2026, Claude Fable; fermata:Live 0.10.21)
 
 **Asked** (28 November): changes "overwritten as new files for just that bit of audio" with "a list of changes made somewhere that the user

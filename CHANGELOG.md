@@ -6,6 +6,32 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.77.0
+Built 28 November 2026 (the conversation for both programs), with Claude Fable. Reported that day, on 3.76.0: "The link to all tracks
+still isn't working ... the EQ change I make is being processed on the track that is showing in the preview, but on ALL the other tracks
+it isn't applying the same plugin changes"; asked for: "bring up the specific plugin for each track ... to check and see that it is being
+processed", and "We can get rid of the 'Mastering' button in the 'Exports' page too. That window is accessed only through the top menu
+button". fermata only: nothing shared changed.
+- **Fixed: Link the settings copied the plug-in's OLD settings when the piece was not playing.** A plug-in takes what is set in its window
+  with its next block of sound, and a piece's own mixer rests unless that piece plays. Set with the piece stopped, the plug-in's state -
+  which is what Link copies - was therefore still the old one: the other tracks were handed that, and when Play started only the track
+  whose window was open took what had been set. A plug-in that is not being run is now handed what was set in its window before its
+  state is read, and after a copy every setting of every track is read back and compared (one that still differs is set by itself).
+- **The same fault, everywhere a plug-in's settings are read:** set in its window while its mixer rested (a piece's own mixer with the
+  piece stopped, a mixer with no output, no audio device at all) and not played afterwards, they were missing from the SAVED project,
+  from the render the Mastering and Exports windows measure and export, from Copy settings and from a copy of the plug-in put on another
+  track. All of these read the plug-in's state, and all now get what the window shows.
+- **Fixed: what was set in the 0.8 seconds after a copy was never copied.** Link looked away for that moment after each copy - from the
+  plug-in being set as well as from the others. A band made and at once switched to a high-pass left the other tracks with the band
+  alone, and the end of a drag longer than two seconds was lost.
+- **Mastering > Plug-in: every track's row has a Window key.** It opens THAT track's own plug-in - what it is set to, and that track's
+  sound going through it as the piece plays - and is lit while that window is open. (A double-click on the row did this already, unseen.)
+  The status line now says when Link has copied, and to how many tracks.
+- **Exports: the "Mastering..." key is gone.** The Mastering window is the top row's Mastering; its Piece box chooses the piece.
+- Not run here: no plug-in can be loaded on the machine this was written on, so the plug-in fixes are made from the code of the plug-in
+  host (JUCE hands a changed value to the sound-making half of a VST3 plug-in only in `processBlock`) and are untested until the Windows
+  build. fermata was built and its windows checked; the six pre-delivery checks were not run (last: 3.71.0).
+
 ## 3.76.0
 Built 28 November 2026 (the conversation for both programs), with Claude Fable. Asked for that day: "a sort of system where the changes
 made are overwritten as new files for just that bit of audio ... Then there should be a list of changes made somewhere that the user can
@@ -30,7 +56,7 @@ Listening copy, Virtual Master, DDP, Atmos - sits between Mastering and Help, an
   simply "take the newest one off", and no longer forgets when the window is closed.
 - **Mastering is the spectrogram window.** The top row's **Mastering** opens it (for the edit worked on last; open already, it comes forward
   as it is), and the window is called Mastering. **Exports** (new, between Mastering and Help) is what was the Mastering window - its
-  pages now in the order **Listening copy, Virtual Master, DDP, Atmos**; its "Mastering..." key opens the Mastering window for the
+  pages now in the order **Listening copy, Virtual Master, DDP, Atmos**; its "Mastering..." key (taken out again in 3.77.0) opens the Mastering window for the
   selected piece. **Audio settings** has left the top row: it is in the **Project** menu. A controller's Mastering key opens the same
   window as the top row's.
 - Left as it was, on purpose: the hot keys list still calls the DDP page's keys "Mastering" (renaming the list would lose keys you have
