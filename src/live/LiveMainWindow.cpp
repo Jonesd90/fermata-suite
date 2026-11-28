@@ -200,11 +200,13 @@ public:
     {
         const auto& p = desk::pal();
         auto b = getLocalBounds();
+        juce::Graphics::ScopedSaveState rounded (g);                        // (3.73.0: the strip's corners rounded - its colour bars follow them)
+        { juce::Path shape; shape.addRoundedRectangle (b.toFloat(), theme::kCorner); g.reduceClipRegion (shape); }
         g.setColour (p.strip); g.fillRect (b);
-        g.setColour (p.stripEdge); g.drawRect (b, 1);
+        g.setColour (p.stripEdge); theme::drawBox (g, b);
         g.setColour (colour); g.fillRect (0, 0, b.getWidth(), 4); g.fillRect (0, b.getHeight() - 4, b.getWidth(), 4);
-        g.setColour (p.disp); g.fillRect (dispArea);
-        g.setColour (p.dispEdge); g.drawRect (dispArea, 1);
+        g.setColour (p.disp); theme::fillBox (g, dispArea);
+        g.setColour (p.dispEdge); theme::drawBox (g, dispArea);
         g.setColour (p.cream); g.setFont (juce::FontOptions (juce::jmin (10.5f, (float) gainCapArea.getHeight() * 0.75f), juce::Font::bold));
         g.drawText (preampShown ? "GAIN" : "", gainCapArea.getX(), gainCapArea.getY() + 1, gainCapArea.getWidth(), gainCapArea.getHeight() - 2, juce::Justification::centred, false);
         // at the bottom of the column, over the headroom: REC while a take records this input, else "in the session" / "not recorded"
@@ -357,12 +359,14 @@ public:
     {
         const auto& p = desk::pal();
         auto b = getLocalBounds();
+        juce::Graphics::ScopedSaveState rounded (g);                        // (3.73.0: the strip's corners rounded - its colour bars follow them)
+        { juce::Path shape; shape.addRoundedRectangle (b.toFloat(), theme::kCorner); g.reduceClipRegion (shape); }
         g.setColour (p.strip); g.fillRect (b);
-        g.setColour (p.stripEdge); g.drawRect (b, 1);
+        g.setColour (p.stripEdge); theme::drawBox (g, b);
         g.setColour (colour); g.fillRect (0, 0, b.getWidth(), 4);
         auto disp = juce::Rectangle<int> (8, 9, b.getWidth() - 16, 36);
-        g.setColour (p.disp); g.fillRect (disp);
-        g.setColour (p.dispEdge); g.drawRect (disp, 1);
+        g.setColour (p.disp); theme::fillBox (g, disp);
+        g.setColour (p.dispEdge); theme::drawBox (g, disp);
     }
     static constexpr int kStripW = 170, kStripH = 88;
 private:

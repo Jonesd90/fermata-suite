@@ -6,6 +6,40 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.73.0
+Built 27 November 2026 (the conversation for both programs), with Claude Opus. Asked for that night: video still could not be added ("NOT ADDED
+- this build of fermata cannot read video on this computer's system") and the file that should say why was not in the download; the buttons
+at the top of the edit window on three lines on the smaller screen ("I want them to be on two please" - all three ways offered); and "all of
+the 90 degree angles in the UI of fermata that are currently sharp right angles, into softer bends (though still fairly tight) - the
+H:M:S:MS display has the right balance of bend".
+- **The video report.** Video could not be added because this build has no video reader in it: the GitHub build leaves it out when Windows'
+  compiler refuses its code, and the file meant to say why did not come with the download. Now the reason can always be seen, two ways:
+  - **Help > Save the video report** writes fermata-video-report.txt (in Documents\Fermata) and shows it: what reads video in this copy,
+    this Windows, and the report the build made - what was tried, with which compiler and Windows SDK, and every error. The report is built
+    into fermata itself, so it is there even when the download has no file. Please send that file.
+  - The download now always has **video-reader.txt** beside Fermata.exe (the same report).
+  - When a video is NOT ADDED because the reader is missing, the window says to save the report.
+- **The buttons on two lines.** In the edit window (and the take windows), when the buttons beside the time readout would need a third line,
+  they are squeezed first: the picture buttons 28 pixels wide instead of 34, the gaps between them about half, and the name box narrower (170,
+  then 150, instead of 240). As a last step a group of buttons may be split between the two lines. A window wide enough looks exactly as before.
+  On a 1280-wide window the edit window's buttons are on two lines in both styles. A take window that narrow still needs three - they stay
+  within the height of its name column and boxes, so the timeline does not lose any room (it was four before). "(a new edit is made on first
+  use)" in the take window is now "(new edit on first use)", to fit the narrower column.
+- **Softer corners.** Boxes have rounded corners - 4 pixels, as the time readout: text boxes and lists, tick boxes, sliders' thumbs and
+  slots, scroll bars, tabs, the meters' wells, the main window's input strips and their displays, the take and edit windows' clips, banners,
+  overdubs, the guide and video clips, the volume-change boxes, the flags (markers, In / Out, the insert flag, marks 1 and 2), the
+  selections, the lasso, the version strip's pieces, the BARS strip and the take chart, Mastering's tracks, the colour picker's swatches, the
+  mixer's keys, lists, fader slot, pan and wells, and the graphs' frames. The keys in the Manuscript UI are as round as the others now. Left
+  square on purpose: the lanes, rows and name plates that sit edge to edge, grids and lines, and the windows themselves (menus and tooltips
+  are drawn by Windows' own windows).
+- **Shared:** the look files fermata:Live uses too - `src/ui/Uikit.h` (the corner size and the rounded-box drawing; the meters),
+  `src/ui/FermataLookAndFeel.h`, `src/ui/MixerLook.h`, `src/ui/DeskLook.h`, `src/ui/MarkerStrip.h` - so fermata:Live has the softer corners
+  as well (fermata:Live 0.10.19).
+- Checked here (Linux): both programs build with no warnings; the build file's new video report was tried in a small stand-in project (the
+  report written, built in and read back). The small-screen check's take and edit windows at 1280, 1366, 1536 and 1920 wide, in both styles,
+  and fermata's and fermata:Live's main windows, mixers and Mastering looked at. Not checked here: the Windows build (GitHub) - and why its
+  video reader does not build, which the report will say.
+
 ## 3.72.0
 Built 27 November 2026 (the conversation for both programs), with Claude Opus. Asked for that evening, with a picture of the edit window's lanes
 ("Edit 1 comments", "Edit 2 pieces", "Changes since Edit 2", Markers, Feedback): the PDF key in the take window too; the - and + keys on the

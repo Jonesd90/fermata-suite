@@ -2,6 +2,13 @@
 #include "VideoReader.h"
 #include "../core/AudioOps.h"
 #include "../core/CrashReport.h"
+// 3.73.0: the report CMakeLists.txt writes about the video reader (its build folder's generated/, on the include path), when there is one
+#if defined (__has_include)
+ #if __has_include ("VideoBuildReport.h")
+  #include "VideoBuildReport.h"
+  #define FERMATA_HAS_VIDEO_REPORT 1
+ #endif
+#endif
 #include <atomic>
 #include <condition_variable>
 #include <deque>
@@ -504,6 +511,14 @@ std::shared_ptr<Source> openForPicture (const juce::File& file)
 }
 
 juce::String systemName() { return raw::systemName(); }
+juce::String buildReport()
+{
+   #if FERMATA_HAS_VIDEO_REPORT
+    return juce::String::fromUTF8 (reinterpret_cast<const char*> (kVideoBuildReport));
+   #else
+    return "(no report: this copy was built without CMakeLists.txt's video trial - the Linux checks' build)";
+   #endif
+}
 void setHardwareDecoding (bool allowed) { hardwareAllowed.store (allowed, std::memory_order_relaxed); }
 bool hardwareDecoding() { return hardwareAllowed.load (std::memory_order_relaxed); }
 

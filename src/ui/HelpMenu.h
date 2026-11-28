@@ -2,6 +2,7 @@
 #include "AppContext.h"
 #include "../core/CrashReport.h"
 #include "../core/CoreReservation.h"
+#include "VideoSource.h"
 
 namespace td
 {
@@ -63,7 +64,25 @@ inline juce::String aboutFermataText (AppContext& app)
     return t;
 }
 
-/** The Help menu (3.14.0): the manual, the keys, the log, the crash reports and About. */
+/** 3.73.0 (27 November 2026: video could not be added, and why could not be seen): writes fermata-video-report.txt beside the log - what reads
+    video in this copy, this Windows, and the report its build made about the video reader (CMakeLists.txt) - and shows it, to be sent. */
+inline void saveVideoReport()
+{
+    auto* inst = juce::JUCEApplication::getInstance();
+    juce::String t;
+    t << "Fermata " << (inst != nullptr ? inst->getApplicationVersion() : juce::String()) << "  (built " << __DATE__ << ")\n"
+      << "Saved: " << juce::Time::getCurrentTime().toString (true, true) << "\n"
+      << "Video read by: " << video::systemName() << "\n"
+      << "Windows: " << juce::SystemStats::getOperatingSystemName() << "\n\n"
+      << video::buildReport() << "\n";
+    const auto f = fermataLogFolder().getChildFile ("fermata-video-report.txt");
+    f.getParentDirectory().createDirectory();
+    if (f.replaceWithText (t)) f.revealToUser();
+    else juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon).withTitle ("Video report")
+                                           .withMessage ("The report could not be written to " + f.getFullPathName() + ".").withButton ("OK"), nullptr);
+}
+
+/** The Help menu (3.14.0): the manual, the keys, the log, the crash reports (3.73.0: the video report) and About. */
 inline void showHelpMenu (AppContext& app, juce::Component& target)
 {
     const auto reports = crashreport::allReports();
@@ -73,6 +92,7 @@ inline void showHelpMenu (AppContext& app, juce::Component& target)
     m.addSeparator();
     m.addItem (3, "Show the log file (fermata-log.txt)");
     m.addItem (4, reports.isEmpty() ? juce::String ("Crash reports (none)") : "Show the crash reports (" + juce::String (reports.size()) + ")", ! reports.isEmpty());
+    m.addItem (6, "Save the video report (how this copy's video reader was built)");
     m.addSeparator();
     m.addItem (5, "About Fermata");
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&target), [&app] (int r)
@@ -81,6 +101,7 @@ inline void showHelpMenu (AppContext& app, juce::Component& target)
         else if (r == 2) { if (app.showHotKeys) app.showHotKeys(); }
         else if (r == 3) fermataLogFolder().getChildFile ("fermata-log.txt").revealToUser();
         else if (r == 4) { const auto all = crashreport::allReports(); if (! all.isEmpty()) all.getFirst().revealToUser(); }
+        else if (r == 6) saveVideoReport();
         else if (r == 5)
         {
             const auto text = aboutFermataText (app);

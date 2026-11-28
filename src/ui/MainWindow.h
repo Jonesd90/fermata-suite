@@ -270,8 +270,8 @@ public:
             g.setColour (p.cream); g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
             g.drawText (caption, r.removeFromLeft (captionWidth()), juce::Justification::centredLeft, false);
         }
-        g.setColour (p.disp); g.fillRect (r);
-        g.setColour (p.dispEdge); g.drawRect (r, 1);
+        g.setColour (p.disp); theme::fillBox (g, r);                 // (3.73.0: rounded)
+        g.setColour (p.dispEdge); theme::drawBox (g, r);
         g.setColour (colour.isTransparent() ? p.cyan : colour);
         g.setFont (font());
         g.drawFittedText (text, r.reduced (8, 0), juce::Justification::centredLeft, 1, 0.75f);

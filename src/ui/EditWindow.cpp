@@ -508,7 +508,7 @@ public:
             if (rr.getRight() < clip.getX() || rr.getX() > clip.getRight()) continue;
             const bool missing = videoMissing.count (v.id) != 0 && videoMissing.at (v.id);
             const bool dragging = videoDragId == v.id && videoMoved;
-            g.setColour (missing ? juce::Colour (0xff3a2224) : juce::Colour (0xff1b2027)); g.fillRect (rr);
+            g.setColour (missing ? juce::Colour (0xff3a2224) : juce::Colour (0xff1b2027)); theme::fillBox (g, rr);       // (3.73.0: rounded)
             // the small pictures, side by side from the clip's own start (a picture covers its slot's middle moment)
             const auto strip = missing ? nullptr : st.get (v.file, v.length);
             const double aspect = strip != nullptr ? strip->aspect : (v.width > 0 && v.height > 0 ? (double) v.width / v.height : 16.0 / 9.0);
@@ -549,7 +549,7 @@ public:
             }
             // its edge, the padlock and its name
             const auto edge = missing ? juce::Colour (0xffe0605a) : v.locked ? juce::Colour (0xff6d8fc2) : juce::Colour (0xffffc83d);
-            g.setColour (edge); g.drawRect (rr, dragging || ! v.locked ? 2 : 1);
+            g.setColour (edge); theme::drawBox (g, rr, dragging || ! v.locked ? 2.0f : 1.0f);
             if (v.start < 0.0) for (int y = rr.getY(); y < rr.getBottom(); y += 6) g.fillRect (rr.getX(), y, 2, 3);       // (it began before 0:00)
             const auto lk = videoLockRect (v);
             g.setColour (juce::Colour (0xd0101418)); g.fillRoundedRectangle (lk.expanded (3, 2).toFloat(), 3.0f);
@@ -991,8 +991,8 @@ public:
         if (lassoMoved)                                              // Alt + drag: the lasso
         {
             const auto lr = lassoRect();
-            g.setColour (theme::accent.withAlpha (0.13f)); g.fillRect (lr);
-            g.setColour (theme::accent.withAlpha (0.9f));  g.drawRect (lr, 1);
+            g.setColour (theme::accent.withAlpha (0.13f)); theme::fillBox (g, lr);
+            g.setColour (theme::accent.withAlpha (0.9f));  theme::drawBox (g, lr);
         }
     }
     // ---- Alt + drag: a lasso; every piece it touches is selected (whole pieces, overdubs too)
@@ -1086,7 +1086,7 @@ public:
         const auto rr = juce::Rectangle<int> (x0, guideTop + 3, x1 - x0, h - 7);
         if (rr.getRight() < clip.getX() || rr.getX() > clip.getRight()) return;
         const auto grey = juce::Colour (0xffa9afb8);
-        g.setColour (grey.withAlpha (guideDrag ? 0.32f : 0.20f)); g.fillRect (rr);
+        g.setColour (grey.withAlpha (guideDrag ? 0.32f : 0.20f)); theme::fillBox (g, rr);          // (3.73.0: rounded)
         {
             setWaveColour (g, juce::Colour (0xffdfe3e8));
             juce::Graphics::ScopedSaveState ss (g); g.reduceClipRegion (rr.reduced (1));
@@ -1095,7 +1095,7 @@ public:
                 if (auto* th = thumbnailFor (gd.file)) drawThumbnailEnvelope (g, rr.reduced (1), *th, f0, f1, guideZoomNow(), nullptr, app.waveShape());
         }
         g.setColour (grey.withAlpha (0.95f));
-        g.drawRect (rr.withTrimmedLeft (startSec < 0.0 ? 2 : 0), 1);
+        theme::drawBox (g, rr.withTrimmedLeft (startSec < 0.0 ? 2 : 0));
         if (startSec < 0.0) for (int y = rr.getY(); y < rr.getBottom(); y += 6) g.fillRect (rr.getX(), y, 2, 3);       // cut off at 0:00
         if (guideDrag)                                                       // while it is dragged: where it starts now
         {
@@ -1135,8 +1135,8 @@ public:
             g.drawText (guideSelected ? "Up / Down, , / . size the guide" : guideSolo ? "S on: Space plays the guide only" : "drag it sideways to line it up", sx + 10, guideTop + 37, kNameW - 16, 16, juce::Justification::centredLeft, true);
         if (guideSelected)                                                     // 3.43.0: selected - the keys size the guide alone
         {
-            g.setColour (theme::accent.withAlpha (0.16f)); g.fillRect (r.withTrimmedLeft (6).withTrimmedBottom (2));
-            g.setColour (theme::accent); g.drawRect (r.withTrimmedBottom (2), 2);
+            g.setColour (theme::accent.withAlpha (0.16f)); theme::fillBox (g, r.withTrimmedLeft (6).withTrimmedBottom (2));
+            g.setColour (theme::accent); theme::drawBox (g, r.withTrimmedBottom (2), 2.0f);
         }
         lanefold::paintTriangle (g, lanefold::triangleBox (sx, kNameW, guideTop), true, grey);                // (3.72.0: fold it)
     }
@@ -1278,7 +1278,7 @@ public:
             {
                 const auto plate = selected ? juce::Colour (0xffc26500) : theme::accent;
                 g.setColour (plate);
-                g.fillRect (lane);
+                theme::fillBox (g, lane);                                                   // (3.73.0: rounded)
                 g.setColour (theme::manuscript() ? theme::inkOn (plate) : juce::Colours::white); g.setFont (juce::FontOptions (12.5f, juce::Font::bold));
                 g.drawText (r.takeName + "   " + formatTimeShort ((double) r.srcIn / rate, 2) + " - " + formatTimeShort ((double) r.srcOut / rate, 2),
                             lane.reduced (6, 0), juce::Justification::centredLeft, true);
@@ -1304,7 +1304,7 @@ public:
                 }
                 const auto tc = rowColour[ti];
                 g.setColour (selected ? chan::clipFill (tc, true) : chan::clipFill (tc));
-                g.fillRect (rr);
+                theme::fillBox (g, rr);                                                      // (3.73.0: rounded)
                 if (r.waiting.active() && (r.waiting.tracks.empty() || std::find (r.waiting.tracks.begin(), r.waiting.tracks.end(), rf->trackId) != r.waiting.tracks.end()))
                     drawWaitingBlock (g, rr.reduced (1), r.waiting.name, theme::text, r.waiting.rx);
                 else
@@ -1316,7 +1316,7 @@ public:
                         if (auto* th = thumbnailFor (rf->file)) drawThumbnailEnvelope (g, rr.reduced (1), *th, (double) (srcA - rf->fileStart) / rate, (double) (srcB - rf->fileStart) / rate, app.waveZoom, wcd.get(), app.waveShape());
                 }
                 g.setColour (selected ? juce::Colour (0xffc26500) : tc.withAlpha (0.9f));         // the selected piece gets an orange frame
-                g.drawRect (rr, selected ? 2 : 1);
+                theme::drawBox (g, rr, selected ? 2.0f : 1.0f);
             }
 
             // this piece's fades: fade-in (yellow) and fade-out (orange)
@@ -1469,7 +1469,7 @@ public:
             const int wpx = juce::jmax (3, (int) ((double) r.length() / rate * pixelsPerSecond));
             const bool selected = isSelected (r.id);
             auto lane = juce::Rectangle<int> (x0, rulerH + 14, wpx, kLaneH - 18);
-            g.setColour (selected ? juce::Colour (0xffc26500) : juce::Colour (0xff6a4cc2)); g.fillRect (lane);
+            g.setColour (selected ? juce::Colour (0xffc26500) : juce::Colour (0xff6a4cc2)); theme::fillBox (g, lane);       // (3.73.0: rounded)
             g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (10.5f, juce::Font::bold));
             g.drawText ("OVERDUB  " + r.takeName, lane.reduced (4, 0), juce::Justification::centredLeft, true);
             drawFadeHandles (g, lane, r, rate, true, true);
@@ -1481,7 +1481,7 @@ public:
                 if (rf == nullptr) continue;
                 auto rr = overdubBand (top + (int) ti * rowH, x0, wpx);
                 const auto tc = chan::of (app.project, tracks[ti].id);
-                g.setColour (selected ? chan::clipFill (tc, true) : chan::clipFill (tc)); g.fillRect (rr);
+                g.setColour (selected ? chan::clipFill (tc, true) : chan::clipFill (tc)); theme::fillBox (g, rr);
                 {
                     setWaveColour (g, chan::waveColour (tc));
                     juce::Graphics::ScopedSaveState ss (g); g.reduceClipRegion (rr.reduced (1));
@@ -1489,7 +1489,7 @@ public:
                     if (! directWave.draw (g, rr.reduced (1), rf->file, (double) (r.srcIn - rf->fileStart) / rate, (double) (r.srcOut - rf->fileStart) / rate, app.waveZoom, wcd.get(), rate, app.waveShape()))
                         if (auto* th = thumbnailFor (rf->file)) drawThumbnailEnvelope (g, rr.reduced (1), *th, (double) (r.srcIn - rf->fileStart) / rate, (double) (r.srcOut - rf->fileStart) / rate, app.waveZoom, wcd.get(), app.waveShape());
                 }
-                g.setColour (selected ? juce::Colour (0xffc26500) : juce::Colour (0xff6a4cc2)); g.drawRect (rr, selected ? 2 : 1);
+                g.setColour (selected ? juce::Colour (0xffc26500) : juce::Colour (0xff6a4cc2)); theme::drawBox (g, rr, selected ? 2.0f : 1.0f);
                 clipname::draw (g, rr.reduced (1), rf->file, viewport.getViewPositionX() + kNameW);          // (3.62.0)
             }
         }
@@ -1510,10 +1510,10 @@ public:
                 if (u.x1 + 8 < clip.getX() || u.x0 - 8 > clip.getRight()) continue;
                 for (auto& run : u.boxes)
                 {
-                    g.setColour (teal.withAlpha (0.07f)); g.fillRect (run);
+                    g.setColour (teal.withAlpha (0.07f)); theme::fillBox (g, run);
                     for (auto& pt : u.points) if (pt.glide > 1) { g.setColour (teal.withAlpha (0.20f)); g.fillRect (juce::Rectangle<int> (pt.x, run.getY(), pt.glide, run.getHeight()).getIntersection (run)); }
                     for (auto& pt : u.points) if (pt.x > u.x0 + 1 && pt.x < u.x1 - 1 && pt.triangle) { g.setColour (teal.withAlpha (0.8f)); g.fillRect (pt.x, run.getY(), 1, run.getHeight()); }
-                    g.setColour (teal); g.drawRect (run, 2);
+                    g.setColour (teal); theme::drawBox (g, run, 2.0f);
                 }
                 if (u.boxes.empty()) { g.setColour (teal.withAlpha (0.6f)); g.fillRect (u.x0, top, 1, rowsEnd - top); }          // (a change that moves nothing: a thin line, so it can still be found)
                 g.setColour (teal);
@@ -1543,7 +1543,7 @@ public:
             for (int y = sy + kInsH; y < rowsEnd; y += 8) g.fillRect (x - 1, y, 2, 4);
             g.fillRect (x - 1, sy, 2, kInsH);
             auto flag = juce::Rectangle<int> (x + 1, sy + 1, 52, kInsH - 3);
-            g.fillRect (flag);
+            theme::fillBox (g, flag, 3.0f);                                                  // (3.73.0: rounded)
             g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (9.5f, juce::Font::bold));
             g.drawText ("INSERT", flag, juce::Justification::centred, false);
             g.setColour (snapped ? orange : orange.withAlpha (0.55f));
@@ -1630,13 +1630,13 @@ public:
             if (trackRow && trackSelected (inf.node))                                       // a selected name (right-click: remove the selected tracks)
             {
                 const auto sel = juce::Rectangle<int> (sx, rowTop, kNameW, rowH);
-                g.setColour (juce::Colour (0xff29b6ff).withAlpha (0.22f)); g.fillRect (sel);
-                g.setColour (juce::Colour (0xff29b6ff)); g.drawRect (sel.reduced (1), 2);
+                g.setColour (juce::Colour (0xff29b6ff).withAlpha (0.22f)); theme::fillBox (g, sel.reduced (1));
+                g.setColour (juce::Colour (0xff29b6ff)); theme::drawBox (g, sel.reduced (1), 2.0f);
             }
             if (lanesOn (*e) && (int) i == hoverRow)                                        // 3.32.0: the lane under the mouse - its name is lit too
             {
-                g.setColour (juce::Colours::white.withAlpha (0.08f)); g.fillRect (sx, rowTop, kNameW, rowH);
-                g.setColour (juce::Colour (0xffffc83d)); g.drawRect (juce::Rectangle<int> (sx, rowTop, kNameW, rowH).reduced (1), 2);
+                g.setColour (juce::Colours::white.withAlpha (0.08f)); theme::fillBox (g, juce::Rectangle<int> (sx, rowTop, kNameW, rowH).reduced (1));
+                g.setColour (juce::Colour (0xffffc83d)); theme::drawBox (g, juce::Rectangle<int> (sx, rowTop, kNameW, rowH).reduced (1), 2.0f);
             }
             // 3.48.0: the weight is named. g.setFont (14.0f) only changes the height of whatever font was last used, so the first track's name was drawn bold
             // or not by what had been drawn just before it - which differs from one redraw to the next while the edit plays (the name flickered); the
@@ -1702,7 +1702,7 @@ public:
         g.setColour (juce::Colour (0x55ffffff)); g.fillRect (sx + kNameW - 2, bandH(), 2, juce::jmax (0, getHeight() - bandH()));
         if (! clipMoveRegion.isNull() && clipMoveToRow >= 0)                           // Shift + drag: the row the clip will go to
         {
-            g.setColour (juce::Colour (0xffffc83d)); g.drawRect (juce::Rectangle<int> (sx + kNameW, top + clipMoveToRow * rowH, getWidth() - sx - kNameW, rowH), 3);
+            g.setColour (juce::Colour (0xffffc83d)); theme::drawBox (g, juce::Rectangle<int> (sx + kNameW, top + clipMoveToRow * rowH, getWidth() - sx - kNameW, rowH), 3.0f);
         }
         if (rowDragFrom >= 0 && rowDragTo >= 0)                                        // where the dragged track will land
         {
@@ -4198,7 +4198,7 @@ public:
                         const int x0 = juce::jmax (kNameW, xOf ((double) r.startSample / rate)), x1 = xOf ((double) r.endSample() / rate);
                         if (x1 <= kNameW) { ++k; continue; }
                         auto block = juce::Rectangle<int> (x0, y + 2, juce::jmax (2, x1 - x0), kGhostH - 4);
-                        g.setColour ((k++ % 2 == 0 ? juce::Colour (0xff6a8db0) : juce::Colour (0xff8aa0b8)).withAlpha (0.8f)); g.fillRect (block);
+                        g.setColour ((k++ % 2 == 0 ? juce::Colour (0xff6a8db0) : juce::Colour (0xff8aa0b8)).withAlpha (0.8f)); theme::fillBox (g, block, 3.0f);
                         g.setColour (juce::Colour (0xff0b1b1e)); if (block.getWidth() > 24) g.drawText (r.takeName, block.reduced (3, 0), juce::Justification::centredLeft, true);
                     }
                     for (auto& o : ve.overdubs)
@@ -4927,14 +4927,19 @@ void EditWindowComponent::resized()
     const std::vector<FlowItem> zoomItems { { &zoomOutButton, 34 }, { &zoomInButton, 34 } };
     // the head: the edit's name (its caption above it), then the time readout; the buttons to the right of the readout, a group never split between two lines
     const int y0 = r.getY() + 4;
+    const int btnRight = r.getRight() - grid::cornerReserve;      // (clear of the pin and sun / moon buttons in the corner)
+    // 3.73.0: the buttons on two lines whenever squeezing can do it (HeadButtons.h) - narrower buttons and gaps, and the name box 170 wide (240),
+    // then 150 when the groups may split too
+    auto nameWAt = [] (int level) { return level == 0 ? 240 : level == 1 ? 170 : 150; };
+    const auto way = headbuttons::choose (items, [&] (int level) { return btnRight - (r.getX() + nameWAt (level) + 10 + clockW + 14); });
+    const int nameW = nameWAt (way.level);
     int x = r.getX();
-    nameBlock.setBounds (x, y0, 240, nameBlock.idealHeight()); x += 240 + 10;
+    nameBlock.setBounds (x, y0, nameW, nameBlock.idealHeight()); x += nameW + 10;
     clock.setBounds (x, y0, clockW, kClockH);                  x += clockW + 14;
     int headH = juce::jmax (nameBlock.getBottom(), y0 + kClockH + 4) - r.getY();
-    const int btnRight = r.getRight() - grid::cornerReserve;      // (clear of the pin and sun / moon buttons in the corner)
     if (btnRight - x >= 300)
     {
-        headH = juce::jmax (headH, grid::flow (juce::Rectangle<int> (x, r.getY(), btnRight - x, headH), items, true, nullptr, true));
+        headH = juce::jmax (headH, grid::flow (juce::Rectangle<int> (x, r.getY(), btnRight - x, headH), way.items, true, nullptr, way.keepGroups));
         lanefold::placeZoomKeys (r, zoomOutButton, zoomInButton, IH);         // 3.72.0: - and + on the second line, under the corner's buttons
     }
     else                                                       // a narrow window: the buttons go under the head, across the whole width

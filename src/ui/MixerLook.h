@@ -72,19 +72,19 @@ public:
         if (! b.isEnabled()) c = c.withMultipliedAlpha (0.5f);
         else if (down) c = c.darker (0.2f);
         else if (highlighted) c = c.brighter (t.ground ? 0.2f : 0.12f);
-        if (theme::manuscript()) { FermataLookAndFeel::drawManuscriptKey (g, r.toFloat().reduced (0.5f), 1.5f, bg, b.getToggleState(), highlighted, down, b.isEnabled() ? 1.0f : 0.5f); return; }
-        g.setColour (c);                                       g.fillRect (r);
-        g.setColour (juce::Colours::white.withAlpha (t.ground ? 0.09f : 0.5f)); g.fillRect (r.getX() + 1, r.getY() + 1, r.getWidth() - 2, 1);    // a fine bevel along the top
-        g.setColour (b.getToggleState() ? c.darker (0.55f) : t.line); g.drawRect (r, 1);
+        if (theme::manuscript()) { FermataLookAndFeel::drawManuscriptKey (g, r.toFloat().reduced (0.5f), 3.0f, bg, b.getToggleState(), highlighted, down, b.isEnabled() ? 1.0f : 0.5f); return; }
+        g.setColour (c);                                       theme::fillBox (g, r, 3.0f);         // (3.73.0: rounded)
+        g.setColour (juce::Colours::white.withAlpha (t.ground ? 0.09f : 0.5f)); g.fillRect (r.getX() + 3, r.getY() + 1, r.getWidth() - 6, 1);    // a fine bevel along the top
+        g.setColour (b.getToggleState() ? c.darker (0.55f) : t.line); theme::drawBox (g, r, 1.0f, 3.0f);
     }
 
     void drawComboBox (juce::Graphics& g, int w, int h, bool, int, int, int, int, juce::ComboBox& box) override
     {
         const auto& t = mixTheme();
         auto r = juce::Rectangle<int> (0, 0, w, h);
-        g.setColour (box.findColour (juce::ComboBox::backgroundColourId)); g.fillRect (r);
-        g.setColour (juce::Colours::black.withAlpha (t.ground ? 0.35f : 0.08f)); g.fillRect (1, 1, w - 2, 1);        // recessed: a shadow along the top
-        g.setColour (box.hasKeyboardFocus (true) ? theme::accent : t.line); g.drawRect (r, 1);
+        g.setColour (box.findColour (juce::ComboBox::backgroundColourId)); theme::fillBox (g, r, 3.0f);       // (3.73.0: rounded)
+        g.setColour (juce::Colours::black.withAlpha (t.ground ? 0.35f : 0.08f)); g.fillRect (3, 1, w - 6, 1);        // recessed: a shadow along the top
+        g.setColour (box.hasKeyboardFocus (true) ? theme::accent : t.line); theme::drawBox (g, r, 1.0f, 3.0f);
         const float cx = (float) w - 8.0f, cy = (float) h * 0.5f;
         juce::Path p; p.addTriangle (cx - 3.0f, cy - 1.5f, cx + 3.0f, cy - 1.5f, cx, cy + 2.0f);
         g.setColour (t.dim.withAlpha (box.isEnabled() ? 1.0f : 0.4f)); g.fillPath (p);
@@ -112,8 +112,8 @@ public:
         if (isFader (s) && style == juce::Slider::LinearVertical)
         {
             const int cx = x + w / 2, p = (int) std::round (pos);
-            g.setColour (t.groove);   g.fillRect (cx - 2, y - 4, 5, h + 8);                       // the slot the cap runs in
-            g.setColour (t.line);     g.drawRect (cx - 2, y - 4, 5, h + 8, 1);
+            g.setColour (t.groove);   theme::fillBox (g, juce::Rectangle<int> (cx - 2, y - 4, 5, h + 8));               // the slot the cap runs in (3.73.0: rounded ends)
+            g.setColour (t.line);     theme::drawBox (g, juce::Rectangle<int> (cx - 2, y - 4, 5, h + 8));
             g.setColour (juce::Colours::black.withAlpha (0.35f)); g.fillRect (cx, y - 3, 1, h + 6);
             const juce::Colour cap = juce::Colour ((juce::uint32) (juce::int64) s.getProperties().getWithDefault ("cap", (juce::int64) 0xff9aa2ad));
             auto r = juce::Rectangle<int> (cx - 14, p - kCapHalf, 28, 2 * kCapHalf);
@@ -132,14 +132,14 @@ public:
         {
             const int cy = y + h / 2, cx = x + w / 2, p = (int) std::round (pos);
             const juce::Colour arc = juce::Colour ((juce::uint32) (juce::int64) s.getProperties().getWithDefault ("arc", (juce::int64) theme::accent.getARGB()));
-            g.setColour (t.groove.withAlpha (t.ground ? 1.0f : 0.55f)); g.fillRect (x, cy - 1, w, 3);
-            g.setColour (t.line);                                      g.drawRect (x, cy - 1, w, 3, 1);
+            g.setColour (t.groove.withAlpha (t.ground ? 1.0f : 0.55f)); theme::fillBox (g, juce::Rectangle<int> (x, cy - 1, w, 3));       // (3.73.0: rounded ends)
+            g.setColour (t.line);                                      theme::drawBox (g, juce::Rectangle<int> (x, cy - 1, w, 3));
             g.setColour (arc);                                         g.fillRect (juce::jmin (cx, p), cy, std::abs (p - cx) + 1, 1);
             g.setColour (t.dim);                                       g.fillRect (cx, cy - 5, 1, 4); g.fillRect (cx, cy + 3, 1, 4);              // centre mark
             for (int i = 1; i < 4; ++i) { g.setColour (t.soft); g.fillRect (x + (w - 1) * i / 4, cy - 3, 1, 2); g.fillRect (x + (w - 1) * i / 4, cy + 2, 1, 2); }
             auto th = juce::Rectangle<int> (p - 3, cy - 7, 7, 15);
-            g.setColour (t.ground ? juce::Colour (0xffb7bfca) : juce::Colours::white); g.fillRect (th);
-            g.setColour (t.text);                                                    g.drawRect (th, 1);
+            g.setColour (t.ground ? juce::Colour (0xffb7bfca) : juce::Colours::white); theme::fillBox (g, th, 3.0f);          // (3.73.0: rounded)
+            g.setColour (t.text);                                                    theme::drawBox (g, th, 1.0f, 3.0f);
             g.fillRect (th.getCentreX(), th.getY() + 3, 1, th.getHeight() - 6);
             return;
         }
@@ -188,7 +188,7 @@ public:
         if (thumbSize <= 0) return;
         auto th = vertical ? juce::Rectangle<int> (x + 1, thumbStart, w - 2, thumbSize) : juce::Rectangle<int> (thumbStart, y + 1, thumbSize, h - 2);
         g.setColour ((t.ground ? juce::Colour (0xff59606c) : juce::Colour (0xff8a95a5)).withMultipliedBrightness (down ? 0.8f : over ? 1.15f : 1.0f));
-        g.fillRect (th);
+        theme::fillBox (g, th);                                     // (3.73.0: rounded)
     }
 
     static constexpr int kCapHalf = 22;                  // the fader cap is 44 pixels tall

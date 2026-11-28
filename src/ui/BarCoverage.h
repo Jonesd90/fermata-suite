@@ -64,7 +64,7 @@ public:
     void paint (juce::Graphics& g) override
     {
         auto* w = app.project.findTakeWindow (windowId);
-        g.fillAll (theme::panel);
+        g.setColour (theme::panel); theme::fillBox (g, getLocalBounds());          // (3.73.0: rounded - and the bars' strip below too)
         // the BARS button: drops the take chart down from here
         {
             const auto b = juce::Rectangle<float> (1.0f, 1.0f, (float) kLeft - 4.0f, (float) getHeight() - 2.0f);
@@ -81,13 +81,16 @@ public:
             g.fillPath (tri);
         }
         const auto area = juce::Rectangle<float> ((float) kLeft, 2.0f, (float) (getWidth() - kLeft - 2), (float) (getHeight() - 4));
+        juce::Graphics::ScopedSaveState rounded (g);
+        { juce::Path shape; shape.addRoundedRectangle (area, theme::cornerFor (area, 3.0f)); g.reduceClipRegion (shape); }
         int first, last; range (first, last);
         if (w == nullptr || first == 0)
         {   // the piece's bars are not known yet: a red strip that says what to do
             g.setColour (juce::Colour (0xffb3261e)); g.fillRect (area);
             g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (11.5f, juce::Font::bold));
             g.drawText ("Right-click here to enter how many bars the piece has", area.reduced (8.0f, 0.0f).toNearestInt(), juce::Justification::centredLeft, true);
-            g.setColour (theme::border); g.drawRect (getLocalBounds(), 1);
+            g.restoreState(); g.saveState();
+            g.setColour (theme::border); theme::drawBox (g, getLocalBounds());
             return;
         }
         const float cell = cellWidth (first, last);
@@ -134,7 +137,8 @@ public:
                 g.setColour (coverage::isLight (coverage::colourFor (c)) ? juce::Colours::black.withAlpha (0.8f) : juce::Colours::white.withAlpha (0.9f));     // (dark numbers on the light greens)
                 g.drawText (juce::String (b), r.toNearestInt(), juce::Justification::centredLeft, false);
             }
-        g.setColour (theme::border); g.drawRect (getLocalBounds(), 1);
+        g.restoreState(); g.saveState();                                       // (the frame outside the bars' rounded strip)
+        g.setColour (theme::border); theme::drawBox (g, getLocalBounds());
     }
     void mouseMove (const juce::MouseEvent& e) override
     {

@@ -8,6 +8,15 @@ fermata:Live is the live-concert recorder that goes with fermata (see `docs/LIVE
 
 A line that starts with **Shared:** is a change to the code fermata shares (see `COMPATIBILITY.md`), so fermata's next build mentions it too.
 
+## 0.10.19
+Built 27 November 2026 (the conversation for both programs), with fermata 3.73.0: fermata's softer corners.
+- **Softer corners** (asked for in fermata, whose look fermata:Live shares): text boxes, lists, tick boxes, sliders, scroll bars, tabs, the
+  meters' wells, the input strips and their displays, the take view's take heads, clips and selection, the mixer's keys and lists - rounded by
+  4 pixels, as the time readout. Rows and lanes that sit edge to edge stay square.
+- **Shared:** `src/ui/Uikit.h`, `src/ui/FermataLookAndFeel.h`, `src/ui/MixerLook.h`, `src/ui/DeskLook.h`, `src/ui/MarkerStrip.h` (the corners).
+- Checked here: builds and links on Linux with no warnings; fermata:Live's small-screen check on the 1536 x 816 screen, its pictures looked at.
+  Not checked: the Windows build (GitHub).
+
 ## 0.10.18
 Built 26 November 2026 (the conversation for both programs), with fermata 3.71.0: the same fitting in fermata:Live (a laptop at a concert is a
 small screen too).

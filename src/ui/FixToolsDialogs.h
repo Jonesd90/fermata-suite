@@ -226,7 +226,7 @@ public:
             g.fillEllipse ((float) x - 5.0f, (float) y - 5.0f, 10.0f, 10.0f);
             g.setColour (theme::wellDark); g.drawEllipse ((float) x - 5.0f, (float) y - 5.0f, 10.0f, 10.0f, 1.2f);
         }
-        g.setColour (theme::border); g.drawRect (pl);
+        g.setColour (theme::border); theme::drawBox (g, pl);
     }
     void mouseMove (const juce::MouseEvent& e) override
     {

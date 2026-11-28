@@ -475,8 +475,8 @@ public:
         if (lassoMoved)                                              // Alt + drag: the lasso
         {
             const auto lr = lassoRect();
-            g.setColour (theme::accent.withAlpha (0.13f)); g.fillRect (lr);
-            g.setColour (theme::accent.withAlpha (0.9f));  g.drawRect (lr, 1);
+            g.setColour (theme::accent.withAlpha (0.13f)); theme::fillBox (g, lr);
+            g.setColour (theme::accent.withAlpha (0.9f));  theme::drawBox (g, lr);
         }
         if (moveActive && moveMoved) paintMoveGhost (g);             // Ctrl + Shift + drag: where the clips will go
     }
@@ -627,7 +627,7 @@ public:
             {
                 const auto plate = live ? juce::Colour (0xffb03030) : (picked ? theme::accent.darker (0.45f) : theme::accent);
                 g.setColour (plate);
-                g.fillRect (lane);
+                theme::fillBox (g, lane);                                                   // (3.73.0: rounded)
                 g.setColour (theme::manuscript() ? theme::inkOn (plate) : juce::Colours::white); g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
                 const bool hasNote = grp.notes.isNotEmpty() && lane.getWidth() >= 44;
                 g.drawText (w->displayName (grp), lane.reduced (6, 0).withTrimmedRight (hasNote ? 16 : 0), juce::Justification::centredLeft, true);
@@ -667,7 +667,7 @@ public:
                 if (r.getBottom() < clip.getY() || r.getY() > clip.getBottom()) continue;       // the row is off the screen
                 const auto tc = rowColour[(size_t) row];
                 g.setColour (live ? juce::Colour (0xff6a3434) : chan::clipFill (tc, picked));      // the track's own colour, darker when the take is selected
-                g.fillRect (r);
+                theme::fillBox (g, r);                                                      // (3.73.0: rounded)
                 if (live) drawLiveWave (g, r.reduced (1), tf.trackId);
                 else if (finishing) drawLiveWave (g, r.reduced (1), tf.trackId, grp.id);
                 else
@@ -691,7 +691,7 @@ public:
                             drawWaitingBlock (g, wr.reduced (1), wp.name, theme::text);
                         }
                 g.setColour (live ? theme::text.withAlpha (0.7f) : tc.withAlpha (picked ? 1.0f : 0.85f));
-                g.drawRect (r, picked ? 2 : 1);
+                theme::drawBox (g, r, picked ? 2.0f : 1.0f);
                 clipname::draw (g, r.reduced (1).withTrimmedBottom (hasStrip ? 16 : 0), tf.file, viewport.getViewPositionX() + kNameW);   // 3.62.0: the file this track of the take plays (clear of the words along the bottom)
                 // "DUD   LOST 0.3 s   Bar 17 - 39" along the bottom of the take (takeStripWords). 3.18.4: on a take of any width, as much of it as fits
                 // (layoutTakeStrip): it used to vanish on a take 50 px wide or less
@@ -701,7 +701,7 @@ public:
                     if (stripW > 0)
                     {
                         const auto strip = juce::Rectangle<int> (r.getX() + 2, r.getBottom() - 16, stripW, 14);
-                        g.setColour (juce::Colour (0xcc000000)); g.fillRect (strip);
+                        g.setColour (juce::Colour (0xcc000000)); theme::fillBox (g, strip, 3.0f);
                         juce::Graphics::ScopedSaveState ss (g); g.reduceClipRegion (strip);                 // (nothing reaches past the take)
                         g.setFont (stripFont);
                         for (auto& sw : stripWords)
@@ -714,8 +714,8 @@ public:
             const int y0 = top + firstRow * rowH, y1 = top + (lastRow + 1) * rowH;
             if (barHighlight > 0 && barsContain (grp.barIn, grp.barOut, barHighlight))           // "Search for bar": this take contains the bar
             {
-                g.setColour (juce::Colour (0xff19d3b5)); g.drawRect (juce::Rectangle<int> (x0, y0, wpx, y1 - y0).expanded (3), 3);
-                g.setColour (juce::Colour (0xff1e8fff)); g.drawRect (juce::Rectangle<int> (x0, y0, wpx, y1 - y0).expanded (1), 1);
+                g.setColour (juce::Colour (0xff19d3b5)); theme::drawBox (g, juce::Rectangle<int> (x0, y0, wpx, y1 - y0).expanded (3), 3.0f, 6.0f);
+                g.setColour (juce::Colour (0xff1e8fff)); theme::drawBox (g, juce::Rectangle<int> (x0, y0, wpx, y1 - y0).expanded (1));
             }
 
             // edit marks (keys 1 and 2)
@@ -734,7 +734,7 @@ public:
                     const int x = x0 + (int) (sec * pixelsPerSecond);
                     g.setColour (c); g.fillRect (x - 1, rulerH, 2, y1 - rulerH);
                     const int fw = 48; juce::Rectangle<int> f (left ? x : x - fw, rulerH, fw, 13);
-                    g.fillRect (f); g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
+                    theme::fillBox (g, f, 3.0f); g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
                     g.drawText (t, f, juce::Justification::centred);
                 };
                 if (w->editIn >= 0)  flag (w->editIn, cin, "Mark 1", true);
@@ -771,7 +771,7 @@ public:
                     const auto c = u.isIn ? juce::Colour (0xff1a9c8a) : juce::Colour (0xff8a5cd0);
                     g.setColour (c.withAlpha (0.55f)); g.fillRect (u.x, u.y0, 1, u.y1 - u.y0);
                     const int fw = 38; juce::Rectangle<int> f (u.isIn ? u.x : u.x - fw, rulerH + kBannerH - 13, fw, 11);       // its own row at the bottom of the strip, clear of mark 1 / 2s
-                    g.setColour (c); g.fillRect (f);
+                    g.setColour (c); theme::fillBox (g, f, 3.0f);
                     g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (9.5f, juce::Font::bold));
                     g.drawText ((u.isIn ? "In " : "Out ") + juce::String (u.number), f, juce::Justification::centred);
                 }
@@ -783,7 +783,7 @@ public:
                     const juce::FontOptions fo (8.5f, juce::Font::bold);
                     const int fw = juce::GlyphArrangement::getStringWidthInt (fo, t) + 4;
                     juce::Rectangle<int> f (u.isIn ? u.x : u.x - fw, rulerH + kBannerH - 12, fw, 10);
-                    g.setColour (grey); g.fillRect (f);
+                    g.setColour (grey); theme::fillBox (g, f, 3.0f);
                     g.setColour (juce::Colours::white); g.setFont (fo);
                     g.drawText (t, f, juce::Justification::centred, false);
                 }
@@ -853,8 +853,8 @@ public:
             if (trackSelected (tracks[i]->id))                                               // a selected name (right-click: remove the selected tracks)
             {
                 const auto sel = juce::Rectangle<int> (sx, top + (int) i * rowH, kNameW, rowH);
-                g.setColour (juce::Colour (0xff29b6ff).withAlpha (0.22f)); g.fillRect (sel);
-                g.setColour (juce::Colour (0xff29b6ff)); g.drawRect (sel.reduced (1), 2);
+                g.setColour (juce::Colour (0xff29b6ff).withAlpha (0.22f)); theme::fillBox (g, sel.reduced (1));
+                g.setColour (juce::Colour (0xff29b6ff)); theme::drawBox (g, sel.reduced (1), 2.0f);
             }
             // 3.48.0: the weight is named (see the Edit window's names: a height alone takes the weight of whatever was drawn last, so the first track's
             // name could change weight from one redraw to the next). Bold, as every row under the first has always been.
@@ -1514,11 +1514,11 @@ private:
                 if (auto* grp = w->findGroup (id))
                 {
                     const auto r = juce::Rectangle<int> (xOf (grp->startSeconds), y + 2, juce::jmax (4, (int) (grp->lengthSeconds() * pixelsPerSecond)), juce::jmax (4, rowH - 4));
-                    g.setColour (col.withAlpha (0.28f)); g.fillRect (r);
-                    g.setColour (col); g.drawRect (r, 2);
+                    g.setColour (col.withAlpha (0.28f)); theme::fillBox (g, r);
+                    g.setColour (col); theme::drawBox (g, r, 2.0f);
                 }
-            g.setColour (col.withAlpha (0.18f)); g.fillRect (juce::Rectangle<int> (sx, y, kNameW, rowH));
-            g.setColour (col); g.drawRect (juce::Rectangle<int> (sx, y, kNameW, rowH), 2);
+            g.setColour (col.withAlpha (0.18f)); theme::fillBox (g, juce::Rectangle<int> (sx, y, kNameW, rowH));
+            g.setColour (col); theme::drawBox (g, juce::Rectangle<int> (sx, y, kNameW, rowH), 2.0f);
         }
         const auto text = moveText (shown, why);
         const auto lr = moveLabelRect (text);
@@ -2616,7 +2616,7 @@ void TakeWindowComponent::fillSendBox()
     }
     sendBox.addItem ("(new edit...)", 1000);
     sendBox.setSelectedId (sel != 0 ? sel : 1000, juce::dontSendNotification);
-    if (sel == 0) sendBox.setText ("(a new edit is made on first use)", juce::dontSendNotification);
+    if (sel == 0) sendBox.setText ("(new edit on first use)", juce::dontSendNotification);      // (3.73.0: shorter - the column can be 170 wide)
     updatingSendBox = false;
 }
 
@@ -2645,26 +2645,30 @@ void TakeWindowComponent::resized()
     };
     const std::vector<FlowItem> zoomItems { { &zoomOutButton, 34 }, { &zoomInButton, 34 } };
     // the head, left to right: the window's name and where "To edit" goes (one column, a line between them), Next Take, REC, the take's length, the time readout
-    constexpr int colW = 200;
     const int y0 = r.getY() + 4;                                  // (the 58-high boxes sit 4 below the top, like a line of the old flowing bar)
+    const int btnRight = r.getRight() - grid::cornerReserve;      // (clear of the pin and sun / moon buttons in the corner)
+    // 3.73.0: the buttons on two lines whenever squeezing can do it (HeadButtons.h) - narrower buttons and gaps, and the name column 170 wide (200),
+    // then 160 when the groups may split too
+    const int tlH = 44, tlW = lengthClock.getIdealWidth (tlH);     // the take's length: smaller than the readout beside it, its bottom level with it
+    auto colWAt = [] (int level) { return level == 0 ? 200 : level == 1 ? 170 : 160; };
+    const auto way = headbuttons::choose (items, [&] (int level) { return btnRight - (r.getX() + colWAt (level) + 10 + 84 + 6 + 84 + 6 + tlW + 6 + clockW + 14); });
+    const int colW = colWAt (way.level);
     int x = r.getX();
     nameBlock.setBounds (x, getLocalBounds().getY() + 1, colW, nameBlock.idealHeight()); x += colW + 10;     // (the column starts right at the top of the window, a row above the boxes)
     takeBox.setBounds (x, y0, 84, 58);                            x += 84 + 6;
     recordButton.setBounds (x, y0, 84, 58);                       x += 84 + 6;
-    const int tlH = 44, tlW = lengthClock.getIdealWidth (tlH);     // the take's length: smaller than the readout beside it, its bottom level with it
     lengthClock.setBounds (x, y0 + kClockH - tlH, tlW, tlH);      x += tlW + 6;
     clock.setBounds (x, y0, clockW, kClockH);                     x += clockW + 14;
     int headH = juce::jmax (nameBlock.getBottom(), y0 + kClockH + 4) - r.getY();
-    const int btnRight = r.getRight() - grid::cornerReserve;      // (clear of the pin and sun / moon buttons in the corner)
     int buttonsBottom = r.getY();                                 // how far down the buttons right of the readout reach (none there: the top)
     if (btnRight - x >= 300)                                  // the buttons to the right of the readout, a group never split between two lines
     {
-        const int flowH = grid::flow (juce::Rectangle<int> (x, r.getY(), btnRight - x, headH), items, true, nullptr, true);
+        const int flowH = grid::flow (juce::Rectangle<int> (x, r.getY(), btnRight - x, headH), way.items, true, nullptr, way.keepGroups);
         headH = juce::jmax (headH, flowH);
         lanefold::placeZoomKeys (r, zoomOutButton, zoomInButton, IH);         // 3.72.0: - and + on the second line, under the corner's buttons
         // 3.65.0: the bottom of the buttons themselves - the flow's lines are 8 taller than their buttons, so the line under them looked taken and the
         // marks' text stopped at the readout's edge, with the room to its right empty ("EDIT 002 - Cathedral 01 - W...")
-        for (auto& it : items) if (it.c != nullptr && it.c->isVisible()) buttonsBottom = juce::jmax (buttonsBottom, it.c->getBottom());
+        for (auto& it : way.items) if (it.c != nullptr && it.c->isVisible()) buttonsBottom = juce::jmax (buttonsBottom, it.c->getBottom());
     }
     else                                                          // a narrow window: the buttons go under the head, across the whole width
     {

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-set(FERMATA_VERSION 3.72.0)        # fermata's version: the ONE place it is changed (see CHANGELOG.md). fermata:Live's is in src/live/Live.cmake.
+set(FERMATA_VERSION 3.73.0)        # fermata's version: the ONE place it is changed (see CHANGELOG.md). fermata:Live's is in src/live/Live.cmake.
 project(Fermata VERSION ${FERMATA_VERSION} LANGUAGES C CXX)
 
 # This repository builds TWO programs from one shared core (read COMPATIBILITY.md before changing anything shared):
@@ -101,8 +101,10 @@ endif()
 # folder, which the GitHub build puts beside Fermata.exe. The video reader can never stop fermata from building.
 set(FERMATA_VIDEO_SOURCE src/ui/VideoReaderNone.cpp)
 set(FERMATA_VIDEO_D3D 1)
+set(FERMATA_VIDEO_TRIALS "not tried (the compiler is not MSVC)")
 file(REMOVE "${CMAKE_BINARY_DIR}/video-reader-did-not-build.txt")
 if(MSVC)
+    set(FERMATA_VIDEO_TRIALS "tried")
     try_compile(FERMATA_VIDEO_READER_BUILDS "${CMAKE_BINARY_DIR}/video-reader-trial"
         SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/ui/VideoReaderWin.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/VideoCheckMain.cpp"
         CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON
@@ -110,6 +112,7 @@ if(MSVC)
     if(FERMATA_VIDEO_READER_BUILDS)
         set(FERMATA_VIDEO_SOURCE src/ui/VideoReaderWin.cpp)
         message(STATUS "Video: the reader is in (Media Foundation, with the graphics card's decoder)")
+        set(FERMATA_VIDEO_TRIALS "tried: the first trial (with the graphics card's decoder) built")
     else()
         try_compile(FERMATA_VIDEO_READER_BUILDS_PLAIN "${CMAKE_BINARY_DIR}/video-reader-trial-plain"
             SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/ui/VideoReaderWin.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/VideoCheckMain.cpp"
@@ -119,14 +122,47 @@ if(MSVC)
         if(FERMATA_VIDEO_READER_BUILDS_PLAIN)
             set(FERMATA_VIDEO_SOURCE src/ui/VideoReaderWin.cpp)
             set(FERMATA_VIDEO_D3D 0)
+            set(FERMATA_VIDEO_TRIALS "tried: the first trial failed; the second (without the graphics card's decoder) built")
             message(WARNING "Video: the reader is in WITHOUT the graphics card's decoder (that part did not build: the processor decodes). The first trial's output:\n${FERMATA_VIDEO_READER_LOG}")
             file(WRITE "${CMAKE_BINARY_DIR}/video-reader-did-not-build.txt" "fermata's video reader was built WITHOUT the graphics card's decoder: that part did not compile. Video still works (the processor decodes). Please send this file with your next message.\n\n${FERMATA_VIDEO_READER_LOG}")
         else()
+            set(FERMATA_VIDEO_TRIALS "tried: BOTH trials failed - fermata is built without video")
             message(WARNING "Video: the reader did NOT build, so fermata is built without it (the picture window will say so). The trials' output:\n${FERMATA_VIDEO_READER_LOG}\n---- without the graphics card's decoder:\n${FERMATA_VIDEO_READER_LOG_PLAIN}")
             file(WRITE "${CMAKE_BINARY_DIR}/video-reader-did-not-build.txt" "fermata's video reader did NOT compile, so this build cannot show video. Please send this file with your next message.\n\n${FERMATA_VIDEO_READER_LOG}\n\n---- without the graphics card's decoder:\n${FERMATA_VIDEO_READER_LOG_PLAIN}")
         endif()
     endif()
 endif()
+# 3.73.0 (27 November 2026: the video reader was left out of the user's build, and the file above was not in the download either - the
+# reason could not be seen): video-reader.txt is now ALWAYS written - what was tried, with what, what came of it, and every trial's output -
+# and put beside Fermata.exe by the GitHub build. It is also built INTO fermata (generated/VideoBuildReport.h, read by src/ui/VideoSource.cpp):
+# Help > Save the video report writes it out again, so it can be sent even when the download has no such file.
+set(FERMATA_VIDEO_REPORT "fermata ${FERMATA_VERSION}: how its video reader was built\n\n")
+string(APPEND FERMATA_VIDEO_REPORT "The reader built in: ${FERMATA_VIDEO_SOURCE}  (graphics card's decoder: ${FERMATA_VIDEO_D3D})\n")
+string(APPEND FERMATA_VIDEO_REPORT "The trials: ${FERMATA_VIDEO_TRIALS}\n")
+string(APPEND FERMATA_VIDEO_REPORT "CMake ${CMAKE_VERSION}; generator: ${CMAKE_GENERATOR} ${CMAKE_GENERATOR_PLATFORM}; system: ${CMAKE_SYSTEM_NAME} ${CMAKE_SYSTEM_VERSION}\n")
+string(APPEND FERMATA_VIDEO_REPORT "Compiler: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} (${CMAKE_CXX_COMPILER}); MSVC: ${MSVC}\n")
+string(APPEND FERMATA_VIDEO_REPORT "Windows SDK: ${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}\n")
+macro(fermata_video_report_log var title)
+    if(DEFINED ${var})
+        set(log "${${var}}")
+        string(LENGTH "${log}" len)
+        if(len GREATER 60000)                                                   # (the end of a long log is where the errors are)
+            math(EXPR from "${len} - 60000")
+            string(SUBSTRING "${log}" ${from} 60000 log)
+            set(log "(... the first part left out ...)\n${log}")
+        endif()
+        string(APPEND FERMATA_VIDEO_REPORT "\n==== ${title}: its output\n${log}\n")
+    endif()
+endmacro()
+fermata_video_report_log(FERMATA_VIDEO_READER_LOG "the first trial (with the graphics card's decoder)")
+fermata_video_report_log(FERMATA_VIDEO_READER_LOG_PLAIN "the second trial (without it)")
+file(WRITE "${CMAKE_BINARY_DIR}/video-reader.txt" "${FERMATA_VIDEO_REPORT}")
+file(READ "${CMAKE_BINARY_DIR}/video-reader.txt" FERMATA_VIDEO_REPORT_HEX HEX)
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," FERMATA_VIDEO_REPORT_HEX "${FERMATA_VIDEO_REPORT_HEX}")
+file(WRITE "${CMAKE_BINARY_DIR}/generated/VideoBuildReport.h"
+     "// made by CMakeLists.txt (3.73.0): build/video-reader.txt, as bytes\nstatic const unsigned char kVideoBuildReport[] = { ${FERMATA_VIDEO_REPORT_HEX} 0x00 };\n")
+target_include_directories(Fermata PRIVATE "${CMAKE_BINARY_DIR}/generated")
+
 add_library(FermataVideoReader STATIC ${FERMATA_VIDEO_SOURCE})
 set_target_properties(FermataVideoReader PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 target_compile_definitions(FermataVideoReader PRIVATE FERMATA_VIDEO_D3D=${FERMATA_VIDEO_D3D})

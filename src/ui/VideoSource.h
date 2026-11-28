@@ -65,6 +65,8 @@ std::shared_ptr<Source> open (const juce::File& file, juce::String& why);
 std::shared_ptr<Source> openForPicture (const juce::File& file);
 /** What decodes the video on this computer, for the log ("Windows Media Foundation", "none in this build"). */
 juce::String systemName();
+/** 3.73.0: how this build's video reader was built (CMakeLists.txt's video-reader.txt, built into the program), for Help > Save the video report. */
+juce::String buildReport();
 /** Whether the graphics card may be used to decode (the user's choice, in the picture's menu: on unless a card's driver shows the picture
     wrongly). Any thread; open Sources follow a change. */
 void setHardwareDecoding (bool allowed);

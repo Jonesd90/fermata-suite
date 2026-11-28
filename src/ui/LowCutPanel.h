@@ -129,7 +129,7 @@ public:
         g.setColour ((theme::manuscript() ? theme::giltBright() : theme::accent).withAlpha (on ? 1.0f : 0.45f));
         g.strokePath (p, juce::PathStrokeType (1.6f));
         g.setColour (theme::text.withAlpha (0.35f)); g.fillRect (xOf (fc), (float) plot.getY(), 1.0f, (float) plot.getHeight());      // the cut
-        g.setColour (theme::border); g.drawRect (plot, 1);
+        g.setColour (theme::border); theme::drawBox (g, plot);
     }
     void resized() override
     {

@@ -2620,6 +2620,39 @@ fermata's `shutdown()` and its static destructors. Our unhandled-exception filte
   right after closing the log, so the PDF reader's unload code never runs. Everything is saved and closed by then.
 (The symbols of Windows' own libraries were not available here: the reading rests on the single thread and the order of the modules.)
 
+## 3.73.0: the video report, the head's buttons on two lines, softer corners (27 November 2026, Claude Opus; fermata:Live 0.10.19)
+
+**Asked:** the video reader was missing from the user's build ("this build of fermata cannot read video on this computer's system" - the text
+of `VideoReaderNone.cpp`) and `video-reader-did-not-build.txt` was not in the download; the edit window's buttons on two lines on the smaller
+screen; rounded corners everywhere, as the time readout's.
+
+**The video report (CMakeLists.txt, the workflow, `VideoSource.cpp`, `HelpMenu.h`):** after the video trials, CMake always writes
+`build/video-reader.txt` - the source built in, the trials' outcome (`FERMATA_VIDEO_TRIALS`: "not tried (the compiler is not MSVC)" too, so a
+skipped block shows), CMake, generator, compiler, `CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION`, each trial's output (the last 60000 characters)
+- and the same bytes as `build/generated/VideoBuildReport.h` (`kVideoBuildReport`, a byte array; on Fermata's include path). `VideoSource.cpp`
+includes it with `__has_include` (the Linux checks' builds have none: `buildReport()` says so). Help > Save the video report writes
+`Documents/Fermata/fermata-video-report.txt` (version, `video::systemName()`, Windows, the report) and reveals it. The workflow copies
+video-reader.txt beside Fermata.exe always (a line saying it was not made, if Configure did not make it). Video.cpp's NOT ADDED message points
+to the report when the system is "none in this build". The old `video-reader-did-not-build.txt` is still written and copied as before.
+
+**The head's buttons (`src/ui/HeadButtons.h`, new, fermata only):** `headbuttons::choose (items, widthAt)` tries way 0 (as they are), 1
+(`compact`: 34 -> 28, other widths -6 / -12, gaps 6 / 8 -> 4, 14 -> 10 - still 10 or more, so grid::flow's groups still end there) and 2 (1 with
+`keepGroups` off) and takes the first that needs no more than two lines; when none does, the one with the fewest lines (the first of
+equals). `widthAt (level)` is the buttons' room at that level: the edit window's name box is 240 / 170 / 150, the take window's column 200 /
+170 / 160. The zoom keys stay in the corner (LaneFold.h's placeZoomKeys). The take window at 1280 wide still needs three lines (within its
+head's height).
+
+**Corners (`Uikit.h`, shared):** `theme::kCorner` = 4 (TimeReadout's radius), `cornerFor` (no more than a third of the shorter side),
+`fillBox` / `drawBox` (int and float rectangles; drawBox draws inside the rectangle, as drawRect does). The look-and-feel (text editor - not
+opaque in JUCE 8, so its corners show the parent -, combo box, toggle, sliders, scroll bar thumb, tabs: top corners only, the front tab's
+accent line clipped to them), MixerLook (keys, combo, fader slot, pan, scroll thumb), the LevelMeter's well (its bars clipped to the rounded
+well, the edge drawn over them), DeskLook's and MainWindow.h's displays, the input strips (MainWindow.cpp, LiveMainWindow.cpp: clipped to the
+rounded strip, so the colour bars follow it), MarkerStrip's flags (a plain fillRoundedRectangle: it does not include Uikit.h), and fermata's
+windows: the timelines' clips, banners, overdubs, guide and video clips, volume boxes, flags, selections and lasso; BarCoverage (its cells
+clipped to the rounded strip); TakeChart; Mastering's DDP tracks; the colour picker; the mixer's wells; graph frames. The Manuscript keys use
+the same radius (was 2.5; the mixer's 1.5 -> 3). Not rounded: rows, lanes, name plates and panels that tile; lines and grids; windows, menus,
+tooltips and alert boxes (Windows' own windows); the spectral selection and the score's marks (they show exact areas).
+
 ## 3.72.0: lanes that fold, the take window's PDF key, the zoom keys on line 2 (27 November 2026, Claude Opus; fermata only)
 
 **Asked** (with a picture of the edit window's lanes): the PDF key in the take window; - and + on the buttons' second line; fold and open the

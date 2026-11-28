@@ -71,7 +71,7 @@ public:
     }
     void setSelected (const juce::Uuid& id) { selected = id; for (auto* r : rows) r->repaint(); }
     void resized() override { viewport.setBounds (getLocalBounds()); layoutRows(); }
-    void paint (juce::Graphics& g) override { g.setColour (theme::wave); g.fillRect (getLocalBounds()); g.setColour (theme::border); g.drawRect (getLocalBounds(), 1); }
+    void paint (juce::Graphics& g) override { g.setColour (theme::wave); theme::fillBox (g, getLocalBounds()); g.setColour (theme::border); theme::drawBox (g, getLocalBounds()); }
     void layoutRows()
     {
         const int w = juce::jmax (100, viewport.getMaximumVisibleWidth());
@@ -300,8 +300,8 @@ public:
             if (b.start > pos)                                                                  // the pause before the track
             {
                 auto gr = juce::Rectangle<float> (xOfSector (pos), (float) top, xOfSector (b.start) - xOfSector (pos), (float) h);
-                g.setColour (theme::window.withAlpha (0.8f)); g.fillRect (gr);
-                g.setColour (theme::dimText.withAlpha (0.5f)); g.drawRect (gr, 1.0f);
+                g.setColour (theme::window.withAlpha (0.8f)); theme::fillBox (g, gr);          // (3.73.0: rounded)
+                g.setColour (theme::dimText.withAlpha (0.5f)); theme::drawBox (g, gr);
                 if (gr.getWidth() > 44) { g.setFont (juce::FontOptions (11.0f)); g.setColour (theme::dimText); g.drawText (b.number == 1 ? "lead-in " + secondsText (b.gap) : secondsText (b.gap), gr, juce::Justification::centred); }
             }
             auto r = juce::Rectangle<float> (xOfSector (b.start), (float) top, xOfSector (b.end) - xOfSector (b.start), (float) h);
@@ -310,8 +310,8 @@ public:
                 const auto& pal = chan::palette();
                 juce::Colour c (pal.empty() ? 0xff3b82c4u : pal[(size_t) (b.number - 1) % pal.size()]);
                 const bool sel = selected == b.id;
-                g.setColour (chan::clipFill (c, sel)); g.fillRect (r);
-                g.setColour (sel ? juce::Colours::white : c.brighter (0.3f)); g.drawRect (r, sel ? 2.0f : 1.0f);
+                g.setColour (chan::clipFill (c, sel)); theme::fillBox (g, r);
+                g.setColour (sel ? juce::Colours::white : c.brighter (0.3f)); theme::drawBox (g, r, sel ? 2.0f : 1.0f);
                 auto inside = r.withLeft (juce::jmax (r.getX(), 0.0f)).withRight (juce::jmin (r.getRight(), (float) W));       // the text stays visible while the clip runs off the screen
                 g.setColour (chan::textOn (chan::clipFill (c, sel)));
                 if (envelopes != nullptr && h > 70)                                                  // the audio of the edit, as an outline in the box

@@ -35,9 +35,9 @@ public:
         for (int i = 0; i < (int) pal.size(); ++i)
         {
             const auto r = swatch (i);
-            g.setColour (juce::Colour (pal[(size_t) i])); g.fillRect (r);
+            g.setColour (juce::Colour (pal[(size_t) i])); theme::fillBox (g, r, 3.0f);              // (3.73.0: rounded)
             const bool isCurrent = custom && juce::Colour (pal[(size_t) i]) == current;
-            g.setColour (isCurrent ? juce::Colours::white : juce::Colour (0x55000000)); g.drawRect (r, isCurrent ? 2 : 1);
+            g.setColour (isCurrent ? juce::Colours::white : juce::Colour (0x55000000)); theme::drawBox (g, r, isCurrent ? 2.0f : 1.0f, 3.0f);
         }
         {   // the colour roll: every hue, smoothly (drag along it); it keeps the brightness and strength of the colour the channel has now
             const auto r = rollRect();
@@ -45,8 +45,8 @@ public:
             grad.point1 = { (float) r.getX(), 0.0f }; grad.point2 = { (float) r.getRight(), 0.0f };
             grad.clearColours();
             for (int i = 0; i <= 24; ++i) grad.addColour ((double) i / 24.0, juce::Colour::fromHSV ((float) i / 24.0f, rollS(), rollV(), 1.0f));
-            g.setGradientFill (grad); g.fillRect (r);
-            g.setColour (juce::Colour (0x55000000)); g.drawRect (r, 1);
+            g.setGradientFill (grad); theme::fillBox (g, r, 3.0f);
+            g.setColour (juce::Colour (0x55000000)); theme::drawBox (g, r, 1.0f, 3.0f);
             if (app.project.channelColour (id) != 0)                                     // a marker at the current hue
             {
                 const float x = (float) r.getX() + current.getHue() * (float) r.getWidth();

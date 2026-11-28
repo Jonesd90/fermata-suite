@@ -142,8 +142,8 @@ public:
         auto r = b.getLocalBounds();
         auto c = bg;
         const auto rf = r.toFloat().reduced (0.5f);
-        const float rad = juce::jmin (4.0f, rf.getHeight() * 0.3f);     // the desk's keys have softly rounded corners
-        if (theme::manuscript()) { drawManuscriptKey (g, rf, juce::jmin (2.5f, rad), bg, b.getToggleState(), highlighted, down, b.isEnabled() ? 1.0f : 0.5f); return; }
+        const float rad = juce::jmin (theme::kCorner, rf.getHeight() * 0.3f);     // the desk's keys have softly rounded corners
+        if (theme::manuscript()) { drawManuscriptKey (g, rf, rad, bg, b.getToggleState(), highlighted, down, b.isEnabled() ? 1.0f : 0.5f); return; }
         if (! b.isEnabled()) c = c.withMultipliedAlpha (0.5f);
         else if (down) c = c.darker (0.25f);
         else if (highlighted) c = c.brighter (0.18f);
@@ -158,13 +158,13 @@ public:
         const int s = 16;
         auto box = juce::Rectangle<int> (2, (b.getHeight() - s) / 2, s, s);
         g.setColour (theme::field);
-        g.fillRect (box);
+        theme::fillBox (g, box, 3.0f);                                      // (3.73.0: rounded)
         g.setColour (highlighted ? (theme::manuscript() ? theme::giltBright() : theme::text) : theme::border);
-        g.drawRect (box, 1);
+        theme::drawBox (g, box, 1.0f, 3.0f);
         if (b.getToggleState())
         {
             g.setColour (theme::accent);
-            g.fillRect (box.reduced (4));
+            theme::fillBox (g, box.reduced (4), 2.0f);
         }
         g.setColour (b.isEnabled() ? theme::text : theme::grid);
         g.setFont (juce::Font (juce::FontOptions (14.0f)));
@@ -175,9 +175,9 @@ public:
     {
         auto r = juce::Rectangle<int> (0, 0, width, height);
         g.setColour (box.findColour (juce::ComboBox::backgroundColourId));
-        g.fillRect (r);
+        theme::fillBox (g, r);                                              // (3.73.0: rounded)
         g.setColour (box.hasKeyboardFocus (true) ? theme::accent : box.findColour (juce::ComboBox::outlineColourId));
-        g.drawRect (r, 1);
+        theme::drawBox (g, r);
         const float cx = (float) width - 12.0f, cy = (float) height * 0.5f;
         juce::Path p;
         p.addTriangle (cx - 4.5f, cy - 2.5f, cx + 4.5f, cy - 2.5f, cx, cy + 3.0f);
@@ -193,12 +193,12 @@ public:
     void fillTextEditorBackground (juce::Graphics& g, int w, int h, juce::TextEditor& e) override
     {
         g.setColour (e.findColour (juce::TextEditor::backgroundColourId));
-        g.fillRect (0, 0, w, h);
+        theme::fillBox (g, juce::Rectangle<int> (0, 0, w, h));                // (3.73.0: rounded)
     }
     void drawTextEditorOutline (juce::Graphics& g, int w, int h, juce::TextEditor& e) override
     {
         g.setColour (e.hasKeyboardFocus (true) ? e.findColour (juce::TextEditor::focusedOutlineColourId) : e.findColour (juce::TextEditor::outlineColourId));
-        g.drawRect (0, 0, w, h, 1);
+        theme::drawBox (g, juce::Rectangle<int> (0, 0, w, h));
     }
 
     // ---- sliders: thin crisp tracks, square thumbs
@@ -215,24 +215,24 @@ public:
         if (horiz)
         {
             const int cy = y + h / 2;
-            g.setColour (juce::Colour (0xff0c0e11)); g.fillRect (x, cy - 2, w, 4);
-            g.setColour (fill);                      g.fillRect (x, cy - 2, juce::jmax (0, p - x), 4);
-            g.setColour (theme::border);             g.drawRect (x, cy - 2, w, 4, 1);
+            g.setColour (juce::Colour (0xff0c0e11)); theme::fillBox (g, juce::Rectangle<int> (x, cy - 2, w, 4), 2.0f);          // (3.73.0: rounded)
+            g.setColour (fill);                      theme::fillBox (g, juce::Rectangle<int> (x, cy - 2, juce::jmax (0, p - x), 4), 2.0f);
+            g.setColour (theme::border);             theme::drawBox (g, juce::Rectangle<int> (x, cy - 2, w, 4), 1.0f, 2.0f);
             auto th = juce::Rectangle<int> (p - 4, cy - 9, 9, 18);
-            g.setColour (thumbColour()); g.fillRect (th);
-            g.setColour (juce::Colour (0xff10141a));               g.drawRect (th, 1);
+            g.setColour (thumbColour()); theme::fillBox (g, th, 3.0f);
+            g.setColour (juce::Colour (0xff10141a));               theme::drawBox (g, th, 1.0f, 3.0f);
         }
         else
         {
             const int cx = x + w / 2;
-            g.setColour (juce::Colour (0xff0c0e11)); g.fillRect (cx - 3, y, 6, h);
-            g.setColour (theme::border);             g.drawRect (cx - 3, y, 6, h, 1);
+            g.setColour (juce::Colour (0xff0c0e11)); theme::fillBox (g, juce::Rectangle<int> (cx - 3, y, 6, h), 3.0f);          // (3.73.0: rounded)
+            g.setColour (theme::border);             theme::drawBox (g, juce::Rectangle<int> (cx - 3, y, 6, h), 1.0f, 3.0f);
             // dB ticks beside the groove
             g.setColour (theme::border.withAlpha (0.6f));
             for (int i = 0; i <= 8; ++i) { const int ty = y + (int) ((double) h * i / 8.0); g.fillRect (cx + 6, ty, 5, 1); g.fillRect (cx - 10, ty, 5, 1); }
             auto th = juce::Rectangle<int> (cx - 12, p - 6, 24, 12);
-            g.setColour (thumbColour()); g.fillRect (th);
-            g.setColour (juce::Colour (0xff10141a));               g.drawRect (th, 1);
+            g.setColour (thumbColour()); theme::fillBox (g, th, 3.0f);
+            g.setColour (juce::Colour (0xff10141a));               theme::drawBox (g, th, 1.0f, 3.0f);
             g.fillRect (th.getX() + 2, th.getCentreY(), th.getWidth() - 4, 1);
         }
     }
@@ -266,7 +266,7 @@ public:
         if (thumbSize <= 0) return;
         auto t = vertical ? juce::Rectangle<int> (x + 1, thumbStart, w - 2, thumbSize) : juce::Rectangle<int> (thumbStart, y + 1, thumbSize, h - 2);
         g.setColour (sb.findColour (juce::ScrollBar::thumbColourId).withMultipliedBrightness (down ? 0.8f : over ? 1.0f : 0.85f));
-        g.fillRect (t);
+        theme::fillBox (g, t);                                              // (3.73.0: rounded; the groove stays square, edge to edge)
     }
     int getDefaultScrollbarWidth() override { return 14; }
 
@@ -275,10 +275,20 @@ public:
     {
         auto r = b.getActiveArea();
         const bool front = b.isFrontTab();
+        // (3.73.0: its top corners rounded - the bottom meets the page)
+        const auto rf = r.toFloat();
+        const float c = theme::cornerFor (rf);
+        juce::Path shape; shape.addRoundedRectangle (rf.getX(), rf.getY(), rf.getWidth(), rf.getHeight(), c, c, true, true, false, false);
+        juce::Path edge;  edge.addRoundedRectangle (rf.getX() + 0.5f, rf.getY() + 0.5f, rf.getWidth() - 1.0f, rf.getHeight() - 0.5f, c, c, true, true, false, false);
         g.setColour (front ? theme::window.brighter (0.12f) : theme::panel.darker (over || down ? 0.08f : 0.0f));
-        g.fillRect (r);
-        g.setColour (theme::border); g.drawRect (r, 1);
-        if (front) { g.setColour (theme::accent); g.fillRect (r.getX(), r.getY(), r.getWidth(), 3); }
+        g.fillPath (shape);
+        g.setColour (theme::border); g.strokePath (edge, juce::PathStrokeType (1.0f));
+        if (front)
+        {
+            juce::Graphics::ScopedSaveState ss (g);
+            g.reduceClipRegion (shape);
+            g.setColour (theme::accent); g.fillRect (r.getX(), r.getY(), r.getWidth(), 3);
+        }
         g.setColour (front && theme::manuscript() ? theme::giltBright() : theme::text);
         g.setFont (juce::Font (juce::FontOptions (14.5f, front ? juce::Font::bold : juce::Font::plain)));
         g.drawText (b.getButtonText(), r.reduced (4, 0), juce::Justification::centred, true);

@@ -130,8 +130,8 @@ public:
     }
     void paint (juce::Graphics& g) override
     {
-        g.fillAll (theme::window);
-        g.setColour (theme::border.brighter (0.3f)); g.drawRect (getLocalBounds(), 2);
+        g.setColour (theme::window); theme::fillBox (g, getLocalBounds());                // (3.73.0: rounded)
+        g.setColour (theme::border.brighter (0.3f)); theme::drawBox (g, getLocalBounds(), 2.0f);
     }
 
     /** Reads the take window again (its takes, their bars, the piece's bars) and redraws. */
@@ -189,8 +189,8 @@ private:
         }
         void paint (juce::Graphics& g) override
         {
-            g.fillAll (theme::field);
-            g.setColour (theme::border); g.drawRect (getLocalBounds(), 1);
+            g.setColour (theme::field); theme::fillBox (g, getLocalBounds());
+            g.setColour (theme::border); theme::drawBox (g, getLocalBounds());
             const int last = owner.last;
             if (last <= 0)
             {

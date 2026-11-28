@@ -154,8 +154,8 @@ void PhaseScopeComponent::paint (juce::Graphics& g)
 
     // correlation meter: -1 (out of phase) .. 0 .. +1 (mono)
     auto cb = corrArea.reduced (4, 10).withHeight (14).toFloat();
-    g.setColour (theme::wellDark); g.fillRect (cb);
-    g.setColour (theme::border); g.drawRect (cb, 1.0f);
+    g.setColour (theme::wellDark); theme::fillBox (g, cb, 3.0f);
+    g.setColour (theme::border); theme::drawBox (g, cb, 1.0f, 3.0f);
     const float zero = cb.getCentreX(), pos = zero + correlation * cb.getWidth() * 0.5f;
     g.setColour (correlation < -0.1f ? juce::Colour (0xffe8281e) : correlation < 0.3f ? juce::Colour (0xffff9a1f) : juce::Colour (0xff35c46b));
     g.fillRect (juce::Rectangle<float> (juce::jmin (zero, pos), cb.getY() + 2, std::abs (pos - zero), cb.getHeight() - 4));

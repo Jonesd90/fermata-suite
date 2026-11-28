@@ -272,8 +272,8 @@ void LiveTakeView::paint (juce::Graphics& g)
             if (x1 < kHeaderW || x0 > getWidth()) continue;
             auto r = juce::Rectangle<int> (x0, heads.getY() + 1, x1 - x0, heads.getHeight() - 2);
             const bool chosen = selectedTake != 0 && t.number == selectedTake;
-            g.setColour (t.recording ? juce::Colour (0xffc62828) : chosen ? theme::accent.brighter (0.45f) : theme::accent); g.fillRect (r);
-            if (chosen) { g.setColour (juce::Colours::white); g.drawRect (r, 1); }
+            g.setColour (t.recording ? juce::Colour (0xffc62828) : chosen ? theme::accent.brighter (0.45f) : theme::accent); theme::fillBox (g, r);     // (fermata 3.73.0's corners)
+            if (chosen) { g.setColour (juce::Colours::white); theme::drawBox (g, r); }
             g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
             auto title = t.title (layout->windowName);
             if (t.recording) title << "  (recording)";
@@ -484,7 +484,7 @@ void LiveTakeView::paintLanes (juce::Graphics& g, juce::Rectangle<int> area)
             int cx0 = xOf (t.start), cx1 = xOf (end);
             if (cx1 < x0 || cx0 > x1) continue;
             auto clip = juce::Rectangle<int> (cx0, y + 1, juce::jmax (1, cx1 - cx0), laneH - 3);
-            g.setColour (chan::clipFill (colour)); g.fillRect (clip);
+            g.setColour (chan::clipFill (colour)); theme::fillBox (g, clip);
             int wx1 = juce::jmin (x1, cx1);
             if (writtenEnd >= 0.0 && t.recording) wx1 = juce::jmin (wx1, xOf (writtenEnd));     // (the Fixer: only what is on the disk)
             paintWave (g, t, tr, clip, juce::jmax (x0, cx0), wx1, chan::waveColour (colour));
@@ -496,14 +496,14 @@ void LiveTakeView::paintLanes (juce::Graphics& g, juce::Rectangle<int> area)
                 for (int hx = rest.getX() - rest.getHeight(); hx < rest.getRight(); hx += 9)
                     g.drawLine ((float) hx, (float) rest.getBottom(), (float) (hx + rest.getHeight()), (float) rest.getY(), 1.0f);
             }
-            g.setColour (chan::clipFill (colour).brighter (0.35f)); g.drawRect (clip, 1);
+            g.setColour (chan::clipFill (colour).brighter (0.35f)); theme::drawBox (g, clip);
         }
         // the selection (the Fixer's ReTouch, the Primary's loop and marks)
         if (selB > selA && std::find (selTracks.begin(), selTracks.end(), tr.id) != selTracks.end())
         {
             const int sx0 = xOf (selA), sx1 = xOf (selB);
-            g.setColour (juce::Colours::white.withAlpha (0.16f)); g.fillRect (sx0, y, juce::jmax (1, sx1 - sx0), laneH);
-            g.setColour (juce::Colours::white.withAlpha (0.55f)); g.drawRect (sx0, y, juce::jmax (1, sx1 - sx0), laneH, 1);
+            g.setColour (juce::Colours::white.withAlpha (0.16f)); theme::fillBox (g, juce::Rectangle<int> (sx0, y, juce::jmax (1, sx1 - sx0), laneH));
+            g.setColour (juce::Colours::white.withAlpha (0.55f)); theme::drawBox (g, juce::Rectangle<int> (sx0, y, juce::jmax (1, sx1 - sx0), laneH));
         }
     }
     g.restoreState();

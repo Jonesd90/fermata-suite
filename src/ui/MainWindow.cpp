@@ -342,11 +342,13 @@ public:
     {
         const auto& p = desk::pal();
         auto b = getLocalBounds();
+        juce::Graphics::ScopedSaveState rounded (g);                        // (3.73.0: the strip's corners rounded - its colour bars follow them)
+        { juce::Path shape; shape.addRoundedRectangle (b.toFloat(), theme::kCorner); g.reduceClipRegion (shape); }
         g.setColour (p.strip); g.fillRect (b);
-        g.setColour (p.stripEdge); g.drawRect (b, 1);
+        g.setColour (p.stripEdge); theme::drawBox (g, b);
         g.setColour (colour); g.fillRect (0, 0, b.getWidth(), 4); g.fillRect (0, b.getHeight() - 4, b.getWidth(), 4);
-        g.setColour (p.disp); g.fillRect (dispArea);
-        g.setColour (p.dispEdge); g.drawRect (dispArea, 1);
+        g.setColour (p.disp); theme::fillBox (g, dispArea);
+        g.setColour (p.dispEdge); theme::drawBox (g, dispArea);
         if (! gainCapArea.isEmpty())
         {
             g.setColour (p.cream); g.setFont (juce::FontOptions (juce::jmin (10.5f, (float) gainCapArea.getHeight() * 0.75f), juce::Font::bold));
@@ -510,12 +512,14 @@ public:
     {
         const auto& p = desk::pal();
         auto b = getLocalBounds();
+        juce::Graphics::ScopedSaveState rounded (g);                        // (3.73.0: the strip's corners rounded - its colour bars follow them)
+        { juce::Path shape; shape.addRoundedRectangle (b.toFloat(), theme::kCorner); g.reduceClipRegion (shape); }
         g.setColour (p.strip); g.fillRect (b);
-        g.setColour (p.stripEdge); g.drawRect (b, 1);
+        g.setColour (p.stripEdge); theme::drawBox (g, b);
         g.setColour (colour); g.fillRect (0, 0, b.getWidth(), 4);
         auto disp = juce::Rectangle<int> (8, 9, b.getWidth() - 16, 36);
-        g.setColour (p.disp); g.fillRect (disp);
-        g.setColour (p.dispEdge); g.drawRect (disp, 1);
+        g.setColour (p.disp); theme::fillBox (g, disp);
+        g.setColour (p.dispEdge); theme::drawBox (g, disp);
     }
     static constexpr int kStripW = 170, kStripH = 88;
 private:
@@ -548,8 +552,8 @@ public:
         {
             const auto r = boundsOf (i);
             if (r.isEmpty()) return;
-            g.setColour (c.withAlpha (0.16f)); g.fillRect (r);
-            g.setColour (c); g.drawRect (r, 3);
+            g.setColour (c.withAlpha (0.16f)); theme::fillBox (g, r);
+            g.setColour (c); theme::drawBox (g, r, 3.0f);
             auto tag = juce::Rectangle<int> (r.getCentreX() - 16, r.getCentreY() - 16, 32, 32);
             g.fillEllipse (tag.toFloat());
             g.setColour (juce::Colours::black); g.setFont (juce::FontOptions (18.0f, juce::Font::bold));

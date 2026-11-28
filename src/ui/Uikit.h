@@ -128,6 +128,24 @@ inline void setDark (bool dark)
 /** Dark or light writing for something drawn on 'fill' (the keys are light in the desk look, so their writing and pictures are dark). */
 inline juce::Colour inkOn (juce::Colour fill);
 
+/** 3.73.0 (asked for on 27 November 2026: "all of the 90 degree angles in the UI of fermata that are currently sharp right angles, into softer
+    bends (though still fairly tight) - the H:M:S:MS display has the right balance of bend"): the corners of every box - a key, a field, a list,
+    a name box, a clip, a flag's frame, a meter's well - are rounded this much (the time readout's 4 pixels). Lines, grids, the lanes and rows of
+    a timeline and the panels that tile a window stay square, as they meet their neighbours edge to edge. */
+constexpr float kCorner = 4.0f;
+/** The corner for a box this size: 'corner' (kCorner), less for a small box - never more than a third of its shorter side. */
+inline float cornerFor (juce::Rectangle<float> r, float corner = kCorner) { return juce::jmax (0.0f, juce::jmin (corner, juce::jmin (r.getWidth(), r.getHeight()) / 3.0f)); }
+/** A box filled, with rounded corners. */
+inline void fillBox (juce::Graphics& g, juce::Rectangle<float> r, float corner = kCorner) { g.fillRoundedRectangle (r, cornerFor (r, corner)); }
+inline void fillBox (juce::Graphics& g, juce::Rectangle<int> r, float corner = kCorner) { fillBox (g, r.toFloat(), corner); }
+/** A box's outline, 'thickness' wide, inside r (where Graphics::drawRect would draw it), with rounded corners. */
+inline void drawBox (juce::Graphics& g, juce::Rectangle<float> r, float thickness = 1.0f, float corner = kCorner)
+{
+    const auto in = r.reduced (thickness * 0.5f);
+    g.drawRoundedRectangle (in, juce::jmax (0.0f, cornerFor (r, corner) - thickness * 0.25f), thickness);
+}
+inline void drawBox (juce::Graphics& g, juce::Rectangle<int> r, float thickness = 1.0f, float corner = kCorner) { drawBox (g, r.toFloat(), thickness, corner); }
+
 /** A panel's background: flat in the Fermata style; in the Manuscript UI a soft glow from the top, like candlelight on a dark page. */
 inline void paintPanel (juce::Graphics& g, juce::Rectangle<int> area, juce::Colour base)
 {
@@ -429,8 +447,9 @@ public:
         if (faderScale) { paintPyramix (g); return; }
         auto b = getLocalBounds().toFloat();
         g.setColour (theme::wellDark);
-        g.fillRect (b);
-        g.setColour (theme::border); g.drawRect (getLocalBounds(), 1);
+        theme::fillBox (g, b, 3.0f);                                        // (3.73.0: rounded - and the bars kept inside the rounding)
+        juce::Graphics::ScopedSaveState keepClip (g);
+        { juce::Path well; well.addRoundedRectangle (b, theme::cornerFor (b, 3.0f)); g.reduceClipRegion (well); }
         const float h = pos (getHoldDb());
         const float fo = pos (kOrangeDb), fr = pos (kRedDb);
         auto bar = [&] (float lin, juce::Rectangle<float> area, float alpha)
@@ -467,6 +486,7 @@ public:
             if (isVertical) g.fillRect (b.getX(), b.getBottom() - b.getHeight() * h - 1.0f, b.getWidth(), 2.0f);
             else            g.fillRect (b.getX() + b.getWidth() * h - 1.0f, b.getY(), 2.0f, b.getHeight());
         }
+        g.setColour (theme::border); theme::drawBox (g, b, 1.0f, 3.0f);          // (3.73.0: its rounded edge, over the bar)
     }
 
     /** The clip light's height at the top of a Pyramix-style meter (the bar's travel starts under it). */
@@ -478,8 +498,8 @@ private:
     void paintPyramix (juce::Graphics& g)
     {
         const auto b = getLocalBounds();
-        g.setColour (wellColour()); g.fillRect (b);
-        g.setColour (wellEdge());   g.drawRect (b, 1);
+        g.setColour (wellColour()); theme::fillBox (g, b, 3.0f);                // (3.73.0: rounded)
+        g.setColour (wellEdge());   theme::drawBox (g, b, 1.0f, 3.0f);
         auto well = b.reduced (1);
         auto clip = well.removeFromTop (kClipH);
         g.setColour (clipped ? overRed() : clipOff()); g.fillRect (clip.reduced (1, 1));

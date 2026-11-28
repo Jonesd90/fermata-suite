@@ -196,7 +196,7 @@ public:
             r.removeFromLeft (8); notes[i]->setBounds (r);
         }
     }
-    void paint (juce::Graphics& g) override { g.fillAll (theme::field); g.setColour (theme::border); g.drawRect (getLocalBounds()); }
+    void paint (juce::Graphics& g) override { g.setColour (theme::field); theme::fillBox (g, getLocalBounds()); g.setColour (theme::border); theme::drawBox (g, getLocalBounds()); }
 private:
     std::vector<Row> rows;
     juce::OwnedArray<juce::Label> labels, notes; juce::OwnedArray<juce::ComboBox> combos;

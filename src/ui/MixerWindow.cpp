@@ -1266,7 +1266,7 @@ public:
     static void paintWells (juce::Graphics& g, const std::vector<juce::Rectangle<int>>& wellList, const std::vector<std::pair<juce::String, juce::Rectangle<int>>>& sectionList, juce::Colour c0)
     {
         const auto& t = mixTheme();
-        for (auto& w : wellList) { g.setColour (t.well.interpolatedWith (c0, t.ground ? 0.13f : 0.10f)); g.fillRect (w); g.setColour (t.soft.interpolatedWith (c0, 0.3f)); g.drawRect (w, 1); }
+        for (auto& w : wellList) { g.setColour (t.well.interpolatedWith (c0, t.ground ? 0.13f : 0.10f)); theme::fillBox (g, w); g.setColour (t.soft.interpolatedWith (c0, 0.3f)); theme::drawBox (g, w); }
         g.setFont (juce::FontOptions (8.5f, juce::Font::bold));
         for (auto& s : sectionList)
         {

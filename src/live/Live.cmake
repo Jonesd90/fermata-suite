@@ -1,6 +1,6 @@
 # fermata:Live - the live-concert recorder, built from the same shared core as fermata (see COMPATIBILITY.md and docs/LIVE-BRIEF.md).
 # Included by the top-level CMakeLists.txt; this file holds everything that is fermata:Live's own, so its work never edits fermata's lines.
-set(FERMATA_LIVE_VERSION 0.10.18)    # fermata:Live's version: the ONE place it is changed (see LIVE-CHANGELOG.md)
+set(FERMATA_LIVE_VERSION 0.10.19)    # fermata:Live's version: the ONE place it is changed (see LIVE-CHANGELOG.md)
 
 # The program is called "fermata:Live" on screen. Windows allows no colon in a file name, so the file is fermata-Live.exe.
 juce_add_gui_app(FermataLive

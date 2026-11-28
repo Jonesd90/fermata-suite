@@ -641,7 +641,13 @@ private:
         double prevEnd = 0.0; bool prevPlaced = false;
         for (auto& r : s.results)
         {
-            if (! r.ok) { ++failedN; text << r.file.getFileName() << ":  NOT ADDED - " << r.error << ".\n\n"; continue; }
+            if (! r.ok)
+            {
+                ++failedN; text << r.file.getFileName() << ":  NOT ADDED - " << r.error << ".\n\n";
+                if (systemName() == "none in this build" && failedN == 1)                 // 3.73.0: the reader was left out of this build - the report says why
+                    text << "(Help > Save the video report makes a file that says why this build has no video reader: please send it.)\n\n";
+                continue;
+            }
             double startAt = r.start; int synced = r.synced;
             if (! r.placed)
             {

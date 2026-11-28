@@ -58,7 +58,7 @@ inline void paintFlags (juce::Graphics& g, const std::vector<Marker>& list, cons
         g.fillRect (x, kStripH, 1, juce::jmax (0, totalHeight - kStripH));
         auto f = juce::Rectangle<int> (x, 1, flagWidth (m.name), kStripH - 2);
         g.setColour (held ? flagColour().brighter (0.3f) : flagColour());
-        g.fillRect (f);
+        g.fillRoundedRectangle (f.toFloat(), 3.0f);                      // (3.73.0: rounded)
         g.setColour (juce::Colour (0xff1a1a1a));
         g.drawText (m.name, f.reduced (4, 0), juce::Justification::centredLeft, true);
     }

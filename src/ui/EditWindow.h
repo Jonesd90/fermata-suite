@@ -5,6 +5,7 @@
 #include "TimeReadout.h"
 #include "ScoreWindow.h"
 #include "LaneFold.h"
+#include "HeadButtons.h"
 #include "Video.h"
 
 namespace td

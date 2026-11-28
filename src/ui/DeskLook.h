@@ -365,8 +365,8 @@ public:
     {
         const auto& p = pal();
         auto b = getLocalBounds();
-        g.setColour (p.disp); g.fillRect (b);
-        g.setColour (p.dispEdge); g.drawRect (b, 1);
+        g.setColour (p.disp); theme::fillBox (g, b);                 // (3.73.0: rounded)
+        g.setColour (p.dispEdge); theme::drawBox (g, b);
         g.setColour (p.cyan);
         g.setFont (theme::figureFont (14.0f));
         const int vw = juce::roundToInt (juce::GlyphArrangement::getStringWidth (juce::Font (theme::figureFont (14.0f)), text));
@@ -435,8 +435,8 @@ public:
     {
         const auto& p = pal();
         auto b = getLocalBounds();
-        g.setColour (isMouseOver() ? p.disp.brighter (0.15f) : p.disp); g.fillRect (b);
-        g.setColour (p.dispEdge); g.drawRect (b, 1);
+        g.setColour (isMouseOver() ? p.disp.brighter (0.15f) : p.disp); theme::fillBox (g, b);       // (3.73.0: rounded)
+        g.setColour (p.dispEdge); theme::drawBox (g, b);
         const bool none = ! (peak > 1.0e-6f);
         const float db = juce::Decibels::gainToDecibels (peak, -120.0f);
         const bool full = peak >= 0.99999f;                                       // (a sample at full scale: clipped, most likely)
