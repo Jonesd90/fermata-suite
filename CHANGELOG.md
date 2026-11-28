@@ -6,6 +6,27 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.75.2
+Built 28 November 2026 (the conversation for both programs), with Claude Fable. The Spectrogram Editing window's plug-in could not be heard:
+reported the same morning with a screen recording - "I put a high pass at around 2 kHz which should be SUPER easy to hear if applied to
+all tracks (which I did) and it made no audible difference" and "it looks like the audio never makes it to the plugin".
+- **Play plays the piece itself, live through its mixer** - as the edit window plays it. The plug-in is given the sound (its own display
+  moves), and a change to it, or a gain box, is heard at once. Until now Play played the piece's *render* straight to the outputs: nothing
+  went through the mixer at all, and a change could only be heard after the next render. The picture, the figures and the meters are still
+  of the last render, and follow when the piece has been rendered again.
+- **Link the settings works.** Setting the plug-in in one track's window now copies ALL its settings to the other tracks' a moment after
+  you let go. 3.75.0 passed each moved control on one by one - and a plug-in only takes a control set from outside while its mixer is
+  running, which an edit's own mixer is not unless that edit plays. So the other tracks' plug-ins never changed: the high-pass was on the
+  first track only, in the render too.
+- **The window knows when the piece has changed.** It went on saying "up to date" with the plug-in changed - most likely because the same
+  fault made it believe the plug-in's controls were moving for ever, so it kept putting its look off. It now looks six seconds after a change at the latest; and a change
+  made while a render is running leads to another render by itself (it used to stop and wait for Measure again).
+- **No render while something plays**: a change made while you listen is rendered and measured when playing stops (the status line says
+  so), so the listening does not stutter for it.
+- Not checked here: all of it. The rig that builds fermata on Linux has no audio device and can load no plug-in, so playing, Link and the
+  plug-in page were not run - the cause was read from the recording and from the engine's code (an Edit mixer runs only while its own Edit
+  plays), and the window's other scenes were run again to see nothing else moved.
+
 ## 3.75.1
 Built 28 November 2026 (the conversation for both programs), with Claude Fable. One fix, found with 3.73.0's video report (Help > Save the
 video report), which the user sent from a 3.75.0 build: "NOT ADDED - this build of fermata cannot read video on this computer's system".

@@ -37,8 +37,9 @@ namespace td
         just before the mix; the project's post-fader slots are switched on for it). "Link the settings" moves a control moved on one instance
         on the others. The engine's delay compensation counts the slot, so the tracks stay lined up, in the render as in playing.
 
-    What plays here is always the render: a gain box or a plug-in is heard, seen and measured once the piece has been rendered again (by
-    itself with "Keep up to date"). */
+    3.75.2: Play plays the piece itself, live through its mixer (AppContext::playEdit) - a gain box and the plug-in are heard at once, and the
+    plug-in is given the sound. The picture, the figures and the meters are of the piece's last render, and follow once it has been rendered
+    again (by itself with "Keep up to date"). Link copies the whole state of the plug-in being set to the others. */
 class SpecEditComponent : public juce::Component, private juce::Timer, private juce::ChangeListener
 {
 public:

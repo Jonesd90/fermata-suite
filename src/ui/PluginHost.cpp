@@ -723,6 +723,30 @@ std::unique_ptr<InsertProcessor> PluginHost::duplicate (InsertProcessor* from, d
     return p;
 }
 
+bool PluginHost::editorOpen (InsertProcessor* p) const
+{
+    for (auto& e : editors) if (e->insert == p) return true;
+    return false;
+}
+
+int PluginHost::copyState (InsertProcessor* from, const std::vector<InsertProcessor*>& to)
+{
+    auto* a = dynamic_cast<Vst3Insert*> (from);
+    if (a == nullptr) return 0;
+    const auto id = a->desc().createIdentifierString();
+    juce::MemoryBlock mb; a->getPlugin().getStateInformation (mb);
+    int n = 0;
+    for (auto* t : to)
+    {
+        auto* b = dynamic_cast<Vst3Insert*> (t);
+        if (b == nullptr || b == a || b->desc().createIdentifierString() != id) continue;
+        b->getPlugin().setStateInformation (mb.getData(), (int) mb.getSize());
+        b->stateWasSet();
+        ++n;
+    }
+    return n;
+}
+
 juce::String PluginHost::identityOf (InsertProcessor* p) const
 {
     auto* v = dynamic_cast<Vst3Insert*> (p);

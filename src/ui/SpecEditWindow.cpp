@@ -1250,7 +1250,8 @@ struct SpecEditComponent::Impl
     MasterRenderParts renderingParts;
     juce::String lastFp, problem;
     bool dirty = true, needsRender = false, staleAfterRender = false, wantRender = false, updating = false;
-    juce::uint32 dirtyAt = 0, lastStoreLook = 0;
+    juce::uint32 dirtyAt = 0, dirtySince = 0, lastStoreLook = 0;
+    bool changedWhileRendering = false;                      // 3.75.2: the piece was changed (from here, or the project said so) while its render was being made
     // 3.75.0: the picture
     std::shared_ptr<SpectralPyramid> pyramid;
     std::unique_ptr<PictureBuild> pictureBuild;
@@ -1269,10 +1270,12 @@ struct SpecEditComponent::Impl
     // 3.75.0: the plug-in's instances as they were last looked at (Link the settings: a control moved on one is moved on the others)
     struct Seen { juce::Uuid track; InsertProcessor* proc = nullptr; std::vector<float> vals; };
     std::vector<Seen> seen;
+    InsertProcessor* linkFrom = nullptr;                     // 3.75.2: the instance being set by hand (its window is open and a control of it moved)
+    juce::uint32 linkDue = 0, linkRunStart = 0, linkQuietUntil = 0;
+    int linkRuns = 0; bool linkResting = false;
     juce::uint32 lastPlugLook = 0, lastLevelsLook = 0;
     juce::uint64 levelsHash = 0;
     // playing
-    juce::Uuid playToken;
     bool playing = false;
     double playStart = 0.0;
 
@@ -1280,7 +1283,15 @@ struct SpecEditComponent::Impl
     juce::String pieceName() const { if (auto* it = app.project.mastering.findItem (editId); it != nullptr && it->fileName.isNotEmpty()) return it->fileName; if (auto* e = edit()) return e->name; return "(no piece)"; }
 
     void say (const juce::String& t, bool warn = false) { status.setColour (juce::Label::textColourId, warn ? theme::warn : theme::text); status.setText (t, juce::dontSendNotification); }
-    void markDirty() { dirty = true; dirtyAt = juce::Time::getMillisecondCounter(); }
+    /** The piece may have changed: it is looked at a moment after the last such word (and, 3.75.2, six seconds after the first at the latest: changes
+        that never stop coming must not put the look off for ever - in 3.75.0 they did, and the window went on saying "up to date"). */
+    void markDirty()
+    {
+        const auto now = juce::Time::getMillisecondCounter();
+        if (! dirty) dirtySince = now;
+        dirty = true; dirtyAt = now;
+        if (renderJob != nullptr) changedWhileRendering = true;
+    }
 
     void fillPieces()
     {
@@ -1371,6 +1382,8 @@ struct SpecEditComponent::Impl
         if (fixing) return;                                                      // (a gain box is being made: the render waits for it - see tick)
         if (masterbusy::holds() > 0) { say ("The Mastering window is rendering or exporting: this piece is measured when it has finished."); return; }
         if (app.engine.isRecording()) { say ("Recording: the piece is measured when the recording has stopped."); return; }
+        // 3.75.2: not while something plays - a render works flat out, and what is being listened to (the piece, live, while a plug-in is set) must not stutter for it
+        if (app.isPlaying()) { say ("The piece has changed: it is rendered and measured again when playing stops."); return; }
         auto* e = edit(); if (e == nullptr) return;
         RenderParams rp;
         if (const auto perr = makeRenderParams (app.project, app.project.mastering, rp); perr.isNotEmpty()) { say (perr, true); wantRender = false; return; }
@@ -1379,6 +1392,7 @@ struct SpecEditComponent::Impl
         wantRender = false;
         if (batch->toRender() == 0) { needsRender = false; lookAtPiece(); return; }
         renderingParts = masterRenderParts (app.project, *e, rp);                 // (what the render is made from: see renderDone)
+        changedWhileRendering = false;
         hold = std::make_unique<masterbusy::Hold>();
         progressValue = 0.0;
         say ("Rendering \"" + e->name + "\" through its mixer...");
@@ -1413,23 +1427,29 @@ struct SpecEditComponent::Impl
                 learnMasterRenderVolatile (app.project, *e, rp);
                 fp = masterRenderFingerprint (app.project, *e, rp);
                 if (masterRenderOnlyVolatileDiffers (renderingParts, masterRenderParts (app.project, *e, rp), editId)) store.restamp (editId, fp);
+                else if (changedWhileRendering && autoToggle.getToggleState())
+                {   // 3.75.2: changed by hand meanwhile (a plug-in's control, a fader, an edit) and "Keep up to date" is on: simply once more. (3.75.0
+                    // stopped here and waited for Measure again - and what played and showed was the render from before the change.)
+                    renderingParts.clear(); changedWhileRendering = false;
+                    lastFp.clear(); markDirty();
+                    say ("The piece changed while it was rendered: it is rendered again in a moment.");
+                    updateButtons();
+                    return;
+                }
                 else { juce::Logger::writeToLog ("Spectrogram Editing: \"" + e->name + "\" was changed while it was rendered; its render is out of date"); staleAfterRender = true; }
             }
         }
         renderingParts.clear();
-        cancelsInARow = 0;
         lookAtPiece();
     }
     /** 3.75.0: something this window did changed the piece's sound (a gain box, Undo, the plug-in): its render is made again - a moment later when
-        "Keep up to date" is on - and one being made now is stopped, since it is of the piece as it was. (Not more than a few times running: a
-        plug-in whose settings never stand still would otherwise stop every render there is.) */
+        "Keep up to date" is on - and one being made now is stopped, since it is of the piece as it was. */
     void soundChangedHere()
     {
         staleAfterRender = false;
-        if (renderJob != nullptr && ! renderAgainAfterCancel && cancelsInARow < 4) { ++cancelsInARow; renderAgainAfterCancel = true; renderJob->cancel(); }
+        if (renderJob != nullptr && ! renderAgainAfterCancel) { renderAgainAfterCancel = true; renderJob->cancel(); }
         markDirty();
     }
-    int cancelsInARow = 0;
 
     void startAnalysis (bool samePiece)
     {
@@ -1447,9 +1467,7 @@ struct SpecEditComponent::Impl
     {
         analysis.reset();
         if (p == nullptr) { say (err.isNotEmpty() ? err : juce::String ("The render could not be measured."), true); updateButtons(); return; }
-        const bool wasPlaying = playing;
-        if (wasPlaying) stopPlay();
-        profile = std::move (p);
+        profile = std::move (p);                                                // (3.75.2: playing goes on - it is the piece that plays now, not the render's file)
         whole = wavestats::measure (*profile, options);
         wave.setProfile (profile, samePieceNext); meters.setProfile (profile);
         if (wave.playheadSeconds() > profile->seconds()) setPlayheadAll (0.0);
@@ -1736,7 +1754,7 @@ struct SpecEditComponent::Impl
         st.hashAfter = Project::undoHash (*e); shownHash = st.hashAfter;         // (the picture's times still hold: a gain moves nothing)
         steps.push_back (std::move (st));
         soundChangedHere();
-        say (what + ": done and in the edit. " + (autoToggle.getToggleState() ? "The piece is rendered again to show and measure it." : "Press Measure again to see and measure it.") + " Undo takes it off." + reachNote,
+        say (what + ": done and in the edit - Play plays it. " + (autoToggle.getToggleState() ? "The piece is rendered again to show and measure it." : "Press Measure again to see and measure it.") + " Undo takes it off." + reachNote,
              reachNote.isNotEmpty());
         fillTracks(); scheduleBreakdown();
         updateButtons();
@@ -1882,7 +1900,6 @@ struct SpecEditComponent::Impl
         bypassToggle.setToggleState (anyBypass, juce::dontSendNotification);
         chooseBtn.setButtonText (plugId.isEmpty() ? "Choose plug-in..." : "Change plug-in...");
         openBtn.setEnabled (n > 0); removeBtn.setEnabled (n > 0); bypassToggle.setEnabled (n > 0);
-        seen.clear();                                                           // (Link starts again from what is there now)
     }
     void slotsChanged()
     {
@@ -1964,7 +1981,7 @@ struct SpecEditComponent::Impl
                 if (! ok) break;
             }
             i.slotsChanged();
-            if (ok) { i.openPlug (-1); i.say ("The plug-in is on " + juce::String ((int) want.size()) + (want.size() == 1 ? " track" : " tracks") + ", after each fader. Its window is the first track's; with Link the settings on, the others follow it."); }
+            if (ok) { i.openPlug (-1); i.say ("The plug-in is on " + juce::String ((int) want.size()) + (want.size() == 1 ? " track" : " tracks") + ", after each fader. Its window is the first track's; with Link the settings on, the others take its settings. Play plays the piece through it."); }
         });
     }
     void openPlug (int row)
@@ -1997,54 +2014,67 @@ struct SpecEditComponent::Impl
         app.project.markDirtyForUndo(); app.engine.checkLatency();
         lookAtPlugs(); soundChangedHere();
     }
-    /** Link the settings: a control moved on one instance (in its window) is moved on the others. Looked at a few times a second, parameter by
-        parameter; whatever moved - linked or not - the piece's sound changed, so it is measured again a moment after the last move. */
+    /** Link the settings. The instances' parameters are looked at a few times a second; the one whose own window is open and whose controls moved
+        is the one being set by hand, and a quarter of a second after its last move ALL its settings are copied to the others (its whole state:
+        PluginHost::copyState). Whatever was set - linked or not - the piece's sound changed, so it is measured again.
+
+        3.75.2: 3.75.0 set each moved parameter on the others one by one. A plug-in only takes a parameter set from outside as its mixer runs, and
+        an edit's own mixer rests unless that edit plays (AudioEngine: mixerIsLive) - so the others never took them, were saved and rendered with
+        their old settings, and their parameters, read back, looked "moved" again for ever (seen on 28 November 2026: a 2 kHz high-pass on eleven
+        tracks, heard on none but the first, and a window that went on saying "up to date"). A whole state is taken at once, mixer or no mixer. */
     void lookAtPlugParams()
     {
+        const auto now = juce::Time::getMillisecondCounter();
         const auto slots = plugSlots();
         bool same = slots.size() == seen.size();
         for (size_t i = 0; same && i < slots.size(); ++i) same = seen[i].proc == slots[i]->getProcessorUnsafe() && (int) seen[i].vals.size() == seen[i].proc->numParams();
         if (! same)
         {
-            seen.clear();
+            seen.clear(); linkFrom = nullptr; linkDue = 0; linkRuns = 0; linkResting = false;
             for (auto* sl : slots) { Seen s; s.proc = sl->getProcessorUnsafe(); const int np = s.proc->numParams(); s.vals.resize ((size_t) np); for (int k = 0; k < np; ++k) s.vals[(size_t) k] = s.proc->getParamNorm (k); seen.push_back (std::move (s)); }
             return;
         }
-        const bool link = linkToggle.getToggleState();
-        bool moved = false;
-        for (size_t i = 0; i < seen.size(); ++i)
+        if (linkResting && (linkFrom == nullptr || ! app.plugins.editorOpen (linkFrom))) { linkResting = false; linkRuns = 0; }
+        const bool quiet = (juce::int32) (now - linkQuietUntil) < 0;             // (just after a copy: the others' parameters are still arriving)
+        for (auto& s : seen)
         {
-            auto& s = seen[i];
+            bool moved = false;
             for (int k = 0; k < (int) s.vals.size(); ++k)
             {
                 const float v = s.proc->getParamNorm (k);
                 if (std::abs (v - s.vals[(size_t) k]) <= 1.0e-6f) continue;
                 s.vals[(size_t) k] = v;
-                if (! s.proc->paramAutomatable (k)) continue;                     // (a meter the plug-in shows as a parameter is no setting)
-                moved = true;
-                if (link)
-                    for (size_t j = 0; j < seen.size(); ++j) if (j != i && k < (int) seen[j].vals.size())
-                    {
-                        seen[j].proc->setParamNorm (k, v);
-                        seen[j].vals[(size_t) k] = seen[j].proc->getParamNorm (k);
-                    }
+                moved = moved || s.proc->paramAutomatable (k);                    // (a meter the plug-in shows as a parameter is no setting)
             }
+            if (! moved || quiet || linkResting || ! app.plugins.editorOpen (s.proc)) continue;      // (only a plug-in whose window is open is being set by hand)
+            if (linkDue == 0) linkRunStart = now;
+            linkFrom = s.proc; linkDue = now + 250; if (linkDue == 0) linkDue = 1;
         }
-        if (moved) { app.project.markDirty(); app.engine.checkLatency(); soundChangedHere(); }      // (a setting may change how late the plug-in is)
+        if (linkDue == 0 || ((juce::int32) (now - linkDue) < 0 && now - linkRunStart < 2000)) return;      // (still moving: at the latest every two seconds)
+        const bool stillMoving = (juce::int32) (now - linkDue) < 0;
+        linkDue = 0;
+        // (a plug-in whose settings never stand still - they move by themselves - must not copy and render for ever: after half a minute of it, no more)
+        linkRuns = stillMoving ? linkRuns + 1 : 0;
+        if (linkRuns > 15) { linkResting = true; say ("This plug-in's settings keep moving by themselves: Link and the automatic measuring leave it alone until its window is closed. (Measure again measures.)", true); return; }
+        bool there = false; std::vector<InsertProcessor*> others;
+        for (auto* sl : slots) { auto* p = sl->getProcessorUnsafe(); if (p == linkFrom) there = true; else others.push_back (p); }
+        if (! there) return;
+        if (linkToggle.getToggleState() && ! others.empty())
+        {
+            app.plugins.copyState (linkFrom, others);
+            for (auto& s : seen) for (int k = 0; k < (int) s.vals.size(); ++k) s.vals[(size_t) k] = s.proc->getParamNorm (k);
+            linkQuietUntil = now + 800;
+        }
+        app.project.markDirty(); app.engine.checkLatency();                      // (a setting may change how late the plug-in is)
+        soundChangedHere();
     }
 
-    // ---- playing: the render itself, straight to the outputs (as the Mastering window's disc audition)
-    int outFirst() const
-    {
-        auto& p = app.project;
-        if (p.mixers.empty()) return 0;
-        const auto& pm = *p.mixers.front();
-        auto outOf = [&] (const juce::Uuid& busId) { for (auto& b : pm.busPool) if (b->busId == busId) return b->outFirst.load(); return -1; };
-        if (p.kindOf (p.mastering.sourceId) == NodeKind::ExtBus) { const int f = outOf (p.mastering.sourceId); if (f >= 0) return f; }
-        for (auto& b : p.buses) if (b.external) { const int f = outOf (b.id); if (f >= 0) return f; }
-        return 0;
-    }
-    bool mine() const { return app.isPlaying() && app.playInfo.kind == AppContext::PlayInfo::Kind::Other && app.playInfo.id == playToken; }
+    // ---- playing. 3.75.2: the piece itself, live through its mixer, as the edit window plays it (AppContext::playEdit) - so a gain box and the
+    //      plug-in are heard at once, and the plug-in is given the sound (its own display moves). 3.74.0 / 3.75.0 played the RENDER straight to the
+    //      outputs: nothing went through the mixer, the plug-in showed nothing, and a change was heard only after the next render. The window's
+    //      time is the render's, which starts at the edit's first sound: editOffset() is the difference.
+    double editOffset() const { auto* e = edit(); return e != nullptr && e->sampleRate > 0.0 ? (double) e->audibleStart() / e->sampleRate : 0.0; }
+    bool mine() const { return app.isPlaying() && app.playInfo.kind == AppContext::PlayInfo::Kind::Edit && app.playInfo.id == editId; }
     /** The playhead in both pictures. */
     void setPlayheadAll (double s)
     {
@@ -2053,15 +2083,15 @@ struct SpecEditComponent::Impl
     }
     void startPlay()
     {
-        if (profile == nullptr || ! file.existsAsFile()) return;
+        if (profile == nullptr || edit() == nullptr) return;
         if (app.engine.isRecording()) { showError ("Spectrogram Editing", "Stop recording first."); return; }
         if (playing) { if (mine()) app.stopPlayback(); playing = false; }
         const bool sel = wave.hasSelection();
         double from = sel ? wave.selStart() : wave.playheadSeconds();
         const double to = sel ? wave.selEnd() : -1.0;
         if (! sel && from >= profile->seconds() - 0.05) from = 0.0;
-        playToken = juce::Uuid();
-        const auto err = app.playRenders ({ { file, 0.0, profile->rate, profile->frames } }, from, to, playToken, outFirst());
+        const double off = editOffset();
+        const auto err = app.playEdit (editId, off + from, off + (sel ? to : profile->seconds()));
         if (err.isNotEmpty()) { say (err, true); return; }
         playing = true; playStart = from; lastPlayPos = from;
         playBtn.setButtonText ("Stop");
@@ -2070,7 +2100,7 @@ struct SpecEditComponent::Impl
     {
         if (! playing) return;
         const bool m = mine();
-        const double pos = m ? app.playheadSeconds() : -1.0;
+        const double pos = m ? app.playheadSeconds() - editOffset() : -1.0;
         if (m) app.stopPlayback();
         playing = false;
         playBtn.setButtonText ("Play");
@@ -2082,7 +2112,7 @@ struct SpecEditComponent::Impl
         if (! playing) return;
         if (mine() && ! app.engine.playbackFinished())
         {
-            const double pos = app.playheadSecondsSmooth();
+            const double pos = juce::jmax (0.0, app.playheadSecondsSmooth() - editOffset());
             wave.setPlayhead (pos); wave.follow (pos);
             if (pos >= view.visT1() && lastPlayPos < view.visT1() && lastPlayPos >= view.visT0() && profile != nullptr && view.visT1() < profile->seconds() - 1.0e-6) view.showFrom (view.visT1());     // the page turns with it
             lastPlayPos = pos;
@@ -2155,7 +2185,7 @@ struct SpecEditComponent::Impl
             lastLevelsLook = now;
             if (mixerLevelsHash() != levelsHash) markDirty();
         }
-        if (dirty && now - dirtyAt > 1200 && ! app.engine.isRecording())
+        if (dirty && (now - dirtyAt > 1200 || now - dirtySince > 6000) && ! app.engine.isRecording())
         {
             dirty = false;
             if (auto* e = edit())
@@ -2201,8 +2231,8 @@ SpecEditComponent::SpecEditComponent (AppContext& a, const juce::Uuid& editId) :
                            "(before the export's own level and dither).");
     m.pieceBox.onChange = [this] { auto& i = *impl; if (i.updating) return; const int k = i.pieceBox.getSelectedId() - 1; if (juce::isPositiveAndBelow (k, (int) i.pieceIds.size())) i.setPiece (i.pieceIds[(size_t) k]); };
     addAndMakeVisible (m.playBtn);
-    m.playBtn.setTooltip ("Plays the render from the playhead - or the selected part - straight to the outputs, as it is (Space). The meters follow it. "
-                          "It is the render that plays: a gain box or a plug-in is heard once the piece has been rendered again.");
+    m.playBtn.setTooltip ("Plays the piece itself, live through its mixer - as the edit window plays it - from the playhead, or the selected part (Space). A gain box and the plug-in are "
+                          "heard at once. The picture, the figures and the meters are of the piece's last render: they follow when it has been rendered again.");
     m.playBtn.onClick = [this] { if (impl->playing) impl->stopPlay(); else impl->startPlay(); };
     m.timeLabel.setFont (juce::FontOptions (15.0f, juce::Font::bold)); m.timeLabel.setJustificationType (juce::Justification::centred);
     m.timeLabel.setColour (juce::Label::backgroundColourId, theme::field); m.timeLabel.setColour (juce::Label::outlineColourId, theme::border);
@@ -2274,7 +2304,7 @@ SpecEditComponent::SpecEditComponent (AppContext& a, const juce::Uuid& editId) :
     m.view.onNote = [this] (const juce::String& t) { impl->say (t); };
     m.view.onNeedDetail = [this] (const PictureRequest& rq) { impl->startDetail (rq); };
     m.view.onView = [this] { impl->sliceForView(); };
-    m.view.livePlayhead = [this] { auto& i = *impl; return i.playing && i.mine() ? juce::jmax (0.0, i.app.playheadSecondsSmooth()) : -1.0; };
+    m.view.livePlayhead = [this] { auto& i = *impl; return i.playing && i.mine() ? juce::jmax (0.0, i.app.playheadSecondsSmooth() - i.editOffset()) : -1.0; };
     m.view.onSelection = [this]
     {
         auto& i = *impl;
@@ -2364,8 +2394,8 @@ SpecEditComponent::SpecEditComponent (AppContext& a, const juce::Uuid& editId) :
     m.bypassToggle.setTooltip ("Bypasses the plug-in on every track that has it.");
     m.bypassToggle.onClick = [this] { impl->bypassPlugs (impl->bypassToggle.getToggleState()); };
     m.linkToggle.setToggleState (st == nullptr || st->getBoolValue ("specEditLink", true), juce::dontSendNotification);
-    m.linkToggle.setTooltip ("On: a control moved in one track's plug-in window is moved on every other track's too, so one window sets them all. A track added later starts as a copy of the first. "
-                             "Off: each track's plug-in is set on its own (double-click a track for its window).");
+    m.linkToggle.setTooltip ("On: set the plug-in in one track's window, and a moment after you let go ALL its settings are copied to every other track's - one window sets them all. "
+                             "A track added later starts as a copy of the first. Off: each track's plug-in is set on its own (double-click a track for its window).");
     m.linkToggle.onClick = [this] { if (auto* s = app.props.getUserSettings()) { s->setValue ("specEditLink", impl->linkToggle.getToggleState()); app.props.saveIfNeeded(); } impl->seen.clear(); };
     m.plugAllBtn.onClick = [this]
     {

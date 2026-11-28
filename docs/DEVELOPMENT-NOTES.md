@@ -2620,6 +2620,43 @@ fermata's `shutdown()` and its static destructors. Our unhandled-exception filte
   right after closing the log, so the PDF reader's unload code never runs. Everything is saved and closed by then.
 (The symbols of Windows' own libraries were not available here: the reading rests on the single thread and the order of the modules.)
 
+## 3.75.2: the Spectrogram Editing window - Play is live, Link copies the state (28 November 2026, Claude Fable; fermata only)
+
+**Reported** with a screen recording (3.75.0, FabFilter Pro-Q 4 on 11 tracks of "A New Song - EDIT", a 2 kHz high-pass): no audible
+difference, the plug-in's analyser shows nothing while the window plays, the status line says "Measured ... up to date" after the
+high-pass is set (Keep up to date off), and after Measure again the new render still has all its bass.
+
+**Three causes, one root: an Edit mixer sleeps.** `AudioEngine` runs an Edit's own mixer only while that Edit plays (`mixerIsLive`; then a
+30 s tail). The piece had its own mixer, so its plug-ins were never processed while this window was in use, because:
+1. **Play played the render** (`playRenders`, straight to the outputs: 3.74.0's choice, when the window only measured). Nothing went
+   through the mixer; the plug-in had no sound. Now `playEdit (editId, editOffset() + from, editOffset() + to)` - the window's time is the
+   render's, which starts at `audibleStart` - and `mine()` is "this edit is playing".
+2. **Link set parameters one by one** (`setParamNorm` -> JUCE `VST3Parameter::setValue`: into `cachedParamValues`, handed to the plug-in in
+   its next `processBlock`). No `processBlock`, so the other instances' processors never had them; `getStateInformation` (the save, the
+   render's copy, the fingerprint) gave their old state. Now `PluginHost::copyState`: `getStateInformation` of the instance being set,
+   `setStateInformation` on the others - what Paste settings does, which needs no running mixer. The instance being set is the one whose
+   window is open (`PluginHost::editorOpen`) and whose automatable parameters moved; the copy is made 250 ms after its last move (every
+   2 s at the latest while it moves), then every instance's parameters are read again and nothing is looked at for 800 ms.
+3. **"Moved" every look** (worked out from the recording, not seen in a debugger: the status stayed "up to date" for as long as nothing
+   was pressed, yet Measure again found the piece changed). The likeliest reason: the mirrored values, read back, differed again each time
+   (the plug-in's controller going back to what its processor had), so `markDirty` was called five times a second and
+   `dirty && now - dirtyAt > 1200` never came true: the fingerprint was never compared. `markDirty` now keeps `dirtySince`, and the look is made 6 s after the first word at the latest.
+
+**Also:** a render that finishes out of date because the piece was changed meanwhile (`changedWhileRendering`: set by `markDirty` while a
+render runs) and "Keep up to date" is on -> rendered again by itself (3.75.0: `staleAfterRender`, wait for Measure again). The count of
+cancelled renders (`cancelsInARow`) is gone; a plug-in whose parameters move by themselves is caught in `lookAtPlugParams` instead (15
+two-second runs without a pause: Link and the measuring leave it alone until its window is closed). `startRender` waits while anything
+plays (`app.isPlaying()`): the render runs flat out on other threads and the live sound must not stutter. `analysisDone` no longer stops
+playing (it did because the file that played was the render's).
+`lookAtPlugs` no longer empties `seen` (it is called by the dirty look, which threw a pending copy away).
+
+**Not run:** any of it - no audio device and no plug-in on the rig. To check on Windows: the plug-in's analyser moves when the window plays;
+a high-pass set in the first track's window is on every ticked track (open another track's window: the same curve); the status line goes
+to "The piece has changed" / renders by itself.
+**Known and left:** a plug-in that keeps its settings only in its processor and takes GUI changes through the host (not Pro-Q) would give an
+old state while its mixer sleeps, here and in every other slot of an Edit mixer - the engine would have to flush parameters to sleeping
+plug-ins. The meters show the render at the playhead, not the live sound.
+
 ## 3.75.1: the video reader compiles - one misspelt Media Foundation name (28 November 2026, Claude Fable; fermata only)
 
 **Reported** since 3.71.0: every video "NOT ADDED - this build of fermata cannot read video on this computer's system", and no

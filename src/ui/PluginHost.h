@@ -54,6 +54,12 @@ public:
     /** 3.75.0 (the Spectrogram Editing window: one plug-in on several tracks): a new instance of the plug-in 'from' is, with all of its settings as they
         are now. Nothing copied with Copy is touched. Null (with the reason) when it is not one of this host's plug-ins or cannot be started. */
     std::unique_ptr<InsertProcessor> duplicate (InsertProcessor* from, double sampleRate, int blockSize, juce::String& error);
+    /** 3.75.2: is this plug-in's own window open (showEditor's)? */
+    bool editorOpen (InsertProcessor*) const;
+    /** 3.75.2 (the Spectrogram Editing window's Link the settings): every plug-in of 'to' is given all of 'from's settings as they are now - its
+        whole state, as Paste settings gives one (so it also works on a plug-in whose mixer is resting, which a parameter set from outside does not
+        reach until the mixer runs). Only instances of the same plug-in are written; how many were. Nothing copied with Copy is touched. */
+    int copyState (InsertProcessor* from, const std::vector<InsertProcessor*>& to);
     /** 3.75.0: what tells one plug-in from another - its file and kind, as canPaste compares them ("" for none, or one that is not this host's). */
     juce::String identityOf (InsertProcessor*) const;
     /** Tells a plug-in the name (and colour, ARGB; 0 = none) of the channel it sits on - "Piano - The Egg Man EDIT": a plug-in that lists its
