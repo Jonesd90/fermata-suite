@@ -335,6 +335,7 @@ public:
             setOpaque (true);
             addAndMakeVisible (*editor); addAndMakeVisible (pin);
             addAndMakeVisible (bypass); addAndMakeVisible (copy); addAndMakeVisible (paste);
+            addChildComponent (toTracks);                         // (3.77.1: shown for the Mastering window's plug-in only - see syncBar)
             bypass.setTooltip ("Bypass: the sound goes past this plug-in unchanged (the same switch as Bypass in the mixer's slot menu). Click again to bring it back.");
             copy.setTooltip ("Copy this plug-in's settings, to Paste into the same plug-in on any other channel, in any mixer.");
             editor->addComponentListener (this);
@@ -346,21 +347,36 @@ public:
             g.fillAll (theme::window);
             g.setColour (theme::panel); g.fillRect (0, 0, getWidth(), kBarH);
             g.setColour (theme::border); g.fillRect (0, kBarH - 1, getWidth(), 1);
-            g.setColour (theme::dimText); g.setFont (juce::FontOptions (12.5f));
-            g.drawText (place.isNotEmpty() ? name + "   |   " + place : name, 8, 0, juce::jmax (0, bypass.getX() - 14), kBarH - 1, juce::Justification::centredLeft, true);
+            const int keysX = toTracks.isVisible() ? toTracks.getX() : bypass.getX();
+            const bool said = said_.isNotEmpty();                 // (3.77.1: what a key just did, for a few seconds, in place of the name)
+            g.setColour (said ? theme::text : theme::dimText); g.setFont (juce::FontOptions (12.5f, said ? juce::Font::bold : juce::Font::plain));
+            g.drawText (said ? said_ : place.isNotEmpty() ? name + "   |   " + place : name, 8, 0, juce::jmax (0, keysX - 14), kBarH - 1, juce::Justification::centredLeft, true);
         }
         void setPlace (const juce::String& p) { if (p != place) { place = p; repaint (0, 0, getWidth(), kBarH); } }
-        void resized() override
+        /** 3.77.1: shows this in the bar, where the plug-in's name is, until 'until' (EditorWindow's timer takes it away). */
+        void say (const juce::String& text, juce::uint32 until) { said_ = text; saidUntil = until; repaint (0, 0, getWidth(), kBarH); }
+        void saidEnough (juce::uint32 now) { if (said_.isNotEmpty() && (juce::int32) (now - saidUntil) >= 0) { said_.clear(); repaint (0, 0, getWidth(), kBarH); } }
+        /** 3.77.1: is "Copy to ticked tracks" wanted (the plug-in is the Mastering window's)? Lays the keys out again when that changed. */
+        void wantToTracks (bool on) { if (on != toTracksWanted) { toTracksWanted = on; layKeys(); repaint (0, 0, getWidth(), kBarH); } }
+        void layKeys()
         {
             const int y = (kBarH - 1 - pin.getHeight()) / 2;
             pin.setTopLeftPosition (getWidth() - pin.getWidth() - 4, y);
-            // left to right: Bypass, Copy, Paste, the pin. A very narrow plug-in keeps the pin and Bypass (Copy and Paste are in the slot's menu too)
-            const bool roomForAll = pin.getX() - (paste.getWidth() + copy.getWidth() + bypass.getWidth() + 19) >= 4;
+            // left to right: (Copy to ticked tracks,) Bypass, Copy, Paste, the pin. A very narrow plug-in keeps the pin and Bypass (Copy and Paste are
+            // in the slot's menu too) - and Copy to ticked tracks before those two, when it is wanted: there is no other place for it
+            const int extra = toTracksWanted ? toTracks.getWidth() + 8 : 0;
+            const bool roomForAll = pin.getX() - (paste.getWidth() + copy.getWidth() + bypass.getWidth() + 19 + extra) >= 4;
             paste.setVisible (roomForAll); copy.setVisible (roomForAll);
             paste.setTopLeftPosition (pin.getX() - paste.getWidth() - 8, y);
             copy.setTopLeftPosition (paste.getX() - copy.getWidth() - 3, y);
             bypass.setTopLeftPosition ((roomForAll ? copy.getX() : pin.getX()) - bypass.getWidth() - 8, y);
             bypass.setVisible (bypass.getX() >= 2);
+            toTracks.setTopLeftPosition (bypass.getX() - toTracks.getWidth() - 8, y);
+            toTracks.setVisible (toTracksWanted && toTracks.getX() >= 2);
+        }
+        void resized() override
+        {
+            layKeys();
             if (fitting) return;
             const juce::ScopedValueSetter<bool> s (fitting, true);
             editor->setBounds (0, kBarH, getWidth(), juce::jmax (1, getHeight() - kBarH));
@@ -378,6 +394,9 @@ public:
         juce::String name, place;                 // the plug-in's name, and the channel and mixer it sits on
         PinButton pin;
         BarKey bypass { "Bypass", 56 }, copy { "Copy", 44 }, paste { "Paste", 46 };
+        BarKey toTracks { "Copy to ticked tracks", 136 };      // 3.77.1 (asked for on 28 November 2026): this plug-in's settings to the same plug-in on the Mastering window's other ticked tracks
+        bool toTracksWanted = false;
+        juce::String said_; juce::uint32 saidUntil = 0;
         bool fitting = false;
     };
     EditorWindow (PluginHost& h, Vst3Insert* i, juce::AudioProcessorEditor* editor)
@@ -405,6 +424,11 @@ public:
         {
             if (host.pasteSettings (insert) && host.slotChanged) host.slotChanged();
             syncBar();
+        };
+        holder->toTracks.onClick = [this, holder]
+        {
+            if (! host.copyToTracks) return;
+            holder->say (host.copyToTracks (insert), juce::Time::getMillisecondCounter() + 5000);
         };
         bar = holder;
         syncBar();
@@ -446,9 +470,22 @@ public:
                                                           : juce::String ("Nothing copied yet: press Copy in a plug-in's window (or Copy settings in a slot's menu) first."));
         }
         bar->setPlace (host.trackNameOf (insert));
+        // 3.77.1: Copy to ticked tracks - there while this plug-in is one of the Mastering window's (that window says so, and to how many others)
+        const int others = host.tracksToCopyTo ? host.tracksToCopyTo (insert) : -1;
+        if (others != othersShown)
+        {
+            othersShown = others;
+            bar->toTracks.setEnabled (others > 0);
+            bar->toTracks.setTooltip (others > 0 ? "Copies ALL of this plug-in's settings, as they are now, to the same plug-in on the other " + juce::String (others) + (others == 1 ? " track" : " tracks")
+                                                   + " ticked on the Mastering window's Plug-in page. Their own settings are replaced. (Link the settings does this by itself each time you let go of a control; this does it when you say.)"
+                                                 : juce::String ("No other track ticked on the Mastering window's Plug-in page holds this plug-in: tick the tracks there first."));
+            bar->wantToTracks (others >= 0);
+        }
+        bar->saidEnough (juce::Time::getMillisecondCounter());
     }
 private:
     juce::Component::SafePointer<Holder> bar;
+    int othersShown = -2;
     juce::String pasteTipFor { "\x01" };
     int barTick = 0;
     bool spaceWasDown = false;

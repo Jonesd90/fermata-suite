@@ -6,6 +6,20 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.77.1
+Built 28 November 2026 (the conversation for both programs), with Claude Fable. Asked for that day, as the sure way beside Link the
+settings: "a button at the top of the window that says 'copy to selected audio tracks' and fermata copies that plugin's settings to all
+the other tracks ... 'Selected tracks' being the ones selected on the right hand box"; "build it at the top next to the bypass etc. It
+uses that instance of the plugin to copy it". fermata only: nothing shared changed.
+- **A plug-in's own window: Copy to ticked tracks**, in its top row to the left of Bypass. It copies ALL the settings of THAT plug-in, as
+  they are at that moment, to the same plug-in on every other track ticked on the Mastering window's Plug-in page. The window's top row
+  then says "Copied to N other tracks" for five seconds, the Mastering window's status line says it too, and the piece is measured
+  again. It does not wait for fermata to notice that a control moved, as Link does: it copies when you press it.
+- The key is there only while the Mastering window is open and the plug-in is one of its piece's (in a track's post-fader slot); it is
+  grey when no other ticked track holds the same plug-in. A plug-in in any other slot has the row it always had.
+- Not run here: no plug-in loads on the machine this was written on, so the key and its window have not been seen. fermata was built.
+  The six pre-delivery checks were not run (last: 3.71.0).
+
 ## 3.77.0
 Built 28 November 2026 (the conversation for both programs), with Claude Fable. Reported that day, on 3.76.0: "The link to all tracks
 still isn't working ... the EQ change I make is being processed on the track that is showing in the preview, but on ALL the other tracks

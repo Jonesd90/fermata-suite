@@ -2620,6 +2620,20 @@ fermata's `shutdown()` and its static destructors. Our unhandled-exception filte
   right after closing the log, so the PDF reader's unload code never runs. Everything is saved and closed by then.
 (The symbols of Windows' own libraries were not available here: the reading rests on the single thread and the order of the modules.)
 
+## 3.77.1 - Copy to ticked tracks, in the plug-in's own window (28 November 2026)
+
+The user's fail-safe beside Link (which depends on noticing a move): a key that copies when pressed, from the instance whose window it is.
+- `PluginHost::tracksToCopyTo` / `copyToTracks`: two hooks the Mastering window sets in its constructor and clears in its destructor
+  (there is one such window). `EditorWindow::syncBar` (five times a second) asks the first: -1 = not that window's plug-in (no key),
+  0 = no other track holds it (grey), n = the tooltip's count.
+- `SpecEditComponent::Impl::copyTargets` finds the others by the post-fader slots of the piece's rows and the plug-in's identity - not by
+  `plugId`, which is only set once the Plug-in page was looked at. `copyToTicked` is `PluginHost::copyState` (3.77.0: the giver is handed
+  its waiting edits first, every setting is compared afterwards), then Link's bookkeeping (the others' values taken as seen, the quiet
+  moment, nothing due), project dirty, latency, `soundChangedHere`.
+- The bar (`Holder`): `layKeys()` is the keys' part of `resized()`; `toTracks` sits left of Bypass and, in a narrow window, stays when
+  Copy and Paste go. `say()` puts a line where the plug-in's name is until `saidEnough`.
+**Not run:** the plug-in window cannot be opened on the rig (no plug-in loads): the key's place and look are unseen. fermata links.
+
 ## 3.77.0 - a plug-in at rest is handed what was set in its window; Link; each track's plug-in window (28 November 2026)
 
 Reported on 3.76.0: the Mastering window's plug-in is heard on the track whose window is open and on no other, with Link on.

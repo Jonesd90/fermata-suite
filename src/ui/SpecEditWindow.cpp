@@ -2273,6 +2273,38 @@ struct SpecEditComponent::Impl
         soundChangedHere();
     }
 
+    /** 3.77.1 (asked for on 28 November 2026, as the sure way beside Link): the key "Copy to ticked tracks" in a plug-in's own window.
+        The other tracks of this piece that hold the same plug-in as 'p' in their post-fader slot - the ticked rows of the Plug-in page; -1 when
+        'p' is not in one of this piece's post-fader slots. It does not go by plugId: the plug-in's window may be open before that page was. */
+    int copyTargets (InsertProcessor* p, std::vector<InsertProcessor*>* out) const
+    {
+        const auto id = p != nullptr ? app.plugins.identityOf (p) : juce::String();
+        if (id.isEmpty()) return -1;
+        bool mine = false; int n = 0;
+        for (auto& r : plugTracks.rows) if (auto* sl = postSlot (r.id)) if (sl->isLoaded())
+        {
+            auto* q = sl->getProcessorUnsafe();
+            if (q == p) mine = true;
+            else if (app.plugins.identityOf (q) == id) { ++n; if (out != nullptr) out->push_back (q); }
+        }
+        return mine ? n : -1;
+    }
+    juce::String copyToTicked (InsertProcessor* p)
+    {
+        std::vector<InsertProcessor*> others;
+        if (copyTargets (p, &others) < 0) return "Not copied: this plug-in is not on one of the Mastering window's tracks.";
+        if (others.empty()) return "Not copied: no other ticked track holds this plug-in.";
+        const int n = app.plugins.copyState (p, others);
+        // (Link: what the others now read is no move by hand, and nothing is waiting to be copied any more)
+        for (auto& s : seen) if (s.proc != p) for (int k = 0; k < (int) s.vals.size(); ++k) s.vals[(size_t) k] = s.proc->getParamNorm (k);
+        linkQuietUntil = juce::Time::getMillisecondCounter() + 800; linkCopiedFrom = p; linkDue = 0;
+        app.project.markDirty(); app.engine.checkLatency();
+        soundChangedHere();
+        const auto what = "Copied to " + juce::String (n) + (n == 1 ? " other track" : " other tracks");
+        say ("The plug-in's settings were copied to the other " + juce::String (n) + (n == 1 ? " ticked track." : " ticked tracks."));
+        return n == (int) others.size() ? what : what + " (of " + juce::String ((int) others.size()) + ")";
+    }
+
     // ---- playing. 3.75.2: the piece itself, live through its mixer, as the edit window plays it (AppContext::playEdit) - so a gain box and the
     //      plug-in are heard at once, and the plug-in is given the sound (its own display moves). 3.74.0 / 3.75.0 played the RENDER straight to the
     //      outputs: nothing went through the mixer, the plug-in showed nothing, and a change was heard only after the next render. The window's
@@ -2425,6 +2457,9 @@ struct SpecEditComponent::Impl
 SpecEditComponent::SpecEditComponent (AppContext& a, const juce::Uuid& editId) : app (a), impl (std::make_unique<Impl> (*this, a))
 {
     auto& m = *impl;
+    // 3.77.1: the plug-in windows' key "Copy to ticked tracks" asks this window (one of it is ever open: Main.cpp, showSpecEdit)
+    app.plugins.tracksToCopyTo = [this] (InsertProcessor* p) { return impl->copyTargets (p, nullptr); };
+    app.plugins.copyToTracks = [this] (InsertProcessor* p) { return impl->copyToTicked (p); };
     auto cap = [this] (juce::Label& l, const juce::String& t, juce::Justification j = juce::Justification::centredRight)
     {
         l.setText (t, juce::dontSendNotification); l.setFont (juce::FontOptions (12.0f)); l.setColour (juce::Label::textColourId, theme::dimText);
@@ -2644,6 +2679,7 @@ SpecEditComponent::SpecEditComponent (AppContext& a, const juce::Uuid& editId) :
 
 SpecEditComponent::~SpecEditComponent()
 {
+    app.plugins.tracksToCopyTo = nullptr; app.plugins.copyToTracks = nullptr;      // (the plug-in windows lose the key within a fifth of a second)
     app.project.removeChangeListener (this);
     stopTimer();
     impl->stopPlay();

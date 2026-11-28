@@ -63,6 +63,12 @@ public:
         resting its state was still the OLD settings, and those were what the others got; and after the copy every setting is read back and
         compared, and one that still differs is set by itself. */
     int copyState (InsertProcessor* from, const std::vector<InsertProcessor*>& to);
+    /** 3.77.1 (set by the Mastering window while it is open; null otherwise): how many OTHER tracks ticked on its Plug-in page hold the same plug-in
+        as this one - or -1 when this plug-in is not one of that window's. At 0 or more the plug-in's own window has the key "Copy to ticked tracks". */
+    std::function<int (InsertProcessor*)> tracksToCopyTo;
+    /** 3.77.1: that key was pressed - the Mastering window copies this plug-in's settings to those tracks (copyState) and answers with what the
+        plug-in's window then says for a few seconds ("Copied to 10 other tracks"). */
+    std::function<juce::String (InsertProcessor*)> copyToTracks;
     /** 3.75.0: what tells one plug-in from another - its file and kind, as canPaste compares them ("" for none, or one that is not this host's). */
     juce::String identityOf (InsertProcessor*) const;
     /** Tells a plug-in the name (and colour, ARGB; 0 = none) of the channel it sits on - "Piano - The Egg Man EDIT": a plug-in that lists its
