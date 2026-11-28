@@ -273,7 +273,7 @@ public:
             if (SUCCEEDED (reader->GetNativeMediaType ((DWORD) MF_SOURCE_READER_FIRST_AUDIO_STREAM, 0, sound.put())) && sound)
             {
                 UINT32 ch = 0, rate = 0;
-                sound->GetUINT32 (MF_MT_AUDIO_NUM_CHANNELS, &ch); sound->GetUINT32 (MF_MT_AUDIO_SAMPLES_PER_SEC, &rate);
+                sound->GetUINT32 (MF_MT_AUDIO_NUM_CHANNELS, &ch); sound->GetUINT32 (MF_MT_AUDIO_SAMPLES_PER_SECOND, &rate);
                 if (ch > 0 && rate > 0) { fmt.soundChannels = (int) ch; fmt.soundRate = (double) rate; }
             }
         }
@@ -487,7 +487,7 @@ private:
         UINT32 ch = 0, rate = 0, bitsNow = 0;
         GUID sub = GUID_NULL;
         cur->GetGUID (MF_MT_SUBTYPE, &sub);
-        cur->GetUINT32 (MF_MT_AUDIO_NUM_CHANNELS, &ch); cur->GetUINT32 (MF_MT_AUDIO_SAMPLES_PER_SEC, &rate); cur->GetUINT32 (MF_MT_AUDIO_BITS_PER_SAMPLE, &bitsNow);
+        cur->GetUINT32 (MF_MT_AUDIO_NUM_CHANNELS, &ch); cur->GetUINT32 (MF_MT_AUDIO_SAMPLES_PER_SECOND, &rate); cur->GetUINT32 (MF_MT_AUDIO_BITS_PER_SAMPLE, &bitsNow);
         floats = IsEqualGUID (sub, MFAudioFormat_Float) != 0;
         bits = (int) bitsNow;
         const bool known = floats ? (bits == 32 || bits == 64) : (bits == 8 || bits == 16 || bits == 24 || bits == 32);

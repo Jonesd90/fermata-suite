@@ -6,6 +6,17 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.75.1
+Built 28 November 2026 (the conversation for both programs), with Claude Fable. One fix, found with 3.73.0's video report (Help > Save the
+video report), which the user sent from a 3.75.0 build: "NOT ADDED - this build of fermata cannot read video on this computer's system".
+- **Video can be read.** Every build so far was made WITHOUT its video reader, so no video could be added on any computer: the reader's
+  code asked Windows for the sound's sample rate by a name that does not exist (`MF_MT_AUDIO_SAMPLES_PER_SEC`; it is
+  `MF_MT_AUDIO_SAMPLES_PER_SECOND`), in two places in `src/ui/VideoReaderWin.cpp`. The GitHub build tries the reader first, and when it
+  does not compile it builds fermata without it rather than failing - which is what happened each time, unseen until the report. Those two
+  lines were the only errors in the file.
+- Not checked here: this file is Windows-only code and cannot be compiled on Linux. The build's own trial compiles AND links it; if
+  something else stops it now, fermata still builds, and Help > Save the video report says what.
+
 ## 3.75.0
 Built 28 November 2026 (the conversation for both programs), with Claude Fable. The second build of the Spectrogram Editing window - the
 mending. Asked for on 27 November: "it throws up the same type of spectrogram window ... It then shows where the top X number of true peaks

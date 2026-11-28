@@ -2620,6 +2620,22 @@ fermata's `shutdown()` and its static destructors. Our unhandled-exception filte
   right after closing the log, so the PDF reader's unload code never runs. Everything is saved and closed by then.
 (The symbols of Windows' own libraries were not available here: the reading rests on the single thread and the order of the modules.)
 
+## 3.75.1: the video reader compiles - one misspelt Media Foundation name (28 November 2026, Claude Fable; fermata only)
+
+**Reported** since 3.71.0: every video "NOT ADDED - this build of fermata cannot read video on this computer's system", and no
+`video-reader-did-not-build.txt` in the download. 3.73.0 built the report into the program (Help > Save the video report); the user's report
+from 3.75.0 (MSVC 19.52, Windows SDK 10.0.26100, Visual Studio 18 2026) showed both trials failing on the same two lines:
+`VideoReaderWin.cpp(276)` and `(490)`: `error C2065: 'MF_MT_AUDIO_SAMPLES_PER_SEC': undeclared identifier`.
+
+**Cause:** the attribute is `MF_MT_AUDIO_SAMPLES_PER_SECOND` (mfapi.h). The file has never compiled anywhere - it is Windows-only and the
+Linux checks cannot see into it - so since 3.68.0 every build fell back to `VideoReaderNone.cpp`, as CMakeLists.txt is made to.
+**Fix:** the name, twice. Nothing else in the file was reported (C2065 does not stop the compiler: it went through the whole file).
+**Not known until the next Windows build:** whether the trial now LINKS (it builds a whole small program with `cmake/VideoCheckMain.cpp`:
+the libraries are named by `#pragma comment (lib, ...)` in the file) and how the reader behaves with a real file - none of it has ever run.
+If the trial fails again the build still succeeds, and the report carries the new output.
+**For the next first-time Windows-only file:** read every Windows name against the SDK's headers before delivering; the trial hides a typo
+as "this computer cannot".
+
 ## 3.75.0: the Spectrogram Editing window, part 2 - the spectrogram, the peaks, the gain box, the plug-in (28 November 2026, Claude Fable; fermata:Live 0.10.20)
 
 **Asked** (27 November, build B of the two agreed): the spectrogram "for the selected audio track", the top X true peaks marked (X the
