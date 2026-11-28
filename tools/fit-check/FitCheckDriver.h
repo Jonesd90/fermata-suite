@@ -14,6 +14,7 @@
 #include "../../src/ui/FixTools.h"
 #include "../../src/core/EditVersions.h"
 #include "../../src/core/MasterRender.h"
+#include "../../src/ui/SpecEditWindow.h"                                   // 3.75.0 (specedit-box: its check steps)
 #include <set>
 
 namespace td::fitcheck
@@ -84,7 +85,14 @@ public:
         if (! edit.isNull())
         {
             add ("specedit", [this, edit] { if (app.showSpecEdit) app.showSpecEdit (edit); });
-            add ("specedit-measured", [this, edit] { soundInRender (edit); if (app.showSpecEdit) app.showSpecEdit (edit); });
+            add ("specedit-measured", [this, edit] { soundInRender (edit); if (app.showSpecEdit) app.showSpecEdit (edit); }, { "Figures", "Peaks and gain", "Plug-in" });
+            // 3.75.0: its highest peak picked and boxed, the gain put in, and taken off again with Undo (the last scene: it changes the edit - in the
+            // project's copy - and leaves the gain's piece files in its Fixes folder)
+            add ("specedit-box", [this, edit]
+                 {
+                     soundInRender (edit); if (app.showSpecEdit) app.showSpecEdit (edit);
+                     juce::Timer::callAfterDelay (1100, [] { if (auto* c = findSpecEdit()) c->checkStep ("pick"); });
+                 }, { "Peaks and gain", "Plug-in", "Figures", "Peaks and gain", "Box it", "Reduce", "Figures", "Plug-in", "Peaks and gain", "Undo (1)", "Figures", "Peaks and gain" });     // (the pages in between give the picture, then the gain, time to be made; then its Undo)
         }
         begin();
     }
@@ -99,6 +107,17 @@ private:
             if (fold) st->setValue ("laneFolds_" + windowId.toString(), "markers,feedback,guide,tuning,video,pieces,changes,comments:1,comments:2,comments:3");
             else st->removeValue ("laneFolds_" + windowId.toString());
         }
+    }
+    static SpecEditComponent* findIn (juce::Component& c)
+    {
+        if (auto* s = dynamic_cast<SpecEditComponent*> (&c)) return s;
+        for (auto* ch : c.getChildren()) if (auto* s = findIn (*ch)) return s;
+        return nullptr;
+    }
+    static SpecEditComponent* findSpecEdit()
+    {
+        for (auto* w : windowsNow()) if (auto* s = findIn (*w)) return s;
+        return nullptr;
     }
     /** 3.74.0: the piece's render (made by the scene before) filled with a sound to measure - notes that swell and die away, different on the
         two sides, with a few clipped crests - so the Spectrogram Editing window is looked at with figures and meters in it, whatever the

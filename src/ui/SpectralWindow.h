@@ -359,6 +359,23 @@ public:
     double selF0() const { return extent().f0; }   // Hz
     double selF1() const { return extent().f1; }
     void clearSelection() { clearMarks(); selectionChanged (true); }
+    /** 3.75.0: one box put there by the program, in place of whatever was selected (seconds, Hz; kept inside the sound and the picture's pitches). It is an
+        ordinary box from then on - moved, resized, added to, feathered. */
+    void selectBox (double t0, double t1, double f0, double f1)
+    {
+        t0 = juce::jlimit (0.0, duration, t0); t1 = juce::jlimit (0.0, duration, t1);
+        f0 = juce::jlimit (0.0, nyq(), f0); f1 = juce::jlimit (0.0, nyq(), f1);
+        clearMarks();
+        if (t1 - t0 >= 0.002 && f1 > f0) { boxes.push_back (denoise::SelRect { t0, t1, f0, f1, true }); boxSeq.push_back (nextSeq++); }
+        drawing = false; editing = -1;
+        selectionChanged (true);
+    }
+    /** 3.75.0: moments marked along the picture - a line down it with a small flag at the top (seconds from the start; 'strong': the one picked). They are
+        only drawn: clicks go to the picture as always. */
+    struct TimeMark { double t = 0.0; juce::String label; juce::Colour colour { 0xffffd24a }; bool strong = false; };
+    void setTimeMarks (std::vector<TimeMark> m) { timeMarks = std::move (m); repaint(); }
+    /** 3.75.0: the page moved and zoomed to show [t0, t0 + span] (kept inside the sound). */
+    void showSpan (double t0, double span) { setWindow (t0, span); }
 
     // ---- 3.33.0: harmonics. One box of the selection (the last one drawn when they were asked for) is given boxes on the other harmonics of its sound: harmonics
     //      1 to 'count' of its fundamental - the fundamental IS the 1st harmonic - the box itself being harmonic 'boxIs'. They are ordinary parts of the selection (Alt
@@ -610,6 +627,14 @@ public:
                 g.setColour (drawAdd ? juce::Colour (0xffffd24a) : juce::Colour (0xffff5a4a)); g.drawRect (r, 2);
                 if (! drawAdd) { g.setColour (juce::Colour (0x55ff5a4a)); g.fillRect (r); }
             }
+            for (auto& mk : timeMarks)                                                // 3.75.0: the moments marked along the picture (the Spectrogram Editing window's highest peaks): their lines ...
+            {
+                if (mk.t < vt0 || mk.t > vt1 || duration <= 0.0) continue;
+                const int x = tToX (mk.t, plot);
+                g.setColour (mk.colour.withAlpha (mk.strong ? 0.95f : 0.6f));
+                if (mk.strong) g.fillRect (x, plot.getY(), 1, plot.getHeight());
+                else for (int y = plot.getY(); y < plot.getBottom(); y += 7) g.fillRect (x, y, 1, 4);
+            }
             if (playT < 0.0 && cueT >= vt0 && cueT <= vt1 && duration > 0.0)          // the playhead you placed on the ruler
             {
                 const int x = tToX (cueT, plot);
@@ -619,6 +644,16 @@ public:
             {
                 const int x = tToX (playT, plot);
                 g.setColour (theme::playhead); g.fillRect (x - 1, plot.getY(), 2, plot.getHeight());
+            }
+            for (auto& mk : timeMarks)                                                // ... and their flags, over the playhead (a flag under it could not be read)
+            {
+                if (mk.t < vt0 || mk.t > vt1 || duration <= 0.0 || mk.label.isEmpty()) continue;
+                const int x = tToX (mk.t, plot);
+                g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+                const int w = juce::jmax (16, juce::GlyphArrangement::getStringWidthInt (g.getCurrentFont(), mk.label) + 8);
+                const juce::Rectangle<int> flag (juce::jlimit (plot.getX(), juce::jmax (plot.getX(), plot.getRight() - w), x - w / 2), plot.getY() + 2, w, 15);
+                g.setColour (mk.colour.withAlpha (mk.strong ? 1.0f : 0.85f)); g.fillRoundedRectangle (flag.toFloat(), 3.0f);
+                g.setColour (juce::Colours::black); g.drawText (mk.label, flag, juce::Justification::centred, false);
             }
         }
         // the round colour control
@@ -1044,6 +1079,7 @@ private:
     struct Dab { double t = 0.0, lf = 0.0, rt = 0.0, up = 0.0, down = 0.0; };
     struct Stroke { std::vector<Dab> dabs; bool add = true; int seq = 0; };
     std::vector<Stroke> strokes;
+    std::vector<TimeMark> timeMarks;                            // 3.75.0 (setTimeMarks)
     std::vector<int> boxSeq;                                    // the order each box was drawn in, beside the strokes' (a later take-out takes from what came before)
     int nextSeq = 1;
     std::vector<juce::Point<int>> paintPts;                     // the stroke being painted, on the screen (drawn as it goes; the shape is made when the button comes up)

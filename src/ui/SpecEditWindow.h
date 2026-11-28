@@ -22,7 +22,23 @@ namespace td
     its render is made again and measured again by itself ("Keep up to date"), or when Measure again is pressed. Only one render is made at a
     time in the whole program (MasterBusy.h).
 
-    The spectrogram itself, the markers on the highest true peaks, the gain boxes and the mastering plug-in come with the next build. */
+    3.75.0, the second part - the mending:
+
+      - the render's SPECTROGRAM (the picture and the tools of Noise mode: SpectrogramView, its Rectangle / Time / Brush tools and feathering),
+        with the highest true peaks marked along it and listed ("Peaks and gain": how many is chosen; peaks nearer than half a second to a
+        higher one belong to it - wavestats::topPeaks). For each, the band that carries most of its height is worked out (bandAtPeak: the
+        sample at the peak is the sum of what every third of an octave adds to it there); "Box it" draws a box round that band;
+      - the GAIN BOX: ReTouch's Gain (FixSpec Patch + RepairMode::Gain, through prepareRepairJobs / applyRegionJobs, exactly as Noise mode's
+        Gain) on the tracks that are ticked, so the cut is made in the multitracks and the piece stays editable up to the export. It is put
+        into the edit as new piece files - the recordings are never touched - and is one Undo step there and here. The render's first sample
+        is the edit's first sound (EditDef::audibleStart), which is how the box's times become the edit's. A list shows each track's own level
+        in the box (or at the picked peak), loudest first;
+      - the PLUG-IN on chosen tracks: one instance on each ticked track, in the track's post-fader slot (Common.h: kPostSlot - after the fader,
+        just before the mix; the project's post-fader slots are switched on for it). "Link the settings" moves a control moved on one instance
+        on the others. The engine's delay compensation counts the slot, so the tracks stay lined up, in the render as in playing.
+
+    What plays here is always the render: a gain box or a plug-in is heard, seen and measured once the piece has been rendered again (by
+    itself with "Keep up to date"). */
 class SpecEditComponent : public juce::Component, private juce::Timer, private juce::ChangeListener
 {
 public:
@@ -31,6 +47,8 @@ public:
     static juce::String windowKey() { return "specedit"; }
     /** Another piece (the Mastering window's button, while this window is open). */
     void setPiece (const juce::Uuid& editId);
+    /** For tools/fit-check only (never used by the program): "pick" picks the highest peak. */
+    void checkStep (const juce::String& what);
 
     void paint (juce::Graphics&) override;
     void resized() override;

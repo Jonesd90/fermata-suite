@@ -2620,6 +2620,94 @@ fermata's `shutdown()` and its static destructors. Our unhandled-exception filte
   right after closing the log, so the PDF reader's unload code never runs. Everything is saved and closed by then.
 (The symbols of Windows' own libraries were not available here: the reading rests on the single thread and the order of the modules.)
 
+## 3.75.0: the Spectrogram Editing window, part 2 - the spectrogram, the peaks, the gain box, the plug-in (28 November 2026, Claude Fable; fermata:Live 0.10.20)
+
+**Asked** (27 November, build B of the two agreed): the spectrogram "for the selected audio track", the top X true peaks marked (X the
+user's), a time-and-frequency box round the loud part reduced with "the gain module from the retouch part of the program" (feathering on the
+box), done "on the multitracks rather than a stereo file" so the project stays editable to the export; and a plug-in "for every audio file"
+on the tracks the user selects, "just before the mix". Order agreed in the conversation: tracks -> gain boxes -> each track's strip
+(inserts, fader) -> the plug-in on chosen tracks -> mix -> Virtual Master -> dither -> export.
+
+**What a gain box is - said plainly, because an earlier message in the conversation described it otherwise.** It is a ReTouch fix: new piece
+files in the edit (Fixes folder), the recordings untouched, one Undo step. It is NOT a setting kept in the project and applied as the piece
+plays, so it cannot be turned up or down afterwards: undo it and make it again. That is what "use the gain module from ReTouch" gives, and
+it is why the result is seen and heard only after the piece is rendered again.
+
+**All of it is in `src/ui/SpecEditWindow.cpp`** (now with `FixToolsCommon.h`: the picture, the track readers, the repair jobs):
+- The picture: `PictureBuild` (thread) makes a `SpectralPyramid` of the render - every channel a "track", so the picture is the louder of
+  left and right at each point; `sliceForView` hands the view a slice (as Noise mode); `sharpOfRender` makes the sharp picture of a view up
+  to 180 s wide on a detached thread (`picture::render`, as Noise mode's `renderSharp`, read from the render's channels). A new render of the
+  same piece and length keeps the view and the selection (`pictureDone`: `keepView`), otherwise the view starts again.
+- The peaks: `wavestats::topPeaks` (below), each with `bandAtPeak`: 8192 samples round the peak (16384 / 32768 at the higher rates), faded
+  only in their outer quarters, one FFT; bin k adds `(2 / N) Re (X[k]) (-1)^k` to the middle sample, so the thirds of an octave (from
+  20 Hz; one band below) sum exactly to the sample at the peak. The band that adds most in the peak's direction, with the neighbours that
+  add at least half as much, is the band shown; `share` = their sum / the sample. It is the nearest SAMPLE to the true peak, one channel.
+- `pickPeak` zooms to 4 s round the peak (or stays closer); `boxPicked` draws the box: the band (made at least `6 x rate / 8192` Hz tall),
+  0.1 s either side (more below 120 Hz: 12 waves, to 0.5 s).
+- `reduce` -> `reduceDone`: one `RepairOp` for each of `view.selectionParts()` (mask and lead as Noise mode's `opsForSelection`),
+  `prepareRepairJobs (Fixes, regions, audibleStart, audibleEnd, rate, ops, ticked tracks)` on the window's `AudioJob`, then `applyRegionJobs`
+  (suffix "gain"), `setUndoForEdit` (so the edit window's Undo fix has it) and `project.changed()` (so Ctrl + Z has it: this window holds no
+  `undoHold`, it is not modal). The box's times ARE the edit's from `audibleStart`: a master render starts there (MasterRender.cpp: `bi.start`).
+- `shownHash`: `Project::undoHash` of the edit the picture is of - set when the render is found up to date, and after each of this window's
+  own boxes and undos (a gain moves nothing in time, so more boxes can go in before the render has caught up). `reduce` refuses when the
+  edit's hash is another: a box drawn on an old picture would land in the wrong place.
+- `steps` / `undoLast`: each box keeps the regions as they were and the hash it left; Undo here puts the regions back only while the edit
+  still has that hash (else: "use Undo in the edit window"). The files of an undone box are NOT deleted (Redo in the edit window can bring
+  the regions back; Noise mode can delete because it holds the undo history while it is open).
+- `bandsForBox` / `gainReachingMiddle`: see the measurement below.
+- Which tracks: `startBreakdown` (250 ms after the selection or the pick changes; detached thread, `breakdownGen` drops stale ones) reads each
+  track's mono mix over the box (`buildTrackParts` / `readTrackMix`; 30 s at most, its middle) and `bandLevelDb` gives the band's RMS (a
+  full-scale sine = 0 dB; 4096-point windows, a shorter stretch its own window). Shown with the strip's fader + input gain added. It is the
+  track before its inserts and pan, not its share of the render - the tooltip says so.
+- The plug-in: the tracks' `slots[kPostSlot]` in the mixer the piece renders through (`mixer()`: as `masterRenderFingerprint` chooses it).
+  `plugId` (`PluginHost::identityOf`) is the plug-in most of the piece's tracks hold there; a track holding another is shown and left
+  alone. `putOn`: a new one (`PluginHost::create`) or a copy of the first with its settings (`PluginHost::duplicate`, new);
+  `postSlotsOn` switches `Project::postFaderSlots` on as the Project menu does. `lookAtPlugParams` (every 180 ms): the instances'
+  parameters against the values last seen; a moved AUTOMATABLE one is set on the others when Link is on (`setParamNorm` on the processor,
+  message thread - not through the slot's lock, which would make the audio thread skip the plug-in for a block), and any move marks the
+  piece for measuring again. A setting that is not a parameter is not linked.
+- `soundChangedHere`: this window changed the sound - a render being made is cancelled (`renderAgainAfterCancel`; at most 4 times running:
+  a plug-in whose parameters never stand still must not stop every render) and the piece is looked at again 1.2 s after the last change.
+- `mixerLevelsHash`: faders, pans, mutes of the piece's mixer, looked at every 1.5 s: a fader moved sends no change message, so "Keep up to
+  date" never heard it (3.74.0 said it did; the Mastering window has the same gap and is as it was).
+- The playhead is one: the waveform's, mirrored into the picture's cue (`setPlayheadAll`); a click in the picture is found by comparing
+  `view.cueTime()` each tick (the view's ruler click tells no one - shared code, left alone).
+
+**`src/core/WaveStats.h`: `topPeaks (profile, count, apartSeconds = 0.5, from, to)`** - each tick's highest true peak over the channels,
+sorted, taken highest first unless within `apartSeconds` of one already taken. Tests in `tests/wavestats_test.cpp` (seven bursts of known
+height and place: order, level, channel, place, grouping, a range, silence).
+
+**Measured: ReTouch's Gain on a narrow low box** (a one-off program against `SpectralRepair::repair`, not kept: a 160 Hz tone, -3 dB asked
+for in 143 - 180 Hz, read at the box's middle):
+
+| rate | box | 1024 bands | 4096 bands |
+|---|---|---|---|
+| 48 kHz | 0.06 s | -1.15 dB | -1.57 dB |
+| 48 kHz | 0.2 s | -1.23 dB | -2.86 dB |
+| 48 kHz | 0.3 s | -1.23 dB | -2.88 dB |
+| 96 kHz | 0.2 s | -0.89 dB | -1.99 dB |
+
+`boxGain`'s slope at each edge is `max (3 bins, 12 % of the edge)` wide, half-way at the edge: with 23 Hz bins a 37 Hz box never reaches the
+gain. So `bandsForBox` picks the window (2048 / 4096 / 8192) for which `6 x rate / N` is no more than the box's height, and
+`gainReachingMiddle` (the same slopes, and 0.35 + 0.57 x box / window for a box shorter than 1.2 windows) agrees with the table within
+0.1 dB; under 80 % of the gain asked for, the status line says so. `boxGain` itself is untouched (Noise mode and ReTouch pick Bands by hand).
+
+**Shared `src/ui/SpectralWindow.h` (`SpectrogramView`): `setTimeMarks` / `TimeMark`** (a line - dashed, solid for the picked one - under the
+playhead, its flag over it), **`selectBox`** (clearMarks, one box, `selectionChanged (true)`), **`showSpan`** (setWindow, public). Nothing
+else in it changed; fermata:Live uses none of the three.
+
+**`src/ui/PluginHost`: `duplicate`, `identityOf`.**
+
+**Checked on Linux:** wavestats tests (1698); both programs build; fit-check scenes `specedit`, `specedit-measured` (its three pages),
+`specedit-box` (picks peak 1 - `SpecEditComponent::checkStep`, for the check only - then clicks Box it and Reduce: the gain went into the
+trial edit, Undo (1) lit, the piece was rendered and measured again by itself) at 1280x680, 1366x728, 1536x816 and 1920x1040, both looks:
+0 problems. `retouch` and `noisemode` scenes as before.
+**Not checked:** Windows (MSVC); any plug-in (the rig loads none: `putOn`, `lookAtPlugParams`, `choosePlugin` were read, not run); `undoLast`
+(not run); playing; the gain's effect on a real render (the trial project's render is silent: its tracks' outputs are off).
+
+**Left open:** the box as a stored, adjustable cut (would need the engine to apply it as it plays); the export's LoudnessMeter still has its
+own true-peak interpolator (3.74.0's note); the Mastering window does not hear a fader either.
+
 ## 3.74.0: the Spectrogram Editing window, part 1 - the figures and the meters (28 November 2026, Claude Fable; fermata only)
 
 **Asked** (27 November): RX's Waveform Statistics for the Mastering window's piece, whole and for a selection; live meters "similar to the TC

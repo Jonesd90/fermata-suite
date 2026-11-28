@@ -51,6 +51,11 @@ public:
     bool pasteSettings (InsertProcessor*);
     /** Paste into an EMPTY slot: a new instance of the copied plug-in with the copied settings. Null (with the reason) when it cannot be started. */
     std::unique_ptr<InsertProcessor> createFromCopied (double sampleRate, int blockSize, juce::String& error);
+    /** 3.75.0 (the Spectrogram Editing window: one plug-in on several tracks): a new instance of the plug-in 'from' is, with all of its settings as they
+        are now. Nothing copied with Copy is touched. Null (with the reason) when it is not one of this host's plug-ins or cannot be started. */
+    std::unique_ptr<InsertProcessor> duplicate (InsertProcessor* from, double sampleRate, int blockSize, juce::String& error);
+    /** 3.75.0: what tells one plug-in from another - its file and kind, as canPaste compares them ("" for none, or one that is not this host's). */
+    juce::String identityOf (InsertProcessor*) const;
     /** Tells a plug-in the name (and colour, ARGB; 0 = none) of the channel it sits on - "Piano - The Egg Man EDIT": a plug-in that lists its
         instances across the project (FabFilter Pro-Q's instance list) shows them by this name instead of 1, 2, 3. Only passed on when it has
         changed since the last call. Message thread. */

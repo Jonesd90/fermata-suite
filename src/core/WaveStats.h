@@ -529,4 +529,47 @@ inline Stats measure (const Profile& p, std::int64_t from, std::int64_t to, cons
 /** The whole file. */
 inline Stats measure (const Profile& p, const Options& opt = {}) { return measure (p, 0, p.frames, opt, nullptr); }
 
+//======================================================================================================================
+/** 3.75.0: one of a file's highest true peaks: where it is (a frame of the file), how high (dBTP) and in which channel. */
+struct PeakEvent { std::int64_t frame = -1; double db = kNone; int channel = 0; };
+
+/** The 'count' highest true peaks between the frames 'from' and 'to' (to < 0: the end), highest first, as separate events: peaks nearer to a
+    higher one than 'apartSeconds' belong to it (a loud chord is one thing to mend, not thirty peaks in a row). Read from the Profile's ticks,
+    so a peak is placed and measured exactly as the whole file's figures have it; a tick counts when its peak lies in the range. Silence gives
+    none. */
+inline std::vector<PeakEvent> topPeaks (const Profile& p, int count, double apartSeconds = 0.5, std::int64_t from = 0, std::int64_t to = -1)
+{
+    std::vector<PeakEvent> out;
+    if (p.empty() || count <= 0) return out;
+    if (to < 0 || to > p.frames) to = p.frames;
+    from = std::max<std::int64_t> (0, from);
+    if (to <= from) return out;
+    const std::int64_t n = p.ticks();
+    const std::int64_t t0 = std::max<std::int64_t> (0, from / p.tickLen), t1 = std::min (n, (to + p.tickLen - 1) / p.tickLen);
+    struct Cand { float amp; std::int64_t at; int ch; };
+    std::vector<Cand> cands; cands.reserve ((size_t) std::max<std::int64_t> (0, t1 - t0));
+    for (std::int64_t t = t0; t < t1; ++t)
+    {
+        Cand c { 0.0f, -1, 0 };
+        for (int k = 0; k < p.channels; ++k)
+        {
+            const auto& tk = p.ch[(size_t) k][(size_t) t];
+            const std::int64_t at = t * p.tickLen + tk.truePeakAt;
+            if (tk.truePeak > c.amp && at >= from && at < to) { c.amp = tk.truePeak; c.at = at; c.ch = k; }
+        }
+        if (c.at >= 0 && c.amp > 1.0e-10f) cands.push_back (c);
+    }
+    std::stable_sort (cands.begin(), cands.end(), [] (const Cand& a, const Cand& b) { return a.amp > b.amp; });
+    const auto apart = (std::int64_t) std::llround (std::max (0.0, apartSeconds) * p.rate);
+    for (auto& c : cands)
+    {
+        bool near_ = false;
+        for (auto& e : out) if (std::llabs (e.frame - c.at) < apart) { near_ = true; break; }
+        if (near_) continue;
+        out.push_back ({ c.at, ampToDb ((double) c.amp), c.ch });
+        if ((int) out.size() >= count) break;
+    }
+    return out;
+}
+
 } // namespace td::wavestats

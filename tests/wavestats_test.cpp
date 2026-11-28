@@ -265,6 +265,57 @@ int main()
         NEAR (analyse (q, rate).correlation (0, 100), 0.0, 0.01);
     }
 
+    // ---- 3.75.0: the highest true peaks, as separate events
+    {
+        const double rate = 48000.0;
+        auto s = tone (rate, 20.0, -30.0, 220.0);
+        // five short bursts of a louder tone, each a different height (and two more close to the highest, which belong to it)
+        struct Burst { double at, db; int ch; };
+        const Burst bursts[] = { { 2.0, -6.0, 0 }, { 5.0, -3.0, 1 }, { 5.2, -4.0, 0 }, { 4.9, -5.0, 1 }, { 9.0, -9.0, 0 }, { 13.0, -12.0, 1 }, { 17.5, -15.0, 0 } };
+        for (auto& b : bursts)
+        {
+            const auto n0 = (size_t) std::llround (b.at * rate); const double a = std::pow (10.0, b.db / 20.0);
+            for (size_t i = 0; i < 960; ++i)
+            {
+                const double w = 0.5 - 0.5 * std::cos (2.0 * kPi * (double) i / 959.0);
+                s[(size_t) b.ch][n0 + i] = (float) (a * w * std::sin (2.0 * kPi * 1000.0 * (double) i / rate + kPi / 2.0)) + s[(size_t) b.ch][n0 + i] * (float) (1.0 - w);
+            }
+        }
+        const auto p = analyse (s, rate);
+        const auto whole = measure (p);
+        const auto top = topPeaks (p, 5);
+        CHECK (top.size() == 5);
+        if (top.size() == 5)
+        {
+            const double wantAt[] = { 5.0, 2.0, 9.0, 13.0, 17.5 }, wantDb[] = { -3.0, -6.0, -9.0, -12.0, -15.0 }; const int wantCh[] = { 1, 0, 0, 1, 0 };
+            for (int i = 0; i < 5; ++i)
+            {
+                NEAR ((double) top[(size_t) i].frame / rate, wantAt[i] + 0.01, 0.006);             // (the middle of the burst)
+                NEAR (top[(size_t) i].db, wantDb[i], 0.05);
+                CHECK (top[(size_t) i].channel == wantCh[i]);
+                if (i > 0) CHECK (top[(size_t) i].db <= top[(size_t) i - 1].db);
+            }
+            NEAR (top[0].db, whole.truePeakDb, 1.0e-9);                                              // the first IS the file's true peak
+        }
+        CHECK (topPeaks (p, 3).size() == 3);
+        CHECK (topPeaks (p, 0).empty());
+        // nearer than the distance: one event; with no distance asked for, the bursts beside the highest count on their own
+        const auto close = topPeaks (p, 4, 0.05);
+        CHECK (close.size() == 4);
+        if (close.size() == 4) { NEAR (close[1].db, -4.0, 0.05); NEAR ((double) close[1].frame / rate, 5.21, 0.006); NEAR (close[2].db, -5.0, 0.05); NEAR (close[3].db, -6.0, 0.05); }
+        // a range: only the peaks inside it
+        const auto part = topPeaks (p, 5, 0.5, (std::int64_t) (8.0 * rate), (std::int64_t) (14.0 * rate));
+        CHECK (part.size() >= 2);
+        if (part.size() >= 2) { NEAR (part[0].db, -9.0, 0.05); NEAR (part[1].db, -12.0, 0.05); for (auto& e : part) CHECK (e.frame >= (std::int64_t) (8.0 * rate) && e.frame < (std::int64_t) (14.0 * rate)); }
+        // more asked for than there are: every event once, none nearer to another than the distance
+        const auto many = topPeaks (p, 1000, 0.5);
+        for (size_t i = 0; i < many.size(); ++i) for (size_t j = 0; j < i; ++j) CHECK (std::llabs (many[i].frame - many[j].frame) >= (std::int64_t) (0.5 * rate));
+        CHECK (many.size() <= 41 && many.size() >= 20);
+        // silence has none
+        Signal z (2, std::vector<float> ((size_t) rate, 0.0f));
+        CHECK (topPeaks (analyse (z, rate), 5).empty());
+    }
+
     std::printf (failures == 0 ? "WAVE STATISTICS TESTS PASSED (%d checks)\n" : "WAVE STATISTICS TESTS FAILED: %d of %d checks\n", failures == 0 ? checks : failures, checks);
     return failures == 0 ? 0 : 1;
 }

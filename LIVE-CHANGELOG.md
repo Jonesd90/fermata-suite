@@ -8,6 +8,12 @@ fermata:Live is the live-concert recorder that goes with fermata (see `docs/LIVE
 
 A line that starts with **Shared:** is a change to the code fermata shares (see `COMPATIBILITY.md`), so fermata's next build mentions it too.
 
+## 0.10.20
+Built 28 November 2026 (the conversation for both programs), with fermata 3.75.0: a rebuild with the shared spectrogram picture.
+- **Shared:** `src/ui/SpectralWindow.h` - the spectrogram picture (`SpectrogramView`, the ReTouch window's) can show marked moments
+  (`setTimeMarks`), take a box from the program (`selectBox`) and be zoomed to a span (`showSpan`), for fermata's Spectrogram Editing window.
+  Nothing fermata:Live uses is changed: the ReTouch window draws and works as before (to test: open it once, draw a box, a gain).
+
 ## 0.10.19
 Built 27 November 2026 (the conversation for both programs), with fermata 3.73.0: fermata's softer corners.
 - **Softer corners** (asked for in fermata, whose look fermata:Live shares): text boxes, lists, tick boxes, sliders, scroll bars, tabs, the

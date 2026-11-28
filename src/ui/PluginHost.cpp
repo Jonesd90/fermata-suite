@@ -713,6 +713,22 @@ std::unique_ptr<InsertProcessor> PluginHost::createFromCopied (double sampleRate
     return p;
 }
 
+std::unique_ptr<InsertProcessor> PluginHost::duplicate (InsertProcessor* from, double sampleRate, int blockSize, juce::String& error)
+{
+    auto* v = dynamic_cast<Vst3Insert*> (from);
+    if (v == nullptr) { error = "There is no plug-in to copy."; return nullptr; }
+    auto factory = makeFactory ([sampleRate] { return sampleRate; }, [blockSize] { return blockSize; });
+    auto p = factory (v->getDescription(), v->getStateBase64());
+    if (p == nullptr) error = lastFactoryError;
+    return p;
+}
+
+juce::String PluginHost::identityOf (InsertProcessor* p) const
+{
+    auto* v = dynamic_cast<Vst3Insert*> (p);
+    return v != nullptr ? v->desc().createIdentifierString() : juce::String();
+}
+
 void PluginHost::setTrackName (InsertProcessor* p, const juce::String& name, juce::uint32 argb)
 {
     if (auto* v = dynamic_cast<Vst3Insert*> (p)) v->tellTrack (name, argb);

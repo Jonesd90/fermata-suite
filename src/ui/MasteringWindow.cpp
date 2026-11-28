@@ -614,8 +614,9 @@ MasteringComponent::MasteringComponent (AppContext& a)
     renderNowBtn.setTooltip ("Makes the preview renders that are missing or out of date, once. Nothing is rendered unless you press this (or Export).");
     renderNowBtn.onClick = [this] { checkRenders(); };
     // 3.74.0: the Spectrogram Editing window (SpecEditWindow.h) for the selected piece - or the first ticked one
-    specEditBtn.setTooltip ("Opens the Spectrogram Editing window for the selected piece: its waveform and loudness, the figures of a Waveform Statistics window (true peak, RMS, "
-                            "clipped samples, DC offset, loudness and loudness range) for the whole piece and for any part you select, and meters that follow the playhead.");
+    specEditBtn.setTooltip ("Opens the Spectrogram Editing window for the selected piece: its spectrogram with the highest true peaks marked, a gain box to bring a peak down on the tracks themselves, "
+                            "one plug-in on the tracks you choose (after their faders), the figures of a Waveform Statistics window (true peak, RMS, clipped samples, DC offset, loudness and "
+                            "loudness range) for the whole piece and for any part you select, and meters that follow the playhead.");
     specEditBtn.onClick = [this]
     {
         auto id = selectedPiece();

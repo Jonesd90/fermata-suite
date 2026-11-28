@@ -6,6 +6,56 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.75.0
+Built 28 November 2026 (the conversation for both programs), with Claude Fable. The second build of the Spectrogram Editing window - the
+mending. Asked for on 27 November: "it throws up the same type of spectrogram window ... It then shows where the top X number of true peaks
+are (X being a number definable by the user) and marks them with markers. The user can then try to gain reduce them. This will still be done
+on the multitracks rather than a stereo file so that the project is completely manageable / editable all the way up to the export" - with "a
+time-and-frequency box ... round the loud part" and "the gain module from the retouch part of the program" (feathering on the box) - and "a
+plugin option ... one instance of the plugin for every audio file", on the tracks the user selects, applied "just before the mix".
+- **The spectrogram** of the piece's render, under its waveform - the picture and the tools of Noise mode: Rectangle, Time and Brush
+  (S, T, B), **Feathering**, Shift to add and Alt to take out, the arrows to zoom, the round colour control, **Picture...** for how it is
+  drawn. A click puts the playhead there, in both pictures; the waveform shows the part the spectrogram is zoomed to. A box drawn in the
+  spectrogram is also the selection the figures are worked out for. **Meters** hides the meters when the picture wants their room.
+- **The highest true peaks** ("Peaks and gain", at the right - the right-hand side is now three pages: Figures, Peaks and gain, Plug-in):
+  as many as you ask for (**Highest peaks**: 1 to 100), highest first, each with its time, its level in dBTP and its side, **marked with a
+  numbered flag** along the spectrogram and the waveform. Peaks less than half a second from a higher one belong to it, so a loud chord is
+  one entry and not thirty. A click on one takes the playhead and the picture there. Under the list: what the highest peak would be with
+  all of these brought down - how much room they stand for.
+- **Which pitches a peak is made of**: beside each peak is the band that carries most of its height, and how much of it (worked out from
+  the peak itself: the sample at the peak is the sum of what every third of an octave adds to it there). **Box it** draws a box round that
+  band at the picked peak, for you to move, resize or feather.
+- **The gain box - Reduce** (key G): ReTouch's Gain, on the multitracks. Draw a box round the loud part, set **Gain** (-3 dB to start with),
+  press Reduce: the sound in the box is turned down by that much - fading with the box's feathering - on every **ticked track**, and goes
+  into the edit at once as new piece files (the recordings themselves are never touched). It is one Undo step: **Undo** here, or Undo in the
+  edit window. The piece is then rendered and measured again, so the picture, the figures and the peak list show the result.
+- **A narrow box round a low note gets the gain it asks for.** ReTouch's Gain slopes in over three of its analysis bands at each edge of a
+  box; with its usual 1024 bands a box round one bass note (40 Hz tall, say) got about -1.2 dB of a -3 dB asked for, and spilled 70 Hz
+  either side. From this window the gain uses finer bands for a low, narrow box (-2.9 dB of the -3 then, measured), **Box it** makes its
+  box at least a fifth of a second long and tall enough, and when a box drawn by hand is still too small for its pitch the status line
+  says about how much of the gain reaches its middle. (Noise mode's and the ReTouch window's Gain are as they were.)
+- **Which tracks are in the box**: the track list shows each track's own level in the box - or at the picked peak - loudest first (its
+  fader counted, before its plug-ins and pan), so you can tick only the tracks the sound is in. All / None tick the lot.
+- **The plug-in on chosen tracks** ("Plug-in"): tick the tracks, **Choose plug-in...** - each ticked track gets its own instance, **after
+  its fader, the last thing before the mix** (the track's post-fader slot in the mixer; the project's post-fader slots are switched on for
+  it). Tick or untick a track later to add or take off its instance (a new one starts as a copy of the first). **Link the settings** (on to
+  start with): a control moved in one track's plug-in window moves on all the others, so one window sets them all; off, each is set on its
+  own (double-click a track for its window). **Bypass** and **Remove** act on all of them. A plug-in that delays the sound is lined up
+  again by the mixer's delay compensation, as any insert is; the delay is shown.
+- **Kept up to date** now also hears a fader, a pan or a mute moved in the piece's mixer (it looked only when the project said it had
+  changed, and a fader says nothing), and a control moved in the plug-in.
+- For the record: what **plays** in this window is the render, so a gain box or a plug-in is heard there once the piece has been rendered
+  again (the status line says when). The gain box is a ReTouch fix - new piece files in the edit, undone with Undo - not a setting that can
+  be turned up and down afterwards: to change one, undo it and make it again.
+- **Shared:** `src/ui/SpectralWindow.h` - the spectrogram picture (`SpectrogramView`) can show marked moments (`setTimeMarks`), take a box
+  from the program (`selectBox`) and be zoomed to a span (`showSpan`); nothing it did before is changed. fermata:Live 0.10.20 is a rebuild
+  with it. `src/core/WaveStats.h` (fermata only): `topPeaks`.
+- Checked here: the peak finder's tests (with the figures' tests: 1698 checks); both programs build for Linux, and the window was looked
+  at there in both looks on four screen sizes - a peak picked, boxed, the gain put into a trial project's edit (the piece rendered and
+  measured itself again) and taken off with Undo. Not checked here: Windows; a plug-in on the tracks (none can be loaded here: the Plug-in
+  page was seen with no plug-in, its code was read through, not run); playing; and the result in the render of a real piece (the trial
+  project's mixer lets nothing through, so its render is silent - what the gain did was read from the tracks themselves).
+
 ## 3.74.0
 Built 28 November 2026 (the conversation for both programs), with Claude Fable. Asked for on 27 November: a mastering window that shows "the
 same track long loudness figures that iZotope RX gives in its Waveform Statistics window" - for the whole piece and, "if a range selection is
