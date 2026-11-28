@@ -2620,6 +2620,55 @@ fermata's `shutdown()` and its static destructors. Our unhandled-exception filte
   right after closing the log, so the PDF reader's unload code never runs. Everything is saved and closed by then.
 (The symbols of Windows' own libraries were not available here: the reading rests on the single thread and the order of the modules.)
 
+## 3.74.0: the Spectrogram Editing window, part 1 - the figures and the meters (28 November 2026, Claude Fable; fermata only)
+
+**Asked** (27 November): RX's Waveform Statistics for the Mastering window's piece, whole and for a selection; live meters "similar to the TC
+Electronic Clarity M Stereo device and the Dorrough Loudness meter". Agreed in the conversation: it works on the multitracks' result, stays
+editable to the export, in two builds - A (this: the measuring) and B (the spectrogram, the top true peaks marked, feathered gain boxes with
+ReTouch's gain, a mastering plug-in on chosen tracks just before the mix).
+
+**`src/core/WaveStats.h` (new; plain C++, no JUCE; `tests/wavestats_test.cpp`):**
+- `TruePeak`: the points between two samples from the 12 either side (Kaiser beta 6 windowed sinc, each phase at unity gain; 3 phases at 4 x,
+  1 at 2 x). `cell (xi)` = the peak of sample i and the points up to the next. Flat to 0.45 fs within 0.01 dB; what is left is the spacing of
+  the points (cos (pi f / 4 fs)). `oversampleFor (rate)`: 4 below 80 kHz, 2 below 160 kHz, else 1. `kClipOver` = 1 + 2e-6: "over 0 dBTP".
+- `KFilter` (the BS.1770 shelf and high-pass, designed for the rate - the same numbers as Loudness.h), `channelWeight`.
+- `Analyzer` -> `Profile`: 10 ms ticks (`tickLen` = rate / 100) per channel: lo / hi sample, sample peak, true peak and its sample, clipped
+  count, sum, sum of squares, sum of K-weighted squares; `cross` (L x R per tick); running sums `sqUpTo` / `kUpTo` made in `finish()`. The true
+  peak of sample i needs 12 later samples: a tail of 23 samples is kept between blocks, and `finish()` feeds 12 zeros (silence follows the
+  file). Block sizes do not change the result (tested bit for bit).
+- `measure (profile, from, to, options, reader)`: whole ticks from the Profile; the two ends that are not on a tick are read through the
+  `Reader` and measured sample by sample (`detail::measurePiece`, with 12 samples of context either side), so peaks, clipped samples, DC and
+  total RMS are exact; without a Reader the part is rounded out to ticks (`exactEnds` false). RMS windows: W ticks, a tick apart, inside the
+  part (a part shorter than a window is its own window); AES17 adds 3.01 dB. Loudness: 400 ms blocks / 3 s windows every 100 ms from the
+  part's first whole tick; integrated = BS.1770 gates; LRA = Tech 3342 (gates -70 LUFS and -20 LU, percentiles 10 and 95 by
+  floor ((n - 1) q + 0.5), as libebur128). `Profile::momentaryAt / shortTermAt / power / correlation` serve the meters.
+- Speed: about 1.6 s for 10 minutes of 48 kHz stereo (-O2, one thread); `measure` about 1 ms.
+- NOT changed: `Loudness.h` (the export's LoudnessMeter: its own 12-tap Hann interpolator, always 4 x). The two true peaks can differ by a few
+  hundredths of a dB (more near the top of the spectrum). One meter for both would be the tidy end state; it changes the export's levels by
+  that much, so it was left for a decision.
+
+**`src/ui/SpecEditWindow.h / .cpp` (new, fermata only; window key `specedit`, one window; `AppContext::showSpecEdit (editId)`):**
+- The piece's render: `MasterRenders::check` with the piece's fingerprint; Ready / Previous -> `FileAnalysis` (a thread: the file through the
+  Analyzer, `done` on the message thread, guarded by a shared `alive` flag). None / Stale -> its own `MasterRenderJob` for that one piece
+  (`startRender`), then the same restamp rule as MasteringComponent::renderFinished (`renderDone`: only when what differs is known to change
+  by itself; otherwise "changed while it was rendered" and no automatic second try until the project changes again).
+- `MasterBusy.h`: a message-thread count of who is rendering previews. MasteringComponent holds one while `job`, `renderJob` or `atmosJob`
+  exist (`syncBusy()`, in its timer and where they are made) and waits (`othersRendering()`) in checkRenders / startJob / startAtmosExport;
+  this window holds one for its job and does not start while the count is over 0.
+- A project change marks it dirty; 1.2 s later the fingerprint is compared and the render looked at; every 2.5 s the store is looked at in case
+  the Mastering window rendered the piece meanwhile.
+- `WaveView`: columns from the ticks' lo / hi, or (under 0.75 ticks a pixel) from the samples, read when the view changes (`fillFine`); the
+  loudness lane from `momentaryAt / shortTermAt`; selection and playhead; wheel zoom about the mouse (no closer than 4 pixels a sample).
+- `StatsPanel`: the two blocks; tooltips per row; a click on a peak's figure -> `onGoTo (frame)`; `asText` for Copy.
+- `MetersPanel`: reads the Profile at the playhead's tick - no audio-thread tap. Playing: bars fall 20 dB / s, hold 2 s, the integrated loudness
+  and LRA of [the tick Play started at, now] by `measure` four times a second. Standing still: the values at the playhead. The vectorscope and
+  the spectrum (8192-point Hann FFT, both channels' power, 31 third-octave bands, a full-scale sine = 0 dB) read the file (`FileSamples`) -
+  the stretch before the playhead while playing, around it standing still.
+- Playing: `AppContext::playRenders` (the render at unity to the Ext bus's outputs, as the disc audition), its own token.
+- Settings (user): `specEditRmsMs`, `specEditAes17`, `specEditAuto`.
+- The small-screen check: scenes `specedit` (the window renders and measures the piece) and `specedit-measured` (the render filled with a test
+  sound first - `soundInRender` - so the figures and meters have something to show whatever the project's mixer lets through).
+
 ## 3.73.0: the video report, the head's buttons on two lines, softer corners (27 November 2026, Claude Opus; fermata:Live 0.10.19)
 
 **Asked:** the video reader was missing from the user's build ("this build of fermata cannot read video on this computer's system" - the text

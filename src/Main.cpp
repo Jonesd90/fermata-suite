@@ -14,6 +14,7 @@
 #include "ui/BounceWindow.h"
 #include "ui/MediaWindow.h"
 #include "ui/MasteringWindow.h"
+#include "ui/SpecEditWindow.h"
 #include "ui/Splash.h"
 #include "ui/BusyWindow.h"
 #include "ui/Video.h"
@@ -389,6 +390,14 @@ public:
         ctx->showAudioSettings = [this] { openAudioSettings(); };
         ctx->showMedia = [this] { openMedia(); };
         ctx->showMastering = [this] { showWindow ("mastering", "Mastering", [this] { return new MasteringComponent (*ctx); }); };
+        ctx->showSpecEdit = [this] (const juce::Uuid& editId)             // 3.74.0: the Spectrogram Editing window (one; open already, it takes the piece)
+        {
+            const auto key = SpecEditComponent::windowKey();
+            auto* e = ctx->project.findEdit (editId);
+            showWindow (key, "Spectrogram Editing" + (e != nullptr ? " - " + e->name : juce::String()), [this, editId] { return new SpecEditComponent (*ctx, editId); });
+            if (auto it = windows.find (key); it != windows.end())
+                if (auto* c = dynamic_cast<SpecEditComponent*> (it->second->getContentComponent())) c->setPiece (editId);
+        };
         ctx->showOrganiser = [this] { showWindow ("organiser", "Display Organiser", [this] { return new OrganiserComponent (*ctx); }); };
         ctx->showTakeDisplay = [this] { showWindow ("takedisplay", "Take Display", [this] { return new TakeDisplayControl (*ctx); }); };
         ctx->listWindows = [this]
@@ -827,7 +836,8 @@ private:
         if (key == "organiser" || key == "takedisplay" || key == "bridge" || key == "pitchpipe" || key == "click" || key == "align") content = new CornerStripHost (content);     // (their pin and sun / moon buttons get a strip of their own)
         // 3.71.0: every window's contents scroll when the window is too small for them (FitLayout.h) - except those that look after a small window
         // themselves: a take or edit window (its timeline), a mixer (its strips), the video picture and the score (they just get smaller)
-        if (key.startsWith ("take:") || key.startsWith ("edit:") || key.startsWith ("mixer:") || key.startsWith ("video:") || key.startsWith ("score:") || key == "bridge")
+        if (key.startsWith ("take:") || key.startsWith ("edit:") || key.startsWith ("mixer:") || key.startsWith ("video:") || key.startsWith ("score:") || key == "bridge"
+            || key == "specedit")                                        // (3.74.0: the Spectrogram Editing window - its waveform and meters take what room there is)
             fit::markSelfFitting (*content);
         auto w = std::make_unique<ToolWindow> (title, [this, key] (ToolWindow*)
         {

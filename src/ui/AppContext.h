@@ -147,6 +147,7 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     std::function<void()> showOrganiser;
     std::function<void()> showTakeDisplay;
     std::function<void()> showMastering;                // the Mastering window (Virtual Master export, DDP builder)
+    std::function<void (const juce::Uuid& editId)> showSpecEdit;     // 3.74.0: the Spectrogram Editing window (SpecEditWindow.h) for this piece - one window; open already: it takes the piece
 
     // ---- the Take Display (take number, time of day and time left, on other screens) ----
     struct TakeDisplaySettings

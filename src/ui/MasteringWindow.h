@@ -1,5 +1,6 @@
 #pragma once
 #include "AppContext.h"
+#include "MasterBusy.h"
 #include <map>
 #include <set>
 #include "../core/MasterExport.h"
@@ -235,6 +236,12 @@ private:
     juce::Uuid selectedPiece() const { return view == 0 ? def().selectedItem : def().selectedClip; }
 
     std::unique_ptr<MasterExportJob> job;
+    // 3.74.0: only one thing renders the previews at a time (MasterBusy.h): this window holds the gate while it renders or exports, and waits
+    // while the Spectrogram Editing window renders the piece it measures
+    std::unique_ptr<masterbusy::Hold> busyHold;
+    void syncBusy() { const bool b = job != nullptr || renderJob != nullptr || atmosJob != nullptr; if (b != (busyHold != nullptr)) { if (b) busyHold = std::make_unique<masterbusy::Hold>(); else busyHold.reset(); } }
+    bool othersRendering() const { return masterbusy::holds() > (busyHold != nullptr ? 1 : 0); }
+    juce::TextButton specEditBtn { "Spectrogram Editing..." };       // 3.74.0: the selected piece measured (SpecEditWindow.h)
     std::unique_ptr<juce::FileChooser> chooser;
     juce::File lastOutput;
     bool lastWasDisc = false;

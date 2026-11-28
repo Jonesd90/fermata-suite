@@ -13,6 +13,7 @@
 #include "../../src/ui/VolumeDialog.h"
 #include "../../src/ui/FixTools.h"
 #include "../../src/core/EditVersions.h"
+#include "../../src/core/MasterRender.h"
 #include <set>
 
 namespace td::fitcheck
@@ -79,6 +80,12 @@ public:
             add ("mixer", [this, mixer] { if (app.showMixer) app.showMixer (mixer); });
             add ("mixchanges", [this, mixer] { showMixChangesPanel (app, mixer); });
         }
+        // 3.74.0: the Spectrogram Editing window - it renders the piece and measures it, so it is looked at a second time, once that is done
+        if (! edit.isNull())
+        {
+            add ("specedit", [this, edit] { if (app.showSpecEdit) app.showSpecEdit (edit); });
+            add ("specedit-measured", [this, edit] { soundInRender (edit); if (app.showSpecEdit) app.showSpecEdit (edit); });
+        }
         begin();
     }
 
@@ -91,6 +98,33 @@ private:
         {
             if (fold) st->setValue ("laneFolds_" + windowId.toString(), "markers,feedback,guide,tuning,video,pieces,changes,comments:1,comments:2,comments:3");
             else st->removeValue ("laneFolds_" + windowId.toString());
+        }
+    }
+    /** 3.74.0: the piece's render (made by the scene before) filled with a sound to measure - notes that swell and die away, different on the
+        two sides, with a few clipped crests - so the Spectrogram Editing window is looked at with figures and meters in it, whatever the
+        project's own mixer lets through. */
+    void soundInRender (const juce::Uuid& edit)
+    {
+        const auto dir = MasterRenders::folderFor (app.project);
+        for (auto& f : dir.findChildFiles (juce::File::findFiles, false, edit.toString() + "-*.wav"))
+        {
+            juce::AudioFormatManager fm; fm.registerBasicFormats();
+            double rate = 48000.0; juce::int64 frames = 48000 * 20;
+            { std::unique_ptr<juce::AudioFormatReader> r (fm.createReaderFor (f)); if (r != nullptr) { rate = r->sampleRate; frames = r->lengthInSamples; } }
+            juce::AudioBuffer<float> b (2, (int) frames);
+            juce::Random rnd (7);
+            for (int i = 0; i < (int) frames; ++i)
+            {
+                const double t = (double) i / rate, note = std::floor (t / 1.7), in = t - note * 1.7;
+                const double hz = 110.0 * std::pow (2.0, std::fmod (note * 7.0, 24.0) / 12.0), env = std::exp (-in * 1.4) * (0.25 + 0.75 * std::abs (std::sin (t * 0.23)));
+                const double l = env * (0.8 * std::sin (6.283185307 * hz * t) + 0.25 * std::sin (6.283185307 * hz * 3.01 * t) + 0.04 * (rnd.nextDouble() - 0.5));
+                const double r = env * (0.7 * std::sin (6.283185307 * hz * t + 0.9) + 0.3 * std::sin (6.283185307 * hz * 2.0 * t) + 0.04 * (rnd.nextDouble() - 0.5));
+                b.setSample (0, i, (float) juce::jlimit (-1.0, 1.0, l * 1.25)); b.setSample (1, i, (float) juce::jlimit (-1.0, 1.0, r * 1.1));
+            }
+            f.deleteFile();
+            if (auto out = f.createOutputStream())
+                if (std::unique_ptr<juce::AudioFormatWriter> w { juce::WavAudioFormat().createWriterFor (out.release(), rate, 2, 32, {}, 0) })
+                    w->writeFromAudioSampleBuffer (b, 0, b.getNumSamples());
         }
     }
     /** 3.72.0: the edit frozen as Edit 1, with a listener's comment on it, and compared with (once). */

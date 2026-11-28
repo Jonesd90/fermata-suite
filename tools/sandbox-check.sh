@@ -59,3 +59,6 @@ $CXX "$OUT/timeformat_test.o.x" "$OUT/Ltc.o" "$OUT"/juce_*.o "$OUT/ct.o" -o "$OU
 $CXX -c "$HERE/tests/remote_hub_test.cpp" -o "$OUT/remote_hub_test.o.x"
 $CXX "$OUT/remote_hub_test.o.x" "$OUT/CrashReport.o" "$OUT/juce_core.o" "$OUT/ct.o" -o "$OUT/remote_hub_test" -lpthread -ldl -lrt
 "$OUT/remote_hub_test"
+# fermata 3.74.0: the Spectrogram Editing window's figures (src/core/WaveStats.h: true peak, RMS, clipped samples, loudness, loudness range) - plain C++, no JUCE
+g++ -std=c++17 -O2 "$HERE/tests/wavestats_test.cpp" -o "$OUT/wavestats_test"
+"$OUT/wavestats_test"

@@ -6,6 +6,46 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.74.0
+Built 28 November 2026 (the conversation for both programs), with Claude Fable. Asked for on 27 November: a mastering window that shows "the
+same track long loudness figures that iZotope RX gives in its Waveform Statistics window" - for the whole piece and, "if a range selection is
+made ... a separate range of values" for the selection - and, "when audio is played ... a live meter similar to the TC Electronic Clarity M
+Stereo device and the Dorrough Loudness meter". This is the first of two builds of that window (the measuring); the spectrogram, the markers
+on the highest true peaks, the gain boxes and the mastering plug-in are the next build.
+- **The Spectrogram Editing window** (Mastering: the new **Spectrogram Editing...** key beside the tabs, for the selected piece). It measures
+  the piece's **render** - the piece through its mixer, the stereo file the Mastering window plays and exports (before the export's own level
+  and dither) - and shows the piece's waveform with its loudness along it (short-term, momentary, and the integrated loudness as a line).
+- **The figures, for the whole piece** (left and right): true peak level (dBTP), sample peak level, max. / min. / total RMS level, possibly
+  clipped samples, DC offset (hover: the level in dB); max. momentary loudness, max. short-term loudness, integrated loudness and loudness
+  range (LRA). They are worked out as the window opens. A click on a true-peak or sample-peak figure puts the playhead on that peak.
+- **The same figures for a selection**, beside the whole piece's: drag along the waveform. They follow the mouse while it drags. The peaks,
+  the clipped samples, the DC offset and the total RMS of a selection are exact to the sample; its loudness and its RMS windows start within
+  10 ms of its start. (A click puts the playhead there and clears the selection; Shift + click stretches it; Esc clears it; Ctrl + A: all.)
+- **Kept up to date**: when the piece changes - an edit, a fader, a plug-in - its render is made again and measured again by itself, a moment
+  after the change ("Keep up to date", on unless you untick it); or press **Measure again**. Only one render is made at a time in the whole
+  program: this window and the Mastering window wait for each other.
+- **Meters that follow the playhead** while the render plays (Play, or Space: from the playhead, or the selection) - and that show what is
+  under the playhead when it stands still: **true peak** bars with the sample peak, a peak-hold line and the highest true peak since Play;
+  **peak + average** on one scale (the average as the bar, the peak as a block above it: the gap is the crest); **loudness** - momentary and
+  short-term bars, with the integrated loudness and the loudness range of what has played; the **stereo** picture (a vectorscope) with the
+  correlation of left and right; and a **third-octave spectrum** with peak holds. A click on the meters starts the holds again.
+- **Choices** (remembered): the length of the RMS windows (10 ms to 3 s; 50 ms unless changed), and what an RMS level of 0 dB is - a
+  full-scale sine (AES17: 3 dB more than the plain RMS) or a full-scale square wave. **Copy the figures** puts them on the clipboard as text.
+- How the figures are made (`src/core/WaveStats.h`): true peak by 4 x oversampling at 44.1 / 48 kHz, 2 x at 88.2 / 96 kHz (ITU-R BS.1770
+  Annex 2), from the 12 samples either side; loudness by BS.1770 (K-weighting, 400 ms blocks every 100 ms, gates at -70 LUFS and 10 LU
+  under); the loudness range by EBU Tech 3342. Like every 4 x true-peak meter it can read a very high tone up to 0.2 dB low (0.4 dB at the
+  very top of the spectrum). The Virtual Master's own loudness and ceiling (the export) still use the meter they had: the two can differ by
+  a few hundredths of a dB.
+- **Shared:** one new file in the shared folder, `src/core/WaveStats.h` (the measuring; plain C++). fermata:Live does not use it: it needs no
+  rebuild or test for this.
+- Checked here (Linux): fermata builds with no warnings. The measuring has its own tests (`tests/wavestats_test.cpp`, 1065 checks, run by
+  `tools/sandbox-check.sh`): EBU Tech 3341's loudness cases and Tech 3342's range cases, true peaks of tones that miss their crests, clipped
+  samples, DC, RMS windows, every block size giving the same result, and 70 parts of a random file whose figures match the samples' own to
+  the last digit. Ten minutes of stereo are measured in under 2 seconds here. The window was opened in the small-screen check on a render
+  filled with a test sound (1536 x 816 and 1280 x 680, both styles), a selection dragged and a peak's figure clicked in the test build. Not
+  checked here: playing (there is no audio device here), so the meters were seen standing still only; the Windows build (GitHub); the
+  figures side by side with RX on your own files.
+
 ## 3.73.0
 Built 27 November 2026 (the conversation for both programs), with Claude Opus. Asked for that night: video still could not be added ("NOT ADDED
 - this build of fermata cannot read video on this computer's system") and the file that should say why was not in the download; the buttons

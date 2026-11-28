@@ -613,6 +613,18 @@ MasteringComponent::MasteringComponent (AppContext& a)
     renderAgainBtn.onClick = [this] { checkRenders (true); };
     renderNowBtn.setTooltip ("Makes the preview renders that are missing or out of date, once. Nothing is rendered unless you press this (or Export).");
     renderNowBtn.onClick = [this] { checkRenders(); };
+    // 3.74.0: the Spectrogram Editing window (SpecEditWindow.h) for the selected piece - or the first ticked one
+    specEditBtn.setTooltip ("Opens the Spectrogram Editing window for the selected piece: its waveform and loudness, the figures of a Waveform Statistics window (true peak, RMS, "
+                            "clipped samples, DC offset, loudness and loudness range) for the whole piece and for any part you select, and meters that follow the playhead.");
+    specEditBtn.onClick = [this]
+    {
+        auto id = selectedPiece();
+        if (id.isNull() || editOf (id) == nullptr || editOf (id)->isEmpty()) { id = juce::Uuid::null(); for (auto& e : includedEdits()) { id = e; break; } }
+        if (id.isNull()) for (auto& it : def().items) if (auto* e = editOf (it.editId); e != nullptr && ! e->isEmpty()) { id = it.editId; break; }
+        if (id.isNull()) { showError ("Spectrogram Editing", "There is no piece with audio to open yet."); return; }
+        if (app.showSpecEdit) app.showSpecEdit (id);
+    };
+    addAndMakeVisible (specEditBtn);
     addAndMakeVisible (prevRenderBtn); addAndMakeVisible (renderAgainBtn); addAndMakeVisible (renderNowBtn); addAndMakeVisible (renderLight);
     prevRenderBtn.setEnabled (false);
 
@@ -879,6 +891,7 @@ MasteringComponent::~MasteringComponent()
     app.project.removeChangeListener (this);
     job.reset();
     renderJob.reset();
+    busyHold.reset();
 }
 
 MasterField* MasteringComponent::addField (juce::Component& parent, juce::OwnedArray<MasterField>& list, const juce::String& caption, std::function<juce::String*()> ref, int maxChars)
@@ -990,6 +1003,7 @@ juce::String MasteringComponent::signature() const
 void MasteringComponent::changeListenerCallback (juce::ChangeBroadcaster*) { projectDirty = true; refreshAll (false); }
 void MasteringComponent::timerCallback()
 {
+    syncBusy();                                              // (3.74.0: MasterBusy.h)
     pollPlayback();
     // The renders are looked at when the window opens, shortly after the choice of pieces changes, and when something that the sound of a ticked piece depends on has
     // really changed (an edit, a file, its mixer) while this window is open. Coming to the front, or a render finishing, does not start another look.
@@ -1509,8 +1523,14 @@ void MasteringComponent::startJob (const MasterJobSpec& spec, int kind)
         juce::Component::SafePointer<MasteringComponent> safe (this);
         if (app.recModeHolds (kind == 1 ? "Making the DDP" : "The export", [safe, spec, kind] { if (safe != nullptr) safe->startJob (spec, kind); })) return;
     }
-    lastJobKind = kind; lastWasDisc = kind == 1;
     auto& status = kind == 1 ? ddpStatus : kind == 2 ? formStatus : vmStatus;
+    if (othersRendering())                                   // 3.74.0: the Spectrogram Editing window is rendering a piece (the export renders too: one at a time)
+    {
+        status.setColour (juce::Label::textColourId, theme::warn);
+        status.setText ("The Spectrogram Editing window is rendering a piece: try again when it has finished (a few moments).", juce::dontSendNotification);
+        return;
+    }
+    lastJobKind = kind; lastWasDisc = kind == 1;
     status.setColour (juce::Label::textColourId, theme::text);
     status.setText ("Starting...", juce::dontSendNotification);
     (kind == 1 ? ddpShow : kind == 2 ? formShow : showButton).setVisible (false);
@@ -1520,6 +1540,7 @@ void MasteringComponent::startJob (const MasterJobSpec& spec, int kind)
     juce::Component::SafePointer<MasteringComponent> safe (this);
     job = std::make_unique<MasterExportJob> (app.project, spec, [safe, kind] (MasterExportResult r) { if (safe != nullptr) safe->jobFinished (r, kind); }, false);
     job->onLoudnessCheck = [safe] (const LoudnessCheck& c) { if (safe != nullptr) safe->askLoudness (c); };
+    syncBusy();
     job->start();
 }
 
@@ -1825,6 +1846,9 @@ void MasteringComponent::resized()
         ddpTab.setBounds (bar.removeFromLeft (150).withSizeKeepingCentre (146, grid::btnH + 4));
         formTab.setBounds (bar.removeFromLeft (150).withSizeKeepingCentre (146, grid::btnH + 4));
         atmosTab.setBounds (bar.removeFromLeft (110).withSizeKeepingCentre (106, grid::btnH + 4));
+        bar.removeFromLeft (18);
+        const int sw = juce::jmin (186, juce::jmax (0, bar.getWidth() - grid::cornerReserve));          // 3.74.0: Spectrogram Editing, clear of the corner's buttons
+        specEditBtn.setBounds (bar.removeFromLeft (sw).withSizeKeepingCentre (sw, grid::btnH + 4));
         (void) bar;                                                                // (the top bar holds only the tabs, so the pin and moon buttons have the corner to themselves)
     }
     {
@@ -1943,7 +1967,7 @@ void MasteringComponent::chooseAtmosFolder()
 void MasteringComponent::startAtmosExport()
 {
     if (atmosJob != nullptr) { atmosJob->cancel(); atmosStatus.setText ("Cancelling...", juce::dontSendNotification); return; }
-    if (job != nullptr || renderJob != nullptr) { atmosStatus.setColour (juce::Label::textColourId, theme::warn); atmosStatus.setText ("Another export or the renders are running: try again when they have finished.", juce::dontSendNotification); return; }
+    if (job != nullptr || renderJob != nullptr || othersRendering()) { atmosStatus.setColour (juce::Label::textColourId, theme::warn); atmosStatus.setText ("Another export or the renders are running: try again when they have finished.", juce::dontSendNotification); return; }
     if (app.engine.isRecording()) { showError ("Mastering", "Stop recording first."); return; }
     AtmosJobSpec spec;
     const auto err = makeAtmosSpec (app.project, def(), spec);
@@ -1960,6 +1984,7 @@ void MasteringComponent::startAtmosExport()
     setBusy (true);
     juce::Component::SafePointer<MasteringComponent> safe (this);
     atmosJob = std::make_unique<AtmosExportJob> (app.project, spec, [safe] (AtmosExportResult r) { if (safe != nullptr) safe->atmosFinished (r); }, false);
+    syncBusy();
     atmosJob->start();
 }
 
@@ -2552,7 +2577,7 @@ void MasteringComponent::lookAtRenders()
 
 bool MasteringComponent::checkRenders (bool force)
 {
-    if (job != nullptr || renderJob != nullptr) { scheduleRecheck (500); return false; }
+    if (job != nullptr || renderJob != nullptr || othersRendering()) { scheduleRecheck (500); return false; }      // (3.74.0: or the Spectrogram Editing window is rendering a piece)
     if (app.engine.isRecording()) return false;
     RenderParams rp;
     const auto perr = makeRenderParams (app.project, def(), rp);
@@ -2607,6 +2632,7 @@ bool MasteringComponent::checkRenders (bool force)
             if (auto* e = editOf (batch->editAt (i))) renderingParts[e->id.toString()] = masterRenderParts (app.project, *e, rp);   // (what the render is made from: see renderFinished)
         }
     renderJob = std::make_unique<MasterRenderJob> (std::move (batch), [safe] (juce::String err) { if (safe != nullptr) safe->renderFinished (err); });
+    syncBusy();
     return false;
 }
 

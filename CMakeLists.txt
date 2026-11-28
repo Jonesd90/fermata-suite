@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-set(FERMATA_VERSION 3.73.0)        # fermata's version: the ONE place it is changed (see CHANGELOG.md). fermata:Live's is in src/live/Live.cmake.
+set(FERMATA_VERSION 3.74.0)        # fermata's version: the ONE place it is changed (see CHANGELOG.md). fermata:Live's is in src/live/Live.cmake.
 project(Fermata VERSION ${FERMATA_VERSION} LANGUAGES C CXX)
 
 # This repository builds TWO programs from one shared core (read COMPATIBILITY.md before changing anything shared):
@@ -50,6 +50,7 @@ target_sources(Fermata PRIVATE
     src/ui/FixTools.cpp
     src/ui/FixToolsEdits.cpp
     src/ui/MasteringWindow.cpp
+    src/ui/SpecEditWindow.cpp          # 3.74.0: the Spectrogram Editing window (the piece's figures and meters)
     src/ui/FontData.cpp
     src/ui/FontData2.cpp
     src/ui/MainWindow.cpp
