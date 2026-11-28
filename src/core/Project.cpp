@@ -1094,6 +1094,25 @@ TakeGroup* Project::findTake (const juce::Uuid& windowId, const juce::Uuid& take
     return nullptr;
 }
 
+bool Project::originalFileOf (const EditDef& e, const EditRegion& r, const RegionFile& f, RegionFile::Before& out)
+{
+    if (auto* g = findTake (r.windowId, r.takeId))
+        for (auto& tf : g->files)
+            if (tf.trackId == f.trackId && tf.file != juce::File()) { out.file = tf.file; out.fileStart = 0; return true; }
+    // the take has gone from its take window: a piece of the same take that still plays this track's whole file (nothing swapped in, from the take's start)
+    if (r.takeId.isNull()) return false;                    // (a piece that names no take - brought in from an AAF, say - has no such relatives)
+    for (auto* list : { &e.regions, &e.overdubs })
+        for (auto& o : *list)
+        {
+            if (o.takeId != r.takeId || o.windowId != r.windowId || o.sourceLength != r.sourceLength || o.waiting.active()) continue;
+            for (auto& of : o.files)
+                if (of.trackId == f.trackId && of.before.empty() && of.fileStart == 0 && of.rxFrom == juce::File() && of.file != f.file
+                    && ! of.file.getParentDirectory().getFileName().equalsIgnoreCase ("Fixes"))
+                { out.file = of.file; out.fileStart = 0; return true; }
+        }
+    return false;
+}
+
 TrackDef* Project::findTrack (const juce::Uuid& id)
 {
     for (auto& t : tracks) if (t.id == id) return &t;
@@ -1921,6 +1940,12 @@ var Project::editToVarIn (const EditDef& eref, const juce::File& base, bool with
             putFilePath (fo, f.file, base); put (fo, key::k_channels, f.numChannels);
             if (f.fileStart != 0) put (fo, key::k_fileStart, (juce::int64) f.fileStart);
             if (f.rxFrom != juce::File()) { var rxo = obj(); putFilePath (rxo, f.rxFrom, base); put (fo, "rxFrom", rxo); }      // 3.22.0: a copy of a file saved in a linked program
+            if (! f.before.empty())                                                    // 3.76.0: what this track played before each offline change (RegionFile::before), oldest first
+            {
+                juce::Array<var> bs;
+                for (auto& b : f.before) { var bo = obj(); putFilePath (bo, b.file, base); put (bo, key::k_channels, f.numChannels); if (b.fileStart != 0) put (bo, key::k_fileStart, (juce::int64) b.fileStart); if (b.name.isNotEmpty()) put (bo, "name", b.name); bs.add (bo); }
+                put (fo, "before", bs);
+            }
             rf.add (fo);
         }
         put (ro, key::k_files, rf);
@@ -1957,6 +1982,24 @@ var Project::editToVarIn (const EditDef& eref, const juce::File& base, bool with
             as.add (ao);
         }
         put (o, "volumeAreas", as);
+    }
+    if (! e->specGains.empty())                                                        // 3.76.0: the Spectrogram Editing (Mastering) window's gain boxes (EditDef::SpecGain), only when there are any
+    {
+        juce::Array<var> gs;
+        for (auto& g : e->specGains)
+        {
+            var go = obj();
+            put (go, key::k_id, g.id.toString()); put (go, "when", (juce::int64) g.when); put (go, "gainDb", g.gainDb); put (go, "at", (juce::int64) g.at);
+            if (g.shaped) put (go, "shaped", true);
+            juce::Array<var> bs; for (auto& b : g.boxes) { var bo = obj(); put (bo, "t0", b.t0); put (bo, "t1", b.t1); put (bo, "f0", b.f0); put (bo, "f1", b.f1); bs.add (bo); }
+            put (go, "boxes", bs);
+            juce::Array<var> ts; for (auto& t : g.tracks) ts.add (t.toString());
+            if (! ts.isEmpty()) put (go, "tracks", ts);
+            juce::Array<var> fs; for (auto& f : g.files) { var fo = obj(); putFilePath (fo, f, base); fs.add (fo); }
+            put (go, "files", fs);
+            gs.add (go);
+        }
+        put (o, "specGains", gs);
     }
     if (! e->feedback.empty()) put (o, "feedback", feedbackToVar (e->feedback));
     if (! e->showFeedback) put (o, "showFeedback", false);
@@ -2403,6 +2446,8 @@ static std::unique_ptr<EditDef> editFromVarIn (const var& v, const juce::File& b
                 f.file = getFilePath (fv, base); f.numChannels = (int) fv[key::k_channels];
                 f.fileStart = samplesFromVar (fv[key::k_fileStart]);
                 if (fv.hasProperty ("rxFrom")) f.rxFrom = getFilePath (fv["rxFrom"], base);
+                if (auto* bs = fv["before"].getArray())
+                    for (auto& bv : *bs) { if (f.before.size() >= 64) break; RegionFile::Before b; b.file = getFilePath (bv, base); b.fileStart = samplesFromVar (bv[key::k_fileStart]); b.name = bv["name"].toString(); if (b.file != juce::File()) f.before.push_back (b); }
                 r.files.push_back (f);
             }
         if (rv.hasProperty (key::k_waiting)) r.waiting = waitingFromVar (rv[key::k_waiting], base);
@@ -2421,6 +2466,23 @@ static std::unique_ptr<EditDef> editFromVarIn (const var& v, const juce::File& b
     if (auto* ta = v["trackIds"].getArray()) for (auto& tv : *ta) { juce::Uuid u (tv.toString()); if (! u.isNull()) e->trackIds.push_back (u); }
     if (v.hasProperty ("playhead")) e->playheadSeconds = juce::jmax (0.0, (double) v["playhead"]);
     e->automationOn = (bool) v["automationOn"]; e->showLtc = v.hasProperty ("showLtc") && (bool) v["showLtc"]; markersFromVar (v["markers"], e->markers); feedbackFromVar (v["feedback"], e->feedback); e->showFeedback = v["showFeedback"].isVoid() ? true : (bool) v["showFeedback"]; e->showMarkers = v["showMarkers"].isVoid() ? true : (bool) v["showMarkers"];
+    if (auto* sgs = v["specGains"].getArray())                                 // 3.76.0
+        for (auto& gv : *sgs)
+        {
+            if (e->specGains.size() >= 4096) break;
+            EditDef::SpecGain g; g.id = juce::Uuid (gv[key::k_id].toString()); if (g.id.isNull()) g.id = juce::Uuid();
+            g.when = (juce::int64) gv["when"]; g.gainDb = (double) dbFromVar (gv["gainDb"]); g.at = samplesFromVar (gv["at"]); g.shaped = (bool) gv["shaped"];
+            if (auto* bs = gv["boxes"].getArray())
+                for (auto& bv : *bs)
+                {
+                    if (g.boxes.size() >= 256) break;
+                    auto num = [&bv] (const char* k) { const double d = (double) bv[k]; return std::isfinite (d) ? juce::jlimit (0.0, 1.0e7, d) : 0.0; };
+                    g.boxes.push_back ({ num ("t0"), num ("t1"), num ("f0"), num ("f1") });
+                }
+            if (auto* ts = gv["tracks"].getArray()) for (auto& tv : *ts) { juce::Uuid u (tv.toString()); if (! u.isNull()) g.tracks.push_back (u); }
+            if (auto* fs = gv["files"].getArray()) for (auto& fv : *fs) { const auto f = getFilePath (fv, base); if (f != juce::File()) g.files.push_back (f); }
+            e->specGains.push_back (std::move (g));
+        }
     if (const var gv = v["guide"]; gv.isObject())                              // the visual guide (2.102)
     {
         auto& gd = e->guide;
@@ -2917,7 +2979,11 @@ juce::uint64 Project::undoHash (const EditDef& e)
         h.add (r.barIn); h.add (r.barOut); h.add (r.sampleRate); h.add ((int) r.curve); h.add (r.outCurveOwn); if (r.outCurveOwn) h.add ((int) r.outCurve);
         h.add (r.fixIn); h.add (r.fixOut); h.add (r.snipIn); h.add (r.snipOut); h.add (r.normaliseIn); h.add (r.inStart); h.add (r.inEnd); h.add (r.outStart); h.add (r.outEnd);
         h.count (r.files.size());
-        for (auto& f : r.files) { h.add (f.trackId); h.add (f.trackName); h.add (f.file); h.add (f.numChannels); h.add (f.fileStart); if (f.rxFrom != juce::File()) h.add (f.rxFrom); }
+        for (auto& f : r.files)
+        {
+            h.add (f.trackId); h.add (f.trackName); h.add (f.file); h.add (f.numChannels); h.add (f.fileStart); if (f.rxFrom != juce::File()) h.add (f.rxFrom);
+            for (auto& b : f.before) { h.add (b.file); h.add (b.fileStart); }             // (3.76.0: only when there is any - what came before hashes as it did)
+        }
         h.add (r.waiting.active()); if (r.waiting.active()) h.add (r.waiting);
         h.count (r.gains.size());
         for (auto& g : r.gains) { h.add (g.at); h.add (g.ramp); h.add (g.autoNorm); h.add (g.group); h.add (g.role); h.count (g.db.size()); for (float d : g.db) h.add (d); }
@@ -2957,6 +3023,13 @@ juce::uint64 Project::undoHash (const EditDef& e)
             h.add (a.id); h.add (a.from); h.add (a.to); h.add (a.fadeIn); h.add (a.fadeOut);
             h.count (a.db.size()); for (auto& d : a.db) { h.add (d.first); h.add (d.second); }
         }
+    }
+    for (auto& g : e.specGains)                                                        // 3.76.0 (only when there are any)
+    {
+        h.add (g.id); h.add (g.gainDb); h.add (g.at); h.add (g.shaped);
+        h.count (g.boxes.size()); for (auto& b : g.boxes) { h.add (b.t0); h.add (b.t1); h.add (b.f0); h.add (b.f1); }
+        h.count (g.tracks.size()); for (auto& t : g.tracks) h.add (t);
+        h.count (g.files.size()); for (auto& f : g.files) h.add (f);
     }
     return h.h;
 }
@@ -3593,11 +3666,12 @@ template <typename F> void forEachAudioFile (std::vector<std::unique_ptr<TakeWin
         {
             auto doRegion = [&] (EditRegion& r)
             {
-                for (auto& rf : r.files) f (rf.file);
+                for (auto& rf : r.files) { f (rf.file); for (auto& b : rf.before) f (b.file); }     // (3.76.0: and what each track played before its fixes)
                 for (auto& wf : r.waiting.files) f (wf);
             };
             for (auto& r : ed.regions) doRegion (r);
             for (auto& r : ed.overdubs) doRegion (r);
+            for (auto& sg : ed.specGains) for (auto& gf : sg.files) f (gf);                        // (3.76.0: the gain boxes' own note of their files)
             if (ed.guide.active()) f (ed.guide.file);                   // (the visual guide's clip: found again by a relink like the rest)
         });
 }
@@ -4266,9 +4340,10 @@ bool Project::renameTake (TakeWindowDef& w, const juce::Uuid& takeId, const juce
             for (auto* rs : { &ed.regions, &ed.overdubs })
                 for (auto& r : *rs)
                 {
-                    for (auto& rf : r.files) renamed (rf.file);
+                    for (auto& rf : r.files) { renamed (rf.file); for (auto& b : rf.before) renamed (b.file); }     // (3.76.0)
                     for (auto& wf : r.waiting.files) renamed (wf);
                 }
+            for (auto& sg : ed.specGains) for (auto& gf : sg.files) renamed (gf);
             renamed (ed.guide.file);
         });
     return ok;

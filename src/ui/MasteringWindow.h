@@ -122,7 +122,7 @@ private:
 
     AppContext& app;
     int view = 0;
-    juce::TextButton vmTab { "Virtual Master" }, ddpTab { "DDP builder" }, formTab { "Listening copy" }, atmosTab { "Atmos" };
+    juce::TextButton vmTab { "Virtual Master" }, ddpTab { "DDP" }, formTab { "Listening copy" }, atmosTab { "Atmos" };
     juce::Label renderCaption, tailCaption, renderNote;
     juce::ComboBox mixerBox, sourceBox, tailBox;
     std::vector<juce::Uuid> mixerIds, sourceIds;
@@ -241,7 +241,7 @@ private:
     std::unique_ptr<masterbusy::Hold> busyHold;
     void syncBusy() { const bool b = job != nullptr || renderJob != nullptr || atmosJob != nullptr; if (b != (busyHold != nullptr)) { if (b) busyHold = std::make_unique<masterbusy::Hold>(); else busyHold.reset(); } }
     bool othersRendering() const { return masterbusy::holds() > (busyHold != nullptr ? 1 : 0); }
-    juce::TextButton specEditBtn { "Spectrogram Editing..." };       // 3.74.0: the selected piece measured (SpecEditWindow.h)
+    juce::TextButton specEditBtn { "Mastering..." };                 // 3.74.0: the selected piece in the Mastering window (SpecEditWindow.h; 3.76.0: its name)
     std::unique_ptr<juce::FileChooser> chooser;
     juce::File lastOutput;
     bool lastWasDisc = false;

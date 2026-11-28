@@ -8,6 +8,15 @@ fermata:Live is the live-concert recorder that goes with fermata (see `docs/LIVE
 
 A line that starts with **Shared:** is a change to the code fermata shares (see `COMPATIBILITY.md`), so fermata's next build mentions it too.
 
+## 0.10.21
+Built 28 November 2026 (the conversation for both programs), with fermata 3.76.0: a rebuild with the shared core.
+- **Shared:** every offline fix now remembers what the piece played before it (`RegionFile::before`, saved in the project as `"before"`),
+  for fermata's "Revert to the original audio" and its list of gain boxes (`"specGains"` in an edit). fermata:Live makes no such fixes of
+  its own, but it reads and writes the same project file: a project with these in it opens and saves here with them kept. The ReTouch
+  window's picture (`src/ui/SpectralWindow.h`) can be given several boxes by the program (`selectBoxes`); what fermata:Live uses of it is
+  unchanged. The top row here is as it was (fermata's has changed: Audio settings is in its Project menu, and it has Exports).
+  To test: open a concert project, record a short take, save, open it in fermata.
+
 ## 0.10.20
 Built 28 November 2026 (the conversation for both programs), with fermata 3.75.0: a rebuild with the shared spectrogram picture.
 - **Shared:** `src/ui/SpectralWindow.h` - the spectrogram picture (`SpectrogramView`, the ReTouch window's) can show marked moments

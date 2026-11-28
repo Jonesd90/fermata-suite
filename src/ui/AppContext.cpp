@@ -654,7 +654,7 @@ juce::String AppContext::switchDeviceRate (double rate)
     {
         juce::Logger::writeToLog ("Sample rate: could not switch the device to " + juce::String (rate, 0) + " Hz: " + err);
         showError ("Sample rate", "The audio device could not be switched to " + kHzText (rate) + ": " + err + ".\n\nThe project plays through the rate converter. "
-                                  "To record, set the device to " + kHzText (rate) + " in its own control panel (MADPanel, say) or in Audio settings.");
+                                  "To record, set the device to " + kHzText (rate) + " in its own control panel (MADPanel, say) or in Project > Audio settings.");
         matchEngineRate();
         return err;
     }
@@ -886,7 +886,7 @@ AppContext::Lamp AppContext::deviceLamp() const
     Lamp l;
     const auto& m = recordMonitor;
     auto* dev = devices.getCurrentAudioDevice();
-    if (dev == nullptr) { l.level = 2; l.word = "NO DEVICE"; l.detail = "No audio device is open: Audio settings."; return l; }
+    if (dev == nullptr) { l.level = 2; l.word = "NO DEVICE"; l.detail = "No audio device is open: Project > Audio settings."; return l; }
     const juce::String name = dev->getName() + ", " + juce::String (dev->getCurrentSampleRate(), 0) + " Hz, buffer " + juce::String (dev->getCurrentBufferSizeSamples());
     if (! engine.isRunning()) { l.level = 2; l.word = "STOPPED"; l.detail = "The audio device has stopped: no sound is reaching Fermata. " + name; return l; }
     if (quietSeconds >= 2) { l.level = 2; l.word = "NOT DELIVERING"; l.detail = "The device says it is running but has delivered no sound for " + juce::String (quietSeconds) + " s (the driver has stalled?). " + name; return l; }

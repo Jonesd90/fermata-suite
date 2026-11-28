@@ -67,7 +67,7 @@ inline bool applyRegionJob (EditDef& e, const RegionJob& j, const juce::String& 
     if (cutAfter)  { mid.fixOut = true; if (i + 1 < (int) e.regions.size()) e.regions[(size_t) i + 1].fixIn = true; }
     for (size_t k = 0; k < j.idx.size() && j.idx[k] < mid.files.size(); ++k)
     {
-        mid.files[j.idx[k]].file = j.results[k].file; mid.files[j.idx[k]].fileStart = j.results[k].from;
+        mid.files[j.idx[k]].swapIn (j.results[k].file, j.results[k].from, mid.takeName);                    // (3.76.0: what it played is remembered - Revert to the original audio)
         mid.files[j.idx[k]].rxFrom = juce::File();                // (3.27.1: the fixed part no longer plays the linked program's copy, so a later save there must not replace it)
     }
     {   // the corrected files may start / end exactly at the piece: the crossfades of the joins made here must lie where there is audio

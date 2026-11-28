@@ -105,7 +105,7 @@ public:
             log ("The audio device used last could not be opened (" + w.text() + "): " + startupError + ". No other device was opened in its place.");
             startupMessage = "The audio device you used last could not be opened:\n\n    " + w.text() + "\n    (" + startupError.trim() + ")\n\n"
                              "fermata has not opened another device in its place. When this one is plugged in or switched on, fermata opens it by itself. "
-                             "Or choose another device in Audio settings.";
+                             "Or choose another device in Project > Audio settings.";
             startupMessageMs = juce::Time::getMillisecondCounter() + 2500;      // (once the main window is up)
         }
     }
@@ -205,7 +205,7 @@ private:
                     tell ("Audio device", "The audio device fermata was using has gone:\n\n    " + what + "\n\n"
                           "fermata has not changed to another device. When this one comes back, fermata opens it again by itself"
                           + juce::String (rec ? " once the take being recorded has been stopped (until then it gets no audio)" : "")
-                          + ". Or choose another device in Audio settings.", true);
+                          + ". Or choose another device in Project > Audio settings.", true);
                 }
                 return;
             }

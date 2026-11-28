@@ -54,6 +54,15 @@ struct RegionFile
     int          numChannels = 1;
     juce::int64  fileStart = 0;        // the take's sample that sits at sample 0 of this file (0 for a whole take; a repaired / pitch-corrected piece is a short file that starts later)
     juce::File   rxFrom {};            // 3.22.0: this file is a copy of a file saved in a linked program (RX, Melodyne ...); each later save of that file is brought in again (empty = not)
+    /** 3.76.0: what this track of the piece played before each offline change swapped a new file in - a ReTouch / Noise-mode fix, a pitch
+        correction, a gain box of the Spectrogram Editing window, audio that came back from another program - the oldest first. So the first is
+        the ORIGINAL recording ("Revert to the original audio") and the last is what the newest change replaced (taking one change off again).
+        Empty: nothing has been swapped in since 3.76.0 (an fx clip made before that has no memory: the take is asked - Project::originalFileOf).
+        Saved as "before" (only when there is any); the pieces a piece is cut into each keep the list. */
+    struct Before { juce::File file; juce::int64 fileStart = 0; juce::String name; };       // (name: what the piece was called then - "012", or "012 (pitch)")
+    std::vector<Before> before;
+    /** A new file takes this track's place; what played until now is remembered ('pieceName': the piece's name as it is, before the change renames it). */
+    void swapIn (const juce::File& f, juce::int64 start, const juce::String& pieceName) { before.push_back ({ file, fileStart, pieceName }); file = f; fileStart = start; }
 };
 
 /** 3.43.0: the most a volume change raises a track - the right-click "Change volume" boxes and the trim window's Level go up to this (was +12 dB in the
@@ -413,6 +422,38 @@ struct EditDef
     int          insertIndex = -1;         // where the next region goes: -1 = at the end, else before regions[insertIndex]
     double       fixIn = -1.0, fixOut = -1.0;     // keys 1 / 2: the part to pitch-correct or repair (seconds on the edit timeline, -1 = not set)
     std::vector<juce::Uuid> fixTracks;            // Alt + drag: only these tracks are marked (empty = every track)
+
+    // ---- 3.76.0: the gain boxes made in the Spectrogram Editing window, oldest first: its list of changes. Each is a ReTouch-style fix - new piece
+    //      files in this edit - and this is the note of it: what was asked for, and which files it made (so it can be found again in the
+    //      pieces, taken off on its own, or made again differently). One whose files no piece plays any more (undone some other way) is dead.
+    struct SpecGain
+    {
+        juce::Uuid id;
+        juce::int64 when = 0;                      // made (ms since 1970)
+        double gainDb = 0.0;
+        struct Box { double t0 = 0.0, t1 = 0.0, f0 = 0.0, f1 = 0.0; };
+        std::vector<Box> boxes;                    // seconds on this edit's timeline as it was then, and Hz
+        juce::int64 at = 0;                        // where its first piece began then (timeline samples): the pieces may have moved since, with the edit
+        bool shaped = false;                       // brushed, or feathered: 'boxes' is only its outline
+        std::vector<juce::Uuid> tracks;            // the tracks it went into (empty: every track)
+        std::vector<juce::File> files;             // the piece files it made
+        bool made (const juce::File& f) const noexcept { return std::find (files.begin(), files.end(), f) != files.end(); }
+    };
+    std::vector<SpecGain> specGains;
+    /** The pieces (of the main track) that still play one of this change's files; 'firstStart': where the first of them begins now. */
+    int piecesOf (const SpecGain& g, juce::int64* firstStart = nullptr) const
+    {
+        int n = 0;
+        for (auto& r : regions)
+        {
+            bool plays = false;
+            for (auto& f : r.files) plays = plays || g.made (f.file);
+            if (! plays) continue;
+            if (n == 0 && firstStart != nullptr) *firstStart = r.startSample;
+            ++n;
+        }
+        return n;
+    }
 
     // ---- 3.50.0: volume areas (see VolumeArea) ----
     std::vector<VolumeArea> areas;
@@ -944,7 +985,14 @@ struct EditDef
             same = a.files[i].file == b.files[i].file && a.files[i].trackId == b.files[i].trackId && a.files[i].fileStart == b.files[i].fileStart;
         if (! same) { why = "The two sides of this snip no longer play the same audio (an offline fix was made on one of them), so they cannot be glued: undo that fix first."; return -1; }
         if (b.srcOut <= a.srcIn + (juce::int64) (0.01 * a.sampleRate)) { why = "The two sides of this snip overlap too far in the take to be glued."; return -1; }
+        return mergePieces (k);
+    }
 
+    /** The pieces k - 1 and k become one, playing the take straight on from the first one's start to the second one's end (the body of glueSnip; 3.76.0:
+        also how a fix join is healed - healFixJoin). The caller has made sure they play the same files. Returns the index of the merged piece. */
+    int mergePieces (int k)
+    {
+        const auto& a = regions[(size_t) k - 1]; const auto& b = regions[(size_t) k];
         EditRegion m = a;                                                                   // the glued piece: the first one's id, start and fade-in
         const auto cut = juce::jlimit ((juce::int64) 0, b.srcOut - a.srcIn, b.srcIn - a.srcIn);    // where the second one's audio began, in the glued piece
         m.srcOut = b.srcOut;
@@ -977,6 +1025,89 @@ struct EditDef
         for (auto& lane : lanes) for (auto& p : lane.pts) if (p.region == bid) p.region = mid;   // (they find their audio in the glued piece: resolveAutomation)
         clampAll();
         return k - 1;
+    }
+
+    /** 3.76.0: the fix join k (an offline fix's cut: "fx") is healed - its two pieces become one again - when they play the same files and the second
+        carries straight on where the first stops, in the take and on the timeline: that is, when nothing is left of the fix but its cut. Returns the
+        index of the healed piece, or -1 when join k is not such a join (nothing is changed). */
+    int healFixJoin (int k)
+    {
+        if (k <= 0 || k >= (int) regions.size() || ! isFixJoin (k) || isSnipJoin (k)) return -1;
+        const auto& a = regions[(size_t) k - 1]; const auto& b = regions[(size_t) k];
+        if (a.waiting.active() || b.waiting.active()) return -1;
+        if (a.takeId != b.takeId || a.windowId != b.windowId || a.files.size() != b.files.size() || std::abs (a.sampleRate - b.sampleRate) >= 0.5 || a.sourceLength != b.sourceLength) return -1;
+        if (b.srcIn != a.srcOut || b.startSample != a.endSample()) return -1;
+        for (size_t i = 0; i < a.files.size(); ++i)
+            if (a.files[i].file != b.files[i].file || a.files[i].trackId != b.files[i].trackId || a.files[i].fileStart != b.files[i].fileStart || a.files[i].rxFrom != b.files[i].rxFrom
+                || a.files[i].before.size() != b.files[i].before.size()) return -1;          // (each side remembers the same number of changes: nothing remembered is lost by the merge)
+        const auto name = b.takeName.length() < a.takeName.length() ? b.takeName : a.takeName;       // (the plainer of the two: one may still say "(pitch)" of a track that is whole again)
+        const bool fixInWas = a.fixIn;
+        const int m = mergePieces (k);
+        regions[(size_t) m].takeName = name; regions[(size_t) m].fixIn = fixInWas;
+        return m;
+    }
+    /** Heals the fix joins at both ends of piece i where that can be done (see healFixJoin). Returns the piece's index afterwards. */
+    int healAround (int i)
+    {
+        if (! juce::isPositiveAndBelow (i, (int) regions.size())) return i;
+        healFixJoin (i + 1);                                                                // (the one after it first: i stays i)
+        if (const int m = healFixJoin (i); m >= 0) i = m;
+        return i;
+    }
+    /** Has an offline change swapped a file into this piece that is remembered (RegionFile::before)? */
+    static bool hasSwapped (const EditRegion& r) noexcept { for (auto& f : r.files) if (! f.before.empty()) return true; return false; }
+    using OriginalLookup = std::function<bool (const EditRegion&, const RegionFile&, RegionFile::Before&)>;
+    /** 3.76.0, "Revert to the original audio": every track of the piece 'rid' (of the main track or an overdub) plays the original recording again -
+        the first file it remembers, or, for a track that remembers none (an fx clip from before 3.76.0), what 'lookup' finds (false: that track is
+        left). Its name loses the fix's word, and its fix joins are healed where its neighbours are whole too. Returns how many tracks were put back
+        (0: nothing was changed). The fix's own files stay on the disk. */
+    int revertToOriginal (const juce::Uuid& rid, const OriginalLookup& lookup = {})
+    {
+        auto* r = findAny (rid);
+        if (r == nullptr || r->waiting.active()) return 0;
+        int n = 0; juce::String was;
+        for (auto& f : r->files)
+        {
+            RegionFile::Before o;
+            if (! f.before.empty()) { o = f.before.front(); if (was.isEmpty()) was = o.name; }
+            else if (! lookup || ! lookup (*r, f, o) || (o.file == f.file && o.fileStart == f.fileStart)) continue;
+            f.file = o.file; f.fileStart = o.fileStart; f.rxFrom = juce::File(); f.before.clear();
+            ++n;
+        }
+        if (n == 0) return 0;
+        r->takeName = was.isNotEmpty() ? was.upToFirstOccurrenceOf (" (", false, false) : r->takeName.upToFirstOccurrenceOf (" (", false, false);
+        if (const int i = indexOf (rid); i >= 0) { healAround (i); clampAll(); }
+        return n;
+    }
+    /** 3.76.0, one change taken off again: every track of every piece that plays one of 'files' goes back to what it played before that file was
+        swapped in (the last it remembers; 'lookup' for one that remembers nothing). Returns how many tracks were put back. A piece none of whose
+        tracks is changed any more loses the fix's word from its name, and joins are healed where they can be. */
+    int takeOffFiles (const std::vector<juce::File>& files, const OriginalLookup& lookup = {})
+    {
+        auto isOne = [&files] (const juce::File& f) { return std::find (files.begin(), files.end(), f) != files.end(); };
+        int n = 0; std::vector<juce::Uuid> touched;
+        for (auto* list : { &regions, &overdubs })
+            for (auto& r : *list)
+            {
+                if (r.waiting.active()) continue;
+                bool any = false; juce::String was;
+                for (auto& f : r.files)
+                {
+                    if (! isOne (f.file)) continue;
+                    RegionFile::Before o;
+                    if (! f.before.empty()) { o = f.before.back(); f.before.pop_back(); if (was.isEmpty()) was = o.name; }
+                    else if (! lookup || ! lookup (r, f, o)) continue;
+                    f.file = o.file; f.fileStart = o.fileStart; f.rxFrom = juce::File();
+                    ++n; any = true;
+                }
+                if (! any) continue;
+                if (! hasSwapped (r)) r.takeName = r.takeName.upToFirstOccurrenceOf (" (", false, false);     // (whole again: its plain name)
+                else if (was.isNotEmpty()) r.takeName = was;                                                 // (an earlier change is still in it: the name it had under that)
+                touched.push_back (r.id);
+            }
+        for (auto& id : touched) if (const int i = indexOf (id); i >= 0) healAround (i);       // (a piece healed into its neighbour is no longer found: nothing to do)
+        if (n > 0) clampAll();
+        return n;
     }
 
     /** The audio of piece i exists only for the take range [from,to) (a corrected file from an offline fix or an external program). A crossfade at one of its FIX joins must not
@@ -1060,7 +1191,7 @@ struct EditDef
         const auto f0 = w.filesFrom(), f1 = f0 + w.filesLength();
         if (r.srcIn < f0 || r.srcOut > f1) return false;
         if (w.tracks.empty()) for (auto& f : r.files) w.tracks.push_back (f.trackId);            // (from now on the tracks are named: some have come back, some have not)
-        r.files[fi].file = copy; r.files[fi].fileStart = f0; r.files[fi].rxFrom = from;
+        r.files[fi].swapIn (copy, f0, r.takeName); r.files[fi].rxFrom = from;                               // (3.76.0: what it played is remembered - Revert to the original audio)
         w.files.erase (w.files.begin() + (long) k); w.tracks.erase (w.tracks.begin() + (long) k);
         const auto label = " (" + w.name + ")";
         if (! r.takeName.endsWith (label)) r.takeName = r.takeName.upToFirstOccurrenceOf (" (", false, false) + label;

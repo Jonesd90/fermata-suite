@@ -379,6 +379,10 @@ public:
     EditDef* findEdit (const juce::Uuid&);
     EditDef* editForWindow (const juce::Uuid& windowId);   // the first edit made from this take window
     TakeGroup* findTake (const juce::Uuid& windowId, const juce::Uuid& takeId);
+    /** 3.76.0: the original recording behind one track of a piece that does not remember it itself (RegionFile::before is empty: an fx clip made
+        before 3.76.0) - the take's own file for that track, or, when the take is no longer in its take window, the file another piece of the
+        same take in this edit still plays whole. False: not known. For EditDef::revertToOriginal / takeOffFiles. */
+    bool originalFileOf (const EditDef&, const EditRegion&, const RegionFile&, RegionFile::Before& out);
     TrackDef* findTrack (const juce::Uuid&);
     /** The tracks an edit shows, in its own order (all project tracks when the edit has no list of its own). Ids that no longer exist are skipped. */
     std::vector<const TrackDef*> editTracks (const EditDef&) const;

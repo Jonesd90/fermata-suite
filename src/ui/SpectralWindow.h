@@ -370,6 +370,21 @@ public:
         drawing = false; editing = -1;
         selectionChanged (true);
     }
+    /** 3.76.0: several boxes put there by the program, in place of whatever was selected (as selectBox; the ones too small are left out), and the
+        boxes that are selected now - those drawn, not what the brush painted (seconds, Hz). */
+    void selectBoxes (const std::vector<denoise::SelRect>& bs)
+    {
+        clearMarks();
+        for (auto b : bs)
+        {
+            b.t0 = juce::jlimit (0.0, duration, b.t0); b.t1 = juce::jlimit (0.0, duration, b.t1); b.f0 = juce::jlimit (0.0, nyq(), b.f0); b.f1 = juce::jlimit (0.0, nyq(), b.f1);
+            if (b.t1 - b.t0 < 0.002 || b.f1 <= b.f0) continue;
+            b.add = true; boxes.push_back (b); boxSeq.push_back (nextSeq++);
+        }
+        drawing = false; editing = -1;
+        selectionChanged (true);
+    }
+    std::vector<denoise::SelRect> selectedBoxes() const { std::vector<denoise::SelRect> v; for (auto& b : boxes) if (b.add) v.push_back (b); return v; }
     /** 3.75.0: moments marked along the picture - a line down it with a small flag at the top (seconds from the start; 'strong': the one picked). They are
         only drawn: clicks go to the picture as always. */
     struct TimeMark { double t = 0.0; juce::String label; juce::Colour colour { 0xffffd24a }; bool strong = false; };

@@ -135,7 +135,7 @@ void DesignComponent::buildIoPage()
                     }, {}, {}, {} });
 
     ioPage.addAndMakeVisible (ioPage.ins); ioPage.addAndMakeVisible (ioPage.outs);
-    ioPage.note.setText ("These lists always match the audio driver chosen in Audio settings (every channel the driver offers is opened). "
+    ioPage.note.setText ("These lists always match the audio driver chosen in Project > Audio settings (every channel the driver offers is opened). "
                          "Give the channels names here (a mono track on an input takes its name, and that name is shown at the top of its mixer strip); tracks pick their inputs on the Tracks tab, in the main window or at the top of each mixer strip.", juce::dontSendNotification);
     ioPage.note.setJustificationType (juce::Justification::topLeft);
     ioPage.addAndMakeVisible (ioPage.note);
@@ -435,7 +435,7 @@ void DesignComponent::buildMixersPage()
         m.addItem ("Delete mixer", row > 0, false, [remove, row] { remove (row); });
     };
     mixersPage.note.setText ("Each mixer is completely independent: its own solos, mutes, levels, sends and plug-ins, and its own Ext buses with their own driver outputs "
-                             "- so different listeners can hear different mixes. The first mixer is the processing mixer and cannot be deleted; the next ones are cue mixers. Every Edit also gets a mixer of its own (listed last): the Edit always plays through it, and the Mastering window bounces each piece through its own.", juce::dontSendNotification);
+                             "- so different listeners can hear different mixes. The first mixer is the processing mixer and cannot be deleted; the next ones are cue mixers. Every Edit also gets a mixer of its own (listed last): the Edit always plays through it, and the Exports window bounces each piece through its own.", juce::dontSendNotification);
     mixersPage.note.setJustificationType (juce::Justification::topLeft);
 }
 } // namespace td

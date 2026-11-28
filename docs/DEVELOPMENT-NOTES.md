@@ -2620,6 +2620,73 @@ fermata's `shutdown()` and its static destructors. Our unhandled-exception filte
   right after closing the log, so the PDF reader's unload code never runs. Everything is saved and closed by then.
 (The symbols of Windows' own libraries were not available here: the reading rests on the single thread and the order of the modules.)
 
+## 3.76.0: every fx clip remembers its original; the list of changes; Mastering / Exports (28 November 2026, Claude Fable; fermata:Live 0.10.21)
+
+**Asked** (28 November): changes "overwritten as new files for just that bit of audio" with "a list of changes made somewhere that the user
+can undo or change"; "revert to original" on an fx clip in the edit window, for ALL fx clips (external software, ReHarmoniSer, ReTouch);
+Mastering = the spectrogram window alone ("can now just be called 'Mastering'"); Exports = the old Mastering window (Listening copy,
+Virtual Master, DDP, Atmos) between Mastering and Help; Audio settings into the Project menu.
+
+**What was there already:** every fix cuts the piece at the fix's ends ("fx" joins: `fixIn` / `fixOut`, linear crossfades, not edit points)
+and swaps a short new file into the middle piece (`applyRegionJob`; `takeInWaitingFile` for a linked program; the hand re-link in
+FixTools.cpp). The gain box does exactly that. What was missing was any memory of what the middle piece played before: the only way back
+was the edit's undo history.
+
+**The memory - `RegionFile::before`** (`src/core/Edit.h`, shared): a list of `{ file, fileStart, name }`, oldest first, pushed by
+`RegionFile::swapIn (file, start, pieceName)` at the three places a file is swapped in. `front()` is the recording, `back()` what the
+newest change replaced. A piece cut again later copies its files, so each part keeps the list. Saved under `"before"` in the file's
+object (only when not empty; at most 64 read). In `Project::undoHash`, in the file walkers (relink, rename on a take's label, gather into
+the project folder: `AudioGather.h`), so a remembered original moves and is copied with the rest.
+- `EditDef::revertToOriginal (pieceId, lookup)`: each track -> `before.front()` (list cleared), or `lookup` for a track with no memory;
+  the name back to what it was (`Before::name`, else the part before " ("); then `healAround`.
+- `EditDef::takeOffFiles (files, lookup)`: every track of every piece (and overdub) that plays one of `files` -> `before.back()`, popped.
+  A piece still holding an earlier change gets the name it had under that one.
+- `healFixJoin (k)` / `healAround (i)`: a fix join whose two sides play the same files (file, start, linked-program file, and the same
+  NUMBER of remembered changes) and run straight on in the take and on the timeline becomes one piece again - `mergePieces (k)`, which is
+  glueSnip's body moved out unchanged (glueSnip calls it after its own checks). Nothing moves on the timeline: `b.srcIn == a.srcOut`.
+- `Project::originalFileOf (edit, piece, file, out)` for a clip from before 3.76.0: the take's file for that track (`findTake`), else the
+  file a piece of the same take (a real `takeId`) in the edit still plays whole (nothing swapped in, `fileStart` 0, not in a "Fixes"
+  folder). Not known otherwise - and then nothing is guessed.
+- Not covered: a TAKE's own fixes (take windows keep them in the take: `TakeGroup::waiting` and its files) - a different structure.
+
+**The list - `EditDef::specGains`** (`EditDef::SpecGain`: id, when, gainDb, boxes on the edit's timeline as it was, `at` = where its first
+piece began, shaped, tracks, files). `piecesOf (g)` counts the pieces that still play its files: 0 = dead (undone by the edit window's
+Undo fix or a revert), not shown, and dropped from the list at the next Reduce. A change's place NOW is its boxes moved by
+(first piece's start now - `at`), so it is found again after the edit before it has changed. Saved under `"specGains"`.
+- `SpecEditWindow.cpp`: `reduce` notes `pendingGain`; `reduceDone` gives it its files and puts it in; `takeOffChange (id)` =
+  `takeOffFiles` + out of the list + `project.changed()` (ONE undo step: Ctrl + Z brings both back; it does not arm the edit window's
+  "Undo fix", which puts back regions only and would leave the pieces without their entry); `changeAgain (id)` = take off, then
+  `view.selectBoxes (boxesNow)`, the gain slider and the track ticks as they were, the Peaks page. The 3.75.0 `steps` (regions kept in
+  the window, valid only while the edit's hash stood) are gone: `undoLast` is `takeOffChange (newest)`.
+- A box too short to cut a piece for (`applyRegionJob`: under 0.06 s) leaves no piece: it is not listed, and the status says so.
+
+**Edit window** (`showPieceMenu`): item 13, shown for a piece that looks like an fx clip (remembers something, or has a fix join, or a
+"(word)" in its name), enabled when at least one track can be put back.
+
+**Top row:** `MainWindow.h` - `audioButton` gone (Project menu item 26), `exportsButton` after `masteringButton`. `AppContext::showMastering`
+still opens the old window (key "mastering", class `MasteringComponent`, now titled "Exports", its tab buttons laid out
+Listening copy / Virtual Master / DDP / Atmos - the views keep their numbers); `showMasteringNow` (new) opens the spectrogram window as it
+is, or for the edit window used last. `deskKeyFor ("mastering")` is the spectrogram window's key, so a controller's key follows the top row.
+
+**Tests** (`tests/core_test.cpp`, beside "processing across edit points"): for every marks-across-joins case the fix is taken off again and
+the edit must be piece for piece what it was (ids, ranges, files, fades, curves, flags) and render the same samples; then one fix inside
+another (the inner alone, the outer under the inner, revert on each), a clip with no memory with and without a relative, a volume change
+surviving, save and read back, the undo hash. Run here: the whole core test (ALL TESTS PASSED), `tools/compat-check.sh`.
+A trap met on the way: compiled as `tests/core_test.cpp` (a relative path) the test cannot find `tests/data` (`__FILE__`) and four
+unrelated checks fail, then it crashes - use the script's absolute path.
+
+**Not run:** Windows; the menu item; RX / linked-program clips; `tools/syntax-check-ui.sh`, `check-windows-code.sh`, `live-check.sh`,
+`tool-checks.sh` (the six were last run on 3.71.0).
+
+**The fit check** (the rig: 1536x816, 1280x680, Manuscript at 1366x728; scenes main, Exports, the Mastering window's three, the edit
+window, ReTouch, Noise mode; fermata:Live at 1536x816): the new Changes page and the reordered Exports tabs fit. What it reported is NOT
+from this build (no layout of those windows changed here) and is left for a decision:
+- Exports > Listening copy scrolls at 1280x680 and at 1366x728 (contents about 690 tall, 580 to 630 to show them): it did before.
+- The edit window's line "N Takes, 00:28 - click a join and press T ..." needs 753 px and has 180 (1280 wide) to 440 (1536): it is cut
+  short with dots. The edit window's scenes had not been run since 3.71.0.
+- Manuscript, Exports: the tick box "Per album: one gain for all the files ..." is 12 px short at 1366 wide.
+- fermata:Live: the outputs list "1-2  1 - Output 1 / 2 - Output 2" is 16 px short (the rig's device names).
+
 ## 3.75.2: the Spectrogram Editing window - Play is live, Link copies the state (28 November 2026, Claude Fable; fermata only)
 
 **Reported** with a screen recording (3.75.0, FabFilter Pro-Q 4 on 11 tracks of "A New Song - EDIT", a 2 kHz high-pass): no audible

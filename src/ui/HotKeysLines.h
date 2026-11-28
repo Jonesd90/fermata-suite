@@ -299,7 +299,7 @@ inline const std::vector<Line>& fermataLines()
         { "ReTimEr", "Esc", "Close, as Cancel (the edit is left as it was)." },
 
         // ---------------------------------------------------------------------------------------------------- mastering
-        { "Mastering", "", "These are the DDP builder tab's. On the other tabs, Space plays the take or edit window you used last." },
+        { "Mastering", "", "These are the keys of the Exports window's DDP tab (the window was called Mastering until 3.76.0, and this list keeps that name). On its other tabs, Space plays the take or edit window you used last." },
         { "Mastering", "Space", "Play the disc from the playhead, or stop." },
         { "Mastering", "Left / Right", "Zoom out / in, on the playhead." },
         { "Mastering", "C", "Scroll so the playhead is in the middle." },

@@ -663,17 +663,20 @@ MainComponent::MainComponent (AppContext& a) : app (a), controllerBox (a)
     menuBarAvoidArea() = [this] { return menuStrip != nullptr && menuStrip->isVisible() ? menuStrip->getBounds() : juce::Rectangle<int>(); };
     editsButton.onClick = [this] { showEditsMenu(); };
     projectButton.onClick = [this] { showProjectMenu(); };
-    audioButton.onClick   = [this] { if (app.showAudioSettings) app.showAudioSettings(); };
     designButton.onClick  = [this] { if (app.showDesign) app.showDesign(); };
     takesButton.onClick   = [this] { showTakesMenu(); };
     mixersButton.onClick  = [this] { showMixersMenu(); };
     bridgeButton.onClick  = [this] { if (app.showBridge) app.showBridge(); };
     preampsButton.onClick = [this] { showPreampSetup (app); };
     mediaButton.onClick   = [this] { if (app.showMedia) app.showMedia(); };
-    masteringButton.onClick = [this] { if (app.showMastering) app.showMastering(); };
+    // 3.76.0 (asked for on 28 November 2026): Mastering is the spectrogram window - the peaks, the gain boxes, the plug-in, the figures and meters -
+    // and what was the Mastering window (Listening copy, Virtual Master, DDP, Atmos) is Exports, beside it
+    masteringButton.onClick = [this] { if (app.showMasteringNow) app.showMasteringNow(); };
+    exportsButton.onClick = [this] { if (app.showMastering) app.showMastering(); };
+    exportsButton.setTooltip ("Exports: a listening copy to send out, the edits as audio files (Virtual Master), a CD laid out and made into a DDP, or a Dolby Atmos master");
     helpButton.onClick = [this] { showHelpMenu (app, helpButton); };                       // 3.14.0
     helpButton.setTooltip ("The manual, the keys, the log file, crash reports and About Fermata");
-    masteringButton.setTooltip ("Mastering: export the edits as audio files (Virtual Master), or lay them out as a CD and make a DDP");
+    masteringButton.setTooltip ("Mastering: a piece's spectrogram with its highest true peaks marked, gain boxes to bring them down on the tracks themselves, a plug-in on chosen tracks, its loudness figures and meters");
     takeDisplayButton.onClick = [this] { if (app.showTakeDisplay) app.showTakeDisplay(); };
     takeDisplayButton.setTooltip ("Show the take number, time of day and time left in the session, full screen, on another display");
     organiserButton.onClick = [this] { if (app.showOrganiser) app.showOrganiser(); };
@@ -1221,7 +1224,7 @@ void MainComponent::timerCallback()
             nums += "   DSP " + juce::String (juce::roundToInt (app.lastLoad.average)) + "% (peak " + juce::String (juce::roundToInt (app.lastLoad.peak)) + "%)"
                  + (app.lastLoad.late > 0 ? "  LATE BLOCKS: " + juce::String (app.lastLoad.late) : juce::String());
     }
-    else s = rec ? "AUDIO DEVICE STOPPED - no sound is reaching the take" : "No audio device - open Audio settings";
+    else s = rec ? "AUDIO DEVICE STOPPED - no sound is reaching the take" : "No audio device - open Project > Audio settings";
     if (rec && ! s.startsWith ("DISK") && ! s.startsWith ("RECORDING HAS") && ! s.startsWith ("AUDIO DEVICE")) s = "RECORDING  -  " + s;
     if (app.crMicOpen() || app.tbPlaybackOn())
         s = juce::String (app.crMicOpen() ? "CR MIC OPEN  " : "") + (app.tbPlaybackOn() ? "TB PLAYBACK ON  " : "") + "-  " + s;
@@ -1296,6 +1299,7 @@ void MainComponent::showProjectMenu()
                        + (app.project.hasTakes() ? juce::String() : juce::String ("...")), app.hasProject());
     }
     m.addItem (24, "Post-fader slots (one more insert slot under every fader)", app.hasProject(), app.project.postFaderSlots);     // 3.40.0
+    m.addItem (26, "Audio settings...");                                         // 3.76.0: out of the top row (asked for on 28 November 2026), into this menu
     m.addSeparator();
     const auto workKey = app.lastWorkWindowKey ? app.lastWorkWindowKey() : juce::String();
     m.addItem (9, "Import AAF as edit windows...");
@@ -1328,6 +1332,7 @@ void MainComponent::showProjectMenu()
     {
         if (r == 22) { if (app.saveWindow (saveWindowId)) app.setNotice ("Saved the " + saveWindowName + ". The other windows are saved too, but what changed in them is still asked about when you quit."); return; }
         if (r == 24) { togglePostFaderSlots (app); return; }
+        if (r == 26) { if (app.showAudioSettings) app.showAudioSettings(); return; }
         if (r == 11) { if (*picked >= 0) pickColour (*picked); return; }
         if (r == 20 || r == 21) { pickStyle (r - 20); return; }
         if (r == 12) { chooseBackupFolder(); return; }
@@ -1642,7 +1647,7 @@ void MainComponent::showEditsMenu()
             bool inMastering = false;
             for (auto& it : app.project.mastering.items) if (it.editId == id) inMastering = true;
             confirmAsync ("Delete edit",
-                          "Do you really want to delete the edit \"" + nm + "\" and its file?\n\nThe edit is removed from this project" + (inMastering ? ", and from the Mastering list," : "") +
+                          "Do you really want to delete the edit \"" + nm + "\" and its file?\n\nThe edit is removed from this project" + (inMastering ? ", and from the Exports list," : "") +
                           " and its .fmedit file goes to the recycle bin. Your audio recordings are NOT deleted.\n\nThis cannot be undone with Ctrl+Z.",
                           "Yes, I do want to delete it", [this, id] { app.deleteWindowAndFile (true, id); });
         }

@@ -614,7 +614,7 @@ MasteringComponent::MasteringComponent (AppContext& a)
     renderNowBtn.setTooltip ("Makes the preview renders that are missing or out of date, once. Nothing is rendered unless you press this (or Export).");
     renderNowBtn.onClick = [this] { checkRenders(); };
     // 3.74.0: the Spectrogram Editing window (SpecEditWindow.h) for the selected piece - or the first ticked one
-    specEditBtn.setTooltip ("Opens the Spectrogram Editing window for the selected piece: its spectrogram with the highest true peaks marked, a gain box to bring a peak down on the tracks themselves, "
+    specEditBtn.setTooltip ("Opens the Mastering window for the selected piece: its spectrogram with the highest true peaks marked, a gain box to bring a peak down on the tracks themselves, "
                             "one plug-in on the tracks you choose (after their faders), the figures of a Waveform Statistics window (true peak, RMS, clipped samples, DC offset, loudness and "
                             "loudness range) for the whole piece and for any part you select, and meters that follow the playhead.");
     specEditBtn.onClick = [this]
@@ -1477,7 +1477,7 @@ void MasteringComponent::startVmExport()
 {
     if (job != nullptr) { job->cancel(); vmStatus.setText ("Cancelling...", juce::dontSendNotification); return; }
     if (renderJob != nullptr) { vmStatus.setColour (juce::Label::textColourId, theme::warn); vmStatus.setText ("The pieces are being rendered: try again when the line at the top says the renders are up to date.", juce::dontSendNotification); return; }
-    if (app.engine.isRecording()) { showError ("Mastering", "Stop recording first."); return; }
+    if (app.engine.isRecording()) { showError ("Exports", "Stop recording first."); return; }
     MasterJobSpec spec;
     const auto err = makeFilesSpec (app.project, def(), spec);
     if (err.isNotEmpty()) { vmStatus.setColour (juce::Label::textColourId, theme::warn); vmStatus.setText (err, juce::dontSendNotification); return; }
@@ -1490,7 +1490,7 @@ void MasteringComponent::startFormExport()
 {
     if (job != nullptr) { job->cancel(); formStatus.setText ("Cancelling...", juce::dontSendNotification); return; }
     if (renderJob != nullptr) { formStatus.setColour (juce::Label::textColourId, theme::warn); formStatus.setText ("The pieces are being rendered: try again when the line at the top says the renders are up to date.", juce::dontSendNotification); return; }
-    if (app.engine.isRecording()) { showError ("Mastering", "Stop recording first."); return; }
+    if (app.engine.isRecording()) { showError ("Exports", "Stop recording first."); return; }
     MasterJobSpec spec;
     const auto err = makeFormsSpec (app.project, def(), spec);
     if (err.isNotEmpty()) { formStatus.setColour (juce::Label::textColourId, theme::warn); formStatus.setText (err, juce::dontSendNotification); return; }
@@ -1503,7 +1503,7 @@ void MasteringComponent::startDdpExport()
     if (job != nullptr) { job->cancel(); ddpStatus.setText ("Cancelling...", juce::dontSendNotification); return; }
     if (renderJob != nullptr) { ddpStatus.setColour (juce::Label::textColourId, theme::warn); ddpStatus.setText ("The pieces are being rendered: try again when the line at the top says the renders are up to date.", juce::dontSendNotification); return; }
     stopPlay();
-    if (app.engine.isRecording()) { showError ("Mastering", "Stop recording first."); return; }
+    if (app.engine.isRecording()) { showError ("Exports", "Stop recording first."); return; }
     MasterJobSpec spec;
     auto err = makeDiscSpec (app.project, def(), spec);
     if (err.isEmpty())
@@ -1641,7 +1641,7 @@ void MasteringComponent::showDoneBox (const MasterExportResult& r, int kind)
     if (! stopped && ! r.previousPieces.isEmpty())
     {
         text << "\n\nNOTE: " << (r.previousPieces.size() == 1 ? "one piece was" : juce::String (r.previousPieces.size()) + " pieces were")
-             << " written from the PREVIOUS render, not the newest (\"Use previous render\" is on, on the DDP builder tab):";
+             << " written from the PREVIOUS render, not the newest (\"Use previous render\" is on, on the DDP tab):";
         for (int i = 0; i < juce::jmin (8, r.previousPieces.size()); ++i) text << "\n   " << r.previousPieces[i];
         if (r.previousPieces.size() > 8) text << "\n   ... and " << (r.previousPieces.size() - 8) << " more";
         text << "\nAnything changed in " << (r.previousPieces.size() == 1 ? "it" : "them") << " since that render is not in the files.";
@@ -1843,9 +1843,10 @@ void MasteringComponent::resized()
     auto all = getLocalBounds();
     {
         auto bar = all.removeFromTop (46).reduced (8, 0);
-        vmTab.setBounds (bar.removeFromLeft (150).withSizeKeepingCentre (146, grid::btnH + 4));
-        ddpTab.setBounds (bar.removeFromLeft (150).withSizeKeepingCentre (146, grid::btnH + 4));
+        // 3.76.0 (asked for on 28 November 2026): the pages in this order - Listening copy, Virtual Master, DDP, Atmos (the views keep their numbers)
         formTab.setBounds (bar.removeFromLeft (150).withSizeKeepingCentre (146, grid::btnH + 4));
+        vmTab.setBounds (bar.removeFromLeft (150).withSizeKeepingCentre (146, grid::btnH + 4));
+        ddpTab.setBounds (bar.removeFromLeft (110).withSizeKeepingCentre (106, grid::btnH + 4));
         atmosTab.setBounds (bar.removeFromLeft (110).withSizeKeepingCentre (106, grid::btnH + 4));
         bar.removeFromLeft (18);
         const int sw = juce::jmin (186, juce::jmax (0, bar.getWidth() - grid::cornerReserve));          // 3.74.0: Spectrogram Editing, clear of the corner's buttons
@@ -1969,7 +1970,7 @@ void MasteringComponent::startAtmosExport()
 {
     if (atmosJob != nullptr) { atmosJob->cancel(); atmosStatus.setText ("Cancelling...", juce::dontSendNotification); return; }
     if (job != nullptr || renderJob != nullptr || othersRendering()) { atmosStatus.setColour (juce::Label::textColourId, theme::warn); atmosStatus.setText ("Another export or the renders are running: try again when they have finished.", juce::dontSendNotification); return; }
-    if (app.engine.isRecording()) { showError ("Mastering", "Stop recording first."); return; }
+    if (app.engine.isRecording()) { showError ("Exports", "Stop recording first."); return; }
     AtmosJobSpec spec;
     const auto err = makeAtmosSpec (app.project, def(), spec);
     if (err.isNotEmpty()) { atmosStatus.setColour (juce::Label::textColourId, theme::warn); atmosStatus.setText (err, juce::dontSendNotification); return; }
@@ -2316,7 +2317,7 @@ void MasteringComponent::updateTimeLabel()
 
 void MasteringComponent::startPlay (double fromSec, double toSec)
 {
-    if (app.engine.isRecording()) { showError ("Mastering", "Stop recording first."); return; }
+    if (app.engine.isRecording()) { showError ("Exports", "Stop recording first."); return; }
     const bool continuing = discPlaying;                                        // (clicking in the timeline while it plays: the renders were checked when it started)
     if (discPlaying) { app.stopPlayback(); discPlaying = false; }
     if (job != nullptr) { ddpStatus.setColour (juce::Label::textColourId, theme::warn); ddpStatus.setText ("Wait for the export to finish before playing.", juce::dontSendNotification); return; }

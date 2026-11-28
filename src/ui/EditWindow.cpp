@@ -3628,6 +3628,24 @@ private:
         m.addSeparator();
         m.addItem (9, "Find other versions of the part between the 1/2 marks...", haveRange && rangeFrom >= piece->startSample && rangeTo <= piece->endSample());
         if (isOver) { m.addSeparator(); m.addItem (4, "Delete this overdub"); }
+        {   // 3.76.0: an fx clip - a piece whose audio an offline change swapped in (ReTouch, Noise mode, a pitch correction, a gain box of the Mastering
+            // window, audio back from RX or another program, a re-linked export): back to the recording itself. Offered when at least one of its tracks
+            // remembers what it played (RegionFile::before), or - a clip from before 3.76.0 - the take still tells (Project::originalFileOf).
+            int can = 0;
+            for (auto& f : piece->files)
+            {
+                RegionFile::Before o;
+                if (! f.before.empty() || (app.project.originalFileOf (ed, *piece, f, o) && (o.file != f.file || o.fileStart != f.fileStart))) ++can;
+            }
+            const bool looksFx = can > 0 || piece->fixIn || piece->fixOut || piece->takeName.contains (" (");
+            if (looksFx && ! piece->waiting.active())
+            {
+                const auto word = piece->takeName.contains (" (") ? piece->takeName.fromLastOccurrenceOf (" (", false, false).upToLastOccurrenceOf (")", false, false) : juce::String();
+                m.addSeparator();
+                m.addItem (13, can > 0 ? "Revert to the original audio" + (word.isNotEmpty() ? "  (takes \"" + word + "\" off this clip)" : juce::String())
+                                       : juce::String ("Revert to the original audio  (not known for this clip: its take has gone)"), can > 0);
+            }
+        }
         std::vector<juce::File> redrawFiles;                                          // the file of the track that was clicked (else every file of the piece)
         {
             const int row = e.y >= bandH() ? (e.y - bandH()) / juce::jmax (1, rowH) : -1;
@@ -3689,6 +3707,16 @@ private:
             else if (r == 5) fixtools::relinkEdit (*appPtr, eid, rid, self.getComponent());
             else if (r == 6) { p2->waiting = WaitingPiece(); appPtr->project.changed(); }
             else if (r == 4) { if (appPtr->isPlaying()) appPtr->stopPlayback(); ed2->removeOverdub (rid); appPtr->project.changed(); }
+            else if (r == 13)                                                         // 3.76.0: Revert to the original audio
+            {
+                const auto name = p2->takeName; const int tracks = (int) p2->files.size();
+                auto lookup = [appPtr, ed2] (const EditRegion& rg, const RegionFile& f, RegionFile::Before& o) { return appPtr->project.originalFileOf (*ed2, rg, f, o); };
+                const int n = ed2->revertToOriginal (rid, lookup);                    // (p2 may be gone after this: the clip heals into its neighbours)
+                if (n == 0) { appPtr->setNotice ("Revert to the original audio: nothing was changed - the original of \"" + name + "\" is not known."); return; }
+                appPtr->project.changed();
+                appPtr->setNotice ("\"" + name + "\" plays the original recording again" + (n < tracks ? " on " + juce::String (n) + " of its " + juce::String (tracks) + " tracks" : juce::String())
+                                   + ". The fix's own files are still on the disk: Ctrl + Z brings it back.");
+            }
         });
     }
 
@@ -4047,7 +4075,7 @@ public:
         subheading.onEscapeKey = [this] { if (auto* e = edit()) subheading.setText (e->subheading, false); timeline.grabKeyboardFocus(); };
         addAndMakeVisible (freezeButton);
         freezeButton.setTooltip ("Freeze this version: it is kept as it is now (pieces, fades, levels, automation, markers, comments and its mixer) and you carry on in the next number. "
-                                 "Its comments stay with it, in a lane above the timeline; comments that come back from its listening copy go to that lane too. Mastering asks this when it makes a listening copy.");
+                                 "Its comments stay with it, in a lane above the timeline; comments that come back from its listening copy go to that lane too. Exports asks this when it makes a listening copy.");
         freezeButton.onClick = [this] { askFreeze(); };
         addAndMakeVisible (changesButton);
         changesButton.setTooltip ("The changes lane: every change this version made since a frozen one, as flags along the timeline (that version's pieces are drawn above them). "
@@ -4676,7 +4704,7 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
                              "You can also drag the files onto this window. Each track goes on its own row.");
     importButton.onClick = [this] { fixtools::showImportMenu (app, juce::Uuid::null(), &importButton, editId); };
     addAndMakeVisible (importButton);
-    feedbackButton.setTooltip ("Comments from listeners: import the file they sent back (or a marker list exported from a review website) and see their comments as flags along the top of this timeline (click a flag to read it, tick it off, or write a reply: your replies go out in the next listening copy, where the listeners see the conversation). The file they send back ends in .fmnotes; a file with all the pieces puts each piece's comments on its own edit. Make the listening copy in Mastering, on the Listening copy tab.");
+    feedbackButton.setTooltip ("Comments from listeners: import the file they sent back (or a marker list exported from a review website) and see their comments as flags along the top of this timeline (click a flag to read it, tick it off, or write a reply: your replies go out in the next listening copy, where the listeners see the conversation). The file they send back ends in .fmnotes; a file with all the pieces puts each piece's comments on its own edit. Make the listening copy in Exports, on the Listening copy tab.");
     feedbackButton.onClick = [this] { showFeedbackMenu(); };
     addAndMakeVisible (feedbackButton); feedbackButton.setWantsKeyboardFocus (false);
     scoreButton.setTooltip ("The score of this edit (a PDF), in a window of its own that you can pin. Click: open / close it. The first time it asks for the PDF and keeps a copy of it in the project's PDFs folder. "

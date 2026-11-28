@@ -292,7 +292,7 @@ AlignComponent::AlignComponent (AppContext& a, bool edit, const juce::Uuid& id) 
                   "Warnings (red): a spot that hears the music later than the main pair (it cannot be lined up by delaying it), a reversed polarity, a distance "
                   "mic that hears it before the main pair, a distance pair whose channels are far apart in time (patching), two main pairs that are not in line.\n\n"
                   "In post: open this from an edit window and Analyse there, any time: the edit then has its own (until then it plays with the piece most of its "
-                  "audio comes from). Bounces and the Mastering window's files use each piece's own.");
+                  "audio comes from). Bounces and the Exports window's files use each piece's own.");
     addAndMakeVisible (info);
     rebuildRows();
     startTimer (150);

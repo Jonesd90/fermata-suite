@@ -38,7 +38,7 @@ public:
         add ("preamps", [this] { showPreampSetup (app); });
         add ("designer", [this] { if (app.showDesign) app.showDesign(); });
         add ("media", [this] { if (app.showMedia) app.showMedia(); });
-        add ("mastering", [this] { if (app.showMastering) app.showMastering(); }, { "Virtual Master", "DDP builder", "Listening copy", "Atmos" });
+        add ("mastering", [this] { if (app.showMastering) app.showMastering(); }, { "Listening copy", "Virtual Master", "DDP", "Atmos" });
         add ("organiser", [this] { if (app.showOrganiser) app.showOrganiser(); });
         add ("takedisplay", [this] { if (app.showTakeDisplay) app.showTakeDisplay(); });
         add ("pitchpipe", [this] { if (app.showPitchPipe) app.showPitchPipe(); });
@@ -85,14 +85,15 @@ public:
         if (! edit.isNull())
         {
             add ("specedit", [this, edit] { if (app.showSpecEdit) app.showSpecEdit (edit); });
-            add ("specedit-measured", [this, edit] { soundInRender (edit); if (app.showSpecEdit) app.showSpecEdit (edit); }, { "Figures", "Peaks and gain", "Plug-in" });
-            // 3.75.0: its highest peak picked and boxed, the gain put in, and taken off again with Undo (the last scene: it changes the edit - in the
-            // project's copy - and leaves the gain's piece files in its Fixes folder)
+            add ("specedit-measured", [this, edit] { soundInRender (edit); if (app.showSpecEdit) app.showSpecEdit (edit); }, { "Figures", "Peaks and gain", "Changes", "Plug-in" });
+            // 3.75.0: its highest peak picked and boxed and the gain put in; 3.76.0: then, from the Changes page, changed (taken off, its box selected
+            // again, made again) and taken off (the last scene: it changes the edit - in the project's copy - and leaves the gain's piece files in its
+            // Fixes folder)
             add ("specedit-box", [this, edit]
                  {
                      soundInRender (edit); if (app.showSpecEdit) app.showSpecEdit (edit);
-                     juce::Timer::callAfterDelay (1100, [] { if (auto* c = findSpecEdit()) c->checkStep ("pick"); });
-                 }, { "Peaks and gain", "Plug-in", "Figures", "Peaks and gain", "Box it", "Reduce", "Figures", "Plug-in", "Peaks and gain", "Undo (1)", "Figures", "Peaks and gain" });     // (the pages in between give the picture, then the gain, time to be made; then its Undo)
+                     juce::Timer::callAfterDelay (3600, [] { if (auto* c = findSpecEdit()) c->checkStep ("pick"); });       // (once the render has been measured: well before Box it is clicked)
+                 }, { "Peaks and gain", "Plug-in", "Figures", "Peaks and gain", "Box it", "Reduce", "Figures", "Plug-in", "Changes", "Change it...", "Reduce", "Figures", "Plug-in", "Changes", "Take it off", "Peaks and gain" });     // (the pages in between give the picture, then the gain, time to be made; then its Undo)
         }
         begin();
     }

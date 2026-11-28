@@ -82,7 +82,11 @@ inline Plan plan (Project& p)
         {
             for (auto* rs : { &ed.regions, &ed.overdubs })
                 for (auto& r : *rs)
-                    for (auto& rf : r.files) add (rf.file, elsewhere, "Edit - " + e->name, false);
+                    for (auto& rf : r.files)
+                    {
+                        add (rf.file, elsewhere, "Edit - " + e->name, false);
+                        for (auto& b : rf.before) add (b.file, elsewhere, "Edit - " + e->name + ", an original under a fix", false);      // (3.76.0: Revert to the original audio needs them)
+                    }
             if (ed.guide.active()) add (ed.guide.file, elsewhere, "Edit - " + e->name + ", its visual guide", false);
         });
     return out;
@@ -177,7 +181,8 @@ inline int apply (Project& p, const Plan& plan)
         {
             for (auto* rs : { &ed.regions, &ed.overdubs })
                 for (auto& r : *rs)
-                    for (auto& rf : r.files) fix (rf.file);
+                    for (auto& rf : r.files) { fix (rf.file); for (auto& b : rf.before) fix (b.file); }
+            for (auto& sg : ed.specGains) for (auto& gf : sg.files) fix (gf);
             if (ed.guide.active()) fix (ed.guide.file);
         });
     if (n > 0)

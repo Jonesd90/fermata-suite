@@ -316,3 +316,12 @@ copies it like everything else, which is fine.
   - Still contract 3 (fermata 3.71.0, fermata:Live 0.10.18): `src/ui/FitLayout.h` joins the shared files (windows that fit the screen: a scroll
     bar instead of squashed controls, no window bigger than its screen); `ToolWindow` (`src/ui/Uikit.h`) and the ReTouch window's own window in
     each program fit their contents. Nothing in a project file changed.
+  - Still contract 3 (fermata 3.76.0, fermata:Live 0.10.21): two things more in a project file, both written only when there is something to
+    write, both read as "none" when missing - so a project made before reads as it did, and an older program reads a new one as it always
+    did (it does not know them, and a project it then saves has lost them: the fixes themselves stay, only their memory goes).
+    In a piece's file (an edit's `regions` / `overdubs` > `files`): `"before"` - what that track of the piece played before each offline
+    change swapped a file in, oldest first: `"file"` (a path, as the file's own), `"channels"`, `"fileStart"` (when not 0), `"name"` (the
+    piece's name then). In an edit: `"specGains"` - the Mastering window's gain boxes: `"id"`, `"when"`, `"gainDb"`, `"at"`, `"shaped"`,
+    `"boxes"` (`t0 t1 f0 f1`), `"tracks"`, `"files"`. Shared code: `RegionFile::before` / `swapIn`, `EditDef::revertToOriginal`,
+    `takeOffFiles`, `healFixJoin`, `mergePieces` (glueSnip's body), `EditDef::SpecGain` (`src/core/Edit.h`); `applyRegionJob` remembers
+    (`src/core/EditFix.h`); `Project::originalFileOf`. `SpectrogramView::selectBoxes` / `selectedBoxes` (`src/ui/SpectralWindow.h`).

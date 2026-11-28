@@ -389,12 +389,30 @@ public:
         ctx->surface = surface.get();
         ctx->showAudioSettings = [this] { openAudioSettings(); };
         ctx->showMedia = [this] { openMedia(); };
-        ctx->showMastering = [this] { showWindow ("mastering", "Mastering", [this] { return new MasteringComponent (*ctx); }); };
+        ctx->showMastering = [this] { showWindow ("mastering", "Exports", [this] { return new MasteringComponent (*ctx); }); };       // (3.76.0: the Exports window; its key and its code keep the old name)
+        ctx->showMasteringNow = [this]                                      // 3.76.0: the top row's Mastering - the spectrogram window
+        {
+            const auto key = SpecEditComponent::windowKey();
+            if (auto it = windows.find (key); it != windows.end() && it->second != nullptr)      // open (or minimised) already: as it is, with the piece it has
+            {
+                showWindow (key, it->second->getName(), [this] { return new SpecEditComponent (*ctx, juce::Uuid::null()); });
+                return;
+            }
+            // not open: the piece of the edit window used last, else the first edit that has sound in it
+            juce::Uuid id;
+            if (const auto k = deskKeyFor ("editwin"); k.startsWith ("edit:")) id = juce::Uuid (k.fromFirstOccurrenceOf (":", false, false));
+            if (auto* e = ctx->project.findEdit (id); e == nullptr || e->isEmpty())
+            {
+                id = juce::Uuid::null();
+                for (auto& x : ctx->project.edits) if (! x->isEmpty()) { id = x->id; break; }
+            }
+            ctx->showSpecEdit (id);
+        };
         ctx->showSpecEdit = [this] (const juce::Uuid& editId)             // 3.74.0: the Spectrogram Editing window (one; open already, it takes the piece)
         {
             const auto key = SpecEditComponent::windowKey();
             auto* e = ctx->project.findEdit (editId);
-            showWindow (key, "Spectrogram Editing" + (e != nullptr ? " - " + e->name : juce::String()), [this, editId] { return new SpecEditComponent (*ctx, editId); });
+            showWindow (key, "Mastering" + (e != nullptr ? " - " + e->name : juce::String()), [this, editId] { return new SpecEditComponent (*ctx, editId); });      // (3.76.0: the window is called Mastering)
             if (auto it = windows.find (key); it != windows.end())
                 if (auto* c = dynamic_cast<SpecEditComponent*> (it->second->getContentComponent())) c->setPiece (editId);
         };
@@ -570,7 +588,7 @@ public:
         place::Tracker::get().start (mainWindow.get());                // 3.64.0: every window and box from now on opens over the window you clicked in (WindowPlace.h)
         if (splash != nullptr)
             splash->startCountdown ([this] { juce::MessageManager::callAsync ([this] { splash.reset(); }); });
-        if (err.isNotEmpty() && saved == nullptr) showError ("Audio device", err + "\n\nOpen \"Audio settings\" to choose your ASIO device.");     // (3.31.0: the device saved but missing is the guard's message)
+        if (err.isNotEmpty() && saved == nullptr) showError ("Audio device", err + "\n\nOpen Project > Audio settings to choose your ASIO device.");     // (3.31.0: the device saved but missing is the guard's message)
         announceCrashReports();
         rxWatcher = rxlink::makeWatcher (*ctx);                                  // 3.22.0 / 3.24.0: what is saved in a linked program (RX, Melodyne ...) comes back into the edits
         rxlink::askAtFirstStart (*ctx);                                          // (once: link the editing programs found on this computer?)
@@ -1099,6 +1117,7 @@ private:
             if (ctx->project.findEdit (id) == nullptr) id = ctx->project.edits.empty() ? juce::Uuid::null() : ctx->project.edits.front()->id;
             return id.isNull() ? juce::String() : "edit:" + id.toString();
         }
+        if (what == "mastering") return SpecEditComponent::windowKey();       // (3.76.0: a controller's Mastering key is the top row's - the spectrogram window)
         if (what != "take") return what;              // "bridge", "pitchpipe", "click", "media" ... are their own keys
         const auto id = deskTakeWindowId();
         return id.isNull() ? juce::String() : "take:" + id.toString();
@@ -1151,7 +1170,7 @@ private:
             else if (what == "takedisplay") ctx->showTakeDisplay();
             else if (what == "organiser") ctx->showOrganiser();
             else if (what == "media") openMedia();
-            else if (what == "mastering") ctx->showMastering();
+            else if (what == "mastering") ctx->showMasteringNow();
             return;
         }
         if (what == "minimiseall") minimiseAllButMain();

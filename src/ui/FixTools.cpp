@@ -2523,7 +2523,7 @@ void relinkEdit (AppContext& app, const juce::Uuid& eid, const juce::Uuid& rid, 
         for (auto fi : cp->where) if (fi >= m.files.size()) same = false;
         if (! same) { drop(); say (title, "The piece changed while the corrected audio was being copied, so nothing was changed. Please try again."); return; }
         const auto old = e2->regions;
-        for (size_t k = 0; k < cp->where.size(); ++k) { auto& f = m.files[cp->where[k]]; f.file = cp->dest[k]; f.fileStart = cp->from; f.rxFrom = juce::File(); }   // (3.27.1: a hand re-link ends any linked-program watch on that track)
+        for (size_t k = 0; k < cp->where.size(); ++k) { auto& f = m.files[cp->where[k]]; f.swapIn (cp->dest[k], cp->from, m.takeName); f.rxFrom = juce::File(); }   // (3.27.1: a hand re-link ends any linked-program watch on that track)
         m.takeName = m.takeName.upToFirstOccurrenceOf (" (", false, false) + " (" + cp->name + ")";
         m.waiting = WaitingPiece();
         e2->keepFixFadesInside (i2, cp->from, cp->to);          // the crossfade must not start before the corrected audio does

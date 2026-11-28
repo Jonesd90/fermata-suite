@@ -6,6 +6,45 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.76.0
+Built 28 November 2026 (the conversation for both programs), with Claude Fable. Asked for that day: "a sort of system where the changes
+made are overwritten as new files for just that bit of audio ... Then there should be a list of changes made somewhere that the user can
+undo or change. They would also be able to do this in the main edit window by right clicking an fx render clip and saying 'revert to
+original' (in fact, that should be implemented to ALL of those fx clips made by external software, or by the internal reharmonizer or
+retouch)"; and the top row: Mastering is the spectrogram window alone, "Exports" - what was the Mastering window, its pages in the order
+Listening copy, Virtual Master, DDP, Atmos - sits between Mastering and Help, and Audio settings goes into the Project menu.
+- **Every fx clip remembers what was there before.** A fix has always been a new file put in for just that stretch of the piece - ReTouch,
+  Noise mode, a pitch correction (ReHarmoniSer), a gain box, audio back from RX or another linked program, a re-linked Export for
+  Processing. From this build each track of such a clip also remembers what it played before, each time, back to the recording itself
+  (saved with the project). Nothing is lost by a fix any more.
+- **Edit window: right-click a piece > Revert to the original audio.** Every track of that clip plays the original recording again, its
+  name loses the fix's word, and the "fx" cuts at its ends go where the audio on both sides is whole again - as though the fix had never
+  been made. It works for every kind of fx clip. Ctrl + Z brings the fix back (its files stay on the disk). A clip made BEFORE this build
+  has no memory: the take is asked for its file (or a neighbouring piece of the same take); when neither is there the menu says the
+  original is not known.
+- **The Mastering window has a list of changes** (its new **Changes** page): every gain box that is in the piece - where, how much, which
+  pitches, which tracks - saved with the project. Click one to go to it. **Take it off** takes that one box off again, any one, in any
+  order, whatever else has been done since: the pieces it changed go back to what they played before it (an earlier RX or ReTouch fix
+  under it stays). **Change it...** (or a double-click) takes it off and puts its box back as the selection, with its gain and its tracks
+  set as they were: alter the gain, the box, the feathering or the tracks and press Reduce. **Undo** on the Peaks and gain page is now
+  simply "take the newest one off", and no longer forgets when the window is closed.
+- **Mastering is the spectrogram window.** The top row's **Mastering** opens it (for the edit worked on last; open already, it comes forward
+  as it is), and the window is called Mastering. **Exports** (new, between Mastering and Help) is what was the Mastering window - its
+  pages now in the order **Listening copy, Virtual Master, DDP, Atmos**; its "Mastering..." key opens the Mastering window for the
+  selected piece. **Audio settings** has left the top row: it is in the **Project** menu. A controller's Mastering key opens the same
+  window as the top row's.
+- Left as it was, on purpose: the hot keys list still calls the DDP page's keys "Mastering" (renaming the list would lose keys you have
+  changed - its first line now says so); the project's "Mastering renders" folder keeps its name; fx clips in a TAKE window are not part
+  of this (a take's fixes are kept differently); fermata:Live's own top row.
+- **Shared:** `src/core/Edit.h`, `EditFix.h`, `Project.cpp/.h`, `AudioGather.h` - the memory, revert, the healing of fx joins, the list of
+  gain boxes and their place in the project file (two new optional keys: see COMPATIBILITY.md); one message in `MasterExport.cpp`;
+  `src/ui/SpectralWindow.h` (`selectBoxes`, `selectedBoxes`); one line of `src/ui/HotKeysLines.h`. fermata:Live 0.10.21 is a rebuild.
+- Checked here: new tests in the shared core's test (a fix taken off again leaves the edit piece for piece and sample for sample as it
+  was, for every way the marks can cross the joins; one fix inside another; revert; a clip with no memory; saved and read back) - the
+  whole core test passes, and the compatibility check; both programs build for Linux; on the rig a gain box was made, found in the list,
+  changed, made again and taken off, in a trial project. Not checked here: Windows; the edit window's menu item itself (its code calls
+  what the tests test); clips from RX or another program (the same memory, not run); the other four of the six checks.
+
 ## 3.75.2
 Built 28 November 2026 (the conversation for both programs), with Claude Fable. The Spectrogram Editing window's plug-in could not be heard:
 reported the same morning with a screen recording - "I put a high pass at around 2 kHz which should be SUPER easy to hear if applied to

@@ -1194,6 +1194,49 @@ private:
     juce::String getTooltipForRow (int row) override { return juce::isPositiveAndBelow (row, (int) rows.size()) ? rows[(size_t) row].tip : juce::String(); }
     juce::ListBox list;
 };
+
+/** 3.76.0: the list of the gain boxes that are in the piece (EditDef::specGains), the newest at the top: a click picks one. */
+class ChangesList : public juce::Component, private juce::ListBoxModel
+{
+public:
+    struct Row { juce::Uuid id; int number = 0; double seconds = 0.0; juce::String band, gain, tracks, tip; };
+    std::vector<Row> rows;
+    juce::Uuid picked;
+    std::function<void (int)> onPick;
+    std::function<void (int)> onOpen;                        // double-click
+
+    ChangesList()
+    {
+        addAndMakeVisible (list); list.setModel (this); list.setRowHeight (20);
+        list.setColour (juce::ListBox::backgroundColourId, theme::field); list.setColour (juce::ListBox::outlineColourId, theme::border); list.setOutlineThickness (1);
+        list.setWantsKeyboardFocus (false);
+    }
+    void refresh() { list.updateContent(); list.repaint(); }
+    void resized() override { list.setBounds (getLocalBounds()); }
+    int pickedRow() const { for (size_t i = 0; i < rows.size(); ++i) if (rows[i].id == picked) return (int) i; return -1; }
+
+private:
+    int getNumRows() override { return (int) rows.size(); }
+    void paintListBoxItem (int row, juce::Graphics& g, int w, int h, bool) override
+    {
+        if (! juce::isPositiveAndBelow (row, (int) rows.size())) return;
+        const auto& r = rows[(size_t) row];
+        if (r.id == picked) { g.setColour (theme::selected); g.fillRect (0, 0, w, h); }
+        g.setFont (juce::FontOptions (12.5f, juce::Font::bold)); g.setColour (theme::accent);
+        g.drawText (juce::String (r.number), 4, 0, 22, h, juce::Justification::centredRight, false);
+        g.setFont (juce::FontOptions (12.5f)); g.setColour (theme::text);
+        g.drawText (clockText (r.seconds), 32, 0, 78, h, juce::Justification::centredLeft, false);
+        g.drawText (r.gain, 110, 0, 52, h, juce::Justification::centredRight, false);
+        g.setColour (theme::dimText);
+        const int tw = juce::jmin (w / 4, juce::GlyphArrangement::getStringWidthInt (g.getCurrentFont(), r.tracks) + 8);
+        g.drawText (r.tracks, w - tw - 2, 0, tw, h, juce::Justification::centredRight, true);
+        g.drawText (r.band, 170, 0, w - 174 - tw, h, juce::Justification::centredLeft, true);
+    }
+    void listBoxItemClicked (int row, const juce::MouseEvent& e) override { if (juce::isPositiveAndBelow (row, (int) rows.size()) && e.getNumberOfClicks() == 1 && onPick) onPick (row); }
+    void listBoxItemDoubleClicked (int row, const juce::MouseEvent&) override { if (juce::isPositiveAndBelow (row, (int) rows.size()) && onOpen) onOpen (row); }
+    juce::String getTooltipForRow (int row) override { return juce::isPositiveAndBelow (row, (int) rows.size()) ? rows[(size_t) row].tip : juce::String(); }
+    juce::ListBox list;
+};
 } // namespace
 
 //==================================================================================================================================
@@ -1221,7 +1264,7 @@ struct SpecEditComponent::Impl
     fixtools::SelectToolsBar toolsBar { view };
     juce::TextButton specBtn { "Picture..." }, metersBtn { "Meters" };
     // 3.75.0: the right-hand side is one of three pages
-    enum { kTabFigures, kTabPeaks, kTabPlug, kTabCount };
+    enum { kTabFigures, kTabPeaks, kTabChanges, kTabPlug, kTabCount };
     juce::TextButton tabBtn[kTabCount];
     int tab = kTabFigures;
     // ... the peaks, and the gain that brings them down
@@ -1232,6 +1275,10 @@ struct SpecEditComponent::Impl
     juce::Slider gainSlider;
     TickList gainTracks;
     double nextAfter = wavestats::kNone;                     // the highest peak that is not in the list
+    // ... 3.76.0: the list of the gain boxes that are in the piece
+    juce::Label changesNote;
+    ChangesList changes;
+    juce::TextButton takeOffBtn { "Take it off" }, againBtn { "Change it..." };
     // ... the plug-in on chosen tracks
     juce::Label plugNote, plugName, plugDelay;
     juce::TextButton chooseBtn { "Choose plug-in..." }, openBtn { "Open" }, removeBtn { "Remove" }, plugAllBtn { "All" }, plugNoneBtn { "None" };
@@ -1259,8 +1306,8 @@ struct SpecEditComponent::Impl
     bool pictureSamePiece = false, selFromView = false;
     double lastCue = -1.0, lastPlayPos = -1.0;
     // 3.75.0: the gain boxes put into the edit from here (the newest last), each with what the edit was before it
-    struct Step { std::vector<EditRegion> before; juce::uint64 hashAfter = 0; juce::String what; };
-    std::vector<Step> steps;
+    /** 3.76.0: what a gain box being made is noted down as when it is in (EditDef::SpecGain; its files and place are filled in then). */
+    EditDef::SpecGain pendingGain;
     AudioJob& job = *new AudioJob();                         // (handed back with release() as the window goes: it may outlive it)
     bool fixing = false, renderAgainAfterCancel = false;
     juce::uint64 shownHash = 0;                              // the edit as the picture shows it (Project::undoHash): a box may only go into that edit
@@ -1319,14 +1366,14 @@ struct SpecEditComponent::Impl
         analysis.reset(); profile.reset(); file = juce::File(); samples.reader.reset();
         pictureBuild.reset(); pyramid.reset(); if (detailCancel != nullptr) detailCancel->store (true);
         view.setData ({}, 0.001); view.setTimeMarks ({}); view.placeCue (-1.0); lastCue = view.cueTime();
-        steps.clear(); shownHash = 0; selFromView = false; seen.clear(); plugId.clear();
+        shownHash = 0; selFromView = false; seen.clear(); plugId.clear(); changes.picked = juce::Uuid::null();
         ++*breakdownGen;
         lastFp.clear(); problem.clear(); needsRender = false; staleAfterRender = false; wantRender = false;
         wave.emptyText = "Measuring..."; wave.setProfile (nullptr, false); wave.setMarks ({}, -1); meters.setProfile (nullptr);
         showFigures(); fillPeaks();
         fillPieces();
-        fillTracks(); lookAtPlugs();
-        if (auto* tl = owner.getTopLevelComponent()) if (owner.isShowing()) tl->setName ("Spectrogram Editing - " + pieceName());
+        fillTracks(); lookAtPlugs(); fillChanges();
+        if (auto* tl = owner.getTopLevelComponent()) if (owner.isShowing()) tl->setName ("Mastering - " + pieceName());
         dirty = false;
         lookAtPiece();
     }
@@ -1337,7 +1384,7 @@ struct SpecEditComponent::Impl
         lastStoreLook = juce::Time::getMillisecondCounter();
         if (renderJob != nullptr) return;
         auto* e = edit();
-        if (e == nullptr || e->isEmpty()) { problem = e == nullptr ? "Choose a piece (the pieces are the Mastering window's list)." : "This piece has no audio."; wave.emptyText = problem; wave.repaint(); say (problem, true); updateButtons(); return; }
+        if (e == nullptr || e->isEmpty()) { problem = e == nullptr ? "Choose a piece (the pieces are the Exports window's list)." : "This piece has no audio."; wave.emptyText = problem; wave.repaint(); say (problem, true); updateButtons(); return; }
         RenderParams rp;
         const auto perr = makeRenderParams (app.project, app.project.mastering, rp);
         if (perr.isNotEmpty()) { problem = perr; wave.emptyText = perr; wave.repaint(); say (perr, true); updateButtons(); return; }
@@ -1371,7 +1418,7 @@ struct SpecEditComponent::Impl
     }
     juce::String measuredText (bool previous) const
     {
-        return "Measured: the render of " + fileTime.toString (true, true, false, true) + (previous ? "  (the PREVIOUS render is in use: Mastering's \"Use newest render\")" : juce::String())
+        return "Measured: the render of " + fileTime.toString (true, true, false, true) + (previous ? "  (the PREVIOUS render is in use: the Exports window's \"Use newest render\")" : juce::String())
                + (needsRender ? juce::String() : juce::String ("  -  up to date"));
     }
 
@@ -1380,7 +1427,7 @@ struct SpecEditComponent::Impl
         wantRender = true;
         if (renderJob != nullptr) return;
         if (fixing) return;                                                      // (a gain box is being made: the render waits for it - see tick)
-        if (masterbusy::holds() > 0) { say ("The Mastering window is rendering or exporting: this piece is measured when it has finished."); return; }
+        if (masterbusy::holds() > 0) { say ("The Exports window is rendering or exporting: this piece is measured when it has finished."); return; }
         if (app.engine.isRecording()) { say ("Recording: the piece is measured when the recording has stopped."); return; }
         // 3.75.2: not while something plays - a render works flat out, and what is being listened to (the piece, live, while a plug-in is set) must not stutter for it
         if (app.isPlaying()) { say ("The piece has changed: it is rendered and measured again when playing stops."); return; }
@@ -1436,7 +1483,7 @@ struct SpecEditComponent::Impl
                     updateButtons();
                     return;
                 }
-                else { juce::Logger::writeToLog ("Spectrogram Editing: \"" + e->name + "\" was changed while it was rendered; its render is out of date"); staleAfterRender = true; }
+                else { juce::Logger::writeToLog ("Mastering (spectrogram): \"" + e->name + "\" was changed while it was rendered; its render is out of date"); staleAfterRender = true; }
             }
         }
         renderingParts.clear();
@@ -1719,6 +1766,14 @@ struct SpecEditComponent::Impl
             if (std::abs (got) < 0.8 * std::abs (db))
                 reachNote = " The box is small for its pitch: about " + juce::String (got, 1) + " dB of it reaches its middle (a taller box, or one a fifth of a second long or more, takes it all).";
         }
+        {   // 3.76.0: the note of it for the list of changes - what was asked for, on the edit's own timeline (the picture's begins at the edit's first sound)
+            pendingGain = {}; pendingGain.id = juce::Uuid(); pendingGain.when = juce::Time::currentTimeMillis(); pendingGain.gainDb = db;
+            const double off = editOffset();
+            for (auto& b : view.selectedBoxes()) pendingGain.boxes.push_back ({ b.t0 + off, b.t1 + off, b.f0, b.f1 });
+            pendingGain.shaped = view.brushed() || view.feathered();
+            if (pendingGain.boxes.empty()) pendingGain.boxes.push_back ({ view.selT0() + off, view.selT1() + off, view.selF0(), view.selF1() });     // (all brush: its outline)
+            if (! everyTrack) pendingGain.tracks = only;
+        }
         const auto from = e->audibleStart(), to = e->audibleEnd();
         auto regions = std::make_shared<std::vector<EditRegion>> (e->regions);
         auto jobs = std::make_shared<std::vector<RegionJob>>();
@@ -1743,40 +1798,150 @@ struct SpecEditComponent::Impl
         auto* e = edit();
         if (err.isNotEmpty() || e == nullptr) { drop(); say (err.isNotEmpty() ? err : juce::String ("The piece has gone."), true); updateButtons(); return; }
         if (Project::undoHash (*e) != shownHash) { drop(); say ("The edit was changed while the gain was being made: nothing was put in. Press Measure again and try once more.", true); updateButtons(); return; }
-        Step st; st.before = e->regions; st.what = what;
-        if (! applyRegionJobs (*e, st.before, jobs, "gain"))
+        const auto before = e->regions;
+        std::vector<juce::File> madeFiles;
+        for (auto& rj : jobs) for (auto& r : rj.results) madeFiles.push_back (r.file);
+        if (! applyRegionJobs (*e, before, jobs, "gain"))
         {
-            e->regions = st.before; drop();
+            e->regions = before; drop();
             say ("The gain could not be put into the edit (" + gApplyWhy + ").", true); updateButtons(); return;
         }
-        fixtools::setUndoForEdit (app, editId, st.before, "spectrogram gain");  // (the edit window's Undo fix takes it off too)
+        // 3.76.0: into the list of changes (the dead ones - undone some other way, no piece plays their files - go from it now)
+        e->specGains.erase (std::remove_if (e->specGains.begin(), e->specGains.end(), [e] (const EditDef::SpecGain& g) { return e->piecesOf (g) == 0; }), e->specGains.end());
+        pendingGain.files = madeFiles;
+        const bool inPiece = e->piecesOf (pendingGain, &pendingGain.at) > 0;      // (a box too short to cut a piece for leaves nothing: applyRegionJob's sliver rule)
+        if (inPiece) { changes.picked = pendingGain.id; e->specGains.push_back (pendingGain); }
+        fixtools::setUndoForEdit (app, editId, before, "spectrogram gain");      // (the edit window's Undo fix takes it off too)
         app.project.changed();
-        st.hashAfter = Project::undoHash (*e); shownHash = st.hashAfter;         // (the picture's times still hold: a gain moves nothing)
-        steps.push_back (std::move (st));
+        shownHash = Project::undoHash (*e);                                      // (the picture's times still hold: a gain moves nothing)
         soundChangedHere();
-        say (what + ": done and in the edit - Play plays it. " + (autoToggle.getToggleState() ? "The piece is rendered again to show and measure it." : "Press Measure again to see and measure it.") + " Undo takes it off." + reachNote,
-             reachNote.isNotEmpty());
-        fillTracks(); scheduleBreakdown();
+        if (! inPiece) say ("The box is too short to cut a piece for (under six hundredths of a second): nothing was changed. Make it longer.", true);
+        else say (what + ": done and in the edit - Play plays it. " + (autoToggle.getToggleState() ? "The piece is rendered again to show and measure it." : "Press Measure again to see and measure it.")
+                  + " It is in the list of Changes." + reachNote, reachNote.isNotEmpty());
+        fillTracks(); scheduleBreakdown(); fillChanges();
         updateButtons();
     }
-    void undoLast()
+
+    // ---- 3.76.0: the list of changes. Every gain box in the piece is noted in the edit (EditDef::specGains) with the files it made, and every
+    //      track of every piece remembers what it played before a fix swapped a file in (RegionFile::before). So ANY one box can be taken off again,
+    //      whenever, whatever else has been done to the edit since: the pieces that play its files go back to what they played before it, and the
+    //      cuts made for it heal where both sides are whole again (EditDef::takeOffFiles).
+    const EditDef::SpecGain* findChange (const juce::Uuid& id) const { if (auto* e = edit()) for (auto& g : e->specGains) if (g.id == id) return &g; return nullptr; }
+    /** Where a change is now, in the picture's seconds: its boxes move with its pieces when the edit before them is changed. */
+    double changeShift (const EditDef& e, const EditDef::SpecGain& g) const
+    {
+        juce::int64 first = g.at;
+        if (e.piecesOf (g, &first) == 0 || e.sampleRate <= 0.0) return 0.0;
+        return (double) (first - g.at) / e.sampleRate;
+    }
+    void fillChanges()
+    {
+        changes.rows.clear();
+        if (auto* e = edit())
+        {
+            const double off = editOffset();
+            int number = 0;
+            for (auto& g : e->specGains)
+            {
+                if (e->piecesOf (g) == 0) continue;                               // (dead: see reduceDone)
+                ++number;
+                ChangesList::Row r; r.id = g.id; r.number = number;
+                const double shift = changeShift (*e, g);
+                double t0 = 1.0e12, t1 = 0.0, f0 = 1.0e12, f1 = 0.0;
+                for (auto& b : g.boxes) { t0 = juce::jmin (t0, b.t0); t1 = juce::jmax (t1, b.t1); f0 = juce::jmin (f0, b.f0); f1 = juce::jmax (f1, b.f1); }
+                r.seconds = juce::jmax (0.0, t0 - off + shift);
+                r.gain = (g.gainDb > 0.0 ? "+" : "") + juce::String (g.gainDb, 1) + " dB";
+                const bool allPitches = f0 <= 20.0 && profile != nullptr && f1 >= profile->rate * 0.49;
+                r.band = (allPitches ? juce::String ("all pitches") : (f0 < 1.0 ? "under " + hzText (f1) : hzText (f0) + " - " + hzText (f1)) + " Hz")
+                         + (g.boxes.size() > 1 ? "  (" + juce::String ((int) g.boxes.size()) + " boxes)" : juce::String()) + (g.shaped ? "  shaped" : "");
+                r.tracks = g.tracks.empty() ? juce::String ("every track") : juce::String ((int) g.tracks.size()) + (g.tracks.size() == 1 ? " track" : " tracks");
+                juce::StringArray names;
+                for (auto& t : g.tracks) for (auto& row : gainTracks.rows) if (row.id == t) names.add (row.name);
+                r.tip = "Gain " + r.gain + " at " + clockText (r.seconds) + ", " + juce::String (t1 - t0, 2) + " s long, " + r.band + ", " + (names.isEmpty() ? r.tracks : names.joinIntoString (", "))
+                        + ". Made " + juce::Time (g.when).toString (true, true, false, true) + ". Click: go there. Double-click: change it.";
+                changes.rows.push_back (std::move (r));
+            }
+            std::reverse (changes.rows.begin(), changes.rows.end());              // the newest at the top
+        }
+        if (changes.pickedRow() < 0) changes.picked = juce::Uuid::null();
+        changes.refresh();
+        const int n = (int) changes.rows.size();
+        changesNote.setText (n == 0 ? juce::String ("No gain boxes in this piece. Each one made with Reduce is listed here, and can be taken off again - or changed - at any time.")
+                                    : juce::String (n) + (n == 1 ? " gain box is" : " gain boxes are") + " in this piece, the newest first. Click one to go to it.", juce::dontSendNotification);
+        updateChangeButtons();
+    }
+    void updateChangeButtons()
+    {
+        const bool one = changes.pickedRow() >= 0 && ! fixing;
+        takeOffBtn.setEnabled (one); againBtn.setEnabled (one && profile != nullptr && pyramid != nullptr);
+        undoBtn.setEnabled (! changes.rows.empty() && ! fixing);
+        undoBtn.setButtonText (changes.rows.empty() ? juce::String ("Undo") : "Undo (" + juce::String ((int) changes.rows.size()) + ")");
+    }
+    /** The boxes of a change as they lie in the picture now. */
+    std::vector<denoise::SelRect> boxesNow (const EditDef& e, const EditDef::SpecGain& g) const
+    {
+        std::vector<denoise::SelRect> v; const double d = changeShift (e, g) - editOffset();
+        for (auto& b : g.boxes) v.push_back ({ b.t0 + d, b.t1 + d, b.f0, b.f1, true });
+        return v;
+    }
+    void goToChange (int row)
     {
         auto* e = edit();
-        if (e == nullptr || steps.empty() || fixing) return;
-        if (Project::undoHash (*e) != steps.back().hashAfter)
-        {
-            steps.clear(); updateButtons();
-            say ("The edit has been changed since that gain box, so it cannot be taken off from here: use Undo in the edit window (Ctrl + Z).", true);
-            return;
-        }
-        const auto what = steps.back().what;
-        e->regions = steps.back().before; steps.pop_back();                      // (its files stay on the disk, as every fix's do: Redo in the edit window may want them)
-        app.project.changed();
+        if (e == nullptr || ! juce::isPositiveAndBelow (row, (int) changes.rows.size())) return;
+        changes.picked = changes.rows[(size_t) row].id; changes.refresh(); updateChangeButtons();
+        const auto* g = findChange (changes.picked);
+        if (g == nullptr || profile == nullptr) return;
+        const auto bs = boxesNow (*e, *g);
+        if (bs.empty()) return;
+        double t0 = 1.0e12, t1 = 0.0; for (auto& b : bs) { t0 = juce::jmin (t0, b.t0); t1 = juce::jmax (t1, b.t1); }
+        const double span = juce::jlimit (2.0, juce::jmax (2.0, profile->seconds()), (t1 - t0) * 4.0);
+        if (pyramid != nullptr) view.showSpan (0.5 * (t0 + t1) - 0.5 * span, span);
+        setPlayheadAll (juce::jmax (0.0, t0)); wave.follow (t0);
+        if (playing) startPlay(); else showPlayhead();
+    }
+    /** Takes one change off again. False (and says why) when nothing could be put back. */
+    bool takeOffChange (const juce::Uuid& id, bool sayIt = true)
+    {
+        auto* e = edit();
+        if (e == nullptr || fixing) return false;
+        const auto* found = findChange (id);
+        if (found == nullptr) return false;
+        if (app.engine.isRecording()) { say ("Stop recording first.", true); return false; }
+        const auto g = *found;
+        auto lookup = [this, e] (const EditRegion& r, const RegionFile& f, RegionFile::Before& o) { return app.project.originalFileOf (*e, r, f, o); };
+        const int n = e->takeOffFiles (g.files, lookup);
+        e->specGains.erase (std::remove_if (e->specGains.begin(), e->specGains.end(), [&id] (const EditDef::SpecGain& x) { return x.id == id; }), e->specGains.end());
+        if (changes.picked == id) changes.picked = juce::Uuid::null();
+        app.project.changed();                                                  // (one undo step: Ctrl + Z brings the box, and its entry here, back)
         shownHash = Project::undoHash (*e);
         soundChangedHere();
-        say (what + ": taken off again (" + juce::String ((int) steps.size()) + " left to undo)." + (autoToggle.getToggleState() ? juce::String() : juce::String (" Press Measure again.")));
-        fillTracks(); scheduleBreakdown();
+        if (sayIt)
+            say (n > 0 ? "Gain " + juce::String (g.gainDb, 1) + " dB: taken off again - Play plays the piece without it." + (autoToggle.getToggleState() ? juce::String (" It is rendered again to show and measure it.") : juce::String (" Press Measure again."))
+                       : juce::String ("That gain box was no longer in any piece: it is off the list."), n == 0);
+        fillTracks(); scheduleBreakdown(); fillChanges();
         updateButtons();
+        return n > 0;
+    }
+    /** Undo (the Peaks and gain page): the newest gain box that is in the piece. */
+    void undoLast() { if (! changes.rows.empty()) takeOffChange (changes.rows.front().id); }
+    /** Change it: the box is taken off and put back as the selection, with its gain and its tracks set as they were - alter what you like, Reduce. */
+    void changeAgain (const juce::Uuid& id)
+    {
+        auto* e = edit();
+        const auto* found = findChange (id);
+        if (e == nullptr || found == nullptr || fixing) return;
+        if (profile == nullptr || pyramid == nullptr) { say ("The picture is still being made: a moment.", true); return; }
+        const auto g = *found; const auto bs = boxesNow (*e, g);
+        if (! takeOffChange (id, false)) { say ("That gain box could not be taken off, so it cannot be changed.", true); return; }
+        gainSlider.setValue (juce::jlimit (-24.0, 6.0, g.gainDb), juce::sendNotification);
+        for (auto& row : gainTracks.rows) row.on = g.tracks.empty() || std::find (g.tracks.begin(), g.tracks.end(), row.id) != g.tracks.end();
+        gainTracks.refresh();
+        double t0 = 1.0e12, t1 = 0.0; for (auto& b : bs) { t0 = juce::jmin (t0, b.t0); t1 = juce::jmax (t1, b.t1); }
+        if (t1 > t0) { const double span = juce::jlimit (2.0, juce::jmax (2.0, profile->seconds()), (t1 - t0) * 4.0); view.showSpan (0.5 * (t0 + t1) - 0.5 * span, span); }
+        view.selectBoxes (bs);
+        selectTab (kTabPeaks);
+        say (juce::String ("The gain box is off, and its box is the selection again with its gain and tracks as they were: alter what you like and press Reduce.")
+             + (g.shaped ? " (It was brushed or feathered: what is selected is its outline - feather it as you want it now.)" : ""));
     }
 
     // ---- 3.75.0: which tracks are in the box - or, with no box, at the picked peak: each track's own level there (its mono mix as the edit plays
@@ -1915,7 +2080,7 @@ struct SpecEditComponent::Impl
         app.engine.rebuildPlan();
         app.project.markDirty();
         app.project.structureChanged();
-        app.setNotice ("Post-fader slots on: every audio track and bus has one more insert slot, under its fader - the Spectrogram Editing window's plug-in sits there.");
+        app.setNotice ("Post-fader slots on: every audio track and bus has one more insert slot, under its fader - the Mastering window's plug-in sits there.");
         return true;
     }
     /** Puts an instance on one track: a copy of one that is already there (with its settings), or a new one of 'desc'.
@@ -1996,7 +2161,7 @@ struct SpecEditComponent::Impl
         const int n = (int) plugSlots().size();
         if (n == 0) return;
         juce::Component::SafePointer<SpecEditComponent> safe (&owner);
-        juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::QuestionIcon).withTitle ("Spectrogram Editing")
+        juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::QuestionIcon).withTitle ("Mastering")
                                           .withMessage ("Take the plug-in off " + juce::String (n == 1 ? "its track" : "all " + juce::String (n) + " tracks") + "? Its settings go with it.")
                                           .withButton ("Take it off").withButton ("Cancel"),
                                       [safe] (int r)
@@ -2084,7 +2249,7 @@ struct SpecEditComponent::Impl
     void startPlay()
     {
         if (profile == nullptr || edit() == nullptr) return;
-        if (app.engine.isRecording()) { showError ("Spectrogram Editing", "Stop recording first."); return; }
+        if (app.engine.isRecording()) { showError ("Mastering", "Stop recording first."); return; }
         if (playing) { if (mine()) app.stopPlayback(); playing = false; }
         const bool sel = wave.hasSelection();
         double from = sel ? wave.selStart() : wave.playheadSeconds();
@@ -2139,7 +2304,9 @@ struct SpecEditComponent::Impl
         tab = juce::jlimit (0, (int) kTabCount - 1, t);
         for (int i = 0; i < kTabCount; ++i) tabBtn[i].setToggleState (i == tab, juce::dontSendNotification);
         if (auto* st = app.props.getUserSettings()) { st->setValue ("specEditTab", tab); app.props.saveIfNeeded(); }
-        const bool f = tab == kTabFigures, p = tab == kTabPeaks, g = tab == kTabPlug;
+        const bool f = tab == kTabFigures, p = tab == kTabPeaks, g = tab == kTabPlug, c = tab == kTabChanges;
+        for (auto* x : std::initializer_list<juce::Component*> { &changesNote, &changes, &takeOffBtn, &againBtn }) x->setVisible (c);
+        if (c) fillChanges();
         for (auto* c : std::initializer_list<juce::Component*> { &stats, &rmsCaption, &rmsBox, &refCaption, &refBox, &copyBtn }) c->setVisible (f);
         for (auto* c : std::initializer_list<juce::Component*> { &countCaption, &countBox, &peaks, &peaksNote, &boxBtn, &gainCaption, &gainSlider, &reduceBtn, &undoBtn, &tracksCaption, &gainTracks, &allBtn, &noneBtn }) c->setVisible (p);
         for (auto* c : std::initializer_list<juce::Component*> { &plugNote, &plugName, &plugDelay, &chooseBtn, &openBtn, &removeBtn, &plugAllBtn, &plugNoneBtn, &bypassToggle, &linkToggle, &plugTracks }) c->setVisible (g);
@@ -2155,8 +2322,7 @@ struct SpecEditComponent::Impl
         playBtn.setEnabled (profile != nullptr);
         copyBtn.setEnabled (profile != nullptr);
         reduceBtn.setEnabled (profile != nullptr && ! fixing && view.hasSelection());
-        undoBtn.setEnabled (! steps.empty() && ! fixing);
-        undoBtn.setButtonText (steps.empty() ? juce::String ("Undo") : "Undo (" + juce::String ((int) steps.size()) + ")");
+        updateChangeButtons();
         boxBtn.setEnabled (profile != nullptr && juce::isPositiveAndBelow (peaks.picked, (int) peaks.rows.size()));
         owner.resized();
     }
@@ -2198,7 +2364,7 @@ struct SpecEditComponent::Impl
                     levelsHash = mixerLevelsHash();
                     if (! needsRender && shownHash != 0) shownHash = Project::undoHash (*e);     // (a marker, a name: the sound is the same, so the picture is still this edit's)
                 }
-                fillTracks();
+                fillTracks(); fillChanges();
                 if (tab == kTabPlug) lookAtPlugs();
             }
             else if (! editId.isNull()) { setPiece (juce::Uuid::null()); return; }              // (the piece has gone from the project)
@@ -2227,7 +2393,7 @@ SpecEditComponent::SpecEditComponent (AppContext& a, const juce::Uuid& editId) :
     };
     cap (m.pieceCaption, "Piece"); cap (m.rmsCaption, "RMS windows"); cap (m.refCaption, "RMS 0 dB =");
     addAndMakeVisible (m.pieceBox);
-    m.pieceBox.setTooltip ("The piece that is shown and measured: one of the Mastering window's pieces. What you see is its render - the piece through its mixer, as the Mastering window plays and exports it "
+    m.pieceBox.setTooltip ("The piece that is shown and measured: one of the Exports window's pieces. What you see is its render - the piece through its mixer, as the Exports window plays and exports it "
                            "(before the export's own level and dither).");
     m.pieceBox.onChange = [this] { auto& i = *impl; if (i.updating) return; const int k = i.pieceBox.getSelectedId() - 1; if (juce::isPositiveAndBelow (k, (int) i.pieceIds.size())) i.setPiece (i.pieceIds[(size_t) k]); };
     addAndMakeVisible (m.playBtn);
@@ -2325,9 +2491,10 @@ SpecEditComponent::SpecEditComponent (AppContext& a, const juce::Uuid& editId) :
     m.meters.setVisible (m.metersBtn.getToggleState());
 
     // ---- the three pages at the right
-    static const char* const tabNames[] = { "Figures", "Peaks and gain", "Plug-in" };
+    static const char* const tabNames[] = { "Figures", "Peaks and gain", "Changes", "Plug-in" };
     static const char* const tabTips[] = { "The figures of the whole piece, and of the selected part.",
                                            "The highest true peaks, marked along the picture - and the gain box that brings one down: draw a box round the loud part, set the gain, press Reduce.",
+                                           "Every gain box that is in this piece: go to one, take it off again, or change it - at any time, in any order.",
                                            "One plug-in on the tracks you tick, after each track's fader: the last thing before the mix." };
     for (int i = 0; i < Impl::kTabCount; ++i)
     {
@@ -2370,12 +2537,25 @@ SpecEditComponent::SpecEditComponent (AppContext& a, const juce::Uuid& editId) :
     m.reduceBtn.setTooltip ("Gain: makes the sound inside the box quieter by the amount beside it - fading in and out with the box's feathering - on every ticked track, as ReTouch's Gain does. "
                             "It goes into the edit at once, as new piece files (the recordings themselves are never touched); the piece is then rendered and measured again. Key: G");
     m.reduceBtn.onClick = [this] { impl->reduce(); };
-    m.undoBtn.setTooltip ("Takes the last gain box off again (as many times as boxes were put in from this window since it opened on this piece). The edit window's Undo does the same.");
+    m.undoBtn.setTooltip ("Takes the newest gain box in this piece off again. The Changes page lists them all, and takes off - or changes - any one of them.");
     m.undoBtn.onClick = [this] { impl->undoLast(); };
     m.gainTracks.onTick = [this] (int) { impl->updateButtons(); };
     m.allBtn.onClick = [this] { impl->gainTracks.setAll (true); }; m.noneBtn.onClick = [this] { impl->gainTracks.setAll (false); };
     m.allBtn.setTooltip ("Ticks every track."); m.noneBtn.setTooltip ("Unticks every track (then tick the ones the sound is in).");
     for (auto* c : std::initializer_list<juce::Component*> { &m.countBox, &m.peaks, &m.boxBtn, &m.gainSlider, &m.reduceBtn, &m.undoBtn, &m.gainTracks, &m.allBtn, &m.noneBtn }) addAndMakeVisible (c);
+    // 3.76.0: the list of changes
+    cap (m.changesNote, {}, juce::Justification::topLeft); m.changesNote.setMinimumHorizontalScale (0.9f);
+    m.changes.onPick = [this] (int row) { impl->goToChange (row); };
+    m.changes.onOpen = [this] (int row) { auto& i = *impl; if (juce::isPositiveAndBelow (row, (int) i.changes.rows.size())) i.changeAgain (i.changes.rows[(size_t) row].id); };
+    m.takeOffBtn.setTooltip ("Takes the picked gain box off again: the pieces it changed play what they played before it (an earlier fix under it stays), and the cuts made for it go where the "
+                             "audio is whole again. Any one, in any order. Ctrl + Z in the edit window brings it back. In the edit window, right-click a piece > Revert to the original audio does "
+                             "the same for any fx clip.");
+    m.takeOffBtn.onClick = [this] { auto& i = *impl; if (! i.changes.picked.isNull()) i.takeOffChange (i.changes.picked); };
+    m.againBtn.setColour (juce::TextButton::buttonColourId, theme::accent);
+    m.againBtn.setTooltip ("Takes the picked gain box off and puts its box back as the selection, with its gain and its tracks set as they were (the Peaks and gain page): "
+                           "alter the gain, the box, the feathering or the tracks, and press Reduce to make it again. (Double-click the box in the list does the same.)");
+    m.againBtn.onClick = [this] { auto& i = *impl; if (! i.changes.picked.isNull()) i.changeAgain (i.changes.picked); };
+    for (auto* c : std::initializer_list<juce::Component*> { &m.changes, &m.takeOffBtn, &m.againBtn }) addAndMakeVisible (c);
     // the plug-in
     cap (m.plugNote, "Tick the tracks, then choose: one plug-in on each ticked track, after the track's fader - the last thing before the mix (its post-fader slot in the mixer). Each track has its own instance.", juce::Justification::topLeft);
     m.plugNote.setMinimumHorizontalScale (0.9f);
@@ -2460,13 +2640,14 @@ void SpecEditComponent::resized()
         if (m.progress.isVisible()) { m.progress.setBounds (top.removeFromRight (juce::jmin (150, top.getWidth() / 3)).withSizeKeepingCentre (juce::jmin (150, top.getWidth() / 3), 16)); top.removeFromRight (8); }
         m.status.setBounds (top);
     }
-    const int sideW = juce::jlimit (300, 380, getWidth() * 28 / 100);
+    const int sideW = juce::jlimit (330, 390, getWidth() * 28 / 100);
     {   // the right-hand side: three pages
         auto right = r.removeFromRight (sideW); r.removeFromRight (8);
         {
             auto tabs = right.removeFromTop (24); right.removeFromTop (6);
-            const int w0 = tabs.getWidth() * 27 / 100, w2 = tabs.getWidth() * 27 / 100;
-            m.tabBtn[0].setBounds (tabs.removeFromLeft (w0)); m.tabBtn[2].setBounds (tabs.removeFromRight (w2)); m.tabBtn[1].setBounds (tabs);
+            const int w = tabs.getWidth();
+            m.tabBtn[0].setBounds (tabs.removeFromLeft (w * 20 / 100)); m.tabBtn[3].setBounds (tabs.removeFromRight (w * 20 / 100));
+            m.tabBtn[2].setBounds (tabs.removeFromRight (w * 24 / 100)); m.tabBtn[1].setBounds (tabs);
         }
         if (m.tab == Impl::kTabFigures)
         {
@@ -2508,6 +2689,14 @@ void SpecEditComponent::resized()
                 m.allBtn.setBounds (row.removeFromLeft (60)); row.removeFromLeft (6); m.noneBtn.setBounds (row.removeFromLeft (60));
             }
             m.gainTracks.setBounds (right);
+        }
+        else if (m.tab == Impl::kTabChanges)
+        {
+            m.changesNote.setBounds (right.removeFromTop (34)); right.removeFromTop (2);
+            auto row = right.removeFromBottom (grid::btnH); right.removeFromBottom (6);
+            m.againBtn.setBounds (row.removeFromLeft (juce::jmin (120, row.getWidth() / 2))); row.removeFromLeft (6);
+            m.takeOffBtn.setBounds (row.removeFromLeft (juce::jmin (110, row.getWidth())));
+            m.changes.setBounds (right);
         }
         else
         {

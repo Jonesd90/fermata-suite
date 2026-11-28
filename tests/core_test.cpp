@@ -2740,7 +2740,126 @@ int main()
                         CHECK (f.inStart == ob.inStart && f.inEnd == ob.inEnd && f.curve == ob.curve && f.fixIn == ob.fixIn);
                         CHECK (l.outStart == ob.outStart && l.outEnd == ob.outEnd && l.outCurveValue() == ob.outCurveValue() && l.fixOut == ob.fixOut);
                     }
+                    // 3.76.0: the change taken off again. Every track of every piece remembers what it played before the fix (RegionFile::before); taken off, the
+                    // joins that were cut for it heal, and the edit is piece for piece what it was - and sounds it.
+                    {
+                        std::vector<juce::File> madeFiles; for (auto& j : jobs) for (auto& pr : j.results) madeFiles.push_back (pr.file);
+                        int swapped = 0;
+                        for (auto& r : e.regions) if (EditDef::hasSwapped (r)) { ++swapped; CHECK (r.files[0].before.size() == 1 && r.takeName.contains ("(reharmonised)")); }
+                        const int back = e.takeOffFiles (madeFiles);
+                        CHECK (back == swapped);
+                        CHECK (e.regions.size() == base.size());
+                        if (e.regions.size() == base.size())
+                            for (size_t j = 0; j < base.size(); ++j)
+                            {
+                                const auto& g = e.regions[j]; const auto& ob = base[j];
+                                CHECK (g.id == ob.id && g.srcIn == ob.srcIn && g.srcOut == ob.srcOut && g.startSample == ob.startSample && g.takeName == ob.takeName);
+                                CHECK (g.files.size() == 1 && g.files[0].file == ob.files[0].file && g.files[0].fileStart == ob.files[0].fileStart && g.files[0].before.empty());
+                                CHECK (g.inStart == ob.inStart && g.inEnd == ob.inEnd && g.outStart == ob.outStart && g.outEnd == ob.outEnd);
+                                CHECK (g.curve == ob.curve && g.outCurveValue() == ob.outCurveValue() && g.fixIn == ob.fixIn && g.fixOut == ob.fixOut && ! g.snipIn && ! g.snipOut);
+                            }
+                        const auto again = renderEdit (e);
+                        double w2 = 0; for (size_t i = 0; i < before.size(); ++i) w2 = juce::jmax (w2, (double) std::abs (before[i] - again[i]));
+                        CHECK (w2 < 1.0e-6);
+                        CHECK (e.takeOffFiles (madeFiles) == 0);                                // (nothing plays them any more)
+                    }
                 }
+            // 3.76.0: one fix inside another, taken off newest first and then all at once; an fx clip with no memory asks the lookup; a volume change survives
+            {
+                auto e = makeEdit (false);
+                for (auto& r : e.regions) r.takeId = juce::Uuid();                              // (each piece is of a take of its own)
+                const auto base = e.regions;
+                GainChange gc; gc.at = (juce::int64) (1.5 * r8); gc.ramp = 0.0; gc.db = { -4.0f }; e.regions[1].gains.push_back (gc);
+                const auto base2 = e.regions;
+                auto fix = [&] (const juce::Uuid& rid, double fromSec, double toSec, const char* word)      // seconds of the take
+                {
+                    const auto cur = e.regions; const int i = e.indexOf (rid); const auto& r = cur[(size_t) i];
+                    RegionJob j; j.regionId = rid; j.a = (juce::int64) (fromSec * r8); j.b = (juce::int64) (toSec * r8); j.fixFrom = j.a; j.fixTo = j.b;
+                    j.outFrom = j.a - 800; j.outTo = j.b + 800; j.idx = { 0 }; j.src = { r.files[0].file }; j.fileStart = { r.files[0].fileStart };
+                    const auto dest = audioops::uniqueFile (dir.getChildFile (juce::String ("nest-") + word + ".wav")); j.dest = { dest };
+                    const auto& src = takeAudio[1];
+                    CHECK (audioops::writeWav (dest, { std::vector<float> (src.begin() + (long) j.outFrom, src.begin() + (long) j.outTo) }, r8, true));
+                    audioops::PieceResult pr; pr.file = dest; pr.from = j.outFrom; pr.to = j.outTo; pr.ok = true; j.results.push_back (pr);
+                    CHECK (applyRegionJobs (e, cur, { j }, word));
+                    return dest;
+                };
+                const auto midId = e.regions[1].id;
+                const auto f1 = fix (midId, 1.4, 2.6, "pitch");                                 // the outer fix: take seconds 1.4 .. 2.6 of the middle piece (1 .. 3)
+                CHECK (e.regions.size() == 5);
+                juce::Uuid outer; for (auto& r : e.regions) if (r.files[0].file == f1) outer = r.id;
+                const auto f2 = fix (outer, 1.8, 2.2, "gain");                                  // the inner one, inside it
+                CHECK (e.regions.size() == 7);
+                int deep = 0; juce::Uuid inner;
+                for (auto& r : e.regions) if (r.files[0].file == f2) { ++deep; inner = r.id; CHECK (r.files[0].before.size() == 2 && r.files[0].before[0].file == takeFile[1] && r.files[0].before[1].file == f1); }
+                CHECK (deep == 1);
+                {   // saved with the project and read back: what each track played before, and the list of gain boxes
+                    Project q2; q2.setInputCount (2); q2.setOutputCount (2);
+                    auto& tw = q2.addTakeWindow ("W"); const auto edId = q2.addEdit ("E", tw.id).id;
+                    { auto* ed = q2.findEdit (edId); ed->sampleRate = r8; ed->regions = e.regions;
+                      EditDef::SpecGain g; g.id = juce::Uuid(); g.when = 1234567; g.gainDb = -3.5; g.at = 16000; g.shaped = true; g.boxes.push_back ({ 1.0, 1.5, 143.0, 180.0 }); g.tracks = { trk }; g.files = { f2 };
+                      ed->specGains.push_back (g); }
+                    Project back; CHECK (back.fromVar (q2.toVar()));
+                    auto* be = back.findEdit (edId); auto* was = q2.findEdit (edId);
+                    CHECK (be != nullptr && be->regions.size() == 7 && be->specGains.size() == 1);
+                    if (be != nullptr && be->regions.size() == 7 && be->specGains.size() == 1)
+                    {
+                        int found = 0;
+                        for (auto& r : be->regions) if (r.files[0].file == f2)
+                        { ++found; CHECK (r.files[0].before.size() == 2 && r.files[0].before[0].file == takeFile[1] && r.files[0].before[0].fileStart == 0 && r.files[0].before[1].file == f1
+                                          && r.files[0].before[1].fileStart == (juce::int64) (1.4 * r8) - 800 && r.files[0].before[1].name.contains ("(pitch)") && r.files[0].before[0].name == base[1].takeName); }
+                        CHECK (found == 1);
+                        const auto& g = be->specGains[0]; const auto& w = was->specGains[0];
+                        CHECK (g.id == w.id && g.when == 1234567 && g.gainDb == -3.5 && g.at == 16000 && g.shaped && g.boxes.size() == 1 && g.boxes[0].t1 == 1.5 && g.boxes[0].f0 == 143.0 && g.boxes[0].f1 == 180.0);
+                        CHECK (g.tracks.size() == 1 && g.tracks[0] == trk && g.files.size() == 1 && g.files[0] == f2);
+                        juce::int64 first = -1; CHECK (be->piecesOf (g, &first) == 1 && first > 0);
+                        const auto h1 = Project::undoHash (*be);                                // (an undo step sees both)
+                        auto g2 = be->specGains; be->specGains.clear(); CHECK (Project::undoHash (*be) != h1); be->specGains = g2; CHECK (Project::undoHash (*be) == h1);
+                        for (auto& r : be->regions) if (r.files[0].file == f2) r.files[0].before.pop_back();
+                        CHECK (Project::undoHash (*be) != h1);
+                    }
+                }
+                {   // the inner one alone: back to the outer fix, in one piece again
+                    auto e2 = e;
+                    CHECK (e2.takeOffFiles ({ f2 }) == 1 && e2.regions.size() == 5);
+                    for (auto& r : e2.regions) if (r.files[0].file == f1) CHECK (r.files[0].before.size() == 1 && r.srcIn == (juce::int64) (1.4 * r8) && r.srcOut == (juce::int64) (2.6 * r8) && r.takeName.contains ("(pitch)"));
+                    CHECK (e2.takeOffFiles ({ f1 }) == 1 && e2.regions.size() == 3);
+                    CHECK (e2.regions[1].id == midId && e2.regions[1].files[0].file == takeFile[1] && e2.regions[1].takeName == base[1].takeName);
+                    CHECK (e2.regions[1].gains.size() == 1 && e2.regions[1].gains[0].at == gc.at && e2.regions[1].gains[0].db[0] == -4.0f);
+                }
+                {   // the outer one taken off while the inner lies in it: the outer's two flanks go back; the inner piece still plays its own file
+                    auto e2 = e;
+                    CHECK (e2.takeOffFiles ({ f1 }) == 2 && e2.regions.size() == 5);
+                    int stillIn = 0; for (auto& r : e2.regions) if (r.files[0].file == f2) ++stillIn;
+                    CHECK (stillIn == 1);
+                }
+                {   // Revert to the original audio on the innermost piece: the recording itself, and it heals only into neighbours that are whole
+                    auto e2 = e;
+                    CHECK (e2.revertToOriginal (inner) == 1);
+                    for (auto& r : e2.regions) CHECK (r.files[0].file != f2);
+                    CHECK (e2.regions.size() == 7);                                             // (its neighbours still play the outer fix: nothing to heal)
+                    auto a = juce::Uuid::null(), b = juce::Uuid::null(); for (auto& r : e2.regions) if (r.files[0].file == f1) { if (a.isNull()) a = r.id; else b = r.id; }
+                    CHECK (e2.revertToOriginal (a) == 1 && e2.revertToOriginal (b) == 1);
+                    CHECK (e2.regions.size() == 3 && e2.regions[1].srcIn == base[1].srcIn && e2.regions[1].srcOut == base[1].srcOut && e2.regions[1].files[0].before.empty());
+                    CHECK (e2.revertToOriginal (e2.regions[1].id) == 0);                        // (nothing to put back)
+                }
+                {   // an fx clip from before 3.76.0 remembers nothing: the lookup is asked, and the piece heals
+                    auto e2 = e; e2.takeOffFiles ({ f2 });
+                    for (auto& r : e2.regions) for (auto& f : r.files) f.before.clear();
+                    juce::Uuid old; for (auto& r : e2.regions) if (r.files[0].file == f1) old = r.id;
+                    CHECK (e2.revertToOriginal (old) == 0);                                     // (no memory, no lookup: left alone)
+                    Project q;
+                    auto lookup = [&q, &e2] (const EditRegion& r, const RegionFile& f, RegionFile::Before& o) { return q.originalFileOf (e2, r, f, o); };
+                    // (the project has no such take any more: the pieces beside it are of the same take and still play its whole file; a piece that names
+                    //  no take at all has no such relatives)
+                    { auto e4 = e2; for (auto& r : e4.regions) r.takeId = juce::Uuid::null(); auto l4 = [&q, &e4] (const EditRegion& r, const RegionFile& f, RegionFile::Before& o) { return q.originalFileOf (e4, r, f, o); }; CHECK (e4.revertToOriginal (old, l4) == 0); }
+                    CHECK (e2.revertToOriginal (old, lookup) == 1 && e2.regions.size() == 3 && e2.regions[1].files[0].file == takeFile[1]);
+                    auto e3 = e; e3.takeOffFiles ({ f2 });
+                    for (auto& r : e3.regions) for (auto& f : r.files) f.before.clear();
+                    for (auto& r : e3.regions) if (r.files[0].file == takeFile[1]) r.takeId = juce::Uuid();       // (and with no such neighbour it is not known: left alone)
+                    auto lookup3 = [&q, &e3] (const EditRegion& r, const RegionFile& f, RegionFile::Before& o) { return q.originalFileOf (e3, r, f, o); };
+                    CHECK (e3.revertToOriginal (old, lookup3) == 0 && e3.regions.size() == 5);
+                }
+            }
             dir.deleteRecursively();
         }
         // Attenuate with linked channels: a stereo pair keeps its level difference and its time difference (the stereo image)

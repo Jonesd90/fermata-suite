@@ -146,7 +146,8 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     std::function<void (const juce::Uuid&)> showScope;
     std::function<void()> showOrganiser;
     std::function<void()> showTakeDisplay;
-    std::function<void()> showMastering;                // the Mastering window (Virtual Master export, DDP builder)
+    std::function<void()> showMastering;                // the EXPORTS window (3.76.0: what was called the Mastering window - Listening copy, Virtual Master, DDP, Atmos; its code keeps the name)
+    std::function<void()> showMasteringNow;             // 3.76.0: the top row's Mastering - the spectrogram window (showSpecEdit) as it is, or for the piece worked on last
     std::function<void (const juce::Uuid& editId)> showSpecEdit;     // 3.74.0: the Spectrogram Editing window (SpecEditWindow.h) for this piece - one window; open already: it takes the piece
 
     // ---- the Take Display (take number, time of day and time left, on other screens) ----
